@@ -180,10 +180,10 @@ pub fn temporary_directory(name: &str) -> PathBuf {
 pub fn config() -> SessionConfig {
     SessionConfig {
         agentloop: AgentloopRef {
-            id: AgentloopId::new("a".repeat(64)),
             configuration: serde_json::json!({}),
             environment: EnvironmentName::new("workspace"),
             needs: Vec::new(),
+            implementation: serde_json::json!({"type": "brain_component", "entrypoint": "turn", "id": AgentloopId::new("a".repeat(64))}),
         },
         model: ModelBinding {
             provider: "vercel-ai-gateway".into(),
@@ -322,7 +322,7 @@ impl ToolExecutor for NoTools {
     async fn execute(
         &self,
         _: brain_protocol::ToolDispatch,
-        _: &dyn brain::ToolServices,
+        _: std::sync::Arc<dyn brain::ToolServices>,
     ) -> Result<brain_protocol::Outcome, Error> {
         Err(Error::Executor("no tools in this test".into()))
     }

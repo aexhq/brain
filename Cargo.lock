@@ -332,6 +332,7 @@ dependencies = [
  "clap",
  "futures-util",
  "hex",
+ "jsonschema",
  "rand 0.9.5",
  "reqwest",
  "serde",
@@ -342,6 +343,32 @@ dependencies = [
  "tracing",
  "xxhash-rust",
  "zeroize",
+]
+
+[[package]]
+name = "brain-env"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.23.1",
+ "brain",
+ "brain-protocol",
+ "brain-telemetry",
+ "clap",
+ "http",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "url",
+ "wasm-encoder",
+ "wasmtime",
+ "wasmtime-wasi",
+ "wasmtime-wasi-http",
 ]
 
 [[package]]
@@ -362,29 +389,6 @@ dependencies = [
  "tokio",
  "tower",
  "utoipa",
-]
-
-[[package]]
-name = "brain-loophost"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.23.1",
- "brain-protocol",
- "clap",
- "http",
- "http-body-util",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "wasm-encoder",
- "wasmtime",
- "wasmtime-wasi",
- "wasmtime-wasi-http",
 ]
 
 [[package]]
@@ -409,9 +413,10 @@ dependencies = [
  "async-trait",
  "axum",
  "brain",
+ "brain-env",
  "brain-http",
- "brain-loophost",
  "brain-protocol",
+ "brain-sessions",
  "brain-telemetry",
  "clap",
  "hex",
@@ -427,6 +432,21 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "zeroize",
+]
+
+[[package]]
+name = "brain-sessions"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "brain",
+ "brain-protocol",
+ "brain-telemetry",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

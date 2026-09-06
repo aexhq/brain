@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf};
 
 use brain_protocol::{
     CreateSessionRequest, Driver, EnvironmentCommand, EnvironmentReceipt, EnvironmentRequest,
-    EnvironmentResponse, Outcome, Tool, TurnOutput,
+    EnvironmentResponse, Tool, TurnOutput,
 };
 use serde_json::Value;
 
@@ -67,8 +67,8 @@ fn checked_in_examples_validate() {
     for example in [
         "tests/examples/environment/setup.json",
         "tests/examples/environment/setup-result.json",
-        "tests/examples/environment/invoke.json",
-        "tests/examples/environment/invoke-result.json",
+        "tests/examples/environment/execute.json",
+        "tests/examples/environment/execute-result.json",
     ] {
         environment_schema
             .validate(&read_json(example))
@@ -89,8 +89,7 @@ fn checked_in_examples_validate() {
     );
 }
 
-/// A Tool names its Environment and what it needs there as a bounded list of distinct
-/// URIs; the fields of the two Tool forms that used to exist are refused outright.
+/// A Tool has at least one placement; each has its own implementation and URI needs.
 #[test]
 fn a_tool_names_one_environment_and_its_needs_as_uris() {
     let schema =
@@ -102,7 +101,7 @@ fn a_tool_names_one_environment_and_its_needs_as_uris() {
     without_environment
         .as_object_mut()
         .unwrap()
-        .remove("environment");
+        .remove("placements");
     assert!(schema.validate(&without_environment).is_err());
     for deleted in ["hosting", "host_id", "binding_names", "environment_id"] {
         let mut old = example.clone();
@@ -110,17 +109,22 @@ fn a_tool_names_one_environment_and_its_needs_as_uris() {
         assert!(schema.validate(&old).is_err(), "{deleted} must be refused");
     }
     let mut repeated = example.clone();
-    repeated["needs"] = serde_json::json!(["pkg:apt/bash", "pkg:apt/bash"]);
+    repeated["placements"]["sandbox"]["needs"] =
+        serde_json::json!(["pkg:apt/bash", "pkg:apt/bash"]);
     assert!(schema.validate(&repeated).is_err());
     let mut too_many = example.clone();
-    too_many["needs"] =
+    too_many["placements"]["sandbox"]["needs"] =
         serde_json::json!((0..65).map(|i| format!("pkg:apt/p{i}")).collect::<Vec<_>>());
     assert!(schema.validate(&too_many).is_err());
     let mut host_tool = example;
-    host_tool.as_object_mut().unwrap().remove("implementation");
-    schema
-        .validate(&host_tool)
-        .expect("a Tool the host env holds itself carries no implementation");
+    host_tool["placements"]["sandbox"]
+        .as_object_mut()
+        .unwrap()
+        .remove("implementation");
+    assert!(
+        schema.validate(&host_tool).is_err(),
+        "every placement has an explicit implementation"
+    );
 }
 
 /// An Environment entry says how Brain reaches it beside its own configuration: the
@@ -160,14 +164,29 @@ fn rust_views_round_trip_contract_examples() {
         serde_json::from_value(read_json("tests/examples/session/create-session.json")).unwrap();
     assert_eq!(session.model.provider, "vercel-ai-gateway");
     assert_eq!(session.model.name, "openai/gpt-5-mini");
-    assert_eq!(session.agentloop.id.as_str(), "a".repeat(64));
+    assert_eq!(session.agentloop.implementation["id"], "a".repeat(64));
     assert_eq!(session.agentloop.environment.as_str(), "brain");
     assert_eq!(session.system, "Be useful.");
     assert_eq!(session.tools.len(), 1);
     assert_eq!(session.tools[0].name, "read");
-    assert_eq!(session.tools[0].environment, session.environments[1].name);
-    assert_eq!(session.tools[0].needs, vec!["file:///workspace"]);
-    assert!(session.tools[0].implementation.is_some());
+    assert!(
+        session.tools[0]
+            .placements
+            .contains_key(&session.environments[1].name)
+    );
+    assert_eq!(
+        session.tools[0].placements.values().next().unwrap().needs,
+        vec!["file:///workspace"]
+    );
+    assert!(
+        session.tools[0]
+            .placements
+            .values()
+            .next()
+            .unwrap()
+            .implementation
+            .is_object()
+    );
     assert!(matches!(session.environments[0].driver, Driver::Brain {}));
     assert!(matches!(
         &session.environments[1].driver,
@@ -175,10 +194,10 @@ fn rust_views_round_trip_contract_examples() {
     ));
 
     let command: EnvironmentCommand =
-        serde_json::from_value(read_json("tests/examples/environment/invoke.json")).unwrap();
+        serde_json::from_value(read_json("tests/examples/environment/execute.json")).unwrap();
     assert!(matches!(
         command.operation.request,
-        EnvironmentRequest::Invoke { ref tool, .. } if tool == "read"
+        EnvironmentRequest::Execute { .. }
     ));
     let setup: EnvironmentCommand =
         serde_json::from_value(read_json("tests/examples/environment/setup.json")).unwrap();
@@ -187,16 +206,15 @@ fn rust_views_round_trip_contract_examples() {
         EnvironmentRequest::Setup { ref needs, .. } if needs.len() == 3
     ));
     let response: EnvironmentResponse =
-        serde_json::from_value(read_json("tests/examples/environment/invoke-result.json")).unwrap();
+        serde_json::from_value(read_json("tests/examples/environment/execute-result.json"))
+            .unwrap();
     assert!(matches!(
         response.receipt,
-        EnvironmentReceipt::Outcome {
-            outcome: Outcome::Ok { .. }
-        }
+        EnvironmentReceipt::Result { .. }
     ));
     let tool: Tool = serde_json::from_value(read_json("tests/examples/tool/tool.json")).unwrap();
     assert_eq!(tool.name, "bash");
-    assert_eq!(tool.environment.as_str(), "sandbox");
+    assert_eq!(tool.placements.keys().next().unwrap().as_str(), "sandbox");
     assert_eq!(tool.definition().name, "bash");
 
     let output: TurnOutput =

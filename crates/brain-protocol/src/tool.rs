@@ -32,9 +32,8 @@ pub struct ToolDefinition {
     pub output_schema: Option<serde_json::Value>,
 }
 
-/// One Tool as a session declares it: what the model is told, the Environment of the
-/// session that runs it, what it needs there, and the implementation that Environment
-/// interprets. Brain reads the name and the Environment and carries the rest.
+/// A canonical Tool definition with one implementation per authorized Environment.
+/// Brain validates dispatched inputs and successful outputs against this definition.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tool {
@@ -46,17 +45,26 @@ pub struct Tool {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "crate::schema::json_object")]
     pub output_schema: Option<serde_json::Value>,
-    pub environment: EnvironmentName,
-    /// What the Tool needs from its Environment, as URIs: `pkg:` for software,
-    /// `https:` or `wss:` for a network destination, `file:` for a filesystem location.
-    /// Brain hands them to the Environment and reads none of them.
+    /// One implementation per authorized Environment, fixed at create.
+    #[schemars(length(min = 1))]
+    pub placements: std::collections::BTreeMap<EnvironmentName, ToolPlacement>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolPlacement {
     #[serde(default)]
     #[schemars(schema_with = "crate::schema::needs")]
     pub needs: Vec<String>,
-    /// Opaque to Brain; interpreted by the Environment. Absent when the Environment
-    /// holds the implementation itself, as the host env does.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub implementation: Option<serde_json::Value>,
+    pub implementation: serde_json::Value,
+}
+
+/// Definitions and logical choices made available to an Agentloop, without executable descriptors.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub struct ActivationTool {
+    #[serde(flatten)]
+    pub definition: ToolDefinition,
+    pub environments: Vec<EnvironmentName>,
 }
 
 impl Tool {
@@ -74,6 +82,7 @@ impl Tool {
 /// in the result; on every Environment wire the call is named by its sequence.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct ToolInvocation {
+    pub environment: EnvironmentName,
     pub call_id: String,
     pub name: String,
     pub input: serde_json::Value,
@@ -86,6 +95,7 @@ pub struct ToolDispatch {
     pub sequence: u64,
     pub session_id: SessionId,
     pub tool: Tool,
+    pub placement: ToolPlacement,
     /// The Environment the Tool names, as the session declared it.
     pub environment: Environment,
     pub invocation: ToolInvocation,

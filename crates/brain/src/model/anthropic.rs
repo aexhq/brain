@@ -283,7 +283,7 @@ mod tests {
     fn the_body_is_well_formed_and_the_cache_breakpoint_sits_on_the_last_tool() {
         let request = ModelRequest {
             system: Some("sys".into()),
-            tools: Some(vec!["read".into()]),
+            tools: Some(tools()),
             messages: vec![Message::user_text("hi")],
             response_format: None,
             max_output_tokens: None,
@@ -302,7 +302,7 @@ mod tests {
     fn a_toolless_request_caches_the_system_block() {
         let request = ModelRequest {
             system: Some("sys".into()),
-            tools: Some(vec!["read".into()]),
+            tools: Some(tools()),
             messages: vec![Message::user_text("hi")],
             response_format: None,
             max_output_tokens: Some(64),
@@ -323,7 +323,7 @@ mod tests {
     fn response_format_is_rejected_instead_of_silently_dropped() {
         let request = ModelRequest {
             system: Some("sys".into()),
-            tools: Some(vec!["read".into()]),
+            tools: Some(tools()),
             messages: vec![Message::user_text("hi")],
             response_format: Some(serde_json::json!({"type": "json_object"})),
             max_output_tokens: None,
@@ -337,7 +337,7 @@ mod tests {
     fn tool_result_always_carries_is_error() {
         let request = ModelRequest {
             system: Some("sys".into()),
-            tools: Some(vec!["read".into()]),
+            tools: Some(tools()),
             messages: vec![Message::tool_results(vec![ContentBlock::ToolResult {
                 tool_use_id: "t1".into(),
                 content: serde_json::json!({"stderr": "boom"}),

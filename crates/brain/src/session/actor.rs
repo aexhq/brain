@@ -18,7 +18,7 @@ use std::{
 
 use brain_protocol::{
     LiveEvent, Message, MessageRequest, ModelRequest, ModelResult, ModelStreamEvent, Outcome,
-    RuntimeEnvelope, SessionConfig, SessionStatus, SessionSummary, StreamingEvent, Tool,
+    RuntimeEnvelope, SessionConfig, SessionStatus, SessionSummary, StreamingEvent,
     ToolCancellation, ToolDefinition, ToolDispatch, ToolInvocation, ToolResult, TurnInput,
     TurnOutput,
     codes::{self, Failure},
@@ -144,7 +144,15 @@ impl SessionActor {
             events,
             configuration: self.config.agentloop.configuration.clone(),
             system: self.config.system.clone(),
-            tools: self.config.definitions(),
+            tools: self
+                .config
+                .tools
+                .iter()
+                .map(|tool| brain_protocol::ActivationTool {
+                    definition: tool.definition(),
+                    environments: tool.placements.keys().cloned().collect(),
+                })
+                .collect(),
             runtime: RuntimeEnvelope::at(&self.row.session_id, self.row.through_sequence),
         };
         let activation = self
@@ -163,13 +171,13 @@ impl SessionActor {
             runtime: self.runtime.clone(),
             config: self.config.clone(),
             cancel_requested: self.cancel_requested.clone(),
-            model_calls: AtomicUsize::new(0),
-            cursor: Mutex::new(Cursor {
+            model_calls: Arc::new(AtomicUsize::new(0)),
+            cursor: Arc::new(Mutex::new(Cursor {
                 through_sequence: self.row.through_sequence,
                 transcript: std::mem::take(&mut self.folded.transcript),
                 emitted_bytes: 0,
                 max_emitted_bytes: self.runtime.limits.max_emitted_bytes,
-            }),
+            })),
         });
         let agentloop_environment = self
             .config
@@ -380,14 +388,15 @@ impl Cursor {
 }
 
 /// Brain's side of a running turn.
+#[derive(Clone)]
 pub struct TurnHost {
     session_id: brain_protocol::SessionId,
     store: Arc<dyn SessionStore>,
     runtime: Arc<SessionRuntime>,
     config: Arc<SessionConfig>,
     cancel_requested: Arc<AtomicBool>,
-    model_calls: AtomicUsize,
-    cursor: Mutex<Cursor>,
+    model_calls: Arc<AtomicUsize>,
+    cursor: Arc<Mutex<Cursor>>,
 }
 
 impl TurnHost {
@@ -398,31 +407,22 @@ impl TurnHost {
         Ok(())
     }
 
-    /// The definitions of the tools a model request offers, in the request's order.
-    ///
-    /// The loop chooses by name from what the session was created with: a name outside
-    /// that set would be a tool nothing admitted and nothing can dispatch, and a repeated
-    /// name would offer the model the same tool twice. Both fail the call.
     fn offered_tools(&self, request: &ModelRequest) -> Result<Vec<ToolDefinition>, Error> {
-        let Some(names) = &request.tools else {
-            return Ok(self.config.definitions());
-        };
-        let mut seen = HashSet::with_capacity(names.len());
-        names
-            .iter()
-            .map(|name| {
-                if !seen.insert(name.as_str()) {
-                    return Err(Error::InvalidState(format!(
-                        "model request offers Tool `{name}` twice"
-                    )));
-                }
-                self.config.tool(name).map(Tool::definition).ok_or_else(|| {
-                    Error::InvalidState(format!(
-                        "model request offers Tool `{name}`, which the session was not created with"
-                    ))
-                })
-            })
-            .collect()
+        let definitions = request
+            .tools
+            .clone()
+            .unwrap_or_else(|| self.config.definitions());
+        let mut seen = HashSet::with_capacity(definitions.len());
+        for definition in &definitions {
+            super::validate_tool_definition(definition)?;
+            if !seen.insert(&definition.name) {
+                return Err(Error::InvalidState(format!(
+                    "model request offers Tool `{}` twice",
+                    definition.name
+                )));
+            }
+        }
+        Ok(definitions)
     }
 
     async fn append(
@@ -464,13 +464,7 @@ impl TurnServices for TurnHost {
             request.system = Some(self.config.system.clone());
         }
         if request.tools.is_none() {
-            request.tools = Some(
-                self.config
-                    .tools
-                    .iter()
-                    .map(|tool| tool.name.clone())
-                    .collect(),
-            );
+            request.tools = Some(self.config.definitions());
         }
         if request.response_format.is_none() {
             request.response_format = self.config.response_format.clone();
@@ -588,18 +582,29 @@ impl TurnServices for TurnHost {
                 })?;
                 let environment = self
                     .config
-                    .environment(&tool.environment)
+                    .environment(&invocation.environment)
                     .cloned()
                     .ok_or_else(|| {
                         Error::InvalidState(format!(
                             "Tool `{}` names Environment `{}`, which this session does not have",
-                            tool.name, tool.environment
+                            tool.name, invocation.environment
+                        ))
+                    })?;
+                let placement = tool
+                    .placements
+                    .get(&invocation.environment)
+                    .cloned()
+                    .ok_or_else(|| {
+                        Error::InvalidState(format!(
+                            "Tool `{}` is not authorized in Environment `{}`",
+                            tool.name, invocation.environment
                         ))
                     })?;
                 let dispatch = ToolDispatch {
                     sequence: 0,
                     session_id: self.session_id.clone(),
                     tool,
+                    placement,
                     environment,
                     invocation,
                     deadline_ms: self.runtime.limits.tool_deadline_ms(),
@@ -610,6 +615,7 @@ impl TurnServices for TurnHost {
                     codes::event::TOOL_CALL_STARTED,
                     serde_json::json!({
                         "tool": &dispatch.tool.name,
+                        "environment": &dispatch.environment.name,
                         "invocation": &dispatch.invocation,
                         "deadline_ms": dispatch.deadline_ms,
                     }),
@@ -638,7 +644,14 @@ impl TurnServices for TurnHost {
                     // cannot be trusted to, so an overdue call is dropped and recorded
                     // as its own distinguished outcome. A cancellation ends the wait the
                     // same way.
-                    let call = executor.execute(dispatch, self);
+                    let output_schema = dispatch.tool.output_schema.clone();
+                    let call = async {
+                        let validator = jsonschema::validator_for(&dispatch.tool.input_schema).map_err(|e| Error::InvalidState(e.to_string()))?;
+                        if let Err(error) = validator.validate(&dispatch.invocation.input) {
+                            return Ok(Outcome::Error { error: brain_protocol::OutcomeError { code: "invalid_input".into(), message: error.to_string(), details: None } });
+                        }
+                        executor.execute(dispatch, Arc::new(self.clone())).await
+                    };
                     let cancelled = async {
                         while !cancel.load(Ordering::Acquire) {
                             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -657,6 +670,15 @@ impl TurnServices for TurnHost {
                     };
                     let dropped = matches!(&result, Ok((_, true)));
                     let unreachable = matches!(&result, Err(Error::Ambiguous(_)));
+                    let result = result.and_then(|(outcome, dropped)| {
+                        if let (Outcome::Ok { value }, Some(schema)) = (&outcome, &output_schema) {
+                            let validator = jsonschema::validator_for(schema).map_err(|e| Error::Executor(e.to_string()))?;
+                            if let Err(error) = validator.validate(value) {
+                                return Ok((Outcome::Error { error: brain_protocol::OutcomeError { code: "invalid_output".into(), message: error.to_string(), details: None } }, dropped));
+                            }
+                        }
+                        Ok((outcome, dropped))
+                    });
                     let result = match result {
                         Ok((outcome, _)) => ToolResult::from_outcome(call_id, outcome),
                         Err(Error::Ambiguous(message)) => ToolResult::from_outcome(call_id, Outcome::Unknown { message }),
@@ -734,6 +756,9 @@ impl TurnServices for TurnHost {
 
 #[async_trait::async_trait]
 impl ToolServices for TurnHost {
+    fn cancelled(&self) -> bool {
+        self.cancel_requested.load(Ordering::Acquire)
+    }
     async fn emit(&self, kind: String, payload: serde_json::Value) -> Result<u64, Error> {
         TurnServices::emit(self, kind, payload).await
     }
@@ -784,6 +809,7 @@ impl TurnHost {
                     serde_json::json!({
                         "target_sequence": cancellation.target_sequence,
                         "tool": &dispatch.tool.name,
+                        "environment": &dispatch.environment.name,
                     }),
                 ));
                 cancellations.push(cancellation);

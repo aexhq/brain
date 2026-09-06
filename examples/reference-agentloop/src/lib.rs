@@ -3,7 +3,7 @@ use brain_protocol::{
 };
 use std::collections::BTreeMap;
 
-wit_bindgen::generate!({ path: "../../crates/brain-loophost/wit/agentloop", world: "agentloop" });
+wit_bindgen::generate!({ path: "../../crates/brain-env/wit/agentloop", world: "agentloop" });
 
 struct Reference;
 
@@ -36,6 +36,7 @@ impl Guest for Reference {
             after = page.next_cursor;
         }
         kv.insert("observed_sequence".into(), after.into());
+        let tools: Vec<brain_protocol::ActivationTool> = decode(&input.tools_json)?;
         let input: brain_protocol::UserInput = decode(&input.input_json)?;
         transcript.push(Message::user_text(input.message));
         loop {
@@ -50,12 +51,16 @@ impl Guest for Reference {
             let calls = result
                 .message
                 .tool_uses()
-                .map(|(id, name, input)| ToolInvocation {
+                .map(|(id, name, input)| {
+                    let placements = tools.iter().find(|tool| tool.definition.name == name).ok_or_else(|| TurnError { code: "unknown_tool".into(), message: name.into(), retryable: false })?;
+                    let [environment] = placements.environments.as_slice() else { return Err(TurnError { code: "ambiguous_placement".into(), message: format!("{name} requires an explicit placement policy"), retryable: false }); };
+                    Ok(ToolInvocation {
+                    environment: environment.clone(),
                     call_id: id.into(),
                     name: name.into(),
                     input: input.clone(),
-                })
-                .collect::<Vec<_>>();
+                })})
+                .collect::<Result<Vec<_>, TurnError>>()?;
             transcript.push(result.message);
             if calls.is_empty() {
                 break;

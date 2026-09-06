@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Everything written here is rendered from the crates' `generated/contract/` directories,
-// which each crate's `cargo run -p <crate> --bin contract` renders from its Rust types.
+// which each crate's `cargo run -p <crate> --bin <crate>-contract` renders from its Rust types.
 // Nothing under src/generated or contracts/ is edited by hand.
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../../..");
@@ -45,7 +45,7 @@ await writeFile(path.join(output, "providers.ts"), providersTs);
 // Component authors compile elsewhere; these contracts define the imports Brain hosts.
 const wit = path.resolve(here, "../contracts");
 await mkdir(wit, { recursive: true });
-const loophostWit = path.join(root, "crates/brain-loophost/wit");
+const loophostWit = path.join(root, "crates/brain-env/wit");
 await copyFile(path.join(loophostWit, "agentloop/agentloop.wit"), path.join(wit, "agentloop.wit"));
 await copyFile(path.join(loophostWit, "tool/tool.wit"), path.join(wit, "tool.wit"));
 await copyFile(schemaPath, path.join(wit, "session.json"));

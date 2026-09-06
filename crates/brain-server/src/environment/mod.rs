@@ -1,21 +1,36 @@
-//! The Environments a session's Tools and Agentloop run in.
-//!
-//! One interface, [`EnvironmentAdapter`], and one implementation per [`Driver`]: the
-//! brain env hosted in this process, the host env reached over the connection a
-//! registered host holds open, and any other Environment reached over HTTP. The
-//! [`EnvironmentRegistry`] resolves an entry to its adapter and journals every operation
-//! before it sends it; nothing else in the server knows which kind it has.
-//!
-//! [`Driver`]: brain_protocol::Driver
-
-mod adapter;
-mod brain;
+//! Concrete Environment transports assembled by the server.
 mod host;
 mod http;
-mod registry;
-
-pub use adapter::{EnvironmentAdapter, Services};
-pub use brain::{BrainEnvironment, NativePolicy};
+pub use brain::environment::{EnvironmentAdapter, Services};
+pub use brain_env::{BrainEnvironment, NativePolicy};
+pub use brain_sessions::EnvironmentRegistry;
 pub use host::HostEnvironment;
 pub use http::{HttpEnvironmentAdapter, validate_url};
-pub use registry::EnvironmentRegistry;
+
+pub struct EnvironmentRouter {
+    pub brain: std::sync::Arc<BrainEnvironment>,
+    pub hosts: HostEnvironment,
+    pub http: std::sync::Arc<HttpEnvironmentAdapter>,
+}
+
+#[async_trait::async_trait]
+impl EnvironmentAdapter for EnvironmentRouter {
+    async fn execute(
+        &self,
+        environment: &brain_protocol::Environment,
+        operation: &brain_protocol::EnvironmentOperation,
+        services: Services,
+    ) -> Result<brain_protocol::EnvironmentReceipt, brain::Error> {
+        use brain_protocol::Driver;
+        let adapter: &dyn EnvironmentAdapter = match environment.driver {
+            Driver::Brain {} => &*self.brain,
+            Driver::Host { .. } => &self.hosts,
+            Driver::Http { .. } => &*self.http,
+        };
+        adapter.execute(environment, operation, services).await
+    }
+}
+
+#[cfg(test)]
+#[path = "registry_tests.rs"]
+mod registry_tests;

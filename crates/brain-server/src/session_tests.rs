@@ -1,4 +1,7 @@
 use super::*;
+use brain::LoopExecutor;
+use brain_protocol::SessionStatus;
+use brain_protocol::{AgentloopRef, Environment};
 use brain_protocol::{
     Message, ModelRequest, ModelResult, ModelStreamEvent, Outcome, ToolCancellation, ToolDispatch,
     TurnInput, TurnOutput,
@@ -46,7 +49,7 @@ impl brain::ToolExecutor for Echo {
     async fn execute(
         &self,
         _: ToolDispatch,
-        _: &dyn brain::ToolServices,
+        _: std::sync::Arc<dyn brain::ToolServices>,
     ) -> Result<Outcome, brain::Error> {
         panic!("echo does not call tools")
     }
@@ -65,8 +68,11 @@ fn api(root: &std::path::Path) -> ServerApi {
         root.join("run"),
         root.join("components"),
         Default::default(),
+        std::num::NonZeroUsize::new(1).unwrap(),
     ));
+    let hosts = crate::HostEnvironment::open(&root.join("hosts.log"), &Default::default()).unwrap();
     ServerApi::new(ServerResources {
+        hosts: hosts.clone(),
         sessions_dir: root.join("sessions"),
         writer: Writer::spawn(),
         feed: feed.clone(),
@@ -87,192 +93,32 @@ fn api(root: &std::path::Path) -> ServerApi {
         idempotency: IdempotencyStore::open(&root.join("requests/log"), Duration::from_secs(60))
             .unwrap(),
         loops: loops.clone(),
-        turns: Arc::new(crate::Turns::default()),
-        environments: Arc::new(EnvironmentRegistry::new(
-            Arc::new(crate::BrainEnvironment::new(
-                loops,
-                Default::default(),
-                root.join("native-workspaces"),
-            )),
-            crate::HostEnvironment::open(&root.join("hosts/log"), &Default::default()).unwrap(),
-            Arc::new(crate::HttpEnvironmentAdapter::new(
-                reqwest::Client::new(),
-                credentials.clone(),
-                &brain::Limits {
-                    max_turn_secs: 0,
-                    ..Default::default()
-                },
-                &Default::default(),
-            )),
-        )),
+        executions: Arc::new(crate::Executions::default()),
+        environments: Arc::new(EnvironmentRegistry::new(Arc::new(
+            crate::environment::EnvironmentRouter {
+                brain: Arc::new(crate::BrainEnvironment::new(
+                    loops,
+                    Default::default(),
+                    root.join("native-workspaces"),
+                )),
+                hosts,
+                http: Arc::new(crate::HttpEnvironmentAdapter::new(
+                    reqwest::Client::new(),
+                    credentials.clone(),
+                    &Default::default(),
+                    Arc::new(crate::Executions::default()),
+                    "http://brain.example".into(),
+                )),
+            },
+        ))),
         credentials,
         providers: Arc::new(brain::model::ProviderRegistry::default_set()),
     })
     .unwrap()
 }
 
-fn seed(api: &ServerApi, id: &str) -> Arc<LocalSessionStore> {
-    let config: SessionConfig = serde_json::from_value(serde_json::json!({
-        "agentloop": {"id": "a".repeat(64), "configuration": {}, "environment": "brain"},
-        "model": {"provider": "openai", "name": "test"}, "system": "test", "tools": [],
-        "environments": [{"name": "brain", "driver": "brain"}]
-    }))
-    .unwrap();
-    let store = LocalSessionStore::create(
-        &api.resources.sessions_dir.join(id),
-        SessionId::new(id),
-        &serde_json::to_value(&config).unwrap(),
-        api.resources.writer.clone(),
-        api.resources.feed.clone(),
-    )
-    .unwrap();
-    let session = Session::begin(
-        store.clone(),
-        api.resources.session_runtime.clone(),
-        &config,
-        &[],
-    )
-    .unwrap()
-    .complete(config)
-    .unwrap();
-    api.remember(store.clone(), session).unwrap();
-    store
-}
-
 fn root(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("brain-server-{name}-{}", rand::random::<u64>()))
-}
-
-#[tokio::test]
-async fn startup_does_not_open_histories_and_reads_do_not_start_execution() {
-    let root = root("lazy");
-    let session_dir = root.join("sessions/broken/journal");
-    std::fs::create_dir_all(&session_dir).unwrap();
-    std::fs::write(
-        session_dir.join("00000000000000000000.segment"),
-        b"incomplete",
-    )
-    .unwrap();
-    let api = api(&root);
-    assert!(api.sessions.lock().unwrap().is_empty());
-    assert!(api.stores.lock().unwrap().is_empty());
-    assert_eq!(
-        std::fs::read(session_dir.join("00000000000000000000.segment")).unwrap(),
-        b"incomplete"
-    );
-    let store = seed(&api, "ses_test");
-    let weak = Arc::downgrade(&store);
-    drop(store);
-    let subscription = api.subscribe(&SessionId::new("ses_test"));
-    assert!(
-        api.send_message(
-            SessionId::new("ses_test"),
-            "one".into(),
-            MessageRequest { input: "".into() }
-        )
-        .await
-        .is_err()
-    );
-    api.send_message(
-        SessionId::new("ses_test"),
-        "one".into(),
-        MessageRequest {
-            input: "hello".into(),
-        },
-    )
-    .await
-    .unwrap();
-    assert!(api.sessions.lock().unwrap().is_empty());
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while weak.strong_count() > 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(
-        api.transcript(SessionId::new("ses_test"))
-            .await
-            .unwrap()
-            .messages,
-        vec![Message::user_text("hello")]
-    );
-    assert!(
-        !api.events(SessionId::new("ses_test"), None)
-            .await
-            .unwrap()
-            .events
-            .is_empty()
-    );
-    assert!(api.sessions.lock().unwrap().is_empty());
-    api.send_message(
-        SessionId::new("ses_test"),
-        "two".into(),
-        MessageRequest {
-            input: "again".into(),
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        api.transcript(SessionId::new("ses_test"))
-            .await
-            .unwrap()
-            .messages
-            .len(),
-        2
-    );
-    assert!(api.sessions.lock().unwrap().is_empty());
-    drop(subscription);
-    drop(api);
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[tokio::test]
-async fn concurrent_cold_reads_share_one_store_and_recovery_never_starts_a_turn() {
-    let root = root("one-store");
-    let api = api(&root);
-    let store = seed(&api, "ses_test");
-    api.passivate(store.session_id()).await.unwrap();
-    let weak = Arc::downgrade(&store);
-    drop(store);
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while weak.strong_count() > 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    let id = SessionId::new("ses_test");
-    let (first, second) = tokio::join!(api.store(&id), api.store(&id));
-    let (first, second) = (first.unwrap(), second.unwrap());
-    assert!(Arc::ptr_eq(&first, &second));
-    first
-        .append_sync(
-            &[brain::AppendRecord::new(
-                "turn_started",
-                serde_json::json!({}),
-            )],
-            brain::SessionUpdate {
-                status: Some(SessionStatus::Running),
-                configuration: None,
-            },
-        )
-        .unwrap();
-    drop((first, second));
-    assert!(matches!(
-        api.get_session(id.clone()).await.unwrap().status,
-        SessionStatus::Idle
-    ));
-    let events = api.events(id, None).await.unwrap().events;
-    assert!(
-        events
-            .iter()
-            .any(|event| event.event_type == "turn_failed" && event.data["code"] == "interrupted")
-    );
-    assert!(api.sessions.lock().unwrap().is_empty());
-    drop(api);
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]
@@ -305,7 +151,7 @@ async fn a_session_is_created_set_up_and_deleted_through_its_environments() {
     let root = root("create");
     let api = api(&root);
     let request: CreateSessionRequest = serde_json::from_value(serde_json::json!({
-        "agentloop": {"id": "a".repeat(64), "configuration": {}, "environment": "brain"},
+        "agentloop": {"implementation": {"type": "brain_component", "entrypoint": "turn", "id": "a".repeat(64)}, "configuration": {}, "environment": "brain"},
         "model": {"provider": "openai", "name": "gpt-5-mini", "api_key": "model-key"},
         "tools": [],
         "environments": [

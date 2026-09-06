@@ -36,7 +36,7 @@ const componentBytes = new Uint8Array(await readFile(resolve(componentPath)));
 
 const admission = await request("POST", "/v1/agentloops", componentBytes, "application/octet-stream");
 const session = await request("POST", "/v1/sessions", {
-  agentloop: { id: admission.id, configuration: {}, environment: "brain" },
+  agentloop: { implementation: { type: "brain_component", entrypoint: "turn", id: admission.id }, configuration: {}, environment: "brain" },
   model: {
     provider: "vercel-ai-gateway",
     name: process.env.BRAIN_MODEL ?? "openai/gpt-5-mini",

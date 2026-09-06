@@ -64,13 +64,15 @@ flowchart LR
   end
 
   subgraph Brain["Brain 运行时"]
-    Server["HTTP / SSE 服务器<br/>会话协调"]
+    Server["brain-server<br/>HTTP / SSE"]
+    Sessions["brain-sessions<br/>会话语义与生命周期策略"]
     Journal[("本地日志<br/>对话、kv 和事件")]
-    subgraph BrainEnv["brain env · Wasmtime worker"]
+    subgraph BrainEnv["brain-env · 多进程 Wasmtime worker pool"]
       Loop["Agentloop Component"]
       Native["工具 Component"]
     end
-    Server <-->|"提交 / 读取"| Journal
+    Server --> Sessions
+    Sessions <-->|"提交 / 读取"| Journal
     Server <-->|"环境协议"| BrainEnv
   end
 
@@ -81,8 +83,9 @@ flowchart LR
   Server <-->|"环境协议（HTTP）"| EnvB["环境 B<br/>工具与资源"]
 ```
 
-默认每轮结束后释放执行资源，对话与已记录事件仍可读取。环境提供方独立管理资源分配、TTL 和清理，
-会话挂起不会自动销毁或恢复环境资源。
+每次执行使用新的 Wasm Store，对话与已记录事件仍可读取。调用方决定环境的存活时间；环境只实现
+setup、execute、detach 和 teardown，不负责空闲过期策略。工作目录按会话和环境名称隔离，保留到 teardown。
+同一个工具可放在多个环境中，每次调用必须明确选择已授权的环境。Agentloop 可以隐藏环境选择，也可以交给模型选择。
 
 Brain 是基于 [Tokio](https://tokio.rs/) 的原生 Rust 二进制文件，用
 [Axum](https://github.com/tokio-rs/axum) 提供 HTTP 和 SSE API，本地部署无需外部存储。

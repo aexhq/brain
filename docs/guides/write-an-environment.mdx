@@ -1,111 +1,80 @@
 ---
 title: Write an Environment
-description: Define how each instance is reached and implement the Environment protocol.
+description: Implement lifecycle mechanisms and execute opaque implementations.
 ---
 
-An Environment extension has two halves:
+An Environment extension has a factory that describes how to reach it and an implementation
+that answers `environment/v1`. Use `brainEnv` for packaged Wasm Components or `hostEnv` for
+JavaScript functions in a browser or application process.
 
-- a small application-side factory that says how each instance is reached and what its
-  configuration is;
-- a server that implements Brain's `environment/v1` operations and executes what is placed there.
-
-Use `brainEnv(...)` instead when Wasmtime with Brain's built-in grants is sufficient, and
-`hostEnv(...)` for functions your own process holds.
-
-## Application-side factory
+## Factory
 
 ```ts
 import { environment } from "@aexhq/brain";
 import { z } from "zod";
 
 export const sandbox = environment({
-  options: z.object({
-    url: z.url(),
-    token: z.string(),
-    image: z.string(),
-    idleMs: z.number().int().positive(),
-  }),
+  options: z.object({ url: z.url(), token: z.string(), image: z.string() }),
   url: ({ url }) => url,
   credential: ({ token }) => token,
-  configure: ({ image, idleMs }) => ({ image, idle_ms: idleMs }),
+  configure: ({ image }) => ({ image }),
 });
 
-const env = sandbox({
-  name: "sandbox",
-  url: "https://sandbox.example",
-  token: process.env.SANDBOX_TOKEN,
-  image: "node:22",
-  idleMs: 300_000,
-});
+const env = sandbox({ name: "sandbox", url: "https://sandbox.example",
+  token: process.env.SANDBOX_TOKEN, image: "node:22" });
 ```
 
-Every instance is named; the name is unique within the session and is how every record refers to
-the Environment. `url` is where Brain posts operations, HTTPS or loopback HTTP. `credential` is sent
-as a bearer token; the server seals it beside the model key and never journals it. `configure`
-returns the Environment's own configuration, which Brain records and sends with setup and never
-reads. The factory result is immutable and is passed to Tool and Agentloop factories as `env`.
+Brain posts to `{url}/v1/operations`. Credentials are sealed by the server and never journaled.
+Configuration is recorded and forwarded unread. The Environment name is unique within its session.
 
-## The protocol
+## Operations
 
-The generated schemas under `crates/brain-protocol/generated/contract/environment/v1` are the source of truth. Brain posts an
-`EnvironmentCommand` to `{url}/v1/operations` containing the contract version and one operation:
+The Rust types in `brain-protocol` generate the published Environment schemas. A command has
+`contract: "environment/v1"` and `operation: { session_id, environment, sequence, request }`.
+The response carries the same contract and sequence and a receipt.
 
-- the session id, the Environment name, and the committed journal sequence that started it, which
-  together name the operation;
-- one request: `setup`, `invoke`, `call`, `cancel`, `detach`, `teardown`, or `turn`.
+| Request | Responsibility |
+| --- | --- |
+| `setup { configuration, needs }` | Accept the union of needs placed here, or reject with the unmet URI. Allocation can be lazy. |
+| `execute { implementation, needs, input, deadline_ms, callback? }` | Resolve the opaque descriptor and execute with only these grants. |
+| `call { name, input }` | An Environment-specific operation, such as explicit workspace reset. |
+| `cancel { target_sequence }` | Best-effort cancellation of the named invocation. |
+| `detach` | Release session attachment mechanisms while retaining owned resources. |
+| `teardown` | Release resources owned by this Environment instance. |
 
-The Environment answers with the same contract and sequence and one receipt: `accepted`,
-`progress`, `result`, `outcome`, `turned`, `failure`, or `unknown`. An operation it does not carry
-is answered with an `unsupported` failure.
+Receipts are `accepted`, `progress`, `result { output }`, `failure`, or `unknown`. Return an
+`unsupported` failure for an unsupported operation or descriptor. Neither `turn` nor `invoke`
+is an Environment operation. An Agentloop adapter interprets its typed input and output above
+this generic boundary; an Environment can support both Agentloops and Tools.
 
-`setup` carries the configuration and one flat list of `needs`: every URI every Tool and the
-Agentloop placed here declared. Provision what this session uses; refuse what you cannot honour
-with a failure that names the URI, which fails the create. `invoke` carries the Tool's name, its
-opaque `implementation`, its own needs, the input, and the deadline. A `brain_component`
-implementation names Component bytes admitted to Brain; any other descriptor belongs to you.
-`turn` carries the Agentloop's id, needs, and turn input, and a `callback`: the base URL of
-Brain's turn routes for this turn and the bearer token that opens them. While the turn is open,
-`POST {url}/model`, `POST {url}/dispatch`, `POST {url}/emit`, `POST {url}/telemetry`, and
-`GET {url}/events?after=` are the same five services an in-process loop has, journaled the same
-way; they answer nothing once the turn ends, and a cancellation makes every call after it fail
-with `cancelled`, which is how the loop learns to stop. Answer with `turned { output }` carrying
-the transcript, kv, and result the loop keeps, or a `failure` with the loop's own code.
-[`examples/loop-environment.mjs`](https://github.com/aexhq/brain/blob/main/examples/loop-environment.mjs)
-is the smallest such Environment.
+## Invocation services
 
-## Correctness rules
+An execution may receive `callback: { url, token, methods }`. POST `{ method, input }` to that
+URL with its bearer token. The response is the method's JSON result. Only listed methods are
+granted. A Tool receives `emit` and `telemetry`; an Agentloop also receives `events`, `model`,
+and `dispatch`. Dispatch input is an array of `{ call_id, name, environment, input }`; model
+input is `ModelRequest`; events input is a cursor number; emit input is `{ event_type, data }`;
+telemetry input is the diagnostic record. Results are respectively Tool results, ModelResult,
+EventPage, committed sequence, and null.
 
-Brain durably commits the operation before calling the Environment and sends it once. The
-Environment must:
+The token belongs to one invocation and is revoked on completion or cancellation. It is never
+part of the journal. It grants no lifecycle or general session API access. Cancellation makes
+subsequent calls fail. Never preserve a callback for the next execution.
 
-- treat `{session_id, environment, sequence}` as the stable operation identity;
-- return `unknown` when it cannot prove whether an effect happened;
-- make cancellation best effort without calling uncertain work successfully cancelled.
+## Lifecycle and delivery
 
-Brain never automatically retries a known failure or an unknown outcome. An Environment may
-implement its own deduplication, but Brain does not require durable Environment state or resource
-restoration.
+The caller decides how long the Environment remains available. Implement setup, detach and
+teardown; do not implement an idle-expiry policy in the Environment. Session creation calls
+setup, ending calls detach, and deletion calls teardown. A physical provider ceiling can still
+terminate resources; report that loss explicitly, without silently allocating replacements.
 
-## Needs and authority
+Brain commits each operation before delivery and sends it once. Identify it by session and
+sequence, retain uncertainty when an effect may have occurred, and never automatically retry
+an unknown execution. Retained files belong to `(session_id, environment)`; invocation state
+and callback credentials belong only to the current call.
 
-The Environment enforces actual policy at its platform boundary: mounts and users for `file:`,
-package managers or an installer that speaks Package URLs for `pkg:`, egress rules for `https:`
-and `wss:`. Brain checks nothing about a need beyond its shape and carries nothing at run time:
-a Tool's code obtains what it needs through the platform you give it.
-
-The Environment receives no ambient Brain or product-control-plane credential. Use narrowly scoped
-identities and keep mutable Environment state separate from the session journal.
-
-## Lifecycle
-
-Session creation runs `setup` before reporting ready. Allocate physical resources on first invoke
-if useful, and serialize concurrent first invokes. The Environment owns TTL, including expiration
-while the session is suspended. End sends `detach`; delete sends `teardown`. An Environment
-wrapping an external service may only release its local binding. Restart means fresh resources
-unless the Environment explicitly offers restoration.
-
-See [`examples/lazy-environment.mjs`](https://github.com/aexhq/brain/blob/main/examples/lazy-environment.mjs)
-for a standalone Environment, and its test for concurrent allocation, expiry, and explicit restart.
-Run it with `node examples/lazy-environment.mjs`. It binds loopback, executes only its reference echo
-Tool, honours `file:` needs, and optionally checks `REFERENCE_ENV_TOKEN`. It is an authoring example,
-not a tenant sandbox.
+The [lazy workspace example](https://github.com/aexhq/brain/blob/main/examples/lazy-environment.mjs)
+tests concurrent first allocation and caller-controlled cleanup. The
+[remote Agentloop example](https://github.com/aexhq/brain/blob/main/examples/loop-environment.mjs)
+resolves a JavaScript implementation and calls granted Brain services. Both bind loopback and
+are authoring examples; they do not isolate untrusted code.

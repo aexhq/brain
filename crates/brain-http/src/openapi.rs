@@ -1,7 +1,7 @@
 //! The OpenAPI document of the session API, rendered from the route annotations in
 //! `router.rs` and the schemas in `brain-protocol`.
 //!
-//! `cargo run -p brain-http --bin contract` writes [`openapi`] to this crate's
+//! `cargo run -p brain-http --bin brain-http-contract` writes [`openapi`] to this crate's
 //! `generated/contract/session/v1/openapi.yaml`. The
 //! router is built from the same annotations, and [`crate::router`] refuses to start if
 //! the two disagree, so a route cannot exist without appearing in the document.
@@ -69,13 +69,7 @@ pub(crate) mod contract {
         SessionSummary,
         SessionTranscript,
         ToolAdmission,
-        TurnDispatchRequest,
-        TurnDispatchResult,
-        TurnEmitAck,
-        TurnEmitRequest,
-        TurnTelemetry,
-        ModelRequest,
-        ModelResult,
+        ExecutionCall,
     );
 }
 

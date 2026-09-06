@@ -26,6 +26,7 @@ export type HostToolHandler<Input, Output> = (input: Input, call: HostToolCall) 
 /** One invocation as the pump hands it to the registry. `deadline_ms` is the
  * remaining budget, not an epoch. */
 export interface InvokeFrame {
+  readonly environment: string;
   readonly sequence: number;
   readonly name: string;
   readonly arguments: unknown;
@@ -53,12 +54,13 @@ export class HostToolRegistry {
   private readonly tools = new Map<string, RegisteredHostTool>();
   private readonly active = new Map<number, { readonly controller: AbortController; cancelled: boolean }>();
 
-  register(contract: HostToolContract, handler: HostToolHandler<unknown, unknown>): void {
+  register(environment: string, contract: HostToolContract, handler: HostToolHandler<unknown, unknown>): void {
     if (typeof contract?.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(contract.name)) throw new TypeError("host tool name must be an identifier");
     if (typeof contract.description !== "string" || contract.description.length === 0 || contract.description.length > 8_192) throw new TypeError("host tool description exceeds its contract bound");
     if (typeof handler !== "function") throw new TypeError("host tool needs a handler function");
-    if (this.tools.has(contract.name)) throw new TypeError(`host tool ${contract.name} is already registered`);
-    this.tools.set(contract.name, { contract, handler });
+    const key = `${contract.name}\0${environment}`;
+    if (this.tools.has(key)) throw new TypeError(`host tool ${contract.name} is already registered`);
+    this.tools.set(key, { contract, handler });
   }
 
   cancel(sequence: number): void {
@@ -69,7 +71,7 @@ export class HostToolRegistry {
   }
 
   async run(frame: InvokeFrame): Promise<Outcome> {
-    const registered = this.tools.get(frame.name);
+    const registered = this.tools.get(`${frame.name}\0${frame.environment}`);
     if (registered === undefined) return errorOutcome("unknown_tool", `no host tool named ${frame.name} is registered`);
     let input: unknown;
     try {

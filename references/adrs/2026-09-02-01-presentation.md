@@ -4,6 +4,9 @@
 - Status: Accepted
 - Compiled: 2026-09-05
 
+Amended by [ADR-044](2026-09-06-03-sessions-and-brain-env.md): the Agentloop supplies
+model-facing Tool schemas independently of the canonical Tools and authorized placements.
+
 ## Context
 
 A canonicalized ModelPresentation pinned the system prompt and tool presentation for a session. That restricted context selection and prompt-cache policy even though the Agentloop was intended to own policy.

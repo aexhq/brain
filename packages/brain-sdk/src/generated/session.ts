@@ -182,7 +182,7 @@ export interface ApiError {
 export interface AgentloopRef {
   configuration: unknown;
   environment: EnvironmentName;
-  id: AgentloopId;
+  implementation: unknown;
   /**
    * What the Agentloop needs from its Environment, as URIs. Brain hands them to the
    * Environment at setup and with every turn, and reads none of them.
@@ -240,34 +240,37 @@ export interface ModelSelection {
   provider: string;
 }
 /**
- * One Tool as a session declares it: what the model is told, the Environment of the
- * session that runs it, what it needs there, and the implementation that Environment
- * interprets. Brain reads the name and the Environment and carries the rest.
+ * A canonical Tool definition with one implementation per authorized Environment.
+ * Brain validates dispatched inputs and successful outputs against this definition.
  *
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "Tool".
  */
 export interface Tool {
   description: string;
-  environment: EnvironmentName;
-  /**
-   * Opaque to Brain; interpreted by the Environment. Absent when the Environment
-   * holds the implementation itself, as the host env does.
-   */
-  implementation?: {
-    [k: string]: unknown | undefined;
-  };
   input_schema: {};
   name: string;
+  output_schema?: {};
   /**
-   * What the Tool needs from its Environment, as URIs: `pkg:` for software,
-   * `https:` or `wss:` for a network destination, `file:` for a filesystem location.
-   * Brain hands them to the Environment and reads none of them.
-   *
+   * One implementation per authorized Environment, fixed at create.
+   */
+  placements: {
+    [k: string]: ToolPlacement;
+  };
+}
+/**
+ * This interface was referenced by `undefined`'s JSON-Schema definition
+ * via the `patternProperty` "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$".
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ToolPlacement".
+ */
+export interface ToolPlacement {
+  implementation: unknown;
+  /**
    * @maxItems 64
    */
   needs?: string[];
-  output_schema?: {};
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
@@ -317,10 +320,30 @@ export interface EventPage {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ExecutionCall".
+ */
+export interface ExecutionCall {
+  input: unknown;
+  method: string;
+}
+/**
+ * Where a remote invocation reaches only its caller-granted services.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ExecutionCallback".
+ */
+export interface ExecutionCallback {
+  methods: string[];
+  token: string;
+  url: string;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "HostCommand".
  */
 export interface HostCommand {
   deadline_at_ms: number;
+  environment: EnvironmentName;
   operation: HostOperation;
   sequence: number;
   session_id: SessionId;
@@ -415,7 +438,19 @@ export interface ModelRequest {
    * The tools to offer on this call, by name. Absent means every tool the session was
    * created with; each name given must be one of them. Filled in like `system`.
    */
-  tools?: string[];
+  tools?: ToolDefinition[];
+}
+/**
+ * What the model may be told about a Tool.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ToolDefinition".
+ */
+export interface ToolDefinition {
+  description: string;
+  input_schema: {};
+  name: string;
+  output_schema: {};
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
@@ -495,18 +530,6 @@ export interface TurnError {
   retryable?: boolean;
 }
 /**
- * One call as the Agentloop makes it. `call_id` is the loop's own correlation, echoed
- * in the result; on every Environment wire the call is named by its sequence.
- *
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "ToolInvocation".
- */
-export interface ToolInvocation {
-  call_id: string;
-  input: unknown;
-  name: string;
-}
-/**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "ToolResult".
  */
@@ -517,40 +540,9 @@ export interface ToolResult {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "TurnDispatchRequest".
- */
-export interface TurnDispatchRequest {
-  calls: ToolInvocation[];
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "TurnDispatchResult".
- */
-export interface TurnDispatchResult {
-  results: ToolResult[];
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "TurnEmitAck".
- */
-export interface TurnEmitAck {
-  /**
-   * The sequence Brain assigned to the committed Event.
-   */
-  sequence: number;
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "TurnEmitRequest".
  */
 export interface TurnEmitRequest {
   data: unknown;
   event_type: string;
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "TurnTelemetry".
- */
-export interface TurnTelemetry {
-  record: unknown;
 }

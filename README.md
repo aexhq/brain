@@ -62,16 +62,27 @@ are plain functions. Any other Environment is reached over HTTP.
 
 ## Architecture
 
-![Brain architecture](references/architecture.png)
+```mermaid
+flowchart TB
+  access[HTTP and SDK] --> server[brain-server]
+  server --> sessions[brain-sessions]
+  server --> env[brain-env worker pool]
+  sessions --> core[brain: durable session actor]
+  sessions --> port[Environment adapter]
+  port --> env
+  port --> external[HTTP and host Environments]
+```
 
 - **Kernel** owns the session. It commits every effect to the append-only journal before dispatch,
   sends it once and never retries on its own. Status, transcript and Events rebuild from the journal
   after a restart.
+- **Sessions** owns multi-session semantics and lifecycle calls. `brain-server` composes it with
+  Environment adapters and retains API credentials and request claims.
 - **Brain env** runs the Agentloop and native Tools as precompiled [Wasmtime](https://wasmtime.dev/)
-  Components. Each turn runs in a fresh capability sandbox and calls back into Brain for model and
+  Components in multiple managed worker processes. Each invocation runs in a fresh capability sandbox and calls back into Brain for model and
   tool calls, so every effect is logged before it happens.
 - **One protocol** reaches every Environment: the brain env inside the server, your app registered as
-  a host, and any Environment over HTTP. Environments own resource allocation, TTL and cleanup.
+  a host, and any Environment over HTTP. Callers own lifecycle policy; Environments implement setup, execution, detach and teardown.
 - **Everything is observable.** Model calls, Tool results and lifecycle changes are committed Events.
   The live feed adds token deltas; reconnecting resumes at a committed sequence.
 

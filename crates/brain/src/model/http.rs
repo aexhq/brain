@@ -312,7 +312,12 @@ mod tests {
                 &binding(),
                 ModelRequest {
                     system: Some("system".into()),
-                    tools: Some(vec!["read".into()]),
+                    tools: Some(vec![ToolDefinition {
+                        name: "read".into(),
+                        description: "read a file".into(),
+                        input_schema: json!({"type": "object"}),
+                        output_schema: None,
+                    }]),
                     messages: vec![Message::user_text("hi")],
                     response_format: None,
                     max_output_tokens: Some(12),

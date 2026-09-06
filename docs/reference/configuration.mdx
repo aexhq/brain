@@ -14,7 +14,8 @@ its output token ceiling, is not here: Brain neither sets nor overrides it.
 | --- | --- | --- | --- |
 | `BRAIN_LISTEN` | `--listen` | `127.0.0.1:8080` | Address to bind |
 | `BRAIN_DATA_DIR` | `--data-dir` | `brain-data` | Where journals, admitted Components, and local state live |
-| `BRAIN_LOOP_WORKER` | `--loop-worker` | `brain-loop-worker` | Path to the loop worker executable |
+| `BRAIN_ENV_WORKER` | `--env-worker` | `brain-env-worker` | Path to the loop worker executable |
+| `BRAIN_ENV_WORKERS` | `--env-workers` | `2` | OS worker processes in the built-in Environment pool |
 | `BRAIN_ENV_NETWORK_ALLOW` | `--env-network-allow` | none | Origins the brain env may grant a Component that needs them: exact, or `https://*.example.com` for a family of hosts |
 | `BRAIN_ENV_SECRET_ALLOW` | `--env-secret-allow` | none | Process environment variable names the brain env may mount under `/secrets` |
 | `BRAIN_ENV_FILESYSTEM_ALLOW` | `--env-filesystem-allow` | none | Filesystem roots the brain env may grant: `scratch` or `workspace` |
@@ -41,11 +42,11 @@ its output token ceiling, is not here: Brain neither sets nor overrides it.
 | `BRAIN_MAX_JOURNAL_OPEN_FILES` | `--max-journal-open-files` | `256` | Journal segment files the writer keeps open at once |
 | `BRAIN_MAX_LIVE_BACKLOG` | `--max-live-backlog` | `1024` | Records a live subscriber may fall behind before it loses them; at least 1 |
 | `BRAIN_MAX_PACKAGE_BYTES` | `--max-package-bytes` | `33554432` | Bytes an Agentloop or Tool Component package may hold |
-| `BRAIN_MAX_TURN_INPUT_BYTES` | `--max-turn-input-bytes` | `33554432` | Bytes one turn's input to an Agentloop may hold, transcript and events together |
-| `BRAIN_MAX_TURN_OUTPUT_BYTES` | `--max-turn-output-bytes` | `33554432` | Bytes one turn's output from an Agentloop may hold |
+| `BRAIN_MAX_EXECUTION_INPUT_BYTES` | `--max-execution-input-bytes` | `33554432` | Bytes one execution input may hold, including an Agentloop's transcript and events |
+| `BRAIN_MAX_EXECUTION_OUTPUT_BYTES` | `--max-execution-output-bytes` | `33554432` | Bytes one execution output may hold |
 | `BRAIN_MAX_LINEAR_MEMORY_BYTES` | `--max-linear-memory-bytes` | `134217728` | Bytes of linear memory one Wasm instance may grow to |
 | `BRAIN_MAX_FUEL` | `--max-fuel` | `10000000000` | Wasmtime work units one invocation may consume; host and WASI waits consume none. A stable ceiling within one Wasmtime version, not a duration |
-| `BRAIN_MAX_CONCURRENT_TURNS` | `--max-concurrent-turns` | `8` | Agentloop turns one worker runs at once, and separately native Tool calls. Each holds a fresh Store while it runs, so guest memory is bounded by twice this count times the linear memory ceiling |
+| `BRAIN_MAX_CONCURRENT_EXECUTIONS` | `--max-concurrent-executions` | `8` | Executions per worker in each of two classes: those granted dispatch, and leaf calls. Each holds a fresh Store while it runs, so guest memory is bounded by twice this count times the linear memory ceiling |
 | `BRAIN_MAX_CORE_INSTANCES` | `--max-core-instances` | `8` | Core instances, memories, and tables one guest may hold: its own modules plus the shims Wasmtime builds for its imports |
 | `BRAIN_MAX_NATIVE_HTTP_SECS` | `--max-native-http-secs` | `120` | Seconds one outbound HTTP request from a native Component may take |
 | `BRAIN_MAX_TELEMETRY_RECORDS` | `--max-telemetry-records` | `4096` | Telemetry records the queue holds before it drops the newest; at least 1 |
@@ -69,7 +70,9 @@ Environment routes, endpoints, or credentials of its own.
 
 Brain owns everything under `BRAIN_DATA_DIR`. Its only format is `brain-data/1`, replaced in place
 during pre-launch development. Start with an empty directory; Brain writes its format marker on
-initialization. There are no legacy layouts or migrations.
+initialization. There are no legacy layouts, compatibility readers, or migrations. Before this
+pre-launch contract cut, the owner must stop the old server and select an empty data directory
+or explicitly archive/reset its existing data. Brain does not delete or convert old journals.
 
 ```
 brain-data/
@@ -78,10 +81,10 @@ brain-data/
   sessions/{session_id}/journal/      one canonical journal per session
   sessions/{session_id}/checkpoint    disposable current-state/index projection
   agentloops/                         admitted Agentloop and Tool Components
-  native-workspaces/{session_id}/     the brain env's `/workspace` per session
+  native-workspaces/{session_id}/{environment}/   retained native Environment workspace
   hosts/hosts.log                     host registrations and token hashes
   requests/requests.log               durable HTTP request claims and answers
-  run/                                worker sockets
+  run/{worker_index}/                 separate worker sockets
   server-metadata/                    sealed model and Environment credentials
 ```
 
@@ -102,7 +105,7 @@ want an egress ceiling on those URLs.
 
 ## Docker
 
-The image sets `BRAIN_DATA_DIR=/var/lib/brain`, `BRAIN_LOOP_WORKER=/usr/local/bin/brain-loop-worker`,
+The image sets `BRAIN_DATA_DIR=/var/lib/brain`, `BRAIN_ENV_WORKER=/usr/local/bin/brain-env-worker`,
 and `BRAIN_LISTEN=0.0.0.0:8080`, declares `/var/lib/brain` as a volume, and runs as uid 10001.
 
 ```sh

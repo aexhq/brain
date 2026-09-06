@@ -8,3 +8,5 @@
 /.worktrees
 tests/release/built/
 .claude/
+
+__pycache__/

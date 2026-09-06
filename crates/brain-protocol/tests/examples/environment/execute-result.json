@@ -1,0 +1,10 @@
+{
+  "contract": "environment/v1",
+  "sequence": 7,
+  "receipt": {
+    "type": "result",
+    "output": {
+      "content": "README"
+    }
+  }
+}

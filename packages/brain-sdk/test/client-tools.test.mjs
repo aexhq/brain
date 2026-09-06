@@ -25,18 +25,18 @@ test("saved host credentials reattach handlers to an existing session", async ()
     if (path.endsWith("/results")) { finish(await request.json()); return new Response(null, { status: 204 }); }
     if (path.endsWith("/events")) {
       return Response.json({ events: [{ sequence: 1, recorded_at_ms: 0, event_type: "session_creation_ended", data: { configuration: {
-        tools: [{ name: "lookup", environment: "app" }],
+        tools: [{ name: "lookup", placements: { app: { implementation: { type: "host_function", name: "lookup" } } } }],
         environments: [{ name: "brain", driver: "brain" }, { name: "app", driver: "host", host_id: credentials.hostId }],
       } } }], next_cursor: 1 });
     }
-    if (path.endsWith("/end")) return Response.json({ session_id: sessionId, status: "ended", last_sequence: 4 });
-    if (path === `/v1/sessions/${sessionId}`) return Response.json({ session_id: sessionId, status: "idle", last_sequence: 1 });
+    if (path.endsWith("/end")) return Response.json({ session_id: sessionId, environment: "app", status: "ended", last_sequence: 4 });
+    if (path === `/v1/sessions/${sessionId}`) return Response.json({ session_id: sessionId, environment: "app", status: "idle", last_sequence: 1 });
     throw new Error(`unexpected request ${path}`);
   } });
   const lookup = tool({ name: "lookup", description: "Lookup.", input: z.object({}), run: async () => "restored" });
   const session = await client.sessions.get(sessionId, { tools: [lookup({ env: hostEnv({ name: "app" }) })] });
   assert.deepEqual(await client.credentials(), credentials);
-  controller.enqueue(new TextEncoder().encode(sse({ session_id: sessionId, sequence: 2, deadline_at_ms: Date.now() + 5000, operation: { type: "invoke_tool", name: "lookup", input: {} } })));
+  controller.enqueue(new TextEncoder().encode(sse({ session_id: sessionId, environment: "app", sequence: 2, deadline_at_ms: Date.now() + 5000, operation: { type: "invoke_tool", name: "lookup", input: {} } })));
   assert.deepEqual((await result).outcome, { status: "ok", value: "restored" });
   await session.end();
 });
@@ -58,7 +58,7 @@ test("one host runs the Tools placed in it and commits ctx.emit before its resul
         async start(controller) {
           await sessionCreated;
           controller.enqueue(new TextEncoder().encode(sse({
-            session_id: sessionId,
+            session_id: sessionId, environment: "app",
             sequence: 3,
             deadline_at_ms: Date.now() + 5_000,
             operation: { type: "invoke_tool", name: "lookup", input: { id: "1" } },
@@ -74,7 +74,7 @@ test("one host runs the Tools placed in it and commits ctx.emit before its resul
     }
     if (path === "/v1/sessions") {
       setTimeout(() => releaseCommand(), 0);
-      return Response.json({ session_id: sessionId, status: "idle", last_sequence: 1 });
+      return Response.json({ session_id: sessionId, environment: "app", status: "idle", last_sequence: 1 });
     }
     if (path === `/v1/sessions/${sessionId}` && request.method === "DELETE") return new Response(null, { status: 204 });
     throw new Error(`unexpected request ${request.method} ${path}`);
@@ -101,7 +101,7 @@ test("one host runs the Tools placed in it and commits ctx.emit before its resul
   const createRequest = requests.find((request) => new URL(request.url).pathname === "/v1/sessions");
   const body = await createRequest.json();
   assert.deepEqual(body.environments[1], { name: "app", driver: "host", host_id: "host_12345678901234567890", configuration: {} });
-  assert.deepEqual(body.tools[0].environment, "app");
+  assert.deepEqual(body.tools[0].placements.app, { needs: [], implementation: { type: "host_function", name: "lookup" } });
   assert.equal("implementation" in body.tools[0], false);
   const eventRequest = requests.find((request) => new URL(request.url).pathname.endsWith("/events"));
   const resultRequest = requests.find((request) => new URL(request.url).pathname.endsWith("/results"));
@@ -152,7 +152,7 @@ test("a host reconnects without replaying old commands", async () => {
       yield {
         type: "command",
         data: {
-          session_id: sessionId,
+          session_id: sessionId, environment: "app",
           sequence: 9,
           deadline_at_ms: Date.now() + 5_000,
           operation: { type: "invoke_tool", name: "lookup", input: { id: "2" } },
@@ -167,7 +167,7 @@ test("a host reconnects without replaying old commands", async () => {
     emit: async () => ({ sequence: 10 }),
   });
   const registry = new HostToolRegistry();
-  registry.register({
+  registry.register("app", {
     name: "lookup",
     description: "Look up one value.",
     input: z.object({ id: z.string() }),

@@ -5,20 +5,16 @@ const accepted = () => ({ type: "accepted" });
 const failure = (code, message) => ({ type: "failure", code, message, retryable: false });
 const identifier = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
 
-// A standalone Environment that runs an Agentloop outside Brain's process. With every
-// turn Brain sends the loop's id and needs, the turn input, and a callback: the address
-// of Brain's turn services for that turn and the token that opens them. This loop's
-// policy is the smallest possible one: hand the model the transcript plus the user's
-// message, append its answer, and return. Anything the loop needs from Brain during the
-// turn goes through the callback; every call is journaled by Brain like an in-process
-// loop's. `fetch` is injectable so the loop can be driven without a network.
+// This provider resolves an opaque descriptor to its JavaScript Agentloop.
+// Invocation-scoped grants open only the services supplied by Brain.
 export function loopEnvironment({ fetch = globalThis.fetch } = {}) {
   const sessions = new Set();
   const call = async (callback, path, body) => {
-    const response = await fetch(`${callback.url}/${path}`, {
+    if (!callback.methods.includes(path)) throw new Error(`service ${path} is not granted`);
+    const response = await fetch(callback.url, {
       method: "POST",
       headers: { authorization: `Bearer ${callback.token}`, "content-type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ method: path, input: body }),
     });
     if (!response.ok) throw new Error(`${path} answered ${response.status}: ${await response.text()}`);
     return response.json();
@@ -48,11 +44,11 @@ export function loopEnvironment({ fetch = globalThis.fetch } = {}) {
       receipt = accepted();
     } else if (!sessions.has(key)) {
       receipt = failure("unavailable", "Environment is absent");
-    } else if (request?.type === "turn") {
+    } else if (request?.type === "execute" && request.implementation?.type === "reference_agentloop") {
       if (!request.callback) receipt = failure("no_callback", "a turn outside Brain needs its callback");
       else {
         try {
-          receipt = { type: "turned", output: await turn(request.callback, request.input) };
+          receipt = { type: "result", output: await turn(request.callback, request.input) };
         } catch (error) {
           receipt = failure("agentloop_failed", String(error.message ?? error));
         }

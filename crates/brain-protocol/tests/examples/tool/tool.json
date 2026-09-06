@@ -15,12 +15,15 @@
   "output_schema": {
     "type": "object"
   },
-  "environment": "sandbox",
-  "needs": [
-    "pkg:apt/bash",
-    "file:///workspace?access=write"
-  ],
-  "implementation": {
-    "artifact_id": "artifact_bash_v1"
+  "placements": {
+    "sandbox": {
+      "needs": [
+        "pkg:apt/bash",
+        "file:///workspace?access=write"
+      ],
+      "implementation": {
+        "artifact_id": "artifact_bash_v1"
+      }
+    }
   }
 }

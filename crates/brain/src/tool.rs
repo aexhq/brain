@@ -7,6 +7,9 @@ use crate::Error;
 pub trait ToolServices: Send + Sync {
     async fn emit(&self, kind: String, payload: serde_json::Value) -> Result<u64, Error>;
     fn telemetry(&self, record: serde_json::Value);
+    fn cancelled(&self) -> bool {
+        false
+    }
 }
 
 #[async_trait]
@@ -17,7 +20,7 @@ pub trait ToolExecutor: Send + Sync + 'static {
     async fn execute(
         &self,
         dispatch: ToolDispatch,
-        services: &dyn ToolServices,
+        services: std::sync::Arc<dyn ToolServices>,
     ) -> Result<Outcome, Error>;
     async fn cancel(&self, cancellation: ToolCancellation) -> Result<(), Error>;
 }

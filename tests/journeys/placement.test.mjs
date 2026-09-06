@@ -5,18 +5,17 @@ import { brainEnv, inspectEnvironment, inspectTool, tool } from "@aexhq/brain";
 import { lazyEnvironment } from "../../examples/lazy-environment.mjs";
 import { fixture, callTools, reply, collect } from "./support.mjs";
 
-let clock = 0;
 let allocations = 0;
-const east = lazyEnvironment({ now: () => clock, allocate: async () => { allocations++; return new Map(); } });
+const east = lazyEnvironment({ allocate: async () => { allocations++; return new Map(); } });
 const west = lazyEnvironment({ allocate: async () => { allocations++; return new Map(); } });
 const f = fixture({ providers: { east: east.handle, west: west.handle } });
 const dispatch = (calls) => (request, response) => request.messages.at(-1).role === "tool" ? reply(response) : callTools(response, calls);
 const echo = (name, needs = []) => tool({ name, description: "Echo in a provider", input: z.object({ value: z.string() }), implementation: { type: "reference_echo" }, needs });
 
 test("compose separately configured environments and allocate only on first invocation", { timeout: 30_000 }, async (t) => {
-  const eastEnv = f.provider("east", { idle_ms: 10_000 });
+  const eastEnv = f.provider("east", { label: "east workspace" });
   const westEnv = f.provider("west");
-  assert.equal(inspectEnvironment(eastEnv).configuration.idle_ms, 10_000);
+  assert.equal(inspectEnvironment(eastEnv).configuration.label, "east workspace");
   assert.equal(inspectEnvironment(eastEnv).driver.url, `${f.upstreamUrl}/east`);
   const first = echo("first", ["file:///workspace?access=write"])({ env: eastEnv });
   assert.equal(inspectTool(first).environment, eastEnv);
@@ -29,7 +28,7 @@ test("compose separately configured environments and allocate only on first invo
   const events = await collect(session.events());
   assert.equal(events.filter(({ type }) => type === "tool_call_ended").length, 2);
   const started = events.find(({ type }) => type === "tool_call_started");
-  assert.deepEqual(Object.keys(started.data).sort(), ["deadline_ms", "invocation", "tool"]);
+  assert.deepEqual(Object.keys(started.data).sort(), ["deadline_ms", "environment", "invocation", "tool"]);
   const setup = events.find(({ type, data }) => type === "environment_setup_started" && data.environment === "east");
   assert.deepEqual(setup.data.request.needs, ["file:///workspace?access=write"]);
   assert.ok(JSON.stringify(f.modelRequests.at(-1).messages).includes("east"));
@@ -43,16 +42,19 @@ test("a need the environment cannot honour fails the create naming the need", { 
   );
 });
 
-test("provider expiry is visible to the model without replacement allocation", { timeout: 30_000 }, async (t) => {
-  const env = f.provider("east", { idle_ms: 1 });
+test("caller teardown is visible without replacement allocation", { timeout: 30_000 }, async (t) => {
+  const env = f.provider("east");
   const session = await f.create(t, { tools: [echo("echo")({ env })] });
   f.model = dispatch([{ name: "echo", input: { value: "value" } }]);
   await session.send("allocate");
   const before = allocations;
-  clock += 10;
-  await session.send("use expired environment");
+  await east.handle({ contract: "environment/v1", operation: { session_id: session.id, environment: "east", sequence: 999, request: { type: "teardown" } } });
+  await session.send("use the workspace again");
   assert.equal(allocations, before);
-  assert.ok(JSON.stringify(f.modelRequests.at(-1).messages).includes("expired"));
+  const ended = (await collect(session.events())).filter((event) => event.type === "tool_call_ended").at(-1);
+  assert.equal(ended.data.result.is_error, true);
+  assert.equal(ended.data.result.output.code, "unavailable");
+  assert.ok(JSON.stringify(f.modelRequests.at(-1).messages.at(-1)).includes("unavailable"));
 });
 
 test("admit a native tool and use it from a model-driven conversation", { timeout: 30_000 }, async (t) => {

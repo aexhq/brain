@@ -1,9 +1,13 @@
 {
   "agentloop": {
-    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "configuration": {},
     "environment": "brain",
-    "needs": []
+    "needs": [],
+    "implementation": {
+      "type": "brain_component",
+      "entrypoint": "turn",
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
   },
   "model": {
     "provider": "vercel-ai-gateway",
@@ -18,12 +22,15 @@
       "input_schema": {
         "type": "object"
       },
-      "environment": "sandbox",
-      "needs": [
-        "file:///workspace"
-      ],
-      "implementation": {
-        "artifact_id": "artifact_read_v1"
+      "placements": {
+        "sandbox": {
+          "needs": [
+            "file:///workspace"
+          ],
+          "implementation": {
+            "artifact_id": "artifact_read_v1"
+          }
+        }
       }
     }
   ],

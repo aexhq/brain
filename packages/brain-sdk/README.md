@@ -62,7 +62,7 @@ const placedLoop = loop({ env });
 const placedTool = inspect({ env });
 ```
 
-`needs` is a list of URIs the Environment receives and Brain never reads: `pkg:` for software,
+`needs` is a list of URIs interpreted by the selected Environment: `pkg:` for software,
 `https:` or `wss:` for a network destination, `file:` for a filesystem location. The brain env
 grants each invocation exactly what its needs name, bounded by the server's `BRAIN_ENV_*`
 allow-lists; the deployment above must include `workspace` in `BRAIN_ENV_FILESYSTEM_ALLOW`.
@@ -91,8 +91,11 @@ Use the same Component objects when placing them for creation. Successful admiss
 execution; Events and live subscriptions also remain accessible while suspended.
 
 Brain releases session execution at turn end by default. Explicit session `idleTtlMs: 0` retains it.
-Environment resource TTL belongs to the Environment. Setup is logical, with allocation deferred to
-the first invoke if the Environment prefers. Placements are fixed for the life of a session.
+The caller controls Environment lifetime through setup, detach, and teardown; providers enforce
+physical resource ceilings. Setup may defer allocation to the first execute. Placements are fixed
+for the life of a session. A canonical Tool can have one implementation in each of several named
+Environments. Loops choose a fixed pair or expose authorized choices to the model; Brain validates
+the actual pair and canonical input/output independently of model presentation.
 
 Agentloop authors can import generated `ModelRequest`, `ModelResult`, `ToolResult`, `EventPage`, and
 `SessionTranscript` types. The JSON schemas ship at `@aexhq/brain/contracts/session.json`; WIT ships

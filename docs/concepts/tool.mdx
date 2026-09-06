@@ -4,8 +4,9 @@ description: One typed contract, what it needs, and the Environment that runs it
 ---
 
 A Tool is the model-visible contract for one action: a name, description, input schema, and
-optional output schema. Every Tool runs in exactly one Environment of its session, named at
-placement with `{ env, ...options }`. Where that Environment is, and how Brain reaches it, is the
+optional output schema. A Tool can have placements in several Environments of its session,
+each declared with `{ env, ...options }`. Each `(Tool name, Environment name)` pair has one
+implementation and its own needs. Where that Environment is, and how Brain reaches it, is the
 Environment's concern; the Tool's declaration is the same everywhere.
 
 ## A function this process holds
@@ -60,7 +61,7 @@ const placed = inspect({ env: brainEnv({ name: "brain" }), depth: 2 });
 
 `implementation` may be a Component, an opaque object the Environment understands, or a function of
 the parsed options that returns that object. A Component implements
-[`crates/brain-loophost/wit/tool/tool.wit`](https://github.com/aexhq/brain/blob/main/crates/brain-loophost/wit/tool/tool.wit):
+[`crates/brain-env/wit/tool/tool.wit`](https://github.com/aexhq/brain/blob/main/crates/brain-env/wit/tool/tool.wit):
 it receives JSON input, its configuration, and a deadline, and can emit committed extension events
 through its host import.
 
@@ -82,6 +83,21 @@ through the platform of its Environment.
 ## One execution rule
 
 Brain durably commits `tool_call_started` before dispatch and sends the operation once. The record
-names the Tool; where the call goes is the configuration's answer for that name. Brain records
+names the Tool and selected Environment. The invocation explicitly names that authorized pair.
+Brain validates canonical input and output schemas for every placement. Brain records
 `ok`, `error`, `timeout`, `cancelled`, or `unknown` before the Agentloop sees the result, and never
 automatically retries a Tool call.
+
+
+## Placement and model presentation
+
+Pass the same Tool factory more than once with different Environments to declare multiple
+placements: `tools: [read({ env: local }), read({ env: remote })]`. Definitions must agree and
+duplicate pairs are refused. The catalogue and placements are immutable after session creation.
+
+The Agentloop receives canonical Tool definitions and authorized Environment names. It independently
+chooses the schemas in `ModelRequest.tools`: it may show ordinary Tools and apply an explicit
+placement policy, or wrap inputs with a model-visible Environment selector. Dispatch always carries
+`{ call_id, name, environment, input }`, with the canonical Tool input unwrapped. Brain never ranks
+Environments or falls back to another placement. Invalid input becomes an `invalid_input` Tool
+result without executing; invalid successful output becomes `invalid_output`.

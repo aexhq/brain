@@ -1,6 +1,6 @@
 import { HostPump } from "./client-pump.js";
 import { BrainError } from "./errors.js";
-import { inspectAgentloop, inspectComponent, inspectEnvironment, inspectTool } from "./extensions.js";
+import { inspectAgentloop, inspectComponent, inspectEnvironment, inspectTool, isComponent } from "./extensions.js";
 import { HostToolRegistry } from "./host.js";
 import type {
   AgentloopAdmission, CreateSessionRequest, Environment as WireEnvironment, EventPage, HostRegistration,
@@ -131,7 +131,9 @@ export class BrainClient {
   }
 
   async admit(extension: PlacedAgentloop): Promise<string> {
-    return this.admitAgentloop(inspectAgentloop(extension).component);
+    const source = inspectAgentloop(extension);
+    if (inspectEnvironment(source.environment).driver.driver !== "brain" || !isComponent(source.implementation)) throw new TypeError("admission needs a Component placed in brainEnv");
+    return this.admitAgentloop(source.implementation);
   }
 
   async admitAgentloop(value: Component): Promise<string> {
@@ -217,27 +219,35 @@ export class Sessions {
       if (tool.handler !== undefined && !placedIn) throw new TypeError(`Tool ${tool.definition.name} has run and must be placed in a hostEnv`);
       if (tool.handler === undefined && placedIn) throw new TypeError(`Tool ${tool.definition.name} is placed in a hostEnv and must have run`);
     }
-    const id = await this.client.admitAgentloop(loop.component);
+    const loopDriver = inspectEnvironment(loop.environment).driver.driver;
+    if (isComponent(loop.implementation) && loopDriver !== "brain") throw new TypeError("a remote Agentloop needs its Environment's implementation descriptor");
+    const implementation = isComponent(loop.implementation)
+      ? { type: "brain_component", entrypoint: "turn", id: await this.client.admitAgentloop(loop.implementation) }
+      : structuredClone(loop.implementation);
     const hosted = [...environments.keys()].some((environment) => inspectEnvironment(environment).driver.driver === "host");
     const host = hosted ? await this.client.register() : undefined;
     const implementations = new Map<PlacedTool, unknown>();
     for (const [placed, tool] of tools) {
-      if (tool.implementation === undefined) continue;
-      const componentSource = (() => { try { return inspectComponent(tool.implementation as Component); } catch { return undefined; } })();
-      implementations.set(placed, componentSource === undefined
+      if (tool.implementation === undefined) {
+        implementations.set(placed, { type: "host_function", name: tool.definition.name });
+        continue;
+      }
+      if (isComponent(tool.implementation) && inspectEnvironment(tool.environment).driver.driver !== "brain") throw new TypeError("a remote Tool needs its Environment's implementation descriptor");
+      implementations.set(placed, !isComponent(tool.implementation)
         ? structuredClone(tool.implementation)
         : {
             type: "brain_component",
+            entrypoint: "run",
             id: await this.client.admitTool(tool.implementation as Component),
             configuration: structuredClone(tool.configuration),
           });
     }
-    const request = compileSession(options, id, environments, implementations, host?.hostId);
+    const request = compileSession(options, implementation, environments, implementations, host?.hostId);
     const session = await this.client.request<WireSession>("POST", "/v1/sessions", request, key);
     if (host !== undefined) {
       const registry = new HostToolRegistry();
       for (const [, tool] of tools) {
-        if (tool.handler !== undefined && tool.contract !== undefined) registry.register(tool.contract, tool.handler);
+        if (tool.handler !== undefined && tool.contract !== undefined) registry.register(inspectEnvironment(tool.environment).name, tool.contract, tool.handler);
       }
       host.pump.register(session.session_id, registry);
     }
@@ -262,15 +272,15 @@ export class Sessions {
     const host = await this.client.register();
     for await (const event of handle.events()) {
       if (event.type !== "session_creation_ended") continue;
-      const configuration = (event.data as { configuration: { tools: { name: string; environment: string }[]; environments: { name: string; driver: string; host_id?: string }[] } }).configuration;
+      const configuration = (event.data as { configuration: { tools: WireTool[]; environments: { name: string; driver: string; host_id?: string }[] } }).configuration;
       const here = configuration.environments.filter((environment) => environment.driver === "host" && environment.host_id === host.hostId).map((environment) => environment.name);
-      const placed = configuration.tools.filter((tool) => here.includes(tool.environment)).map((tool) => tool.name).sort();
-      const supplied = tools.map((tool) => tool.definition.name).sort();
+      const placed = configuration.tools.flatMap((tool) => Object.keys(tool.placements).filter((environment) => here.includes(environment)).map((environment) => `${tool.name}\0${environment}`)).sort();
+      const supplied = tools.map((tool) => `${tool.definition.name}\0${inspectEnvironment(tool.environment).name}`).sort();
       if (placed.length === 0 || JSON.stringify(placed) !== JSON.stringify(supplied)) {
         throw new TypeError("the Tools supplied must be exactly those the session placed in this host");
       }
       const registry = new HostToolRegistry();
-      for (const tool of tools) registry.register(tool.contract!, tool.handler!);
+      for (const tool of tools) registry.register(inspectEnvironment(tool.environment).name, tool.contract!, tool.handler!);
       host.pump.register(sessionId, registry);
       return new SessionHandle(this.client, toSessionState(session), () => host.unregister(sessionId));
     }
@@ -359,7 +369,7 @@ function collectEnvironments(options: CreateSessionOptions): ReadonlySet<Environ
 
 function compileSession(
   options: CreateSessionOptions,
-  agentloopId: string,
+  agentloopImplementation: unknown,
   environments: ReadonlySet<Environment>,
   implementations: ReadonlyMap<PlacedTool, unknown>,
   hostId?: string,
@@ -382,27 +392,29 @@ function compileSession(
         };
     }
   });
-  const tools: WireTool[] = [];
-  const names = new Set<string>();
+  const tools = new Map<string, WireTool>();
   for (const selected of options.tools ?? []) {
     const tool = inspectTool(selected);
-    if (names.has(tool.definition.name)) throw new TypeError(`Tool name ${tool.definition.name} is duplicated`);
-    names.add(tool.definition.name);
-    const implementation = implementations.get(selected);
-    tools.push({
-      name: tool.definition.name,
-      description: tool.definition.description,
+    const definition = {
+      name: tool.definition.name, description: tool.definition.description,
       input_schema: structuredClone(tool.definition.inputSchema),
       ...(tool.definition.outputSchema === undefined ? {} : { output_schema: structuredClone(tool.definition.outputSchema) }),
-      environment: inspectEnvironment(tool.environment).name,
-      needs: [...tool.needs],
-      ...(implementation === undefined ? {} : { implementation: structuredClone(implementation) as WireTool["implementation"] }),
-    });
+    };
+    const environment = inspectEnvironment(tool.environment).name;
+    const known = tools.get(definition.name);
+    if (known !== undefined) {
+      const { placements: _placements, ...canonical } = known;
+      if (JSON.stringify(canonical) !== JSON.stringify(definition)) throw new TypeError(`Tool ${definition.name} has conflicting definitions`);
+      if (Object.hasOwn(known.placements, environment)) throw new TypeError(`Tool ${definition.name} is duplicated in Environment ${environment}`);
+    }
+    const entry = known ?? { ...definition, placements: Object.create(null) as WireTool["placements"] };
+    entry.placements[environment] = { needs: [...tool.needs], implementation: structuredClone(implementations.get(selected)) };
+    tools.set(definition.name, entry);
   }
   const loop = inspectAgentloop(options.agentloop);
   return {
     agentloop: {
-      id: agentloopId,
+      implementation: structuredClone(agentloopImplementation),
       configuration: structuredClone(loop.configuration),
       environment: inspectEnvironment(loop.environment).name,
       needs: [...loop.needs],
@@ -410,7 +422,7 @@ function compileSession(
     model: { provider: options.model.provider, name: options.model.name, api_key: options.model.apiKey },
     system: options.system ?? "",
     ...(options.responseFormat === undefined ? {} : { response_format: structuredClone(options.responseFormat) as CreateSessionRequest["response_format"] }),
-    tools,
+    tools: [...tools.values()],
     environments: entries,
     ...(options.transcript === undefined ? {} : { transcript: structuredClone(options.transcript) as CreateSessionRequest["transcript"] }),
     ...(options.idleTtlMs === undefined ? {} : { idle_ttl_ms: options.idleTtlMs }),

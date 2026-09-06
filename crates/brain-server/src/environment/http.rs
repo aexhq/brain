@@ -17,7 +17,9 @@ pub struct HttpEnvironmentAdapter {
     credentials: Arc<dyn CredentialStore>,
     /// How long a turn may run before the session cancels it: the one operation that
     /// outlives the client's ordinary request timeout. `None` means no bound.
-    max_turn: Option<Duration>,
+    max_operation: Option<Duration>,
+    executions: Arc<crate::Executions>,
+    public_url: String,
     max_response_bytes: usize,
 }
 
@@ -25,13 +27,16 @@ impl HttpEnvironmentAdapter {
     pub fn new(
         client: reqwest::Client,
         credentials: Arc<dyn CredentialStore>,
-        limits: &brain::Limits,
         server_limits: &crate::ServerLimits,
+        executions: Arc<crate::Executions>,
+        public_url: String,
     ) -> Self {
         Self {
             client,
             credentials,
-            max_turn: limits.max_turn(),
+            max_operation: server_limits.max_environment(),
+            executions,
+            public_url,
             max_response_bytes: crate::limits::ceiling(
                 server_limits.max_environment_response_bytes,
             ),
@@ -72,7 +77,7 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
         &self,
         environment: &Environment,
         operation: &EnvironmentOperation,
-        services: Services<'_>,
+        services: Services,
     ) -> Result<EnvironmentReceipt, brain::Error> {
         let Driver::Http { url, .. } = &environment.driver else {
             return Err(brain::Error::InvalidState(
@@ -82,6 +87,29 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
         let credential = self
             .credentials
             .environment(&operation.session_id, &environment.name)?;
+        let mut operation = operation.clone();
+        let mut open = None;
+        let timeout = if let EnvironmentRequest::Execute {
+            deadline_ms,
+            callback,
+            ..
+        } = &mut operation.request
+        {
+            if let Some(services) = &services {
+                let (grant, guard) = self.executions.open(
+                    &operation.session_id,
+                    operation.sequence,
+                    &self.public_url,
+                    services.clone(),
+                )?;
+                *callback = Some(grant);
+                open = Some(guard);
+            }
+            (*deadline_ms != u64::MAX).then(|| Duration::from_millis(*deadline_ms))
+        } else {
+            self.max_operation
+        };
+        let _open = open;
         let command = EnvironmentCommand {
             contract: ENVIRONMENT_CONTRACT.into(),
             operation: operation.clone(),
@@ -93,24 +121,11 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
         if let Some(credential) = &credential {
             request = request.bearer_auth(credential.as_str());
         }
-        // A turn runs for as long as the loop needs, under the session's wall-time bound
-        // rather than the client's; a cancellation ends the wait here, and the callbacks
-        // the loop makes after it fail with `cancelled`, which is how it learns to stop.
-        let turn = match (&operation.request, &services) {
-            (EnvironmentRequest::Turn { .. }, Services::Turn(services)) => {
-                Some(Arc::clone(services))
-            }
-            _ => None,
-        };
-        if turn.is_some() {
-            request = request.timeout(
-                self.max_turn
-                    .unwrap_or(Duration::from_secs(10 * 365 * 24 * 60 * 60)),
-            );
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
         }
-        let sent = request.send();
         let cancelled = async {
-            match turn {
+            match &services {
                 Some(services) => {
                     while !services.cancelled() {
                         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -119,51 +134,57 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
                 None => std::future::pending::<()>().await,
             }
         };
-        let mut response = tokio::select! {
-            sent = sent => sent.map_err(|error| {
-                brain::Error::Ambiguous(format!("Environment transport outcome is unknown: {error}"))
-            })?,
-            () = cancelled => return Err(brain::Error::Cancelled("turn cancelled".into())),
-        };
-        let status = response.status();
-        if response
-            .content_length()
-            .is_some_and(|length| length > self.max_response_bytes as u64)
-        {
-            return Err(brain::Error::Ambiguous(format!(
-                "Environment response exceeds {} bytes",
-                self.max_response_bytes
-            )));
-        }
-        let mut body = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|error| brain::Error::Ambiguous(error.to_string()))?
-        {
-            if chunk.len() > self.max_response_bytes - body.len() {
+        let receive = async {
+            let mut response = request.send().await.map_err(|error| {
+                brain::Error::Ambiguous(format!(
+                    "Environment transport outcome is unknown: {error}"
+                ))
+            })?;
+            let status = response.status();
+            if response
+                .content_length()
+                .is_some_and(|length| length > self.max_response_bytes as u64)
+            {
                 return Err(brain::Error::Ambiguous(format!(
                     "Environment response exceeds {} bytes",
                     self.max_response_bytes
                 )));
             }
-            body.extend_from_slice(&chunk);
+            let mut body = Vec::new();
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|error| brain::Error::Ambiguous(error.to_string()))?
+            {
+                if chunk.len() > self.max_response_bytes - body.len() {
+                    return Err(brain::Error::Ambiguous(format!(
+                        "Environment response exceeds {} bytes",
+                        self.max_response_bytes
+                    )));
+                }
+                body.extend_from_slice(&chunk);
+            }
+            if !status.is_success() {
+                return Err(brain::Error::Ambiguous(format!(
+                    "Environment returned {status}: {}",
+                    String::from_utf8_lossy(&body[..body.len().min(16 * 1024)])
+                )));
+            }
+            let response: EnvironmentResponse = serde_json::from_slice(&body).map_err(|error| {
+                brain::Error::Ambiguous(format!("Environment terminal receipt is invalid: {error}"))
+            })?;
+            if response.contract != ENVIRONMENT_CONTRACT || response.sequence != operation.sequence
+            {
+                return Err(brain::Error::Ambiguous(
+                    "Environment response correlation does not match the operation".into(),
+                ));
+            }
+            Ok(response.receipt)
+        };
+        tokio::select! {
+            result = receive => result,
+            () = cancelled => Err(brain::Error::Cancelled("execution cancelled".into())),
         }
-        if !status.is_success() {
-            return Err(brain::Error::Ambiguous(format!(
-                "Environment returned {status}: {}",
-                String::from_utf8_lossy(&body[..body.len().min(16 * 1024)])
-            )));
-        }
-        let response: EnvironmentResponse = serde_json::from_slice(&body).map_err(|error| {
-            brain::Error::Ambiguous(format!("Environment terminal receipt is invalid: {error}"))
-        })?;
-        if response.contract != ENVIRONMENT_CONTRACT || response.sequence != operation.sequence {
-            return Err(brain::Error::Ambiguous(
-                "Environment response correlation does not match the operation".into(),
-            ));
-        }
-        Ok(response.receipt)
     }
 }
 
@@ -230,18 +251,16 @@ mod tests {
         let adapter = HttpEnvironmentAdapter::new(
             reqwest::Client::new(),
             credentials,
-            &brain::Limits {
-                max_turn_secs: 0,
-                ..Default::default()
-            },
             &crate::ServerLimits {
                 max_environment_response_bytes: 1024,
                 ..Default::default()
             },
+            Arc::new(crate::Executions::default()),
+            "http://brain.example".into(),
         );
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(3),
-            adapter.execute(&environment, &operation, Services::None),
+            adapter.execute(&environment, &operation, None),
         )
         .await;
         server.abort();

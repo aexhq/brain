@@ -53,6 +53,7 @@ fn invocation(name: &str, call_id: &str) -> ToolInvocation {
         call_id: call_id.into(),
         name: name.into(),
         input: serde_json::json!({}),
+        environment: brain_protocol::EnvironmentName::new("workspace"),
     }
 }
 
@@ -64,9 +65,13 @@ fn tool_config(tool_name: &str, needs: Vec<&str>) -> SessionConfig {
         description: "a tool".into(),
         input_schema: serde_json::json!({"type":"object"}),
         output_schema: None,
-        environment: EnvironmentName::new("workspace"),
-        needs: needs.into_iter().map(String::from).collect(),
-        implementation: Some(serde_json::json!({"kind": "test"})),
+        placements: std::collections::BTreeMap::from([(
+            EnvironmentName::new("workspace"),
+            brain_protocol::ToolPlacement {
+                needs: needs.into_iter().map(String::from).collect(),
+                implementation: serde_json::json!({"kind": "test"}),
+            },
+        )]),
     }];
     config
 }
@@ -87,9 +92,13 @@ fn host_tool_config(tool_name: &str) -> SessionConfig {
         description: "answered by the application".into(),
         input_schema: serde_json::json!({"type":"object"}),
         output_schema: None,
-        environment: EnvironmentName::new("app"),
-        needs: Vec::new(),
-        implementation: None,
+        placements: std::collections::BTreeMap::from([(
+            EnvironmentName::new("app"),
+            brain_protocol::ToolPlacement {
+                needs: Vec::new(),
+                implementation: serde_json::json!({"type": "host_function", "name": tool_name}),
+            },
+        )]),
     }];
     config
 }
@@ -108,7 +117,7 @@ impl ToolExecutor for OutcomeTools {
     async fn execute(
         &self,
         _: ToolDispatch,
-        _: &dyn brain::ToolServices,
+        _: std::sync::Arc<dyn brain::ToolServices>,
     ) -> Result<Outcome, Error> {
         self.entered.notify_one();
         tokio::time::sleep(self.delay).await;
@@ -346,7 +355,7 @@ async fn wall_deadline_keeps_completed_tool_results_and_records_unknown_cancella
         async fn execute(
             &self,
             call: ToolDispatch,
-            _: &dyn brain::ToolServices,
+            _: std::sync::Arc<dyn brain::ToolServices>,
         ) -> Result<Outcome, Error> {
             if call.invocation.call_id == "slow" {
                 std::future::pending::<()>().await;
@@ -631,8 +640,7 @@ async fn needs_are_admitted_unread() {
     settle(runtime, data_dir).await;
 }
 
-/// The started record carries a reference to the Tool, not a copy of it: the Tool and
-/// its Environment live once, in the configuration recorded at creation.
+/// The started record identifies the authorized placement used for this invocation.
 #[tokio::test]
 async fn a_tool_call_record_names_the_tool_and_nothing_else_about_it() {
     let data_dir = temporary_directory("tool-record");
@@ -667,7 +675,8 @@ async fn a_tool_call_record_names_the_tool_and_nothing_else_about_it() {
         started.data,
         serde_json::json!({
             "tool": "bash",
-            "invocation": {"call_id": "call_1", "name": "bash", "input": {}},
+            "environment": "workspace",
+            "invocation": {"call_id": "call_1", "name": "bash", "environment": "workspace", "input": {}},
             "deadline_ms": 5_000,
         })
     );
@@ -803,7 +812,10 @@ async fn a_tool_in_a_host_env_uses_the_configured_executor() {
             let seen = seen.clone();
             async move {
                 let results = services
-                    .dispatch(vec![invocation("pick_file", "call_1")])
+                    .dispatch(vec![ToolInvocation {
+                        environment: EnvironmentName::new("app"),
+                        ..invocation("pick_file", "call_1")
+                    }])
                     .await?;
                 *seen.lock().unwrap() = results;
                 done(input.transcript)
@@ -840,7 +852,10 @@ async fn an_unanswered_host_call_becomes_unknown_and_journals_the_cancellation()
             let seen = seen.clone();
             async move {
                 let results = services
-                    .dispatch(vec![invocation("pick_file", "call_1")])
+                    .dispatch(vec![ToolInvocation {
+                        environment: EnvironmentName::new("app"),
+                        ..invocation("pick_file", "call_1")
+                    }])
                     .await?;
                 *seen.lock().unwrap() = results;
                 done(input.transcript)
