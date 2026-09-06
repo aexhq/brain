@@ -47,7 +47,7 @@ test("simultaneous preparation coalesces one artifact upload", { timeout: 30_000
   assert.equal(uploads, 1);
 });
 
-test("configured agentloops retain explicit slots across fresh activations", { timeout: 30_000 }, async (t) => {
+test("configured agentloops retain explicit kv across fresh activations", { timeout: 30_000 }, async (t) => {
   const loop = agentloop({ implementation: f.diagnostic, options: z.object({ label: z.string().default("configured") }) });
   const placed = loop({ env: brainEnv({ name: "brain" }) });
   assert.deepEqual(inspectAgentloop(placed).configuration, { label: "configured" });

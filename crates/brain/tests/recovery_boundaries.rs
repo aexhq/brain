@@ -75,11 +75,11 @@ async fn emitted_internal_kind_is_rejected_without_corrupting_recovery() {
         1000,
         scripted(|input, services| async move {
             services
-                .emit("state_set".into(), serde_json::json!({"ordinary":"event"}))
+                .emit("kv_set".into(), serde_json::json!({"ordinary":"event"}))
                 .await?;
             Ok(TurnOutput {
                 transcript: input.transcript,
-                slots: Default::default(),
+                kv: Default::default(),
                 result: None,
             })
         }),
@@ -102,7 +102,7 @@ async fn emitted_internal_kind_is_rejected_without_corrupting_recovery() {
         !runtime
             .kinds(session.id())
             .iter()
-            .any(|kind| kind == "state_set")
+            .any(|kind| kind == "kv_set")
     );
 }
 

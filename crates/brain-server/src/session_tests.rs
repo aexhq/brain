@@ -21,7 +21,7 @@ impl LoopExecutor for Echo {
         transcript.push(Message::user_text(input.input.message));
         Ok(TurnOutput {
             transcript,
-            slots: input.slots,
+            kv: input.kv,
             result: None,
         })
     }

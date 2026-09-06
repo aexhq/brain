@@ -71,7 +71,7 @@ fn input(message: &str) -> TurnInput {
     TurnInput {
         input: message.into(),
         transcript: Vec::new(),
-        slots: Default::default(),
+        kv: Default::default(),
         events: Vec::new(),
         configuration: serde_json::json!({}),
         system: String::new(),
@@ -160,7 +160,7 @@ async fn reference_loop_reads_interruptions_and_hands_tool_failures_to_the_model
         .await
         .unwrap();
     assert_eq!(model.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(output.slots["observed_sequence"], 3);
+    assert_eq!(output.kv["observed_sequence"], 3);
     assert_eq!(output.transcript.len(), 5);
 }
 
@@ -291,7 +291,7 @@ async fn real_worker_admits_and_runs_a_turn_of_the_diagnostic_loop() {
         .turn(digest, environment(), input("hello"), &bridge)
         .await
         .unwrap();
-    assert_eq!(output.slots["memory"]["turns"], 1);
+    assert_eq!(output.kv["memory"]["turns"], 1);
     assert_eq!(
         output.result,
         Some(serde_json::json!({"turns": 1, "message": "hello"}))
@@ -398,7 +398,7 @@ async fn concurrent_turns_all_reach_the_agentloop() {
     for turn in turns {
         match turn.await.unwrap() {
             Ok(output) => {
-                assert_eq!(output.slots["memory"]["turns"], 1);
+                assert_eq!(output.kv["memory"]["turns"], 1);
                 reached += 1;
             }
             Err(error) => refused.push(error.to_string()),

@@ -21,12 +21,12 @@ The Component exports `turn` and imports five Brain services:
 
 JSON strings on the WIT boundary use the generated session contract, also packaged as
 `@aexhq/brain/contracts/session.json`. It includes `ModelRequest`, `ModelResult`, `ToolResult`, and `EventPage`. A turn receives
-the current transcript, Agentloop slots, committed Events since its previous activation,
+the current transcript, Agentloop kv, committed Events since its previous activation,
 configuration, system prompt, Tool definitions, and a deterministic logical-time/seed envelope.
-It returns the transcript, updated slots, and optional result.
+It returns the transcript, updated kv, and optional result.
 
 Brain commits model, Tool, and emitted Event records. An Agentloop must not depend on the Wasm heap
-surviving between activations; only returned transcript and slots are durable.
+surviving between activations; only returned transcript and kv are durable.
 
 ## Place the Component
 
@@ -81,7 +81,7 @@ observations into the transcript, dispatches requested Tools, and returns errors
 It has no Aex dependency. Build with `cargo build --manifest-path examples/reference-agentloop/Cargo.toml --target wasm32-wasip2 --release`.
 
 Read imports are available during an activation. They do not advance Brain's initial-page cursor;
-keep an observation cursor in your own slot when consuming additional pages. Collect observations
+keep an observation cursor in your own kv when consuming additional pages. Collect observations
 before producing new effects so a loop does not chase its own Events indefinitely. Suspension
 leaves external history reads available; it does not run guest callbacks.
 

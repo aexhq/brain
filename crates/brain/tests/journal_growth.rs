@@ -50,7 +50,7 @@ fn growing_loop(calls: usize) -> Arc<common::ScriptedLoop> {
         }
         Ok(TurnOutput {
             transcript,
-            slots: Default::default(),
+            kv: Default::default(),
             result: Some(serde_json::json!({"ok": true})),
         })
     })
@@ -122,7 +122,7 @@ async fn the_journal_folds_to_the_final_transcript_after_the_turn() {
         CALLS * 2,
         "every filler message and every answer folds back out of the journal"
     );
-    assert!(folded.slots.contains_key(brain::LAST_ACTIVATION_SLOT));
+    assert!(folded.kv.contains_key(brain::LAST_ACTIVATION_KEY));
     drop(store);
     let _ = fs::remove_dir_all(data_dir);
 }
@@ -282,7 +282,7 @@ async fn a_rewritten_transcript_is_journalled_from_where_it_differs() {
             transcript.push(Message::user_text(input.input.message));
             Ok::<_, Error>(TurnOutput {
                 transcript,
-                slots: Default::default(),
+                kv: Default::default(),
                 result: None,
             })
         }),

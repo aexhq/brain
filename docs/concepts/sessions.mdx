@@ -10,14 +10,14 @@ under `sessions/{id}/journal/`.
 ## One journal, several projections
 
 One sequence counter orders every record. Public Events, session status, the current transcript,
-and Agentloop slots are projections built from that journal. They are not independent state stores.
+and Agentloop kv are projections built from that journal. They are not independent state stores.
 Brain opens sessions on demand. A checksummed disposable checkpoint accelerates ordinary opens;
 stale or damaged checkpoints rebuild from the canonical journal. Checkpoints are not a second source of truth.
 
 Public lifecycle and effect records appear through `GET /v1/sessions/{id}/events`. Transcript
-deltas and slots remain canonical journal records rather than separate copies. When a delta replaces
+deltas and kv remain canonical journal records rather than separate copies. When a delta replaces
 an existing transcript tail, Brain projects that same record as `transcript_replaced`; pure appends
-and slot changes stay private. Every projection preserves the journal sequence.
+and kv changes stay private. Every projection preserves the journal sequence.
 
 ## Effects happen after commit
 
@@ -45,8 +45,8 @@ The Agentloop owns transcript contents while Brain owns persistence. At model ca
 Brain records the difference from the last transcript. Appends store only the tail; summaries,
 edits, and reorders restart at the first changed item. Recovery folds those deltas in journal order.
 
-The Agentloop's returned slots follow the same rule. Every invocation uses a fresh Wasm instance;
-state must be present in the transcript or returned slots.
+The Agentloop's returned kv follows the same rule. Every invocation uses a fresh Wasm instance;
+state must be present in the transcript or returned kv.
 
 ## Turns
 

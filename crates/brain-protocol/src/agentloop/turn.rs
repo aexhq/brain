@@ -41,8 +41,8 @@ pub struct TurnInput {
     /// The transcript as it stands: what the next model call would see.
     #[schemars(length(max = MAX_TRANSCRIPT_ITEMS))]
     pub transcript: Vec<Message>,
-    /// The loop's slots by name, as it last returned them.
-    pub slots: BTreeMap<String, serde_json::Value>,
+    /// The loop's kv (a key-value map it keeps between turns), as it last returned it.
+    pub kv: BTreeMap<String, serde_json::Value>,
     /// Every record on the session's feed since the loop last ran, oldest first, so a
     /// loop sees what happened to its environments and tools between turns.
     #[schemars(length(max = 1000))]
@@ -64,9 +64,9 @@ pub struct TurnInput {
 pub struct TurnOutput {
     #[schemars(length(max = MAX_TRANSCRIPT_ITEMS))]
     pub transcript: Vec<Message>,
-    /// Slots to keep. A name the loop leaves out keeps its previous value.
+    /// Kv to keep. A key the loop leaves out keeps its previous value.
     #[serde(default)]
-    pub slots: BTreeMap<String, serde_json::Value>,
+    pub kv: BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
 }

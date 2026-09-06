@@ -63,7 +63,7 @@ fn a_new_session_folds_to_nothing() {
         store.fold().unwrap(),
         Folded {
             transcript: Vec::new(),
-            slots: Default::default(),
+            kv: Default::default(),
             through_sequence: 1,
         }
     );
@@ -229,32 +229,32 @@ fn transcript_replacement_is_an_event_projection_after_reopen() {
 }
 
 #[test]
-fn a_slot_keeps_its_last_value() {
-    let directory = temporary("slot");
+fn a_key_keeps_its_last_value() {
+    let directory = temporary("kv");
     let writer = Writer::spawn();
     let store = created(&directory, &writer);
     store
         .append_journal_sync(&[
-            JournalEntry::StateSet {
-                name: "loop".into(),
+            JournalEntry::KvSet {
+                key: "loop".into(),
                 value: serde_json::json!({"summary": null}),
             },
-            JournalEntry::StateSet {
-                name: "loop".into(),
+            JournalEntry::KvSet {
+                key: "loop".into(),
                 value: serde_json::json!({"summary": "so far"}),
             },
-            JournalEntry::StateSet {
-                name: "tool".into(),
+            JournalEntry::KvSet {
+                key: "tool".into(),
                 value: serde_json::json!(7),
             },
         ])
         .unwrap();
     let folded = store.fold().unwrap();
     assert_eq!(
-        folded.slots["loop"],
+        folded.kv["loop"],
         serde_json::json!({"summary": "so far"})
     );
-    assert_eq!(folded.slots["tool"], serde_json::json!(7));
+    assert_eq!(folded.kv["tool"], serde_json::json!(7));
     drop(store);
     drop(writer);
     let _ = fs::remove_dir_all(directory);
@@ -423,8 +423,8 @@ fn committed_completion_prefix_survives_without_inventing_turn_success() {
                         keep: 0,
                         append: vec![user("committed answer")],
                     },
-                    JournalEntry::StateSet {
-                        name: "observed_sequence".into(),
+                    JournalEntry::KvSet {
+                        key: "observed_sequence".into(),
                         value: serde_json::json!(2),
                     },
                 ])
@@ -440,8 +440,8 @@ fn committed_completion_prefix_survives_without_inventing_turn_success() {
         }
         if completed_steps >= 3 {
             store
-                .append_journal_sync(&[JournalEntry::StateSet {
-                    name: "brain.last_activation".into(),
+                .append_journal_sync(&[JournalEntry::KvSet {
+                    key: "brain.last_activation".into(),
                     value: serde_json::json!(2),
                 }])
                 .unwrap();
@@ -467,7 +467,7 @@ fn committed_completion_prefix_survives_without_inventing_turn_success() {
         let folded = reopened.fold().unwrap();
         assert_eq!(folded.transcript.len(), usize::from(completed_steps >= 1));
         if completed_steps >= 1 {
-            assert_eq!(folded.slots["observed_sequence"], 2);
+            assert_eq!(folded.kv["observed_sequence"], 2);
         }
         let records = reopened.records_after(0, 100).unwrap();
         assert_eq!(

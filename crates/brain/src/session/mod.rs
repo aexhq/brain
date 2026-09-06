@@ -20,7 +20,7 @@ use crate::{
 };
 use actor::{SessionActor, SessionCommand, failure_of, failure_payload};
 
-pub use actor::LAST_ACTIVATION_SLOT;
+pub use actor::LAST_ACTIVATION_KEY;
 pub use config::{
     DEFAULT_MAX_MODEL_CALLS_PER_TURN, DEFAULT_MAX_TURN_MS, DEFAULT_TOOL_DEADLINE_MS, SessionRuntime,
 };
@@ -94,7 +94,7 @@ impl Session {
         Ok(CreatingSession { store, config, row })
     }
 
-    /// Starts a session that is already in the store: its transcript and slots fold out
+    /// Starts a session that is already in the store: its transcript and kv fold out
     /// of its journal, and nothing is replayed into the loop.
     pub fn open(store: Arc<dyn SessionStore>, config: Arc<SessionRuntime>) -> Result<Self, Error> {
         let row = store.session_row()?;

@@ -580,7 +580,7 @@ fn to_wit_input(input: TurnInput) -> Result<wit::TurnInput, String> {
     Ok(wit::TurnInput {
         input_json: json(&input.input)?,
         transcript_json: json(&input.transcript)?,
-        slots_json: json(&input.slots)?,
+        kv_json: json(&input.kv)?,
         events_json: json(&input.events)?,
         configuration_json: json(&input.configuration)?,
         system: input.system,
@@ -609,8 +609,8 @@ fn from_wit_output(output: wit::TurnOutput) -> Result<TurnOutput, String> {
     Ok(TurnOutput {
         transcript: serde_json::from_str(&output.transcript_json)
             .map_err(|error| format!("Agentloop transcript is invalid JSON: {error}"))?,
-        slots: serde_json::from_str(&output.slots_json)
-            .map_err(|error| format!("Agentloop slots are invalid JSON: {error}"))?,
+        kv: serde_json::from_str(&output.kv_json)
+            .map_err(|error| format!("Agentloop kv is invalid JSON: {error}"))?,
         result: output
             .result_json
             .map(|value| serde_json::from_str(&value))
@@ -626,8 +626,8 @@ fn validate_output(output: &TurnOutput) -> Result<(), String> {
             brain_protocol::MAX_TRANSCRIPT_ITEMS
         ));
     }
-    if output.slots.len() > 128 || output.slots.keys().any(|name| !valid_identifier(name)) {
-        return Err("Agentloop slots must be at most 128 identifier-named values".into());
+    if output.kv.keys().any(|key| !valid_identifier(key)) {
+        return Err("Agentloop kv keys must be identifiers".into());
     }
     Ok(())
 }

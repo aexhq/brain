@@ -75,8 +75,8 @@ impl WorkerPool {
             worker_binary: worker_binary.into(),
             socket: run_dir.join("brain-loop-worker.sock"),
             packages: packages.into(),
-            // Match the worker's execution slots exactly: an accepted connection must
-            // never wait silently behind a worker-side slot and trip the liveness bound.
+            // Match the worker's concurrent-turn limit exactly: an accepted connection must
+            // never wait silently behind the worker's own limit and trip the liveness bound.
             permits: Arc::new(Semaphore::new(limits.concurrent_turns_per_worker.max(1))),
             tool_permits: Arc::new(Semaphore::new(limits.concurrent_turns_per_worker.max(1))),
             limits,

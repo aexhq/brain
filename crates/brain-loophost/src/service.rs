@@ -205,7 +205,7 @@ impl WorkerService {
             .await;
             return;
         };
-        let Ok(_slot) = self.running.acquire().await else {
+        let Ok(_permit) = self.running.acquire().await else {
             let _ = crate::worker_write(
                 stream,
                 &failed("turn_failed", "the worker is shutting down".into()),
@@ -251,7 +251,7 @@ impl WorkerService {
             .await;
             return;
         };
-        let Ok(_slot) = self.running_tools.acquire().await else {
+        let Ok(_permit) = self.running_tools.acquire().await else {
             let _ = crate::worker_write(
                 stream,
                 &failed("tool_failed", "the worker is shutting down".into()),
@@ -375,7 +375,7 @@ mod tests {
         TurnInput {
             input: "hello".into(),
             transcript: Vec::new(),
-            slots: Default::default(),
+            kv: Default::default(),
             events: Vec::new(),
             configuration: serde_json::json!({}),
             system: String::new(),

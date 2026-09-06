@@ -4,7 +4,7 @@
 //! A turn is one call into the loop. While it runs, the loop reaches Brain through
 //! [`TurnHost`]: model calls, tool dispatch, its own records, telemetry. Each service
 //! journals before it acts, so the feed says what happened whether or not the loop
-//! comes back. When it does come back, the transcript and slots it hands over are
+//! comes back. When it does come back, the transcript and kv it hands over are
 //! diffed against what the journal already holds and only the difference is written.
 
 use std::{
@@ -34,9 +34,9 @@ use crate::{
     },
 };
 
-/// The slot Brain keeps for itself: the sequence of the loop's last activation, so the
+/// The kv key Brain keeps for itself: the sequence of the loop's last activation, so the
 /// next turn can hand it every record since.
-pub const LAST_ACTIVATION_SLOT: &str = "brain.last_activation";
+pub const LAST_ACTIVATION_KEY: &str = "brain.last_activation";
 
 /// Records handed to a loop as "what happened since you last ran". More than this and
 /// the loop reads the feed itself.
@@ -69,7 +69,7 @@ pub struct SessionActor {
     runtime: Arc<SessionRuntime>,
     receiver: mpsc::Receiver<SessionCommand>,
     cancel_requested: Arc<AtomicBool>,
-    /// The transcript and slots as the journal holds them.
+    /// The transcript and kv as the journal holds them.
     folded: Folded,
 }
 
@@ -130,8 +130,8 @@ impl SessionActor {
         .await?;
         let since = self
             .folded
-            .slots
-            .get(LAST_ACTIVATION_SLOT)
+            .kv
+            .get(LAST_ACTIVATION_KEY)
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
         let event_records = self.store.records_after(since, EVENTS_PER_TURN)?;
@@ -143,7 +143,7 @@ impl SessionActor {
         let input = TurnInput {
             input: request.input,
             transcript: self.folded.transcript.clone(),
-            slots: self.folded.slots.clone(),
+            kv: self.folded.kv.clone(),
             events,
             configuration: self.config.agentloop.configuration.clone(),
             system: self.config.system.clone(),
@@ -286,16 +286,16 @@ impl SessionActor {
         if let Some(delta) = delta(&self.folded.transcript, &output.transcript) {
             entries.push(delta);
         }
-        for (name, value) in output.slots {
-            if name == LAST_ACTIVATION_SLOT {
+        for (key, value) in output.kv {
+            if key == LAST_ACTIVATION_KEY {
                 continue;
             }
-            if self.folded.slots.get(&name) != Some(&value) {
-                entries.push(JournalEntry::StateSet {
-                    name: name.clone(),
+            if self.folded.kv.get(&key) != Some(&value) {
+                entries.push(JournalEntry::KvSet {
+                    key: key.clone(),
                     value: value.clone(),
                 });
-                self.folded.slots.insert(name, value);
+                self.folded.kv.insert(key, value);
             }
         }
         self.folded.transcript = output.transcript;
@@ -308,12 +308,12 @@ impl SessionActor {
             None,
         )
         .await?;
-        self.folded.slots.insert(
-            LAST_ACTIVATION_SLOT.into(),
+        self.folded.kv.insert(
+            LAST_ACTIVATION_KEY.into(),
             serde_json::json!(events_through),
         );
-        let entries = vec![JournalEntry::StateSet {
-            name: LAST_ACTIVATION_SLOT.into(),
+        let entries = vec![JournalEntry::KvSet {
+            key: LAST_ACTIVATION_KEY.into(),
             value: serde_json::json!(events_through),
         }];
         self.row.through_sequence = append_journal(self.store.clone(), entries).await?;

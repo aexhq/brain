@@ -241,7 +241,7 @@ pub fn echo_loop() -> Arc<ScriptedLoop> {
         transcript.push(Message::user_text(&input.input.message));
         Ok(TurnOutput {
             transcript,
-            slots: Default::default(),
+            kv: Default::default(),
             result: Some(serde_json::json!({"ok": true})),
         })
     })

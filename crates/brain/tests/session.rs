@@ -33,7 +33,7 @@ fn user(text: &str) -> Message {
 fn done(transcript: Vec<Message>) -> Result<TurnOutput, Error> {
     Ok(TurnOutput {
         transcript,
-        slots: Default::default(),
+        kv: Default::default(),
         result: Some(serde_json::json!({"ok": true})),
     })
 }
@@ -507,7 +507,7 @@ async fn a_loop_cannot_append_brains_own_kinds() {
             "turn_ended",
             "session_ended",
             "model_call_started",
-            "state_set",
+            "kv_set",
             "transcript_delta",
         ] {
             let refused = services.emit(kind.into(), serde_json::json!({})).await;
@@ -885,11 +885,11 @@ async fn the_transcript_folds_back_from_its_deltas() {
         transcript.push(user("and then"));
         let second = services.model(request(transcript.clone())).await?;
         transcript.push(second.message);
-        let mut slots = std::collections::BTreeMap::new();
-        slots.insert("memory".to_string(), serde_json::json!({"turns": 1}));
+        let mut kv = std::collections::BTreeMap::new();
+        kv.insert("memory".to_string(), serde_json::json!({"turns": 1}));
         Ok(TurnOutput {
             transcript,
-            slots,
+            kv,
             result: None,
         })
     });
@@ -908,8 +908,8 @@ async fn the_transcript_folds_back_from_its_deltas() {
         .unwrap();
     let folded = runtime.store(handle.id()).fold().unwrap();
     assert_eq!(folded.transcript.len(), 4);
-    assert_eq!(folded.slots["memory"], serde_json::json!({"turns": 1}));
-    assert!(folded.slots.contains_key(brain::LAST_ACTIVATION_SLOT));
+    assert_eq!(folded.kv["memory"], serde_json::json!({"turns": 1}));
+    assert!(folded.kv.contains_key(brain::LAST_ACTIVATION_KEY));
     drop(handle);
     settle(runtime, data_dir).await;
 }
