@@ -21,6 +21,7 @@ Linux worker job, then runs all journeys as a required part of `build-test`.
 | `tool` with `run` in `hostEnv`, options, schemas, context | Progress ordering, input/output errors, handler errors, deadlines/signals, the call's sequence, concurrent sessions, protected Event rejection |
 | `register`, `credentials`, reattachment | Save credentials, close the host connection, reject mismatched placements, restore matching handlers, preserve active-call cancellation on creation replay |
 | `environment`, `brainEnv`, placed Tools, `needs` | Independent authenticated Environments per instance, lazy allocation, expiry without retry, needs at setup, a refused need failing the create, native workspace persistence/isolation, a need the brain env cannot grant |
+| An Agentloop placed in an Environment reached over HTTP | The turn's model call, emit, and dispatch through Brain's turn routes, a dispatched Tool running in the host env, and the routes closing with the turn |
 | `timeoutMs` | Explicit client timeout leaves the server's execution observable and does not retry the model call |
 
 The pagination case emits fewer than the permitted Events per turn across enough turns to cross

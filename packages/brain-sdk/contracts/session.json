@@ -879,6 +879,24 @@
       "pattern": "^[0-9a-f]{64}$",
       "type": "string"
     },
+    "ToolInvocation": {
+      "description": "One call as the Agentloop makes it. `call_id` is the loop's own correlation, echoed\nin the result; on every Environment wire the call is named by its sequence.",
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "input": true,
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "name",
+        "input"
+      ],
+      "type": "object"
+    },
     "ToolResult": {
       "properties": {
         "call_id": {
@@ -893,6 +911,65 @@
         "call_id",
         "output",
         "is_error"
+      ],
+      "type": "object"
+    },
+    "TurnDispatchRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "calls": {
+          "items": {
+            "$ref": "#/$defs/ToolInvocation"
+          },
+          "maxItems": 128,
+          "type": "array"
+        }
+      },
+      "required": [
+        "calls"
+      ],
+      "type": "object"
+    },
+    "TurnDispatchResult": {
+      "properties": {
+        "results": {
+          "items": {
+            "$ref": "#/$defs/ToolResult"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "results"
+      ],
+      "type": "object"
+    },
+    "TurnEmitAck": {
+      "properties": {
+        "sequence": {
+          "description": "The sequence Brain assigned to the committed Event.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sequence"
+      ],
+      "type": "object"
+    },
+    "TurnEmitRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "data": true,
+        "event_type": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_type",
+        "data"
       ],
       "type": "object"
     },
@@ -917,6 +994,16 @@
       "required": [
         "code",
         "message"
+      ],
+      "type": "object"
+    },
+    "TurnTelemetry": {
+      "additionalProperties": false,
+      "properties": {
+        "record": true
+      },
+      "required": [
+        "record"
       ],
       "type": "object"
     },

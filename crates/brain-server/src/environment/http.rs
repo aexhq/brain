@@ -1,7 +1,7 @@
 //! An Environment reached over HTTP at the URL its entry names, with the credential
 //! the session sealed for it.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use brain_protocol::{
@@ -9,7 +9,7 @@ use brain_protocol::{
     EnvironmentReceipt, EnvironmentRequest, EnvironmentResponse,
 };
 
-use super::{EnvironmentAdapter, Services, adapter::unsupported};
+use super::{EnvironmentAdapter, Services};
 use crate::CredentialStore;
 
 const MAX_ENVIRONMENT_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
@@ -17,13 +17,21 @@ const MAX_ENVIRONMENT_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 pub struct HttpEnvironmentAdapter {
     client: reqwest::Client,
     credentials: Arc<dyn CredentialStore>,
+    /// How long a turn may run before the session cancels it: the one operation that
+    /// outlives the client's ordinary request timeout. Zero means no bound.
+    max_turn_ms: u64,
 }
 
 impl HttpEnvironmentAdapter {
-    pub fn new(client: reqwest::Client, credentials: Arc<dyn CredentialStore>) -> Self {
+    pub fn new(
+        client: reqwest::Client,
+        credentials: Arc<dyn CredentialStore>,
+        max_turn_ms: u64,
+    ) -> Self {
         Self {
             client,
             credentials,
+            max_turn_ms,
         }
     }
 }
@@ -61,16 +69,13 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
         &self,
         environment: &Environment,
         operation: &EnvironmentOperation,
-        _: Services<'_>,
+        services: Services<'_>,
     ) -> Result<EnvironmentReceipt, brain::Error> {
         let Driver::Http { url, .. } = &environment.driver else {
             return Err(brain::Error::InvalidState(
                 "the HTTP adapter was handed an Environment it does not reach".into(),
             ));
         };
-        if matches!(operation.request, EnvironmentRequest::Turn { .. }) {
-            return Ok(unsupported("run an Agentloop over HTTP"));
-        }
         let credential = self
             .credentials
             .environment(&operation.session_id, &environment.name)?;
@@ -85,9 +90,39 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
         if let Some(credential) = &credential {
             request = request.bearer_auth(credential.as_str());
         }
-        let mut response = request.send().await.map_err(|error| {
-            brain::Error::Ambiguous(format!("Environment transport outcome is unknown: {error}"))
-        })?;
+        // A turn runs for as long as the loop needs, under the session's wall-time bound
+        // rather than the client's; a cancellation ends the wait here, and the callbacks
+        // the loop makes after it fail with `cancelled`, which is how it learns to stop.
+        let turn = match (&operation.request, &services) {
+            (EnvironmentRequest::Turn { .. }, Services::Turn(services)) => {
+                Some(Arc::clone(services))
+            }
+            _ => None,
+        };
+        if turn.is_some() {
+            request = request.timeout(if self.max_turn_ms == 0 {
+                Duration::from_secs(10 * 365 * 24 * 60 * 60)
+            } else {
+                Duration::from_millis(self.max_turn_ms)
+            });
+        }
+        let sent = request.send();
+        let cancelled = async {
+            match turn {
+                Some(services) => {
+                    while !services.cancelled() {
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                }
+                None => std::future::pending::<()>().await,
+            }
+        };
+        let mut response = tokio::select! {
+            sent = sent => sent.map_err(|error| {
+                brain::Error::Ambiguous(format!("Environment transport outcome is unknown: {error}"))
+            })?,
+            () = cancelled => return Err(brain::Error::Cancelled("turn cancelled".into())),
+        };
         let status = response.status();
         if response
             .content_length()
@@ -188,7 +223,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let credentials =
             Arc::new(crate::metadata::ServerMetadata::open(directory.path()).unwrap());
-        let adapter = HttpEnvironmentAdapter::new(reqwest::Client::new(), credentials);
+        let adapter = HttpEnvironmentAdapter::new(reqwest::Client::new(), credentials, 0);
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(3),
             adapter.execute(&environment, &operation, Services::None),

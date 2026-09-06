@@ -14,6 +14,7 @@ Each option is a flag and an environment variable. Flags win.
 | `BRAIN_ENV_SECRET_ALLOW` | `--env-secret-allow` | empty | Comma-separated process environment variable names the brain env may mount under `/secrets` |
 | `BRAIN_ENV_FILESYSTEM_ALLOW` | `--env-filesystem-allow` | empty | Comma-separated roots (`scratch`, `workspace`) the brain env may grant |
 | `BRAIN_API_TOKEN` | `--api-token` | none | Bearer token callers must present |
+| `BRAIN_PUBLIC_URL` | `--public-url` | `http://{listen}` | Where an Environment on another machine reaches this server for the turns it runs |
 | `BRAIN_MODEL_BASE_URL` | `--model-base-url` | `https://ai-gateway.vercel.sh/v1` | Endpoint for the `vercel-ai-gateway` provider |
 | `BRAIN_OPENAI_BASE_URL` | `--openai-base-url` | provider default | Endpoint for the `openai` provider, or any OpenAI-compatible server |
 | `BRAIN_ANTHROPIC_BASE_URL` | `--anthropic-base-url` | provider default | Endpoint for the `anthropic` provider |

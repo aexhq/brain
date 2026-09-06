@@ -3,7 +3,7 @@ use brain_protocol::{
     AgentloopAdmission, AgentloopId, ApiError, CreateSessionRequest, EnvironmentCallRequest,
     EnvironmentCallResult, EnvironmentName, EventPage, HostCommand, HostEvent, HostEventAck,
     HostId, HostRegistration, HostResult, LiveEvent, MessageRequest, SessionId, SessionList,
-    SessionSummary, ToolAdmission,
+    SessionSummary, ToolAdmission, TurnAnswer, TurnCall,
 };
 
 pub struct HostConnection {
@@ -40,6 +40,15 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
         token: String,
         event: HostEvent,
     ) -> Result<HostEventAck, ApiError>;
+    /// One call on an open turn's routes by the Environment running that turn, opened
+    /// by the token minted for it.
+    async fn turn_call(
+        &self,
+        session_id: SessionId,
+        sequence: u64,
+        token: String,
+        call: TurnCall,
+    ) -> Result<TurnAnswer, ApiError>;
     async fn admit_agentloop(
         &self,
         idempotency_key: String,

@@ -329,6 +329,10 @@
         },
         {
           "properties": {
+            "callback": {
+              "$ref": "#/$defs/TurnCallback",
+              "description": "Where this turn reaches Brain's services. Absent for an Environment inside\nBrain's own process, which has them directly."
+            },
             "id": {
               "$ref": "#/$defs/AgentloopId"
             },
@@ -624,6 +628,29 @@
         "description",
         "input_schema",
         "output_schema"
+      ],
+      "type": "object"
+    },
+    "TurnCallback": {
+      "additionalProperties": false,
+      "description": "Where an Environment reaches Brain's turn services for one turn, and the bearer\ntoken that opens them. Sent with the turn, never journaled, dead when the turn ends.",
+      "properties": {
+        "token": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "url": {
+          "description": "`{public url}/v1/sessions/{session_id}/turns/{sequence}`.",
+          "format": "uri",
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "token"
       ],
       "type": "object"
     },

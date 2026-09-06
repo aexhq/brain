@@ -68,6 +68,13 @@ pub(crate) mod contract {
         SessionSummary,
         SessionTranscript,
         ToolAdmission,
+        TurnDispatchRequest,
+        TurnDispatchResult,
+        TurnEmitAck,
+        TurnEmitRequest,
+        TurnTelemetry,
+        ModelRequest,
+        ModelResult,
     );
 }
 

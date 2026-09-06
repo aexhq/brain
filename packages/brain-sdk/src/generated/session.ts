@@ -502,6 +502,18 @@ export interface TurnError {
   retryable?: boolean;
 }
 /**
+ * One call as the Agentloop makes it. `call_id` is the loop's own correlation, echoed
+ * in the result; on every Environment wire the call is named by its sequence.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ToolInvocation".
+ */
+export interface ToolInvocation {
+  call_id: string;
+  input: unknown;
+  name: string;
+}
+/**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "ToolResult".
  */
@@ -509,4 +521,46 @@ export interface ToolResult {
   call_id: string;
   is_error: boolean;
   output: unknown;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "TurnDispatchRequest".
+ */
+export interface TurnDispatchRequest {
+  /**
+   * @maxItems 128
+   */
+  calls: ToolInvocation[];
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "TurnDispatchResult".
+ */
+export interface TurnDispatchResult {
+  results: ToolResult[];
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "TurnEmitAck".
+ */
+export interface TurnEmitAck {
+  /**
+   * The sequence Brain assigned to the committed Event.
+   */
+  sequence: number;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "TurnEmitRequest".
+ */
+export interface TurnEmitRequest {
+  data: unknown;
+  event_type: string;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "TurnTelemetry".
+ */
+export interface TurnTelemetry {
+  record: unknown;
 }

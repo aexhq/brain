@@ -12,7 +12,8 @@ use crate::{
     Environment, EnvironmentCallRequest, EnvironmentCallResult, EnvironmentCommand,
     EnvironmentName, EnvironmentResponse, EventPage, HostCommand, HostEvent, HostEventAck, HostId,
     HostRegistration, HostResult, Message, MessageRequest, Outcome, SESSION_CONTRACT, SessionId,
-    SessionList, SessionSummary, Tool, ToolAdmission, ToolId, TurnInput, TurnOutput,
+    SessionList, SessionSummary, Tool, ToolAdmission, ToolId, TurnDispatchRequest,
+    TurnDispatchResult, TurnEmitAck, TurnEmitRequest, TurnInput, TurnOutput, TurnTelemetry,
 };
 
 /// Where the contracts are published; each document's `$id` is its path under here.
@@ -52,6 +53,11 @@ pub fn session() -> Value {
             define::<SessionList>(generator);
             define::<SessionSummary>(generator);
             define::<crate::SessionTranscript>(generator);
+            define::<TurnDispatchRequest>(generator);
+            define::<TurnDispatchResult>(generator);
+            define::<TurnEmitAck>(generator);
+            define::<TurnEmitRequest>(generator);
+            define::<TurnTelemetry>(generator);
             marker(SESSION_CONTRACT)
         },
     )

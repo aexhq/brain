@@ -1,7 +1,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentloopId, EnvironmentName, HostId, Outcome, SessionId, TurnInput, TurnOutput};
+use crate::{
+    AgentloopId, EnvironmentName, HostId, Outcome, SessionId, TurnCallback, TurnInput, TurnOutput,
+};
 
 /// The contract identifier every command and response carries.
 pub const ENVIRONMENT_CONTRACT: &str = "environment/v1";
@@ -105,6 +107,10 @@ pub enum EnvironmentRequest {
         #[schemars(schema_with = "crate::schema::needs")]
         needs: Vec<String>,
         input: Box<TurnInput>,
+        /// Where this turn reaches Brain's services. Absent for an Environment inside
+        /// Brain's own process, which has them directly.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        callback: Option<TurnCallback>,
     },
     Cancel {
         #[schemars(range(min = 1))]

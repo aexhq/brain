@@ -9,7 +9,7 @@ use brain_protocol::{
     EnvironmentCallRequest, EnvironmentCallResult, EnvironmentName, Event, EventPage, HostCommand,
     HostEvent, HostEventAck, HostId, HostOperation, HostRegistration, HostResult, LiveEvent,
     MessageRequest, SessionId, SessionList, SessionStatus, SessionSummary, StreamingEvent,
-    ToolAdmission, ToolAdmissionStatus, ToolId,
+    ToolAdmission, ToolAdmissionStatus, ToolId, TurnAnswer, TurnCall, TurnEmitAck,
 };
 use tower::ServiceExt;
 
@@ -82,6 +82,29 @@ impl BrainApi for Api {
             return Err(ApiError::unauthorized("invalid host credential"));
         }
         Ok(HostEventAck { sequence: 8 })
+    }
+    async fn turn_call(
+        &self,
+        _: SessionId,
+        sequence: u64,
+        token: String,
+        call: TurnCall,
+    ) -> Result<TurnAnswer, ApiError> {
+        if sequence != 4 || token != "turn-token" {
+            return Err(ApiError::not_found("no such open turn"));
+        }
+        Ok(match call {
+            TurnCall::Events { after } => TurnAnswer::Events(EventPage {
+                events: Vec::new(),
+                next_cursor: after,
+            }),
+            TurnCall::Emit(request) => {
+                assert_eq!(request.event_type, "remote_note");
+                TurnAnswer::Emit(TurnEmitAck { sequence: 5 })
+            }
+            TurnCall::Telemetry(_) => TurnAnswer::Telemetry,
+            other => panic!("unexpected turn call {other:?}"),
+        })
     }
     async fn admit_agentloop(&self, _: String, _: Vec<u8>) -> Result<AgentloopAdmission, ApiError> {
         Ok(admission())
@@ -275,6 +298,25 @@ async fn exposes_every_v1_route_with_its_contract_status() {
         ),
         request("POST", &format!("/v1/sessions/{id}/end"), None, None),
         request("DELETE", &format!("/v1/sessions/{id}"), None, None),
+        Request::builder()
+            .uri(format!("/v1/sessions/{id}/turns/4/events?after=2"))
+            .header("authorization", "Bearer turn-token")
+            .body(Body::empty())
+            .unwrap(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/v1/sessions/{id}/turns/4/emit"))
+            .header("authorization", "Bearer turn-token")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"event_type":"remote_note","data":{"ok":true}}"#))
+            .unwrap(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/v1/sessions/{id}/turns/4/telemetry"))
+            .header("authorization", "Bearer turn-token")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"record":{"ok":true}}"#))
+            .unwrap(),
         request("GET", "/health/live", None, None),
         request("GET", "/health/ready", None, None),
     ];
@@ -566,6 +608,41 @@ async fn the_host_token_opens_exactly_the_host_surface() {
         .await
         .unwrap();
     assert_eq!(registration.status(), StatusCode::OK);
+}
+
+/// A turn's routes open with the token minted for that turn and nothing else: not the
+/// API bearer, not another turn's token.
+#[tokio::test]
+async fn the_turn_token_opens_exactly_that_turns_routes() {
+    let build = || router_with_bearer(Api::default(), "secret".into());
+    let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let emit = |sequence: u64, bearer: &str| {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/v1/sessions/{id}/turns/{sequence}/emit"))
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"event_type":"remote_note","data":{}}"#))
+            .unwrap()
+    };
+    let opened = build().oneshot(emit(4, "turn-token")).await.unwrap();
+    assert_eq!(opened.status(), StatusCode::OK);
+    let api_bearer = build().oneshot(emit(4, "secret")).await.unwrap();
+    assert_eq!(api_bearer.status(), StatusCode::NOT_FOUND);
+    let other_turn = build().oneshot(emit(5, "turn-token")).await.unwrap();
+    assert_eq!(other_turn.status(), StatusCode::NOT_FOUND);
+    let no_token = build()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/sessions/{id}/turns/4/emit"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"event_type":"remote_note","data":{}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(no_token.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

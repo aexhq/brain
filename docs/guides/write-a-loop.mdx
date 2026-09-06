@@ -56,8 +56,8 @@ const assistant = agentloop({ implementation: component(bytes) });
 The client sends the raw bytes to `POST /v1/agentloops`; Brain validates the Component contract and
 returns its id, the SHA-256 of the bytes. Admission is cached for that `Component` object. Session
 creation seals the id, parsed options, `needs`, and the Environment. The brain env runs the loop
-with exactly the grants its needs name; an Environment reached over HTTP answers a turn as
-unsupported until Brain's turn services are reachable from another process.
+with exactly the grants its needs name; an Environment reached over HTTP runs it however it
+likes and reaches the same services through the turn routes it is handed with each turn.
 
 ## Effect semantics
 

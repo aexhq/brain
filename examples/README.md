@@ -11,6 +11,7 @@ These examples use the public TypeScript SDK and HTTP API against a locally runn
 | `example-brain.mjs` | Wrap a compiled Agentloop Component in the SDK factory. |
 | `reference-agentloop/` | A Rust Agentloop Component written against Brain's public contracts alone. |
 | `lazy-environment.mjs` | A standalone Environment: logical setup with needs, lazy allocation, idle expiry, explicit restart. |
+| `loop-environment.mjs` | A standalone Environment that runs an Agentloop on another server, calling Brain's turn routes back. |
 
 On Linux, from the repository root, install dependencies, build the SDK, and build the two Brain
 executables:
@@ -63,6 +64,12 @@ A session reaches it by naming its address: an `environment({ url, credential })
 SDK, or an entry `{ "name": "echo", "driver": "http", "url": "http://127.0.0.1:8090" }` in a raw
 create request. `npm test -w examples` runs its unit test for concurrent allocation, expiry, and
 explicit restart.
+
+`loop-environment.mjs` runs an Agentloop outside Brain's process on `127.0.0.1:8091`. Place a
+session's Agentloop in it the same way, and Brain sends each turn with the address of its turn
+routes and the token that opens them; the loop calls the model, dispatches Tools, and emits Events
+through those routes, and Brain journals every call. Brain must be reachable from the loop's
+process: set `BRAIN_PUBLIC_URL` when that is not the listen address.
 
 `session.events(cursor)` reads the public Event projection from the canonical journal. It is not an external
 queue or an at-least-once delivery guarantee. Applications that forward events own their queue,

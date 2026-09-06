@@ -18,7 +18,7 @@ The MVP keeps Tool and Agentloop placements explicit and fixed at session creati
 - [x] Cross-session native workspace isolation test
 - [x] Public SDK user journeys against real servers and workers, with isolated suites running in parallel
 - [ ] Native subagent support, parent and child links between sessions
-- [ ] Agentloops running in an Environment reached over HTTP: Brain's turn services as session
+- [x] Agentloops running in an Environment reached over HTTP: Brain's turn services as session
   routes with a per-turn token, so a loop can run on another server
 - [ ] Post-MVP official `tool-env` Tool extension: inspect the session's placements and Environment
   status, expose failures to the Agentloop for model-directed recovery, and request placement

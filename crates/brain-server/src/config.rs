@@ -44,6 +44,10 @@ pub struct ServerConfig {
     pub providers_file: Option<PathBuf>,
     #[arg(long, env = "BRAIN_API_TOKEN", hide_env_values = true)]
     pub api_token: Option<String>,
+    /// Where an Environment on another machine reaches this server, for the turns it
+    /// runs. Defaults to `http://{listen}`.
+    #[arg(long, env = "BRAIN_PUBLIC_URL")]
+    pub public_url: Option<String>,
     /// Model calls one turn may make before Brain refuses the next.
     #[arg(long, env = "BRAIN_MAX_MODEL_CALLS", default_value_t = 128)]
     pub max_model_calls_per_turn: usize,

@@ -417,6 +417,7 @@ mod tests {
             Arc::new(HttpEnvironmentAdapter::new(
                 reqwest::Client::new(),
                 metadata,
+                0,
             )),
         );
         let environment = Environment {

@@ -52,9 +52,10 @@ uses a fresh Wasm instance, while compiled and prelinked code is reused.
 
 An Agentloop may be placed in any Environment. The brain env runs it in a fresh Wasmtime instance
 per activation with exactly the grants its `needs` name, the same way it runs a Tool. An
-Environment reached over HTTP answers a turn as unsupported until Brain's turn services are
-reachable from another process. The factory always requires an explicit `env` so the placement is
-sealed into the session instead of inferred; Brain does not fall back to another placement.
+Environment reached over HTTP receives each turn with the address of Brain's turn routes for that
+turn and the token that opens them, and reaches the same five services through them; Brain
+journals every call the same way. The factory always requires an explicit `env` so the placement
+is sealed into the session instead of inferred; Brain does not fall back to another placement.
 
 ## State and failures
 

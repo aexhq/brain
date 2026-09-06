@@ -670,6 +670,21 @@ components:
     ToolId:
       pattern: ^[0-9a-f]{64}$
       type: string
+    ToolInvocation:
+      description: |-
+        One call as the Agentloop makes it. `call_id` is the loop's own correlation, echoed
+        in the result; on every Environment wire the call is named by its sequence.
+      properties:
+        call_id:
+          type: string
+        input: true
+        name:
+          type: string
+      required:
+      - call_id
+      - name
+      - input
+      type: object
     ToolResult:
       properties:
         call_id:
@@ -681,6 +696,47 @@ components:
       - call_id
       - output
       - is_error
+      type: object
+    TurnDispatchRequest:
+      additionalProperties: false
+      properties:
+        calls:
+          items:
+            $ref: '#/components/schemas/ToolInvocation'
+          maxItems: 128
+          type: array
+      required:
+      - calls
+      type: object
+    TurnDispatchResult:
+      properties:
+        results:
+          items:
+            $ref: '#/components/schemas/ToolResult'
+          type: array
+      required:
+      - results
+      type: object
+    TurnEmitAck:
+      properties:
+        sequence:
+          description: The sequence Brain assigned to the committed Event.
+          format: uint64
+          minimum: 1
+          type: integer
+      required:
+      - sequence
+      type: object
+    TurnEmitRequest:
+      additionalProperties: false
+      properties:
+        data: true
+        event_type:
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
+          type: string
+      required:
+      - event_type
+      - data
       type: object
     TurnError:
       description: Why a turn, or one of the host calls inside it, failed.
@@ -699,6 +755,13 @@ components:
       required:
       - code
       - message
+      type: object
+    TurnTelemetry:
+      additionalProperties: false
+      properties:
+        record: true
+      required:
+      - record
       type: object
     Usage:
       description: |-
@@ -1185,6 +1248,182 @@ paths:
               schema:
                 $ref: '#/components/schemas/SessionTranscript'
           description: Committed transcript, including suspended sessions
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/sessions/{session_id}/turns/{sequence}/dispatch:
+    post:
+      operationId: turnDispatch
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      - in: path
+        name: sequence
+        required: true
+        schema:
+          format: int64
+          minimum: 0
+          type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TurnDispatchRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TurnDispatchResult'
+          description: The Tool results, in the calls' order
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/sessions/{session_id}/turns/{sequence}/emit:
+    post:
+      operationId: turnEmit
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      - in: path
+        name: sequence
+        required: true
+        schema:
+          format: int64
+          minimum: 0
+          type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TurnEmitRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TurnEmitAck'
+          description: The loop's Event committed
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/sessions/{session_id}/turns/{sequence}/events:
+    get:
+      operationId: turnEvents
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      - in: path
+        name: sequence
+        required: true
+        schema:
+          format: int64
+          minimum: 0
+          type: integer
+      - in: query
+        name: after
+        required: false
+        schema:
+          format: int64
+          minimum: 0
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventPage'
+          description: A finite event page
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+      summary: |-
+        The turn routes: Brain's five turn services, for the Environment running a turn
+        outside this process. Each answers only while that activation is open and only
+        with its token.
+  /v1/sessions/{session_id}/turns/{sequence}/model:
+    post:
+      operationId: turnModel
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      - in: path
+        name: sequence
+        required: true
+        schema:
+          format: int64
+          minimum: 0
+          type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelResult'
+          description: The model's answer, journaled
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/sessions/{session_id}/turns/{sequence}/telemetry:
+    post:
+      operationId: turnTelemetry
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      - in: path
+        name: sequence
+        required: true
+        schema:
+          format: int64
+          minimum: 0
+          type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TurnTelemetry'
+        required: true
+      responses:
+        '204':
+          description: Accepted, best effort
         default:
           content:
             application/json:

@@ -274,7 +274,10 @@ impl BrainEnvironment {
         operation: &EnvironmentOperation,
         services: &Arc<dyn TurnServices>,
     ) -> Result<EnvironmentReceipt, brain::Error> {
-        let EnvironmentRequest::Turn { id, needs, input } = &operation.request else {
+        let EnvironmentRequest::Turn {
+            id, needs, input, ..
+        } = &operation.request
+        else {
             unreachable!("turn is called for turn requests only");
         };
         if !self.pool.status(id).await.map_err(loop_error)? {

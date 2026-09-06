@@ -12,9 +12,10 @@ use axum::{
 };
 use brain_protocol::{
     AgentloopAdmission, AgentloopId, CreateSessionRequest, EnvironmentCallRequest,
-    EnvironmentCallResult, EnvironmentName, HostCommand, HostEvent, HostEventAck, HostId,
-    HostRegistration, HostResult, MessageRequest, SessionId, SessionList, SessionSummary,
-    ToolAdmission,
+    EnvironmentCallResult, EnvironmentName, EventPage, HostCommand, HostEvent, HostEventAck,
+    HostId, HostRegistration, HostResult, MessageRequest, ModelRequest, ModelResult, SessionId,
+    SessionList, SessionSummary, ToolAdmission, TurnAnswer, TurnCall, TurnDispatchRequest,
+    TurnDispatchResult, TurnEmitAck, TurnEmitRequest, TurnTelemetry,
 };
 use utoipa::{OpenApi, openapi::HttpMethod};
 
@@ -49,6 +50,11 @@ const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
         events,
         cancel_session,
         end_session,
+        turn_events,
+        turn_model,
+        turn_dispatch,
+        turn_emit,
+        turn_telemetry,
         live,
         ready,
     )
@@ -84,6 +90,7 @@ fn build<A: BrainApi>(api: A, token: Option<String>) -> Router {
         ));
     }
     let hosts = host_routes(api.clone(), &mut routed);
+    let turns = turn_routes(api.clone(), &mut routed);
     let health = health_routes(api, &mut routed);
     // The published document is rendered from `ApiDoc`; the router from the same
     // annotations, through `documented`. A handler in one and not the other would ship
@@ -93,7 +100,7 @@ fn build<A: BrainApi>(api: A, token: Option<String>) -> Router {
         operations(&ApiDoc::openapi()),
         "brain-http: the routes and the OpenAPI document disagree"
     );
-    protected.merge(hosts).merge(health)
+    protected.merge(hosts).merge(turns).merge(health)
 }
 
 /// A handler's route, taken from its `#[utoipa::path]` annotation: the path and the
@@ -165,6 +172,24 @@ fn host_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>) -> Router {
         documented::<__path_host_commands, _, _, _>(routed, host_commands::<A>),
         documented::<__path_resolve_host, _, _, _>(routed, resolve_host::<A>),
         documented::<__path_emit_host_event, _, _, _>(routed, emit_host_event::<A>),
+    ] {
+        router = router.route(&path, method);
+    }
+    router
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
+        .with_state(api)
+}
+
+/// A turn's routes open with the token minted for that turn rather than the API
+/// bearer, so these authenticate inside their handlers, like the host routes.
+fn turn_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>) -> Router {
+    let mut router = Router::new();
+    for (path, method) in [
+        documented::<__path_turn_events, _, _, _>(routed, turn_events::<A>),
+        documented::<__path_turn_model, _, _, _>(routed, turn_model::<A>),
+        documented::<__path_turn_dispatch, _, _, _>(routed, turn_dispatch::<A>),
+        documented::<__path_turn_emit, _, _, _>(routed, turn_emit::<A>),
+        documented::<__path_turn_telemetry, _, _, _>(routed, turn_telemetry::<A>),
     ] {
         router = router.route(&path, method);
     }
@@ -735,6 +760,172 @@ async fn delete_session<A: BrainApi>(
         .await
         .map_err(HttpError)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// The turn routes: Brain's five turn services, for the Environment running a turn
+/// outside this process. Each answers only while that activation is open and only
+/// with its token.
+#[utoipa::path(
+    get,
+    path = "/v1/sessions/{session_id}/turns/{sequence}/events",
+    operation_id = "turnEvents",
+    params(("session_id" = contract::SessionId, Path), ("sequence" = u64, Path), ("after" = Option<u64>, Query, minimum = 0)),
+    responses(
+        (status = 200, description = "A finite event page", body = contract::EventPage),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
+async fn turn_events<A: BrainApi>(
+    State(api): State<A>,
+    Path((session_id, sequence)): Path<(SessionId, u64)>,
+    Query(query): Query<EventsQuery>,
+    headers: HeaderMap,
+) -> Result<Json<EventPage>, HttpError> {
+    let answer = api
+        .turn_call(
+            session_id,
+            sequence,
+            bearer(&headers)?,
+            TurnCall::Events {
+                after: query.after.unwrap_or(0),
+            },
+        )
+        .await
+        .map_err(HttpError)?;
+    match answer {
+        TurnAnswer::Events(page) => Ok(Json(page)),
+        _ => Err(mismatched()),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/{session_id}/turns/{sequence}/model",
+    operation_id = "turnModel",
+    params(("session_id" = contract::SessionId, Path), ("sequence" = u64, Path)),
+    request_body = contract::ModelRequest,
+    responses(
+        (status = 200, description = "The model's answer, journaled", body = contract::ModelResult),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
+async fn turn_model<A: BrainApi>(
+    State(api): State<A>,
+    Path((session_id, sequence)): Path<(SessionId, u64)>,
+    headers: HeaderMap,
+    Json(request): Json<ModelRequest>,
+) -> Result<Json<ModelResult>, HttpError> {
+    let answer = api
+        .turn_call(
+            session_id,
+            sequence,
+            bearer(&headers)?,
+            TurnCall::Model(request),
+        )
+        .await
+        .map_err(HttpError)?;
+    match answer {
+        TurnAnswer::Model(result) => Ok(Json(result)),
+        _ => Err(mismatched()),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/{session_id}/turns/{sequence}/dispatch",
+    operation_id = "turnDispatch",
+    params(("session_id" = contract::SessionId, Path), ("sequence" = u64, Path)),
+    request_body = contract::TurnDispatchRequest,
+    responses(
+        (status = 200, description = "The Tool results, in the calls' order", body = contract::TurnDispatchResult),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
+async fn turn_dispatch<A: BrainApi>(
+    State(api): State<A>,
+    Path((session_id, sequence)): Path<(SessionId, u64)>,
+    headers: HeaderMap,
+    Json(request): Json<TurnDispatchRequest>,
+) -> Result<Json<TurnDispatchResult>, HttpError> {
+    let answer = api
+        .turn_call(
+            session_id,
+            sequence,
+            bearer(&headers)?,
+            TurnCall::Dispatch(request),
+        )
+        .await
+        .map_err(HttpError)?;
+    match answer {
+        TurnAnswer::Dispatch(result) => Ok(Json(result)),
+        _ => Err(mismatched()),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/{session_id}/turns/{sequence}/emit",
+    operation_id = "turnEmit",
+    params(("session_id" = contract::SessionId, Path), ("sequence" = u64, Path)),
+    request_body = contract::TurnEmitRequest,
+    responses(
+        (status = 200, description = "The loop's Event committed", body = contract::TurnEmitAck),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
+async fn turn_emit<A: BrainApi>(
+    State(api): State<A>,
+    Path((session_id, sequence)): Path<(SessionId, u64)>,
+    headers: HeaderMap,
+    Json(request): Json<TurnEmitRequest>,
+) -> Result<Json<TurnEmitAck>, HttpError> {
+    let answer = api
+        .turn_call(
+            session_id,
+            sequence,
+            bearer(&headers)?,
+            TurnCall::Emit(request),
+        )
+        .await
+        .map_err(HttpError)?;
+    match answer {
+        TurnAnswer::Emit(ack) => Ok(Json(ack)),
+        _ => Err(mismatched()),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/{session_id}/turns/{sequence}/telemetry",
+    operation_id = "turnTelemetry",
+    params(("session_id" = contract::SessionId, Path), ("sequence" = u64, Path)),
+    request_body = contract::TurnTelemetry,
+    responses(
+        (status = 204, description = "Accepted, best effort"),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
+async fn turn_telemetry<A: BrainApi>(
+    State(api): State<A>,
+    Path((session_id, sequence)): Path<(SessionId, u64)>,
+    headers: HeaderMap,
+    Json(record): Json<TurnTelemetry>,
+) -> Result<StatusCode, HttpError> {
+    api.turn_call(
+        session_id,
+        sequence,
+        bearer(&headers)?,
+        TurnCall::Telemetry(record),
+    )
+    .await
+    .map_err(HttpError)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn mismatched() -> HttpError {
+    HttpError(brain_protocol::ApiError::internal(
+        "the turn answered a different call than was made",
+    ))
 }
 
 #[utoipa::path(

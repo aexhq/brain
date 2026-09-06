@@ -16,6 +16,7 @@ pub mod model;
 mod schema;
 pub mod session;
 pub mod tool;
+pub mod turn;
 
 pub use agentloop::*;
 pub use environment::*;
@@ -27,3 +28,4 @@ pub use message::*;
 pub use model::*;
 pub use session::*;
 pub use tool::*;
+pub use turn::*;

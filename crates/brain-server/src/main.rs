@@ -6,7 +6,7 @@ use brain_loophost::{LoopLimits, WorkerPool};
 use brain_server::{
     BrainEnvironment, EnvironmentLoopExecutor, EnvironmentRegistry, HostEnvironment,
     HttpEnvironmentAdapter, IdempotencyStore, NativePolicy, ServerApi, ServerConfig,
-    ServerModelExecutor, ServerResources, ServerToolExecutor,
+    ServerModelExecutor, ServerResources, ServerToolExecutor, Turns,
 };
 use brain_telemetry::{TelemetryRecord, TelemetrySink, telemetry_channel};
 use clap::Parser;
@@ -87,6 +87,7 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(120))
         .build()?;
+    let max_turn_ms = config.max_turn_secs.saturating_mul(1_000);
     let environments = Arc::new(EnvironmentRegistry::new(
         Arc::new(BrainEnvironment::new(
             loops.clone(),
@@ -98,17 +99,29 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
             config.data_dir.join("native-workspaces"),
         )),
         HostEnvironment::open(&config.data_dir.join("hosts").join("hosts.log"))?,
-        Arc::new(HttpEnvironmentAdapter::new(http, credentials.clone())),
+        Arc::new(HttpEnvironmentAdapter::new(
+            http,
+            credentials.clone(),
+            max_turn_ms,
+        )),
     ));
+    let turns = Arc::new(Turns::default());
     // Every session's directory, rebuilt from disk. A session that was mid-turn when the
     // last process stopped is failed with code `interrupted` before anything is served.
     let writer = Writer::spawn();
     let feed = Arc::new(Feed::new(telemetry.clone()));
     let session_runtime = Arc::new(SessionRuntime {
         max_model_calls_per_turn: config.max_model_calls_per_turn,
-        max_turn_ms: config.max_turn_secs.saturating_mul(1_000),
+        max_turn_ms,
         tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
-        loop_executor: Arc::new(EnvironmentLoopExecutor(environments.clone())),
+        loop_executor: Arc::new(EnvironmentLoopExecutor {
+            environments: environments.clone(),
+            turns: turns.clone(),
+            public_url: config
+                .public_url
+                .clone()
+                .unwrap_or_else(|| format!("http://{}", config.listen)),
+        }),
         model_executor: model,
         tool_executor: Arc::new(ServerToolExecutor::new(environments.clone())),
         live: feed.clone(),
@@ -126,6 +139,7 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         )?,
         loops,
         environments,
+        turns,
         credentials,
         providers,
     })?;
@@ -146,6 +160,19 @@ fn validate(config: &ServerConfig) -> anyhow::Result<()> {
     }
     if config.max_model_calls_per_turn == 0 || config.max_model_calls_per_turn > 1_024 {
         anyhow::bail!("BRAIN_MAX_MODEL_CALLS must be in 1..=1024");
+    }
+    if let Some(url) = &config.public_url {
+        let parsed = reqwest::Url::parse(url)?;
+        if !matches!(parsed.scheme(), "http" | "https")
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            anyhow::bail!(
+                "BRAIN_PUBLIC_URL must be an HTTP(S) URL without credentials, query, or fragment"
+            );
+        }
     }
     if config
         .env_filesystem_allow

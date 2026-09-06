@@ -18,7 +18,7 @@ use brain_protocol::{
     EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, EventPage, HostEvent,
     HostEventAck, HostId, HostRegistration, HostResult, MessageRequest, ModelBinding,
     SessionConfig, SessionId, SessionList, SessionStatus, SessionSummary, ToolAdmission,
-    ToolAdmissionStatus,
+    ToolAdmissionStatus, TurnAnswer, TurnCall,
 };
 use tokio::sync::Mutex;
 
@@ -26,7 +26,7 @@ use tokio::sync::Mutex;
 #[path = "session_tests.rs"]
 mod session_tests;
 
-use crate::{CredentialStore, EnvironmentRegistry, IdempotencyStore, Services};
+use crate::{CredentialStore, EnvironmentRegistry, IdempotencyStore, Services, Turns};
 
 pub struct ServerResources {
     /// Where every session's directory lives.
@@ -45,6 +45,8 @@ pub struct ServerResources {
     /// Admits Agentloop and Tool Components; the brain env runs them.
     pub loops: Arc<WorkerPool>,
     pub environments: Arc<EnvironmentRegistry>,
+    /// The turns open right now whose loop runs outside this process.
+    pub turns: Arc<Turns>,
     /// What the server knows about a session that its records do not: the credentials
     /// it calls its model and its Environments with.
     pub credentials: Arc<dyn CredentialStore>,
@@ -428,6 +430,20 @@ impl BrainApi for ServerApi {
             .hosts()
             .emit(&host_id, &token, event)
             .await
+    }
+
+    async fn turn_call(
+        &self,
+        session_id: SessionId,
+        sequence: u64,
+        token: String,
+        call: TurnCall,
+    ) -> Result<TurnAnswer, ApiError> {
+        self.resources
+            .turns
+            .call(&session_id, sequence, &token, call)
+            .await
+            .map_err(api_error)
     }
 
     async fn admit_agentloop(
@@ -970,8 +986,14 @@ impl BrainApi for ServerApi {
 }
 
 /// Runs each turn in the Environment the Agentloop names, through the same interface
-/// every other operation on that Environment uses.
-pub struct EnvironmentLoopExecutor(pub Arc<EnvironmentRegistry>);
+/// every other operation on that Environment uses. An Environment outside this process
+/// is handed the turn's routes and the token that opens them.
+pub struct EnvironmentLoopExecutor {
+    pub environments: Arc<EnvironmentRegistry>,
+    pub turns: Arc<Turns>,
+    /// Where an Environment on another machine reaches this server.
+    pub public_url: String,
+}
 
 #[async_trait]
 impl LoopExecutor for EnvironmentLoopExecutor {
@@ -984,6 +1006,15 @@ impl LoopExecutor for EnvironmentLoopExecutor {
         input: brain_protocol::TurnInput,
         services: Arc<dyn brain::TurnServices>,
     ) -> Result<brain_protocol::TurnOutput, brain::Error> {
+        let (callback, _open) = match environment.driver {
+            Driver::Http { .. } => {
+                let (callback, open) =
+                    self.turns
+                        .open(session, sequence, &self.public_url, services.clone())?;
+                (Some(callback), Some(open))
+            }
+            Driver::Brain {} | Driver::Host { .. } => (None, None),
+        };
         let operation = EnvironmentOperation {
             sequence,
             environment: environment.name.clone(),
@@ -992,10 +1023,11 @@ impl LoopExecutor for EnvironmentLoopExecutor {
                 id: agentloop.id.clone(),
                 needs: agentloop.needs.clone(),
                 input: Box::new(input),
+                callback,
             },
         };
         match self
-            .0
+            .environments
             .execute(environment, &operation, Services::Turn(&services))
             .await?
         {

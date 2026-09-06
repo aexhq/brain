@@ -84,6 +84,7 @@ fn api(root: &std::path::Path) -> ServerApi {
         idempotency: IdempotencyStore::open(&root.join("requests/log"), Duration::from_secs(60))
             .unwrap(),
         loops: loops.clone(),
+        turns: Arc::new(crate::Turns::default()),
         environments: Arc::new(EnvironmentRegistry::new(
             Arc::new(crate::BrainEnvironment::new(
                 loops,
@@ -94,6 +95,7 @@ fn api(root: &std::path::Path) -> ServerApi {
             Arc::new(crate::HttpEnvironmentAdapter::new(
                 reqwest::Client::new(),
                 credentials.clone(),
+                0,
             )),
         )),
         credentials,
