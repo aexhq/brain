@@ -272,8 +272,6 @@ async fn a_worker_crash_does_not_replay_or_stop_its_sibling_and_shutdown_reaps_b
     }
     assert_eq!((succeeded, failed), (1, 1));
     pool.ready().await.unwrap();
-    let replacement = pid(0).await;
-    assert_ne!(replacement, first);
     assert_eq!(pid(1).await, second);
     let bridge = RecordingBridge {
         calls: Mutex::new(Vec::new()),
@@ -284,6 +282,9 @@ async fn a_worker_crash_does_not_replay_or_stop_its_sibling_and_shutdown_reaps_b
             .await
             .unwrap();
     }
+    let replacement = pid(0).await;
+    assert_ne!(replacement, first);
+    assert_eq!(pid(1).await, second);
     pool.shutdown().await;
     assert!(pool.ready().await.is_err());
     for process in [replacement, second] {
