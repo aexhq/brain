@@ -70,7 +70,7 @@ const admission = await call("GET", `/v1/agentloops/${admitted.result.id}`);
 assert.deepEqual(admission.result, admitted.result);
 
 const createBody = {
-  agentloop: { id: admitted.result.id, configuration: {}, environment: "brain" },
+  agentloop: { implementation: { type: "brain_component", entrypoint: "turn", id: admitted.result.id }, configuration: {}, environment: "brain" },
   model: { provider: "vercel-ai-gateway", name: "openai/gpt-5-mini", api_key: "release-smoke-key" },
   tools: [],
   environments: [{ name: "brain", driver: "brain" }],
