@@ -11,9 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::MAX_TURN_OUTPUT_BYTES;
 #[cfg(unix)]
-use crate::{MAX_PACKAGE_BYTES, MAX_TURN_INPUT_BYTES};
+use crate::LoopLimits;
 
 /// What the guest asks Brain to do. Every payload is JSON in the shapes the
 /// `brain-protocol` session contract types define.
@@ -192,14 +191,12 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de
 }
 
 #[cfg(unix)]
-pub(crate) fn max_request_bytes(request: &WorkerRequest) -> usize {
+pub(crate) fn max_request_bytes(request: &WorkerRequest, limits: &LoopLimits) -> usize {
     match request {
         WorkerRequest::Ping | WorkerRequest::Cancel => 1_024,
-        WorkerRequest::Admit { .. } => MAX_PACKAGE_BYTES * 2,
+        WorkerRequest::Admit { .. } => limits.max_request_frame_bytes(),
         WorkerRequest::Turn { .. }
         | WorkerRequest::Tool { .. }
-        | WorkerRequest::HostResult { .. } => MAX_TURN_INPUT_BYTES + 1_024,
+        | WorkerRequest::HostResult { .. } => limits.max_turn_frame_bytes(),
     }
 }
-
-pub(crate) const MAX_RESPONSE_FRAME_BYTES: usize = MAX_TURN_OUTPUT_BYTES + 1_024;

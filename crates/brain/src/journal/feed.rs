@@ -11,19 +11,24 @@ use crate::journal::SessionRecord;
 /// memory and not a promise of delivery: a subscriber further behind than this loses the
 /// records it missed and is told how many. Reading them back is what `after` is for — the
 /// journal is the record, and the stream is a notification that it moved.
-const LIVE_BACKLOG: usize = 1_024;
-
 /// Where every session's records and live model output go as they happen: one feed per
 /// process, with independent backlogs for each subscribed session.
 pub struct Feed {
     telemetry: TelemetryPublisher,
+    backlog: usize,
     live: Mutex<HashMap<SessionId, broadcast::Sender<(SessionId, LiveEvent)>>>,
 }
 
 impl Feed {
+    /// A feed under the default limits.
     pub fn new(telemetry: TelemetryPublisher) -> Self {
+        Self::with_limits(telemetry, &crate::Limits::default())
+    }
+
+    pub fn with_limits(telemetry: TelemetryPublisher, limits: &crate::Limits) -> Self {
         Self {
             telemetry,
+            backlog: limits.max_live_backlog.max(1),
             live: Mutex::new(HashMap::new()),
         }
     }
@@ -37,7 +42,7 @@ impl Feed {
         let mut live = self.live.lock().expect("live feed poisoned");
         live.retain(|_, sender| sender.receiver_count() > 0);
         live.entry(session_id.clone())
-            .or_insert_with(|| broadcast::Sender::new(LIVE_BACKLOG))
+            .or_insert_with(|| broadcast::Sender::new(self.backlog))
             .subscribe()
     }
 
@@ -86,7 +91,7 @@ mod tests {
             data: serde_json::json!({}),
         });
         feed.send((quiet.clone(), event.clone()));
-        for _ in 0..LIVE_BACKLOG * 2 {
+        for _ in 0..crate::Limits::default().max_live_backlog * 2 {
             feed.send((noisy.clone(), event.clone()));
         }
         assert_eq!(receiver.try_recv().unwrap().0, quiet);

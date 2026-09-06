@@ -1,4 +1,4 @@
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc};
 
 use brain_protocol::{AgentloopId, ToolId, TurnError, TurnInput, TurnOutput, codes};
 use http_body_util::BodyExt as _;
@@ -11,7 +11,7 @@ use wasmtime_wasi_http::{
     WasiHttpView,
 };
 
-use crate::{Access, HostCall, LoopLimits, NativeEnvironment};
+use crate::{Access, HostCall, LoopLimits, NativeEnvironment, limits::ceiling};
 
 /// A long-running invocation yields to Tokio at this interval while retaining its fixed
 /// total fuel budget.
@@ -82,7 +82,7 @@ impl AdmissionEngine {
     }
 
     pub fn admit(&self, package_bytes: &[u8]) -> Result<AdmittedAgentloop, String> {
-        if package_bytes.len() > self.limits.package_bytes {
+        if package_bytes.len() > ceiling(self.limits.max_package_bytes) {
             return Err("Agentloop package exceeds the configured admission limit".into());
         }
         let actual = AgentloopId::new(hex_digest(package_bytes));
@@ -121,7 +121,7 @@ impl AdmissionEngine {
     }
 
     pub fn admit_tool(&self, component_bytes: &[u8]) -> Result<AdmittedTool, String> {
-        if component_bytes.len() > self.limits.package_bytes {
+        if component_bytes.len() > ceiling(self.limits.max_package_bytes) {
             return Err("Tool Component exceeds the configured admission limit".into());
         }
         let digest = ToolId::new(hex_digest(component_bytes));
@@ -178,7 +178,7 @@ pub struct HostState {
 
 impl HostState {
     fn new(
-        limits: StoreBudget,
+        limits: &LoopLimits,
         bridge: Arc<dyn GuestHost>,
         environment: NativeEnvironment,
     ) -> Result<Self, TurnError> {
@@ -209,13 +209,14 @@ impl HostState {
         let mut http = WasiHttpCtx::new();
         http.set_field_size_limit(64 * 1024);
         Ok(Self {
-            limits,
+            limits: store_budget(limits),
             bridge: Some(bridge),
             table: ResourceTable::new(),
             wasi: wasi.build(),
             http,
             network: NetworkHooks {
                 allow: environment.network_allow,
+                limits: limits.clone(),
             },
             _scratch: scratch,
             _secrets: secrets,
@@ -254,6 +255,7 @@ impl WasiHttpView for HostState {
 
 struct NetworkHooks {
     allow: Vec<String>,
+    limits: LoopLimits,
 }
 
 impl WasiHttpHooks for NetworkHooks {
@@ -274,13 +276,14 @@ impl WasiHttpHooks for NetworkHooks {
             > + Send,
     > {
         let allowed = network_allowed(&self.allow, request.uri());
+        let limits = self.limits.clone();
         Box::new(async move {
             if !allowed {
                 return Err(HttpError::HttpRequestDenied);
             }
             let (response, io) = wasmtime_wasi_http::default_send_request(
                 request,
-                Some(bounded_http_options(options)),
+                Some(bounded_http_options(options, &limits)),
             )
             .await?;
             Ok((
@@ -309,13 +312,15 @@ fn network_allowed(allow: &[String], uri: &http::Uri) -> bool {
         })
 }
 
-fn bounded_http_options(options: Option<RequestOptions>) -> RequestOptions {
-    const MAX: Duration = Duration::from_secs(120);
+fn bounded_http_options(options: Option<RequestOptions>, limits: &LoopLimits) -> RequestOptions {
     let options = options.unwrap_or_default();
+    let Some(max) = limits.max_native_http() else {
+        return options;
+    };
     RequestOptions {
-        connect_timeout: Some(options.connect_timeout.unwrap_or(MAX).min(MAX)),
-        first_byte_timeout: Some(options.first_byte_timeout.unwrap_or(MAX).min(MAX)),
-        between_bytes_timeout: Some(options.between_bytes_timeout.unwrap_or(MAX).min(MAX)),
+        connect_timeout: Some(options.connect_timeout.unwrap_or(max).min(max)),
+        first_byte_timeout: Some(options.first_byte_timeout.unwrap_or(max).min(max)),
+        between_bytes_timeout: Some(options.between_bytes_timeout.unwrap_or(max).min(max)),
     }
 }
 
@@ -391,12 +396,9 @@ fn wit_error(error: TurnError) -> wit::TurnError {
     }
 }
 
-/// Core instances one guest may hold: its own modules plus the shims wasmtime builds
-/// for its imports.
-const MAX_CORE_INSTANCES: usize = 8;
-
 struct StoreBudget {
     limit: usize,
+    instances: usize,
     memory: usize,
     memory_growth: usize,
     elements: usize,
@@ -404,9 +406,10 @@ struct StoreBudget {
 }
 
 impl StoreBudget {
-    fn new(limit: usize) -> Self {
+    fn new(limit: usize, instances: usize) -> Self {
         Self {
             limit,
+            instances,
             memory: 0,
             memory_growth: 0,
             elements: 0,
@@ -463,13 +466,13 @@ impl ResourceLimiter for StoreBudget {
     }
 
     fn instances(&self) -> usize {
-        MAX_CORE_INSTANCES
+        self.instances
     }
     fn memories(&self) -> usize {
-        MAX_CORE_INSTANCES
+        self.instances
     }
     fn tables(&self) -> usize {
-        MAX_CORE_INSTANCES
+        self.instances
     }
 }
 
@@ -484,8 +487,7 @@ impl AdmittedAgentloop {
         input: TurnInput,
         bridge: Arc<dyn GuestHost>,
     ) -> Result<TurnOutput, TurnError> {
-        let store_limits = StoreBudget::new(limits.linear_memory_bytes);
-        let state = HostState::new(store_limits, bridge, environment)?;
+        let state = HostState::new(limits, bridge, environment)?;
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limits);
         configure_fuel(&mut store, limits)?;
@@ -525,8 +527,7 @@ impl AdmittedTool {
         input: NativeToolInput,
         bridge: Arc<dyn GuestHost>,
     ) -> Result<serde_json::Value, TurnError> {
-        let store_limits = StoreBudget::new(limits.linear_memory_bytes);
-        let state = HostState::new(store_limits, bridge, environment)?;
+        let state = HostState::new(limits, bridge, environment)?;
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limits);
         configure_fuel(&mut store, limits)?;
@@ -553,10 +554,22 @@ impl AdmittedTool {
 const COMPUTE_BUDGET_EXCEEDED: &str = "native invocation exceeded its compute budget";
 
 fn configure_fuel(store: &mut Store<HostState>, limits: &LoopLimits) -> Result<(), TurnError> {
-    store.set_fuel(limits.fuel).map_err(host_failure)?;
+    let fuel = if limits.max_fuel == 0 {
+        u64::MAX
+    } else {
+        limits.max_fuel
+    };
+    store.set_fuel(fuel).map_err(host_failure)?;
     store
-        .fuel_async_yield_interval(Some(FUEL_YIELD_INTERVAL.min(limits.fuel).max(1)))
+        .fuel_async_yield_interval(Some(FUEL_YIELD_INTERVAL.min(fuel).max(1)))
         .map_err(host_failure)
+}
+
+fn store_budget(limits: &LoopLimits) -> StoreBudget {
+    StoreBudget::new(
+        ceiling(limits.max_linear_memory_bytes),
+        ceiling(limits.max_core_instances),
+    )
 }
 
 /// A turn that failed on this side of the guest: a trap, a budget, an output the
@@ -620,12 +633,6 @@ fn from_wit_output(output: wit::TurnOutput) -> Result<TurnOutput, String> {
 }
 
 fn validate_output(output: &TurnOutput) -> Result<(), String> {
-    if output.transcript.len() > brain_protocol::MAX_TRANSCRIPT_ITEMS {
-        return Err(format!(
-            "Agentloop transcript exceeds {} items",
-            brain_protocol::MAX_TRANSCRIPT_ITEMS
-        ));
-    }
     if output.kv.keys().any(|key| !valid_identifier(key)) {
         return Err("Agentloop kv keys must be identifiers".into());
     }
@@ -669,14 +676,14 @@ mod tests {
     #[test]
     fn memory_budget_is_aggregate_across_memories_and_failed_growth_releases_budget() {
         let engine = wasmtime::Engine::default();
-        let mut store = Store::new(&engine, StoreBudget::new(2 * 65536));
+        let mut store = Store::new(&engine, StoreBudget::new(2 * 65536, 8));
         store.limiter(|budget| budget);
         let first = wasmtime::Memory::new(&mut store, wasmtime::MemoryType::new(1, None)).unwrap();
         let _second =
             wasmtime::Memory::new(&mut store, wasmtime::MemoryType::new(1, None)).unwrap();
         assert!(first.grow(&mut store, 1).is_err());
         assert!(wasmtime::Memory::new(&mut store, wasmtime::MemoryType::new(1, None)).is_err());
-        let mut budget = StoreBudget::new(65536);
+        let mut budget = StoreBudget::new(65536, 8);
         assert!(budget.memory_growing(0, 65536, None).unwrap());
         budget
             .memory_grow_failed(wasmtime::Error::msg("allocation failed"))
@@ -761,7 +768,7 @@ mod tests {
     #[tokio::test]
     async fn a_guest_that_never_returns_is_trapped_within_its_budget() {
         let limits = LoopLimits::default();
-        let fuel = limits.fuel;
+        let fuel = limits.max_fuel;
         let admission = AdmissionEngine::new(limits, Vec::new()).unwrap();
         let engine = admission.engine();
 
@@ -802,7 +809,7 @@ mod tests {
         let admission = AdmissionEngine::new(LoopLimits::default(), Vec::new()).unwrap();
         let engine = admission.engine();
         let state = HostState::new(
-            StoreBudget::new(128 * 1024 * 1024),
+            &LoopLimits::default(),
             Arc::new(SlowHost),
             NativeEnvironment::default(),
         )
@@ -811,7 +818,7 @@ mod tests {
         configure_fuel(
             &mut store,
             &LoopLimits {
-                fuel: TEST_FUEL,
+                max_fuel: TEST_FUEL,
                 ..LoopLimits::default()
             },
         )

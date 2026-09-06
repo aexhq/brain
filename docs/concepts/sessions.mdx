@@ -29,8 +29,8 @@ Before the Agentloop observes the answer, Brain commits `*_ended` or `*_failed` 
 started sequence. If a remote result is uncertain, the failure or Tool outcome says `unknown`; an
 unknown effect is not replayed onto another target.
 
-Extension Events use the same commit path. A turn may call `ctx.emit` at most 128 times and may
-emit at most 1 MiB across the serialized Event kinds and payloads.
+Extension Events use the same commit path. A turn may emit at most `BRAIN_MAX_EMITTED_BYTES`
+across the serialized Event kinds and payloads, 1 MiB unless the deployment sets otherwise.
 Public system codes and private journal record names are reserved; extensions cannot emit them.
 
 This makes `{session_id, sequence}` the stable name of an operation throughout the journal and its
@@ -54,10 +54,12 @@ A turn starts when a client sends a message and ends when the Agentloop returns 
 the activation the loop may call Brain's model, Tool dispatch, event emission, and telemetry
 services in any order.
 
-Two server limits bound a turn:
+Three deployment limits bound a turn, each with a default the server ships and zero meaning no
+bound; see [Configuration](/docs/reference/configuration) for the rest:
 
-- `BRAIN_MAX_MODEL_CALLS`, default 128, limits model calls per turn.
-- `BRAIN_MAX_TURN_SECS`, default 1800, limits wall time; zero disables the limit.
+- `BRAIN_MAX_MODEL_CALLS` limits model calls per turn.
+- `BRAIN_MAX_TURN_SECS` limits wall time.
+- `BRAIN_MAX_TOOL_SECS` is the deadline handed to every Tool call.
 
 The wall deadline initiates cancellation. Brain records outstanding effect outcomes and waits for
 bounded executor cancellation before closing the turn; this cleanup can extend the response time.

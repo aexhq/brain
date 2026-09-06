@@ -406,7 +406,7 @@ mod tests {
             {\"index\":1,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"i\\\":1}\"}}\
             ]},\"finish_reason\":null}]}\n\n\
             data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n";
-        let mut accumulator = Accumulator::new();
+        let mut accumulator = Accumulator::new(&crate::Limits::default());
         for event in decode_stream(raw.as_bytes()).unwrap() {
             accumulator.push(event).unwrap();
         }
@@ -480,7 +480,7 @@ mod tests {
             "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":5}}\n\n",
             "data: [DONE]\n\n",
         );
-        let mut accumulator = Accumulator::new();
+        let mut accumulator = Accumulator::new(&crate::Limits::default());
         for event in decode_stream(raw.as_bytes()).unwrap() {
             accumulator.push(event).unwrap();
         }
@@ -499,7 +499,7 @@ mod tests {
             "data: {\"choices\":[{\"delta\":{\"refusal\":\"I cannot help with that.\"},\"finish_reason\":null}]}\n\n",
             "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
         );
-        let mut accumulator = Accumulator::new();
+        let mut accumulator = Accumulator::new(&crate::Limits::default());
         for event in decode_stream(raw.as_bytes()).unwrap() {
             accumulator.push(event).unwrap();
         }

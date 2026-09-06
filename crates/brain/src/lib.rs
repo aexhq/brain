@@ -4,6 +4,7 @@
 pub mod agentloop;
 pub mod error;
 pub mod journal;
+pub mod limits;
 pub mod model;
 pub mod session;
 pub mod tool;
@@ -14,10 +15,10 @@ pub use journal::{
     AppendRecord, CommitHandle, Feed, Folded, JournalEntry, LocalSessionStore, SessionRecord,
     SessionStore, SessionUpdate, Writer, event_page,
 };
+pub use limits::Limits;
 pub use model::ModelExecutor;
 pub use session::{
-    CreatingSession, DEFAULT_MAX_MODEL_CALLS_PER_TURN, DEFAULT_MAX_TURN_MS,
-    DEFAULT_TOOL_DEADLINE_MS, LAST_ACTIVATION_KEY, Session, SessionRuntime, TurnServices,
-    random_id, session_config,
+    CreatingSession, LAST_ACTIVATION_KEY, Session, SessionRuntime, TurnServices, random_id,
+    session_config,
 };
 pub use tool::{ToolExecutor, ToolServices};

@@ -12,26 +12,29 @@ use brain_protocol::{
 use super::{EnvironmentAdapter, Services};
 use crate::CredentialStore;
 
-const MAX_ENVIRONMENT_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
-
 pub struct HttpEnvironmentAdapter {
     client: reqwest::Client,
     credentials: Arc<dyn CredentialStore>,
     /// How long a turn may run before the session cancels it: the one operation that
-    /// outlives the client's ordinary request timeout. Zero means no bound.
-    max_turn_ms: u64,
+    /// outlives the client's ordinary request timeout. `None` means no bound.
+    max_turn: Option<Duration>,
+    max_response_bytes: usize,
 }
 
 impl HttpEnvironmentAdapter {
     pub fn new(
         client: reqwest::Client,
         credentials: Arc<dyn CredentialStore>,
-        max_turn_ms: u64,
+        limits: &brain::Limits,
+        server_limits: &crate::ServerLimits,
     ) -> Self {
         Self {
             client,
             credentials,
-            max_turn_ms,
+            max_turn: limits.max_turn(),
+            max_response_bytes: crate::limits::ceiling(
+                server_limits.max_environment_response_bytes,
+            ),
         }
     }
 }
@@ -100,11 +103,10 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
             _ => None,
         };
         if turn.is_some() {
-            request = request.timeout(if self.max_turn_ms == 0 {
-                Duration::from_secs(10 * 365 * 24 * 60 * 60)
-            } else {
-                Duration::from_millis(self.max_turn_ms)
-            });
+            request = request.timeout(
+                self.max_turn
+                    .unwrap_or(Duration::from_secs(10 * 365 * 24 * 60 * 60)),
+            );
         }
         let sent = request.send();
         let cancelled = async {
@@ -126,11 +128,12 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
         let status = response.status();
         if response
             .content_length()
-            .is_some_and(|length| length > MAX_ENVIRONMENT_RESPONSE_BYTES as u64)
+            .is_some_and(|length| length > self.max_response_bytes as u64)
         {
-            return Err(brain::Error::Ambiguous(
-                "Environment response exceeds 2 MiB".into(),
-            ));
+            return Err(brain::Error::Ambiguous(format!(
+                "Environment response exceeds {} bytes",
+                self.max_response_bytes
+            )));
         }
         let mut body = Vec::new();
         while let Some(chunk) = response
@@ -138,10 +141,11 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
             .await
             .map_err(|error| brain::Error::Ambiguous(error.to_string()))?
         {
-            if chunk.len() > MAX_ENVIRONMENT_RESPONSE_BYTES - body.len() {
-                return Err(brain::Error::Ambiguous(
-                    "Environment response exceeds 2 MiB".into(),
-                ));
+            if chunk.len() > self.max_response_bytes - body.len() {
+                return Err(brain::Error::Ambiguous(format!(
+                    "Environment response exceeds {} bytes",
+                    self.max_response_bytes
+                )));
             }
             body.extend_from_slice(&chunk);
         }
@@ -197,7 +201,7 @@ mod tests {
                 .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
                 .await
                 .unwrap();
-            let body = vec![b'x'; MAX_ENVIRONMENT_RESPONSE_BYTES + 1];
+            let body = vec![b'x'; 1024 + 1];
             socket
                 .write_all(format!("{:x}\r\n", body.len()).as_bytes())
                 .await
@@ -223,7 +227,18 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let credentials =
             Arc::new(crate::metadata::ServerMetadata::open(directory.path()).unwrap());
-        let adapter = HttpEnvironmentAdapter::new(reqwest::Client::new(), credentials, 0);
+        let adapter = HttpEnvironmentAdapter::new(
+            reqwest::Client::new(),
+            credentials,
+            &brain::Limits {
+                max_turn_secs: 0,
+                ..Default::default()
+            },
+            &crate::ServerLimits {
+                max_environment_response_bytes: 1024,
+                ..Default::default()
+            },
+        );
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(3),
             adapter.execute(&environment, &operation, Services::None),
@@ -231,7 +246,7 @@ mod tests {
         .await;
         server.abort();
         assert!(
-            matches!(result.unwrap(), Err(brain::Error::Ambiguous(message)) if message.contains("exceeds 2 MiB"))
+            matches!(result.unwrap(), Err(brain::Error::Ambiguous(message)) if message.contains("exceeds 1024 bytes"))
         );
     }
 }

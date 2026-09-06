@@ -46,8 +46,8 @@ The MVP keeps Tool and Agentloop placements explicit and fixed at session creati
 - [x] Per-session live subscriptions, independent of Agentloop activation
 - [ ] Post-MVP configurable resource admission, memory and compiled-code cache budgets, and
   fair scheduling for deployments running mutually untrusted extensions
-- [ ] Post-MVP configurable kv bounds per Agentloop, key count and serialized bytes, set by the
-  deployment that knows its machine; Brain sets no fixed limit
+- [x] Every limit a deployment default, injected at server start and overridable by
+  environment variable ([ADR-043](references/adrs/2026-09-06-02-deployment-limits.md))
 - [ ] Optional worker isolation integrations such as gVisor or MicroVMs for deployments needing
   an additional boundary around Wasm execution
 - [ ] Multimodal input, images and files on `send`

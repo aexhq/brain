@@ -37,8 +37,8 @@ impl Runtime {
     pub fn open(
         data_dir: &Path,
         telemetry: brain_telemetry::TelemetryPublisher,
-        max_model_calls_per_turn: usize,
-        tool_deadline_ms: u64,
+        max_model_calls: usize,
+        max_tool_secs: u64,
         loop_executor: Arc<dyn LoopExecutor>,
         model_executor: Arc<dyn ModelExecutor>,
         tool_executor: Arc<dyn ToolExecutor>,
@@ -52,9 +52,12 @@ impl Runtime {
                 .map(|store| (store.session_id().clone(), store))
                 .collect();
         let config = Arc::new(SessionRuntime {
-            max_model_calls_per_turn,
-            max_turn_ms: 0,
-            tool_deadline_ms,
+            limits: brain::Limits {
+                max_model_calls,
+                max_turn_secs: 0,
+                max_tool_secs,
+                ..Default::default()
+            },
             loop_executor,
             model_executor,
             tool_executor,

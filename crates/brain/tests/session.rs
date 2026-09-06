@@ -134,7 +134,7 @@ fn runtime(
         data_dir,
         publisher,
         8,
-        brain::DEFAULT_TOOL_DEADLINE_MS,
+        120,
         loop_executor,
         model_executor,
         tool_executor,
@@ -145,14 +145,14 @@ fn runtime_with_deadline(
     data_dir: &std::path::Path,
     loop_executor: Arc<dyn brain::LoopExecutor>,
     tool_executor: Arc<dyn ToolExecutor>,
-    tool_deadline_ms: u64,
+    max_tool_secs: u64,
 ) -> Runtime {
     let (publisher, _worker) = telemetry_channel();
     Runtime::open(
         data_dir,
         publisher,
         8,
-        tool_deadline_ms,
+        max_tool_secs,
         loop_executor,
         Arc::new(NoModels),
         tool_executor,
@@ -314,12 +314,7 @@ async fn cancel_forwards_inflight_tool_cancellation_to_the_environment_port() {
         transcript.push(user(&format!("{} results", results.len())));
         done(transcript)
     });
-    let runtime = runtime_with_deadline(
-        &data_dir,
-        loop_executor,
-        tools.clone(),
-        brain::DEFAULT_TOOL_DEADLINE_MS,
-    );
+    let runtime = runtime_with_deadline(&data_dir, loop_executor, tools.clone(), 120);
     let handle = runtime.create(&tool_config("slow", vec![]), &[]).unwrap();
     let turning = {
         let handle = handle.clone();
@@ -375,7 +370,10 @@ async fn wall_deadline_keeps_completed_tool_results_and_records_unknown_cancella
         done(input.transcript)
     });
     let mut runtime = runtime(&data_dir, executor, Arc::new(NoModels), Arc::new(Tools));
-    Arc::get_mut(&mut runtime.config).unwrap().max_turn_ms = 1500;
+    Arc::get_mut(&mut runtime.config)
+        .unwrap()
+        .limits
+        .max_turn_secs = 2;
     let session = runtime.create(&tool_config("lookup", vec![]), &[]).unwrap();
     let turning = tokio::spawn({
         let session = session.clone();
@@ -652,7 +650,7 @@ async fn a_tool_call_record_names_the_tool_and_nothing_else_about_it() {
             .await?;
         done(input.transcript)
     });
-    let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 5_000);
+    let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 5);
     let handle = runtime
         .create(&tool_config("bash", vec!["pkg:apt/ffmpeg"]), &[])
         .unwrap();
@@ -725,7 +723,7 @@ async fn invoke_outcomes_map_onto_tool_results() {
                 }
             })
         };
-        let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 5_000);
+        let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 5);
         let handle = runtime.create(&tool_config("tool", vec![]), &[]).unwrap();
         handle
             .message(MessageRequest { input: "go".into() })
@@ -773,7 +771,7 @@ async fn an_overdue_invoke_is_cancelled_and_recorded_as_unknown() {
             }
         })
     };
-    let runtime = runtime_with_deadline(&data_dir, loop_executor, tools.clone(), 200);
+    let runtime = runtime_with_deadline(&data_dir, loop_executor, tools.clone(), 1);
     let handle = runtime.create(&tool_config("slow", vec![]), &[]).unwrap();
     let started = std::time::Instant::now();
     handle
@@ -820,7 +818,7 @@ async fn a_tool_in_a_host_env_uses_the_configured_executor() {
         entered: tokio::sync::Notify::new(),
         cancelled: Mutex::new(Vec::new()),
     });
-    let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 5_000);
+    let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 5);
     let handle = runtime.create(&host_tool_config("pick_file"), &[]).unwrap();
     handle
         .message(MessageRequest { input: "go".into() })
@@ -857,7 +855,7 @@ async fn an_unanswered_host_call_becomes_unknown_and_journals_the_cancellation()
         entered: tokio::sync::Notify::new(),
         cancelled: Mutex::new(Vec::new()),
     });
-    let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 200);
+    let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 1);
     let handle = runtime.create(&host_tool_config("pick_file"), &[]).unwrap();
     handle
         .message(MessageRequest { input: "go".into() })

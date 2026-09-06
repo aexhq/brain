@@ -11,13 +11,13 @@ runtime every session shares, and starts each session with both:
 
 ```rust
 // One writer thread and one live feed for the whole process.
-let writer = brain::Writer::spawn();
-let feed = Arc::new(brain::Feed::new(telemetry.clone()));
+let writer = brain::Writer::spawn_with(&limits);
+let feed = Arc::new(brain::Feed::with_limits(telemetry.clone(), &limits));
 
+// Every limit has a default; a deployment overrides the fields it knows better.
+let limits = brain::Limits::default();
 let runtime = Arc::new(brain::SessionRuntime {
-    max_model_calls_per_turn: brain::DEFAULT_MAX_MODEL_CALLS_PER_TURN,
-    max_turn_ms: brain::DEFAULT_MAX_TURN_MS,
-    tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
+    limits: limits.clone(),
     loop_executor,
     model_executor,
     tool_executor,

@@ -8,7 +8,7 @@ mod supervisor;
 mod wire;
 
 pub use client::{TurnBridge, WorkerClient};
-pub use limits::LoopLimits;
+pub use limits::{LoopLimits, WorkerArgs};
 pub use runtime::{AdmissionEngine, AdmittedAgentloop, AdmittedTool, GuestHost, NativeToolInput};
 pub use service::WorkerService;
 pub use supervisor::{LoopError, WorkerPool};
@@ -16,17 +16,6 @@ pub use wire::{
     Access, ComponentKind, HostCall, NativeEnvironment, WorkerRequest, WorkerResponse, Workspace,
     network_covers,
 };
-
-pub const MAX_PACKAGE_BYTES: usize = 32 * 1024 * 1024;
-pub const MAX_TURN_INPUT_BYTES: usize = 32 * 1024 * 1024;
-pub const MAX_TURN_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
-pub const MAX_LINEAR_MEMORY_BYTES: usize = 128 * 1024 * 1024;
-
-/// Turns one worker runs at once by default.
-///
-/// A turn holds a fresh Wasm Store and instance for as long as it runs. Eight instances
-/// of the default 128 MiB ceiling bound guest linear memory to 1 GiB.
-pub const DEFAULT_CONCURRENT_TURNS: usize = 8;
 
 /// The interfaces a guest may import: the contract's own types and the host services.
 pub const RUNTIME_SHIM_IMPORTS: &[&str] =
@@ -64,14 +53,16 @@ pub const TOOL_IMPORTS: &[&str] = &["brain:tool/types@0.1.0", "brain:tool/host@0
 #[doc(hidden)]
 pub async fn worker_read<R: tokio::io::AsyncRead + Unpin>(
     reader: &mut R,
+    limits: &LoopLimits,
 ) -> Result<WorkerRequest, String> {
-    wire::read_frame(reader, MAX_PACKAGE_BYTES.max(MAX_TURN_INPUT_BYTES) + 1_024).await
+    wire::read_frame(reader, limits.max_request_frame_bytes()).await
 }
 
 #[doc(hidden)]
 pub async fn worker_write<W: tokio::io::AsyncWrite + Unpin>(
     writer: &mut W,
     response: &WorkerResponse,
+    limits: &LoopLimits,
 ) -> Result<(), String> {
-    wire::write_frame(writer, response, wire::MAX_RESPONSE_FRAME_BYTES).await
+    wire::write_frame(writer, response, limits.max_response_frame_bytes()).await
 }

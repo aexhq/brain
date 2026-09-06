@@ -20,11 +20,10 @@ use brain_protocol::{
 use utoipa::{OpenApi, openapi::HttpMethod};
 
 use crate::{
-    BrainApi, HttpError,
+    BrainApi, HttpError, HttpLimits,
     openapi::{Package, contract, operations},
 };
 
-pub(crate) const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
 
 /// The session API as one document. Every handler below is listed here and registered
@@ -67,18 +66,19 @@ struct EventsQuery {
     after: Option<u64>,
 }
 
-pub fn router<A: BrainApi>(api: A) -> Router {
-    build(api, None)
+pub fn router<A: BrainApi>(api: A, limits: &HttpLimits) -> Router {
+    build(api, None, limits)
 }
 
-pub fn router_with_bearer<A: BrainApi>(api: A, token: String) -> Router {
-    build(api, Some(token))
+pub fn router_with_bearer<A: BrainApi>(api: A, token: String, limits: &HttpLimits) -> Router {
+    build(api, Some(token), limits)
 }
 
-fn build<A: BrainApi>(api: A, token: Option<String>) -> Router {
+fn build<A: BrainApi>(api: A, token: Option<String>, limits: &HttpLimits) -> Router {
+    let body_limit = limits.body_limit();
     let expected = token.map(|token| sha256(token.as_bytes()));
     let mut routed = BTreeSet::new();
-    let mut protected = protected_routes(api.clone(), &mut routed);
+    let mut protected = protected_routes(api.clone(), &mut routed, body_limit);
     if let Some(expected) = expected {
         protected = protected.layer(middleware::from_fn(
             move |request: Request, next: Next| async move {
@@ -89,8 +89,8 @@ fn build<A: BrainApi>(api: A, token: Option<String>) -> Router {
             },
         ));
     }
-    let hosts = host_routes(api.clone(), &mut routed);
-    let turns = turn_routes(api.clone(), &mut routed);
+    let hosts = host_routes(api.clone(), &mut routed, body_limit);
+    let turns = turn_routes(api.clone(), &mut routed, body_limit);
     let health = health_routes(api, &mut routed);
     // The published document is rendered from `ApiDoc`; the router from the same
     // annotations, through `documented`. A handler in one and not the other would ship
@@ -139,7 +139,11 @@ where
     (path, on(filter, handler))
 }
 
-fn protected_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>) -> Router {
+fn protected_routes<A: BrainApi>(
+    api: A,
+    routed: &mut BTreeSet<String>,
+    body_limit: usize,
+) -> Router {
     let mut router = Router::new();
     for (path, method) in [
         documented::<__path_admit_agentloop, _, _, _>(routed, admit_agentloop::<A>),
@@ -160,13 +164,13 @@ fn protected_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>) -> Route
         router = router.route(&path, method);
     }
     router
-        .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
+        .layer(DefaultBodyLimit::max(body_limit))
         .with_state(api)
 }
 
 /// Host commands use the scoped token returned by registration rather than the API
 /// bearer, so these routes authenticate inside their handlers.
-fn host_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>) -> Router {
+fn host_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>, body_limit: usize) -> Router {
     let mut router = Router::new();
     for (path, method) in [
         documented::<__path_host_commands, _, _, _>(routed, host_commands::<A>),
@@ -176,13 +180,13 @@ fn host_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>) -> Router {
         router = router.route(&path, method);
     }
     router
-        .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
+        .layer(DefaultBodyLimit::max(body_limit))
         .with_state(api)
 }
 
 /// A turn's routes open with the token minted for that turn rather than the API
 /// bearer, so these authenticate inside their handlers, like the host routes.
-fn turn_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>) -> Router {
+fn turn_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>, body_limit: usize) -> Router {
     let mut router = Router::new();
     for (path, method) in [
         documented::<__path_turn_events, _, _, _>(routed, turn_events::<A>),
@@ -194,7 +198,7 @@ fn turn_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>) -> Router {
         router = router.route(&path, method);
     }
     router
-        .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
+        .layer(DefaultBodyLimit::max(body_limit))
         .with_state(api)
 }
 
@@ -363,10 +367,8 @@ async fn admit_agentloop<A: BrainApi>(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<AgentloopAdmission>, HttpError> {
-    if body.is_empty() || body.len() > MAX_REQUEST_BYTES {
-        return Err(invalid(
-            "Agentloop package must be between 1 byte and 32 MiB",
-        ));
+    if body.is_empty() {
+        return Err(invalid("Agentloop package must not be empty"));
     }
     Ok(Json(
         api.admit_agentloop(idempotency_key(&headers)?, body.to_vec())
@@ -391,8 +393,8 @@ async fn admit_tool<A: BrainApi>(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<ToolAdmission>, HttpError> {
-    if body.is_empty() || body.len() > MAX_REQUEST_BYTES {
-        return Err(invalid("Tool Component must be between 1 byte and 32 MiB"));
+    if body.is_empty() {
+        return Err(invalid("Tool Component must not be empty"));
     }
     Ok(Json(
         api.admit_tool(idempotency_key(&headers)?, body.to_vec())

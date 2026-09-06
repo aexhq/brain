@@ -2,13 +2,19 @@ use std::{net::SocketAddr, path::PathBuf};
 
 use clap::Parser;
 
+/// Everything the server reads from its command line and process environment. This is
+/// the one place Brain reads either: every limit below is a default the crate that
+/// enforces it ships, overridden here and injected once when the server composes.
 #[derive(Clone, Parser)]
 #[command(name = "brain", version, about = "A standalone Brain session server")]
 pub struct ServerConfig {
+    /// Address to bind.
     #[arg(long, env = "BRAIN_LISTEN", default_value = "127.0.0.1:8080")]
     pub listen: SocketAddr,
+    /// Where journals, admitted Components, and local state live.
     #[arg(long, env = "BRAIN_DATA_DIR", default_value = "brain-data")]
     pub data_dir: PathBuf,
+    /// Path to the loop worker executable.
     #[arg(long, env = "BRAIN_LOOP_WORKER", default_value = "brain-loop-worker")]
     pub loop_worker: PathBuf,
     /// Origins the brain env may grant a Component that needs them: exact, or
@@ -42,21 +48,26 @@ pub struct ServerConfig {
     /// supersedes a catalog provider of the same name.
     #[arg(long, env = "BRAIN_PROVIDERS_FILE")]
     pub providers_file: Option<PathBuf>,
+    /// Bearer token callers must present. Required when listening beyond loopback.
     #[arg(long, env = "BRAIN_API_TOKEN", hide_env_values = true)]
     pub api_token: Option<String>,
     /// Where an Environment on another machine reaches this server, for the turns it
     /// runs. Defaults to `http://{listen}`.
     #[arg(long, env = "BRAIN_PUBLIC_URL")]
     pub public_url: Option<String>,
-    /// Model calls one turn may make before Brain refuses the next.
-    #[arg(long, env = "BRAIN_MAX_MODEL_CALLS", default_value_t = 128)]
-    pub max_model_calls_per_turn: usize,
-    /// Seconds one turn may run before Brain cancels it. Zero means no bound.
-    #[arg(long, env = "BRAIN_MAX_TURN_SECS", default_value_t = 1800)]
-    pub max_turn_secs: u64,
     /// Seconds an idle session keeps its task and memory before it is suspended to disk
     /// and rebuilt on its next request. A session may set its own at create; zero means
     /// never.
     #[arg(long, env = "BRAIN_SESSION_IDLE_TTL_SECS")]
     pub session_idle_ttl_secs: Option<u64>,
+    #[command(flatten)]
+    pub limits: brain::Limits,
+    #[command(flatten)]
+    pub loop_limits: brain_loophost::LoopLimits,
+    #[command(flatten)]
+    pub telemetry_limits: brain_telemetry::TelemetryLimits,
+    #[command(flatten)]
+    pub http_limits: brain_http::HttpLimits,
+    #[command(flatten)]
+    pub server_limits: crate::ServerLimits,
 }

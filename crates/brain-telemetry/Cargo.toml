@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 brain-protocol = { workspace = true }
 async-trait = { workspace = true }
+clap = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

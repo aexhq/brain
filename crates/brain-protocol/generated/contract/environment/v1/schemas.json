@@ -609,7 +609,6 @@
       "description": "What the model may be told about a Tool.",
       "properties": {
         "description": {
-          "maxLength": 8192,
           "type": "string"
         },
         "input_schema": {
@@ -679,7 +678,6 @@
         },
         "system": {
           "description": "The system prompt the session was created with. Used on every model call unless\nthe loop sends its own.",
-          "maxLength": 131072,
           "type": "string"
         },
         "tools": {
@@ -687,7 +685,6 @@
           "items": {
             "$ref": "#/$defs/ToolDefinition"
           },
-          "maxItems": 128,
           "type": "array"
         },
         "transcript": {
@@ -695,7 +692,6 @@
           "items": {
             "$ref": "#/$defs/Message"
           },
-          "maxItems": 4096,
           "type": "array"
         }
       },
@@ -725,7 +721,6 @@
           "items": {
             "$ref": "#/$defs/Message"
           },
-          "maxItems": 4096,
           "type": "array"
         }
       },

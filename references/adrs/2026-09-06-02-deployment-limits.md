@@ -66,10 +66,12 @@ Rules that follow:
   Flags win over environment. Parse failures and out-of-range values fail startup.
 - **Zero means no bound.** `BRAIN_MAX_TURN_SECS=0` already means unbounded. The same reading
   applies to every ceiling, so a deployment that trusts its workload can switch a bound off
-  without inventing a large number. Trust-boundary limits keep a non-zero default.
-- **Derived numbers are derived.** The loophost's 120-second host-call ceiling and the
-  125-second worker backstop are the tool deadline plus slack. They are computed from the
-  injected tool deadline, not kept as separate constants that drift.
+  without inventing a large number. Trust-boundary limits keep a non-zero default. The three
+  queue capacities (live backlog, host command queue, telemetry queue) are preallocated
+  channels, not ceilings; they must be at least 1 and the server refuses to start otherwise.
+- **Derived numbers are derived.** The loophost's 125-second worker liveness bound is the
+  ceiling on a native Component's outbound HTTP request plus slack. It is computed from
+  that injected ceiling, not kept as a separate constant that drifts.
 - **Trust-boundary limits stay on.** The HTTP request size cap and the host registration cap
   face untrusted callers. They remain deployment limits with a non-zero default and are
   never deleted.
@@ -88,25 +90,26 @@ Deployment limits, to be exposed. Defaults are today's values unless marked.
 
 | Crate | Field | Today | Note |
 | --- | --- | --- | --- |
-| brain | `max_model_calls_per_turn` | 128 | exposed already |
+| brain | `max_model_calls` | 128 | exposed already |
 | brain | `max_turn_secs` | 1800 | exposed already |
-| brain | `tool_deadline_secs` | 120 | constant, not exposed |
-| brain | `max_emitted_bytes_per_turn` | 1 MiB | documented |
-| brain | `max_provider_assistant_bytes` | 192 KiB | too small for 64k-token outputs; default rises |
-| brain | `max_provider_delta_bytes` | 64 KiB | |
-| brain | `max_model_stream_bytes` / `max_sse_frame_bytes` / `max_error_bytes` | 32 MiB / 256 KiB / 16 KiB | |
-| brain | model HTTP timeout / connect timeout | 120 s / 10 s | |
-| brain | journal `max_queued_bytes` / `owner_queue_bytes` / `open_files` | 64 MiB / 8 MiB / 256 | `Writer::spawn` takes them |
-| brain | `live_backlog` | 1,024 records | `Feed::new` takes it |
-| brain-loophost | `package_bytes` / `turn_input_bytes` / `turn_output_bytes` | 32 MiB each | `LoopLimits` fields exist |
-| brain-loophost | `linear_memory_bytes` / `fuel` / `concurrent_turns_per_worker` | 128 MiB / 10^10 / 8 | `LoopLimits` fields exist |
-| brain-telemetry | `max_queue_records` / `max_queue_bytes` / `max_retry_age` | 4,096 / 8 MiB / 30 s | `telemetry_channel` takes them |
+| brain | `max_tool_secs` | 120 | was a constant |
+| brain | `max_emitted_bytes` | 1 MiB | documented |
+| brain | `max_model_output_bytes` | 192 KiB, now 4 MiB | was too small for 64k-token outputs |
+| brain | `max_model_delta_bytes` | 64 KiB | |
+| brain | `max_model_stream_bytes` / `max_model_frame_bytes` / `max_model_error_bytes` | 32 MiB / 256 KiB / 16 KiB | |
+| brain | `max_model_secs` / `max_model_connect_secs` | 120 / 10 | |
+| brain | `max_journal_queue_bytes` / `max_session_queue_bytes` / `max_journal_open_files` | 64 MiB / 8 MiB / 256 | `Writer::spawn_with` takes them |
+| brain | `max_live_backlog` | 1,024 records | `Feed::with_limits` takes it; at least 1 |
+| brain-loophost | `max_package_bytes` / `max_turn_input_bytes` / `max_turn_output_bytes` | 32 MiB each | `LoopLimits` |
+| brain-loophost | `max_linear_memory_bytes` / `max_fuel` / `max_concurrent_turns` / `max_core_instances` | 128 MiB / 10^10 / 8 / 8 | `LoopLimits` |
+| brain-loophost | `max_native_http_secs` | 120 | was a constant; the worker liveness bound derives from it |
+| brain-telemetry | `max_telemetry_records` / `max_telemetry_bytes` / `telemetry_retry_secs` | 4,096 / 8 MiB / 30 | `telemetry_channel_with` takes them; the two capacities at least 1 |
 | brain-http | `max_request_bytes` | 32 MiB | trust boundary; the 2 MiB session and message caps in `brain` collapse into this one |
-| brain-server | `max_environment_response_bytes` | 2 MiB | will bite the first Tool returning a file; default rises |
-| brain-server | environment HTTP timeout / connect timeout | 120 s / 5 s | |
-| brain-server | `max_hosts` / `host_command_capacity` / `unconnected_host_ttl_secs` | 4,096 / 128 / 60 | `max_hosts` is a trust boundary |
-| brain-server | `idempotency_retention_secs` | 86,400 | |
-| brain-server | `session_idle_ttl_secs` | none | exposed already |
+| brain-server | `max_environment_response_bytes` | 2 MiB, now 32 MiB | would have failed the first Tool returning a file |
+| brain-server | `max_environment_secs` / `max_environment_connect_secs` | 120 / 5 | |
+| brain-server | `max_hosts` / `max_host_commands` / `host_unconnected_secs` | 4,096 / 128 / 60 | `max_hosts` is a trust boundary; the command queue at least 1 |
+| brain-server | `request_retention_secs` | 86,400 | |
+| brain-server | `session_idle_ttl_secs` | none | exposed already; absent means release after each turn |
 
 Deleted:
 
@@ -151,25 +154,33 @@ configuration reference has no single place to be true from.
 
 ## Consequences
 
-`ServerConfig` grows by roughly twenty-five fields and the configuration reference by the same
-number of rows. Every row must exist in exactly one place, so the docs table is generated or
-checked from the clap definitions in `npm run gen` and the CI diff guard.
+Each limits struct is a clap `Args` with its `BRAIN_*` name, flag, default, and help on the
+field, and `ServerConfig` flattens the five of them. The library crates depend on clap for the
+derive but never call it; only the server parses. The configuration reference table is
+rendered from that clap definition by `cargo run -p brain-server --bin contract`, part of
+`npm run gen` and the CI diff guard, so a row cannot drift from the field it describes.
 
-`Writer::spawn`, `Feed::new`, and `telemetry_channel` take limits arguments; `LoopLimits`
-is constructed from config; the embed guide shows the structs being filled. Embedders who
-relied on constants exported from `brain` switch to the `Default` impls.
+`Writer::spawn_with`, `Feed::with_limits`, and `telemetry_channel_with` take limits; the
+zero-argument constructors remain and use the defaults. `LoopLimits` is constructed from
+config and handed to the worker on its command line. The embed guide shows the structs being
+filled. Embedders who relied on constants exported from `brain` switch to the `Default`
+impls. Turn and Tool bounds are whole seconds now, so a test that wants a sub-second bound
+sets one second.
 
 `MAX_TRANSCRIPT_ITEMS` leaves the JSON Schema and the generated SDK types, a pre-1.0 rewrite
 in place. A turn's transcript is bounded by turn input and output bytes instead.
 
 The two limits already failing real workloads, assistant output at 192 KiB and environment
-responses at 2 MiB, get larger defaults in the same change. Their new defaults are chosen
-from current model output ceilings and measured Tool responses, not from a round number, and
-the reasoning is written next to the `Default`.
+responses at 2 MiB, get larger defaults in the same change: 4 MiB covers a 64k-token answer
+several times over, and 32 MiB matches the request cap so a Tool can return what a caller
+can send. The reasoning is written next to each `Default`.
 
 The roadmap item added when the kv cap was deleted, configurable kv bounds, is subsumed:
 kv is bounded by turn output bytes and journal queue bytes, both deployment limits under this
 record. It is replaced by an entry pointing here.
+
+The supervisor and the worker no longer construct `LoopLimits::default()` independently. Before
+this record they agreed only by coincidence; now the worker parses what the supervisor rendered.
 
 Fair scheduling, per-tenant budgets, and admission policy for mutually untrusted extensions
 remain deferred under ADR-038. This record decides where a limit lives and who sets it, not

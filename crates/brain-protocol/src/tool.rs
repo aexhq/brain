@@ -24,7 +24,6 @@ pub struct ToolAdmission {
 pub struct ToolDefinition {
     #[schemars(schema_with = "crate::schema::identifier")]
     pub name: String,
-    #[schemars(length(max = 8192))]
     pub description: String,
     #[schemars(schema_with = "crate::schema::json_object")]
     pub input_schema: serde_json::Value,
@@ -41,7 +40,6 @@ pub struct ToolDefinition {
 pub struct Tool {
     #[schemars(schema_with = "crate::schema::identifier")]
     pub name: String,
-    #[schemars(length(max = 8192))]
     pub description: String,
     #[schemars(schema_with = "crate::schema::json_object")]
     pub input_schema: serde_json::Value,

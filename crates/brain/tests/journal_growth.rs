@@ -62,7 +62,7 @@ fn runtime(data_dir: &std::path::Path, calls: usize) -> Runtime {
         data_dir,
         publisher,
         calls.max(1),
-        brain::DEFAULT_TOOL_DEADLINE_MS,
+        120,
         growing_loop(calls),
         Arc::new(ScriptedModel),
         Arc::new(NoTools),
@@ -272,7 +272,7 @@ async fn a_rewritten_transcript_is_journalled_from_where_it_differs() {
         &data_dir,
         publisher,
         4,
-        brain::DEFAULT_TOOL_DEADLINE_MS,
+        120,
         scripted(|input, _services| async move {
             let mut transcript = input.transcript;
             if transcript.len() >= 3 {

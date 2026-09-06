@@ -363,7 +363,7 @@ mod tests {
             "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":7}}\n\n",
         );
-        let mut accumulator = Accumulator::new();
+        let mut accumulator = Accumulator::new(&crate::Limits::default());
         for event in decode_stream(raw.as_bytes()).unwrap() {
             accumulator.push(event).unwrap();
         }

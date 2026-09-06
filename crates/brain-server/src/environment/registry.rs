@@ -413,11 +413,15 @@ mod tests {
                 Default::default(),
                 root.path().join("native-workspaces"),
             )),
-            HostEnvironment::open(&root.path().join("hosts.log")).unwrap(),
+            HostEnvironment::open(&root.path().join("hosts.log"), &Default::default()).unwrap(),
             Arc::new(HttpEnvironmentAdapter::new(
                 reqwest::Client::new(),
                 metadata,
-                0,
+                &brain::Limits {
+                    max_turn_secs: 0,
+                    ..Default::default()
+                },
+                &Default::default(),
             )),
         );
         let environment = Environment {

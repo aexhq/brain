@@ -42,9 +42,6 @@ pub const LAST_ACTIVATION_KEY: &str = "brain.last_activation";
 /// the loop reads the feed itself.
 const EVENTS_PER_TURN: usize = 1_000;
 
-const MAX_EMITS_PER_TURN: usize = 128;
-const MAX_EMITTED_BYTES_PER_TURN: usize = 1024 * 1024;
-
 pub enum SessionCommand {
     Message {
         request: MessageRequest,
@@ -170,8 +167,8 @@ impl SessionActor {
             cursor: Mutex::new(Cursor {
                 through_sequence: self.row.through_sequence,
                 transcript: std::mem::take(&mut self.folded.transcript),
-                emitted: 0,
                 emitted_bytes: 0,
+                max_emitted_bytes: self.runtime.limits.max_emitted_bytes,
             }),
         });
         let agentloop_environment = self
@@ -189,15 +186,9 @@ impl SessionActor {
                 host.clone(),
             );
             tokio::pin!(running);
-            if self.runtime.max_turn_ms == 0 {
-                running.await
-            } else {
-                match tokio::time::timeout(
-                    Duration::from_millis(self.runtime.max_turn_ms),
-                    &mut running,
-                )
-                .await
-                {
+            match self.runtime.limits.max_turn() {
+                None => running.await,
+                Some(max_turn) => match tokio::time::timeout(max_turn, &mut running).await {
                     Ok(outcome) => outcome,
                     Err(_) => {
                         self.cancel_requested.store(true, Ordering::Release);
@@ -208,7 +199,7 @@ impl SessionActor {
                             "turn exceeded its wall-time budget".into(),
                         ))
                     }
-                }
+                },
             }
         };
         // Whatever the loop did, the host's cursor is the truth about what reached the
@@ -218,8 +209,8 @@ impl SessionActor {
             Cursor {
                 through_sequence: cursor.through_sequence,
                 transcript: std::mem::take(&mut cursor.transcript),
-                emitted: cursor.emitted,
                 emitted_bytes: cursor.emitted_bytes,
+                max_emitted_bytes: cursor.max_emitted_bytes,
             }
         };
         self.row.through_sequence = cursor.through_sequence;
@@ -263,25 +254,6 @@ impl SessionActor {
         output: TurnOutput,
         events_through: u64,
     ) -> Result<SessionSummary, Error> {
-        if output.transcript.len() > brain_protocol::MAX_TRANSCRIPT_ITEMS {
-            let failure = Failure::new(
-                codes::failure::INVALID_TRANSCRIPT,
-                format!(
-                    "Agentloop returned a transcript of {} items; the most is {}",
-                    output.transcript.len(),
-                    brain_protocol::MAX_TRANSCRIPT_ITEMS
-                ),
-            );
-            return self
-                .close_turn(vec![
-                    AppendRecord::new(
-                        codes::event::ACTIVATION_FAILED,
-                        failure_payload(None, &failure)?,
-                    ),
-                    AppendRecord::new(codes::event::TURN_FAILED, failure_payload(None, &failure)?),
-                ])
-                .await;
-        }
         let mut entries = Vec::new();
         if let Some(delta) = delta(&self.folded.transcript, &output.transcript) {
             entries.push(delta);
@@ -389,23 +361,19 @@ struct Cursor {
     through_sequence: u64,
     /// The transcript as last recorded, so the next delta is against it.
     transcript: Vec<Message>,
-    emitted: usize,
     emitted_bytes: usize,
+    max_emitted_bytes: usize,
 }
 
 impl Cursor {
     fn reserve_emit(&mut self, bytes: usize) -> Result<(), Error> {
-        if self.emitted >= MAX_EMITS_PER_TURN {
+        if self.emitted_bytes.saturating_add(bytes) > crate::limits::ceiling(self.max_emitted_bytes)
+        {
             return Err(Error::EmitLimit(format!(
-                "turn exceeded its limit of {MAX_EMITS_PER_TURN} emitted Events"
+                "turn exceeded its limit of {} emitted Event bytes",
+                self.max_emitted_bytes
             )));
         }
-        if self.emitted_bytes.saturating_add(bytes) > MAX_EMITTED_BYTES_PER_TURN {
-            return Err(Error::EmitLimit(format!(
-                "turn exceeded its limit of {MAX_EMITTED_BYTES_PER_TURN} emitted Event bytes"
-            )));
-        }
-        self.emitted += 1;
         self.emitted_bytes += bytes;
         Ok(())
     }
@@ -485,10 +453,10 @@ impl TurnServices for TurnHost {
     async fn model(&self, mut request: ModelRequest) -> Result<ModelResult, Error> {
         self.check_cancelled()?;
         let calls = self.model_calls.fetch_add(1, Ordering::AcqRel) + 1;
-        if calls > self.runtime.max_model_calls_per_turn {
+        if calls > crate::limits::ceiling(self.runtime.limits.max_model_calls) {
             return Err(Error::Budget(format!(
                 "turn exceeded its budget of {} model calls",
-                self.runtime.max_model_calls_per_turn
+                self.runtime.limits.max_model_calls
             )));
         }
         // What the loop left unsaid is what the session was created with.
@@ -507,22 +475,10 @@ impl TurnServices for TurnHost {
         if request.response_format.is_none() {
             request.response_format = self.config.response_format.clone();
         }
-        if request
-            .system
-            .as_ref()
-            .is_some_and(|system| system.len() > 131_072)
-        {
+        if request.messages.is_empty() {
             return Err(Error::InvalidState(
-                "model request system prompt exceeds 128 KiB".into(),
+                "model request must carry at least one message".into(),
             ));
-        }
-        if request.messages.is_empty()
-            || request.messages.len() > brain_protocol::MAX_TRANSCRIPT_ITEMS
-        {
-            return Err(Error::InvalidState(format!(
-                "model request must carry 1..={} messages",
-                brain_protocol::MAX_TRANSCRIPT_ITEMS
-            )));
         }
         let tools = self.offered_tools(&request)?;
         // The messages are the transcript as the loop wants the model to see it; the
@@ -610,11 +566,6 @@ impl TurnServices for TurnHost {
         if calls.is_empty() {
             return Ok(Vec::new());
         }
-        if calls.len() > 128 {
-            return Err(Error::InvalidState(
-                "a dispatch carries at most 128 Tool calls".into(),
-            ));
-        }
         let mut seen = HashSet::with_capacity(calls.len());
         for call in &calls {
             if !seen.insert(call.call_id.as_str()) {
@@ -651,7 +602,7 @@ impl TurnServices for TurnHost {
                     tool,
                     environment,
                     invocation,
-                    deadline_ms: self.runtime.tool_deadline_ms,
+                    deadline_ms: self.runtime.limits.tool_deadline_ms(),
                 };
                 // A reference, not a copy: the Tool and its Environment live once, in
                 // the configuration recorded at creation.
@@ -1020,21 +971,13 @@ mod tests {
     }
 
     #[test]
-    fn emitted_events_have_count_and_aggregate_byte_limits() {
+    fn emitted_events_have_an_aggregate_byte_limit() {
         let mut cursor = Cursor {
             through_sequence: 0,
             transcript: Vec::new(),
-            emitted: MAX_EMITS_PER_TURN - 1,
-            emitted_bytes: 0,
+            emitted_bytes: 1023,
+            max_emitted_bytes: 1024,
         };
-        cursor.reserve_emit(1).unwrap();
-        assert_eq!(
-            cursor.reserve_emit(1).unwrap_err().code(),
-            codes::failure::EMIT_LIMIT
-        );
-
-        cursor.emitted = 0;
-        cursor.emitted_bytes = MAX_EMITTED_BYTES_PER_TURN - 1;
         cursor.reserve_emit(1).unwrap();
         assert_eq!(
             cursor.reserve_emit(1).unwrap_err().code(),

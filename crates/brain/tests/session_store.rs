@@ -250,10 +250,7 @@ fn a_key_keeps_its_last_value() {
         ])
         .unwrap();
     let folded = store.fold().unwrap();
-    assert_eq!(
-        folded.kv["loop"],
-        serde_json::json!({"summary": "so far"})
-    );
+    assert_eq!(folded.kv["loop"], serde_json::json!({"summary": "so far"}));
     assert_eq!(folded.kv["tool"], serde_json::json!(7));
     drop(store);
     drop(writer);

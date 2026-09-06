@@ -21,9 +21,7 @@ use crate::{
 use actor::{SessionActor, SessionCommand, failure_of, failure_payload};
 
 pub use actor::LAST_ACTIVATION_KEY;
-pub use config::{
-    DEFAULT_MAX_MODEL_CALLS_PER_TURN, DEFAULT_MAX_TURN_MS, DEFAULT_TOOL_DEADLINE_MS, SessionRuntime,
-};
+pub use config::SessionRuntime;
 pub use services::TurnServices;
 
 /// One running session: a task that drives its turns, and this handle to it.
@@ -66,12 +64,6 @@ impl Session {
         transcript: &[Message],
     ) -> Result<CreatingSession, Error> {
         validate_session_contract(request)?;
-        if transcript.len() > brain_protocol::MAX_TRANSCRIPT_ITEMS {
-            return Err(Error::InvalidState(format!(
-                "a session may open with at most {} transcript items",
-                brain_protocol::MAX_TRANSCRIPT_ITEMS
-            )));
-        }
         // The creation record is the session's own genesis and comes first; a transcript
         // the caller carries forward is what happened before it, and follows.
         store.append_sync(
@@ -125,9 +117,6 @@ impl Session {
     pub fn validate_message(request: &MessageRequest) -> Result<(), Error> {
         if request.input.message.is_empty() {
             return Err(Error::InvalidState("message cannot be empty".into()));
-        }
-        if serde_json::to_vec(&request).map_err(json_error)?.len() > 2 * 1024 * 1024 {
-            return Err(Error::InvalidState("message request exceeds 2 MiB".into()));
         }
         Ok(())
     }
@@ -327,24 +316,17 @@ fn stopped() -> Error {
 }
 
 fn validate_session_contract(config: &SessionConfig) -> Result<(), Error> {
-    if serde_json::to_vec(config).map_err(json_error)?.len() > 2 * 1024 * 1024 {
-        return Err(Error::InvalidState("session request exceeds 2 MiB".into()));
-    }
     if !sha256_valid(config.agentloop.id.as_str())
         || !identifier_valid(&config.model.provider)
         || config.model.name.is_empty()
-        || config.model.name.len() > 256
-        || config.system.len() > 131_072
-        || config.tools.len() > 128
-        || config.environments.len() > 128
+        || config.model.name.chars().any(char::is_whitespace)
     {
         return Err(Error::InvalidState(
-            "session request violates a contract size or identity bound".into(),
+            "session request violates a contract identity rule".into(),
         ));
     }
     for tool in &config.tools {
         if !identifier_valid(&tool.name)
-            || tool.description.len() > 8_192
             || !tool.input_schema.is_object()
             || tool
                 .output_schema
@@ -581,79 +563,38 @@ mod tests {
     fn every_bound_rejects_a_configuration_that_breaches_it() {
         let cases: Vec<Breach> = vec![
             (
-                "configuration over 2 MiB",
-                |request| {
-                    request.agentloop.configuration =
-                        serde_json::json!("x".repeat(3 * 1024 * 1024));
-                },
-                "exceeds 2 MiB",
-            ),
-            (
                 "an Agentloop id of the wrong length",
                 |request| request.agentloop.id = AgentloopId::new("a".repeat(63)),
-                "size or identity bound",
+                "identity rule",
             ),
             (
                 "an Agentloop id that is not hex",
                 |request| request.agentloop.id = AgentloopId::new("g".repeat(64)),
-                "size or identity bound",
+                "identity rule",
             ),
             (
                 "an empty model provider",
                 |request| request.model.provider = String::new(),
-                "size or identity bound",
+                "identity rule",
             ),
             (
                 "a model provider holding a path traversal",
                 |request| request.model.provider = "gateway/../root".into(),
-                "size or identity bound",
+                "identity rule",
             ),
             (
                 "an empty model name",
                 |request| request.model.name = String::new(),
-                "size or identity bound",
+                "identity rule",
             ),
             (
-                "a model name over 256 bytes",
-                |request| request.model.name = "m".repeat(257),
-                "size or identity bound",
-            ),
-            (
-                "a system prompt over 128 KiB",
-                |request| request.system = "s".repeat(131_073),
-                "size or identity bound",
-            ),
-            (
-                "more than 128 Tools",
-                |request| {
-                    request.tools = (0..129)
-                        .map(|index| Tool {
-                            name: format!("tool{index}"),
-                            ..tool()
-                        })
-                        .collect();
-                },
-                "size or identity bound",
-            ),
-            (
-                "more than 128 Environments",
-                |request| {
-                    request.environments = (0..129)
-                        .map(|index| environment(&format!("env{index}"), Driver::Brain {}))
-                        .collect();
-                    request.tools[0].environment = EnvironmentName::new("env0");
-                    request.agentloop.environment = EnvironmentName::new("env0");
-                },
-                "size or identity bound",
+                "a model name holding whitespace",
+                |request| request.model.name = "gpt 5".into(),
+                "identity rule",
             ),
             (
                 "a Tool name that is not an identifier",
                 |request| request.tools[0].name = "../escape".into(),
-                "Tool definition violates",
-            ),
-            (
-                "a Tool description over 8 KiB",
-                |request| request.tools[0].description = "d".repeat(8_193),
                 "Tool definition violates",
             ),
             (

@@ -220,7 +220,7 @@ async fn saturated_parent_turns_can_all_invoke_native_tools() {
     }
     let directory = tempfile::tempdir().unwrap();
     let limits = LoopLimits::default();
-    let count = limits.concurrent_turns_per_worker;
+    let count = limits.max_concurrent_turns;
     let pool = Arc::new(WorkerPool::new(
         env!("CARGO_BIN_EXE_brain-loop-worker"),
         directory.path().join("run"),
@@ -478,14 +478,12 @@ async fn host_calls_queued_before_cancel_are_not_answered_after_cancel() {
         calls: Mutex::new(Vec::new()),
         cancelled: AtomicBool::new(true),
     };
-    let error = WorkerClient::new(socket)
+    let error = WorkerClient::new(socket, &LoopLimits::default())
         .turn(
             brain_protocol::AgentloopId::new("diagnostic"),
             NativeEnvironment::default(),
             input("hello"),
-            brain_loophost::MAX_TURN_INPUT_BYTES,
             &bridge,
-            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap_err();

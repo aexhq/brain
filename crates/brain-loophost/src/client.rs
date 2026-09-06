@@ -1,16 +1,13 @@
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use brain_protocol::{AgentloopId, ToolId, TurnError, TurnInput, TurnOutput};
 
 #[cfg(unix)]
-use crate::wire::{MAX_RESPONSE_FRAME_BYTES, max_request_bytes, read_frame, write_frame};
+use crate::wire::{max_request_bytes, read_frame, write_frame};
 use crate::{
-    ComponentKind, HostCall, LoopError, NativeEnvironment, NativeToolInput, WorkerRequest,
-    WorkerResponse,
+    ComponentKind, HostCall, LoopError, LoopLimits, NativeEnvironment, NativeToolInput,
+    WorkerRequest, WorkerResponse,
 };
 
 /// The server's side of a turn: what answers the guest's host calls, and whether the
@@ -24,12 +21,15 @@ pub trait TurnBridge: Send + Sync {
 #[derive(Clone, Debug)]
 pub struct WorkerClient {
     socket: PathBuf,
+    #[cfg_attr(not(unix), allow(dead_code))]
+    limits: LoopLimits,
 }
 
 impl WorkerClient {
-    pub fn new(socket: impl Into<PathBuf>) -> Self {
+    pub fn new(socket: impl Into<PathBuf>, limits: &LoopLimits) -> Self {
         Self {
             socket: socket.into(),
+            limits: limits.clone(),
         }
     }
     pub fn socket(&self) -> &Path {
@@ -78,8 +78,8 @@ impl WorkerClient {
         environment: NativeEnvironment,
         input: NativeToolInput,
         bridge: &dyn TurnBridge,
-        liveness: Duration,
     ) -> Result<serde_json::Value, LoopError> {
+        let liveness = self.limits.worker_liveness();
         let mut stream = tokio::net::UnixStream::connect(&self.socket)
             .await
             .map_err(|error| error.to_string())?;
@@ -92,14 +92,17 @@ impl WorkerClient {
                 configuration: input.configuration,
                 deadline_at_ms: input.deadline_at_ms,
             },
-            crate::MAX_TURN_INPUT_BYTES + 1_024,
+            self.limits.max_turn_frame_bytes(),
         )
         .await?;
         let (mut reader, mut writer) = stream.split();
         loop {
             let response = tokio::time::timeout(
                 liveness,
-                read_frame::<_, WorkerResponse>(&mut reader, MAX_RESPONSE_FRAME_BYTES),
+                read_frame::<_, WorkerResponse>(
+                    &mut reader,
+                    self.limits.max_response_frame_bytes(),
+                ),
             )
             .await
             .map_err(|_| LoopError::Failed("brain-loop-worker stopped answering".into()))??;
@@ -109,7 +112,7 @@ impl WorkerClient {
                     write_frame(
                         &mut writer,
                         &WorkerRequest::HostResult { id, result },
-                        MAX_RESPONSE_FRAME_BYTES,
+                        self.limits.max_response_frame_bytes(),
                     )
                     .await?;
                 }
@@ -130,25 +133,23 @@ impl WorkerClient {
         _environment: NativeEnvironment,
         _input: NativeToolInput,
         _bridge: &dyn TurnBridge,
-        _liveness: Duration,
     ) -> Result<serde_json::Value, LoopError> {
         Err("brain-loop-worker IPC requires Unix domain sockets".into())
     }
 
     /// Runs one turn on its own connection, answering the guest's host calls through
-    /// `bridge` as they arrive. `liveness` bounds how long the worker may go without a
-    /// frame while the guest is computing; a bridge call in flight is the server's own
-    /// time and is not counted.
+    /// `bridge` as they arrive. The worker liveness bound limits how long the worker may
+    /// go without a frame while the guest is computing; a bridge call in flight is the
+    /// server's own time and is not counted.
     #[cfg(unix)]
     pub async fn turn(
         &self,
         digest: AgentloopId,
         environment: NativeEnvironment,
         input: TurnInput,
-        max_input_bytes: usize,
         bridge: &dyn TurnBridge,
-        liveness: Duration,
     ) -> Result<TurnOutput, LoopError> {
+        let liveness = self.limits.worker_liveness();
         let mut stream = tokio::net::UnixStream::connect(&self.socket)
             .await
             .map_err(|error| error.to_string())?;
@@ -159,7 +160,7 @@ impl WorkerClient {
                 environment,
                 input: Box::new(input),
             },
-            max_input_bytes + 1_024,
+            self.limits.max_turn_frame_bytes(),
         )
         .await
         .map_err(|error| {
@@ -179,7 +180,10 @@ impl WorkerClient {
             // whatever bytes came next.
             let mut next = std::pin::pin!(tokio::time::timeout(
                 liveness,
-                read_frame::<_, WorkerResponse>(&mut reader, MAX_RESPONSE_FRAME_BYTES)
+                read_frame::<_, WorkerResponse>(
+                    &mut reader,
+                    self.limits.max_response_frame_bytes()
+                )
             ));
             let response = loop {
                 tokio::select! {
@@ -213,7 +217,7 @@ impl WorkerClient {
                     write_frame(
                         &mut writer,
                         &WorkerRequest::HostResult { id, result },
-                        MAX_RESPONSE_FRAME_BYTES,
+                        self.limits.max_response_frame_bytes(),
                     )
                     .await?;
                 }
@@ -235,21 +239,19 @@ impl WorkerClient {
         _digest: AgentloopId,
         _environment: NativeEnvironment,
         _input: TurnInput,
-        _max_input_bytes: usize,
         _bridge: &dyn TurnBridge,
-        _liveness: Duration,
     ) -> Result<TurnOutput, LoopError> {
         Err("brain-loop-worker IPC requires Unix domain sockets".into())
     }
 
     #[cfg(unix)]
     async fn call(&self, request: WorkerRequest) -> Result<WorkerResponse, String> {
-        let max = max_request_bytes(&request);
+        let max = max_request_bytes(&request, &self.limits);
         let mut stream = tokio::net::UnixStream::connect(&self.socket)
             .await
             .map_err(|error| error.to_string())?;
         write_frame(&mut stream, &request, max).await?;
-        read_frame(&mut stream, MAX_RESPONSE_FRAME_BYTES).await
+        read_frame(&mut stream, self.limits.max_response_frame_bytes()).await
     }
 
     #[cfg(not(unix))]

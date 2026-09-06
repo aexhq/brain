@@ -1,4 +1,4 @@
-use std::{net::IpAddr, sync::Arc, time::Duration};
+use std::{net::IpAddr, sync::Arc};
 
 use async_trait::async_trait;
 use brain_protocol::{ModelBinding, ModelRequest, ModelResult, ModelStreamEvent, ToolDefinition};
@@ -11,14 +11,10 @@ use crate::{
     model::{Accumulator, Dialect, MaxTokensField, anthropic, openai, sse::SseDecoder},
 };
 
-const MAX_ERROR_BYTES: usize = 16 * 1024;
-const MAX_STREAM_BYTES: usize = 32 * 1024 * 1024;
-const MAX_FRAME_BYTES: usize = 256 * 1024;
-
 pub struct RemoteModelConfig {
     pub base_url: String,
     pub api_key: String,
-    pub timeout: Duration,
+    pub limits: crate::Limits,
     pub dialect: Dialect,
     pub max_tokens_field: MaxTokensField,
 }
@@ -31,6 +27,7 @@ pub struct RemoteModelConfig {
 pub struct ModelTransport {
     client: reqwest::Client,
     base_url: String,
+    limits: crate::Limits,
 }
 
 pub struct RemoteModelClient {
@@ -69,18 +66,24 @@ pub fn validate_base_url(base_url: &str) -> Result<(), Error> {
 }
 
 impl ModelTransport {
-    pub fn new(base_url: &str, timeout: Duration) -> Result<Self, Error> {
+    pub fn new(base_url: &str, limits: &crate::Limits) -> Result<Self, Error> {
         validate_base_url(base_url)?;
-        let client = reqwest::Client::builder()
+        let mut client = reqwest::Client::builder()
             .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(timeout.min(Duration::from_secs(10)))
-            .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none());
+        if let Some(connect) = limits.max_model_connect() {
+            client = client.connect_timeout(connect);
+        }
+        if let Some(timeout) = limits.max_model() {
+            client = client.timeout(timeout);
+        }
+        let client = client
             .build()
             .map_err(|error| Error::Executor(error.to_string()))?;
         Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_owned(),
+            limits: limits.clone(),
         })
     }
 }
@@ -88,7 +91,7 @@ impl ModelTransport {
 impl RemoteModelClient {
     /// Builds a transport of its own. For a caller that makes one call, or a test.
     pub fn new(config: RemoteModelConfig) -> Result<Self, Error> {
-        let transport = ModelTransport::new(&config.base_url, config.timeout)?;
+        let transport = ModelTransport::new(&config.base_url, &config.limits)?;
         Self::bound(
             Arc::new(transport),
             config.api_key,
@@ -179,15 +182,17 @@ impl ModelExecutor for RemoteModelClient {
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.trim().parse::<u64>().ok())
                 .and_then(|seconds| seconds.checked_mul(1_000));
+            let max_error_bytes =
+                crate::limits::ceiling(self.transport.limits.max_model_error_bytes);
             let mut bytes = Vec::new();
             while let Some(chunk) = response
                 .chunk()
                 .await
                 .map_err(|error| Error::Ambiguous(error.to_string()))?
             {
-                let count = chunk.len().min(MAX_ERROR_BYTES - bytes.len());
+                let count = chunk.len().min(max_error_bytes - bytes.len());
                 bytes.extend_from_slice(&chunk[..count]);
-                if bytes.len() == MAX_ERROR_BYTES {
+                if bytes.len() == max_error_bytes {
                     break;
                 }
             }
@@ -197,16 +202,20 @@ impl ModelExecutor for RemoteModelClient {
                 retry_after_ms,
             });
         }
-        let mut decoder = SseDecoder::new(MAX_FRAME_BYTES);
+        let limits = &self.transport.limits;
+        let mut decoder = SseDecoder::new(crate::limits::ceiling(limits.max_model_frame_bytes));
         let mut stream = response.bytes_stream();
         let mut total = 0_usize;
-        let mut accumulator = Accumulator::new();
+        let mut accumulator = Accumulator::new(limits);
         while let Some(chunk) = stream.next().await {
             let chunk = chunk
                 .map_err(|error| Error::Ambiguous(format!("model stream interrupted: {error}")))?;
             total = total.saturating_add(chunk.len());
-            if total > MAX_STREAM_BYTES {
-                return Err(Error::Ambiguous("model stream exceeded 32 MiB".into()));
+            if total > crate::limits::ceiling(limits.max_model_stream_bytes) {
+                return Err(Error::Ambiguous(format!(
+                    "model stream exceeded {} bytes",
+                    limits.max_model_stream_bytes
+                )));
             }
             for data in decoder.feed(&chunk)? {
                 for event in self.decode(&data)? {
@@ -288,7 +297,10 @@ mod tests {
         let client = RemoteModelClient::new(RemoteModelConfig {
             base_url: format!("http://{address}"),
             api_key: "test-key".into(),
-            timeout: Duration::from_secs(2),
+            limits: crate::Limits {
+                max_model_secs: 2,
+                ..Default::default()
+            },
             dialect: Dialect::OpenAiChat,
             max_tokens_field: MaxTokensField::default(),
         })
@@ -373,7 +385,10 @@ mod tests {
         let client = RemoteModelClient::new(RemoteModelConfig {
             base_url: format!("http://{address}"),
             api_key: "sk-ant".into(),
-            timeout: Duration::from_secs(2),
+            limits: crate::Limits {
+                max_model_secs: 2,
+                ..Default::default()
+            },
             dialect: Dialect::AnthropicMessages,
             max_tokens_field: MaxTokensField::default(),
         })
@@ -431,7 +446,10 @@ mod tests {
         let client = RemoteModelClient::new(RemoteModelConfig {
             base_url: format!("http://{address}"),
             api_key: "test-key".into(),
-            timeout: Duration::from_secs(2),
+            limits: crate::Limits {
+                max_model_secs: 2,
+                ..Default::default()
+            },
             dialect: Dialect::OpenAiChat,
             max_tokens_field: MaxTokensField::default(),
         })
@@ -457,11 +475,12 @@ mod tests {
             }
         ));
 
+        let max_error_bytes = crate::Limits::default().max_model_error_bytes;
         let denied = Router::new().route(
             "/chat/completions",
-            post(|| async {
-                let chunks = futures_util::stream::once(async {
-                    Ok::<_, std::io::Error>(Bytes::from(vec![b'x'; MAX_ERROR_BYTES + 1]))
+            post(move || async move {
+                let chunks = futures_util::stream::once(async move {
+                    Ok::<_, std::io::Error>(Bytes::from(vec![b'x'; max_error_bytes + 1]))
                 })
                 .chain(futures_util::stream::pending());
                 (
@@ -474,7 +493,10 @@ mod tests {
         let client = RemoteModelClient::new(RemoteModelConfig {
             base_url: format!("http://{address}"),
             api_key: "test-key".into(),
-            timeout: Duration::from_secs(2),
+            limits: crate::Limits {
+                max_model_secs: 2,
+                ..Default::default()
+            },
             dialect: Dialect::OpenAiChat,
             max_tokens_field: MaxTokensField::default(),
         })
@@ -484,7 +506,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(&error, Error::ProviderStatus { status: 400, body, .. } if body.len() == MAX_ERROR_BYTES),
+            matches!(&error, Error::ProviderStatus { status: 400, body, .. } if body.len() == max_error_bytes),
             "a deterministic 4xx must surface as a typed status, got {error:?}"
         );
     }
@@ -504,7 +526,10 @@ mod tests {
         let client = RemoteModelClient::new(RemoteModelConfig {
             base_url: format!("http://{address}"),
             api_key: "test-key".into(),
-            timeout: Duration::from_secs(2),
+            limits: crate::Limits {
+                max_model_secs: 2,
+                ..Default::default()
+            },
             dialect: Dialect::OpenAiChat,
             max_tokens_field: MaxTokensField::default(),
         })

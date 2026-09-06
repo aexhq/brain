@@ -526,7 +526,7 @@ mod tests {
             thread::sleep(std::time::Duration::from_millis(5));
         }
         assert!(
-            peak <= writer::OWNER_QUEUE_BYTES + 2 * 1024 * 1024,
+            peak <= crate::Limits::default().max_session_queue_bytes + 2 * 1024 * 1024,
             "queue reached {peak} bytes with a stalled writer"
         );
         release.store(true, Ordering::Release);

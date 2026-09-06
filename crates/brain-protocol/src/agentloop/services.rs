@@ -24,7 +24,6 @@ pub struct TurnCallback {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TurnDispatchRequest {
-    #[schemars(length(max = 128))]
     pub calls: Vec<ToolInvocation>,
 }
 

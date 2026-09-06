@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use brain::{
@@ -110,11 +110,11 @@ impl ServerModelExecutor {
     pub fn new(
         credentials: Arc<dyn CredentialStore>,
         providers: &ProviderRegistry,
-        timeout: Duration,
+        limits: &brain::Limits,
     ) -> Result<Self, brain::Error> {
         let mut transports = HashMap::new();
         for def in providers.iter() {
-            match ModelTransport::new(&def.base_url, timeout) {
+            match ModelTransport::new(&def.base_url, limits) {
                 Ok(transport) => {
                     transports.insert(
                         def.name.clone(),
@@ -217,7 +217,7 @@ mod tests {
         let executor = ServerModelExecutor::new(
             store,
             &ProviderRegistry::default_set(),
-            Duration::from_secs(1),
+            &brain::Limits::default(),
         )
         .unwrap();
         for provider in ["vercel-ai-gateway", "openai", "anthropic", "deepseek"] {
@@ -289,7 +289,15 @@ mod tests {
                 },
             )
             .unwrap();
-        let executor = ServerModelExecutor::new(store, &registry, Duration::from_secs(2)).unwrap();
+        let executor = ServerModelExecutor::new(
+            store,
+            &registry,
+            &brain::Limits {
+                max_model_secs: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let result = executor
             .execute(
                 &session("ses_local"),

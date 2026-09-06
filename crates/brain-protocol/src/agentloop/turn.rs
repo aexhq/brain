@@ -8,9 +8,6 @@ use crate::{Event, Message, SessionId, ToolDefinition, UserInput};
 
 pub const AGENTLOOP_CONTRACT_VERSION: &str = "agentloop/v1";
 
-/// The most items a transcript may hold.
-pub const MAX_TRANSCRIPT_ITEMS: usize = 4_096;
-
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct RuntimeEnvelope {
     pub logical_time_ms: u64,
@@ -39,7 +36,6 @@ impl RuntimeEnvelope {
 pub struct TurnInput {
     pub input: UserInput,
     /// The transcript as it stands: what the next model call would see.
-    #[schemars(length(max = MAX_TRANSCRIPT_ITEMS))]
     pub transcript: Vec<Message>,
     /// The loop's kv (a key-value map it keeps between turns), as it last returned it.
     pub kv: BTreeMap<String, serde_json::Value>,
@@ -50,11 +46,9 @@ pub struct TurnInput {
     pub configuration: serde_json::Value,
     /// The system prompt the session was created with. Used on every model call unless
     /// the loop sends its own.
-    #[schemars(length(max = 131072))]
     pub system: String,
     /// The tools the session was created with: offered whole on every model call unless
     /// the loop names a subset. Brain admitted and provisioned exactly these.
-    #[schemars(length(max = 128))]
     pub tools: Vec<ToolDefinition>,
     pub runtime: RuntimeEnvelope,
 }
@@ -62,7 +56,6 @@ pub struct TurnInput {
 /// What the loop hands back when the turn is done.
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]
 pub struct TurnOutput {
-    #[schemars(length(max = MAX_TRANSCRIPT_ITEMS))]
     pub transcript: Vec<Message>,
     /// Kv to keep. A key the loop leaves out keeps its previous value.
     #[serde(default)]

@@ -14,7 +14,7 @@ async fn interrupted_ending_is_terminal_and_pending_detach_is_unknown() {
         &directory,
         telemetry,
         4,
-        1000,
+        1,
         common::echo_loop(),
         Arc::new(NoModels),
         Arc::new(NoTools),
@@ -72,7 +72,7 @@ async fn emitted_internal_kind_is_rejected_without_corrupting_recovery() {
         &directory,
         telemetry,
         4,
-        1000,
+        1,
         scripted(|input, services| async move {
             services
                 .emit("kv_set".into(), serde_json::json!({"ordinary":"event"}))
@@ -114,7 +114,7 @@ async fn interrupted_creation_is_failed() {
         &directory,
         telemetry,
         4,
-        1000,
+        1,
         common::echo_loop(),
         Arc::new(NoModels),
         Arc::new(NoTools),
@@ -150,7 +150,7 @@ async fn wall_deadline_records_unknown_model_outcome() {
         &directory,
         telemetry,
         4,
-        1000,
+        1,
         scripted(|_input, services| async move {
             services
                 .model(ModelRequest {
@@ -166,7 +166,10 @@ async fn wall_deadline_records_unknown_model_outcome() {
         Arc::new(SlowModel),
         Arc::new(NoTools),
     );
-    Arc::get_mut(&mut runtime.config).unwrap().max_turn_ms = 100;
+    Arc::get_mut(&mut runtime.config)
+        .unwrap()
+        .limits
+        .max_turn_secs = 1;
     let session = runtime.create(&config(), &[]).unwrap();
     session
         .message(MessageRequest { input: "go".into() })
@@ -186,7 +189,7 @@ async fn model_cancellation_records_ambiguous_failure() {
         &directory,
         telemetry,
         4,
-        1000,
+        1,
         scripted(|_input, services| async move {
             services
                 .model(ModelRequest {
