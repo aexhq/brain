@@ -136,6 +136,12 @@ jobs:
           BRAIN_TEST_TOOL_COMPONENT: ${{ runner.temp }}/diagnostic-tool.wasm
           BRAIN_TEST_REFERENCE_AGENTLOOP: ${{ runner.temp }}/reference-agentloop.wasm
         run: npm run test:journeys
+      - name: Verify every package release fixture before publication
+        env:
+          BRAIN_TEST_SERVER: ${{ github.workspace }}/target/debug/brain
+          BRAIN_TEST_WORKER: ${{ github.workspace }}/target/debug/brain-env-worker
+          BRAIN_TEST_AGENTLOOP_PACKAGE: ${{ runner.temp }}/diagnostic-agentloop.wasm
+        run: bash tools/check-release-fixtures.sh
 
   image-smoke:
     runs-on: ubuntu-24.04
