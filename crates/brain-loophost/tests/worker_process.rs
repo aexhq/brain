@@ -443,13 +443,18 @@ async fn host_calls_queued_before_cancel_are_not_answered_after_cancel() {
     let socket = directory.path().join("worker.sock");
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
     let worker = tokio::spawn(async move {
+        let limits = LoopLimits::default();
         let (mut stream, _) = listener.accept().await.unwrap();
         assert!(matches!(
-            brain_loophost::worker_read(&mut stream).await.unwrap(),
+            brain_loophost::worker_read(&mut stream, &limits)
+                .await
+                .unwrap(),
             WorkerRequest::Turn { .. }
         ));
         assert!(matches!(
-            brain_loophost::worker_read(&mut stream).await.unwrap(),
+            brain_loophost::worker_read(&mut stream, &limits)
+                .await
+                .unwrap(),
             WorkerRequest::Cancel
         ));
         brain_loophost::worker_write(
@@ -461,6 +466,7 @@ async fn host_calls_queued_before_cancel_are_not_answered_after_cancel() {
                     payload_json: "{}".into(),
                 },
             },
+            &limits,
         )
         .await
         .unwrap();
@@ -469,10 +475,15 @@ async fn host_calls_queued_before_cancel_are_not_answered_after_cancel() {
             &WorkerResponse::TurnFailed {
                 error: TurnError::new(brain_protocol::codes::failure::CANCELLED, "cancelled"),
             },
+            &limits,
         )
         .await
         .unwrap();
-        assert!(brain_loophost::worker_read(&mut stream).await.is_err());
+        assert!(
+            brain_loophost::worker_read(&mut stream, &limits)
+                .await
+                .is_err()
+        );
     });
     let bridge = RecordingBridge {
         calls: Mutex::new(Vec::new()),
