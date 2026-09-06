@@ -28,23 +28,21 @@
 
 ## What is it
 
-**Brain** is a standalone, minimal, distributed and extensible agent runtime. Compose an Agentloop,
-Models, Tools, and Environments through small public interfaces. One session can invoke Tools in several execution
-Environments while keeping its transcript and canonical history locally accessible.
+**Brain** is a minimal, distributed and extensible agent runtime. You compose an Agentloop, a Model,
+Tools and Environments through small public interfaces. One session can run Tools in several
+Environments while its transcript and history stay locally readable.
 
-It is for builders who need control over agent execution and want to assemble their own system:
-custom assistants, research agents, and future agent platforms. Brain supplies runtime mechanisms;
-applications supply product policy, scheduling, tenancy, and infrastructure. Aex is an independent
-consumer of these same interfaces.
+Brain supplies runtime mechanisms. Your application supplies product policy, scheduling, tenancy and
+infrastructure.
 
 ### Agentloop Extensions
-The core mechanism that bridge LLM, full control of context and dispatch tools.  [Write an agent loop](https://aex.dev/brain/docs/guides/write-a-loop).
+The core mechanism that bridges the LLM, controls context and dispatches tools. [Write an agent loop](https://aex.dev/brain/docs/guides/write-a-loop).
 - Pi
 - Opencode
 - Codex
 
 ### Tool Extensions
-The hand for LLM to actually do work, it declares resources it needs and provide ability to interact. [Write a tool](https://aex.dev/brain/docs/guides/write-a-tool).
+The hands that let the LLM do work. A tool declares the resources it needs and how to act. [Write a tool](https://aex.dev/brain/docs/guides/write-a-tool).
 - Bash
 - Inline function
 - Web_search/Web_fetch
@@ -56,83 +54,35 @@ An environment provides the resources a tool needs to complete its tasks. [Write
 - Filesystem
 
 ### Official Extensions
-We provide a number of official extensions, written in the same way you would: [aexhq/extensions](https://github.com/aexhq/extensions).
+Official extensions are written the same way you would write yours: [aexhq/extensions](https://github.com/aexhq/extensions).
 
-Brain ships two Environments of its own. `brainEnv({ name })` runs Components in a fresh Wasmtime
-instance per invocation, granted exactly what their `needs` name and bounded by the server's
-`BRAIN_ENV_*` allow-lists, which are empty by default. `hostEnv({ name })` is your own process,
-registered with Brain as a host, for Tools that are plain functions. Anything else is an
-`environment(...)` extension reached over HTTP, configured per instance by the application.
-Each Wasm invocation is bounded by 10 billion Wasmtime fuel units for guest work; suspended I/O
-does not consume fuel, while the session's wall-time limit still bounds the complete turn.
-
+Brain ships two Environments of its own. `brainEnv` runs Components in a fresh Wasmtime instance
+per invocation, granted only what their `needs` name. `hostEnv` is your own process, for Tools that
+are plain functions. Any other Environment is reached over HTTP.
 
 ## Architecture
 
-The [architecture decision records](references/adrs/README.md) explain the design and its evolution.
+![Brain architecture](references/architecture.png)
 
-Every Tool and the Agentloop is placed in one of the session's named Environments, and every
-Environment is reached through one protocol: the brain env inside the server, the host env that is
-your own process, and any Environment reached over HTTP. The Agentloop controls context and
-decides when to call the model or dispatch Tools; Brain coordinates execution and records the
-results.
+- **Kernel** owns the session. It commits every effect to the append-only journal before dispatch,
+  sends it once and never retries on its own. Status, transcript and Events rebuild from the journal
+  after a restart.
+- **Brain env** runs the Agentloop and native Tools as precompiled [Wasmtime](https://wasmtime.dev/)
+  Components. Each turn runs in a fresh capability sandbox and calls back into Brain for model and
+  tool calls, so every effect is logged before it happens.
+- **One protocol** reaches every Environment: the brain env inside the server, your app registered as
+  a host, and any Environment over HTTP. Environments own resource allocation, TTL and cleanup.
+- **Everything is observable.** Model calls, Tool results and lifecycle changes are committed Events.
+  The live feed adds token deltas; reconnecting resumes at a committed sequence.
 
-```mermaid
-flowchart LR
-  subgraph App["Your application"]
-    Client["SDK / HTTP client"]
-    Host["host env<br/>Tools as functions"]
-  end
-
-  subgraph Brain["Brain runtime"]
-    Server["HTTP / SSE server<br/>Session coordination"]
-    Journal[("Local journal<br/>Transcript, slots and Events")]
-    subgraph BrainEnv["brain env · Wasmtime worker"]
-      Loop["Agentloop Component"]
-      Native["Tool Components"]
-    end
-    Server <-->|"commit / read"| Journal
-    Server <-->|"Environment protocol"| BrainEnv
-  end
-
-  Client <-->|"HTTP / SSE"| Server
-  Host <-->|"Environment protocol over host SSE"| Server
-  Server <-->|"model calls"| Models["Model providers"]
-  Server <-->|"Environment protocol over HTTP"| EnvA["Environment A<br/>Tools + resources"]
-  Server <-->|"Environment protocol over HTTP"| EnvB["Environment B<br/>Tools + resources"]
-```
-
-Brain commits each external-effect intent before dispatch and sends it once. The local journal
-retains session state; execution is released after each turn by default. Transcripts and recorded
-Events remain readable while execution is suspended. Environment providers own resource allocation,
-TTL, and cleanup independently of session execution.
-
-Brain owns the session. You supply the agent loop, the model, the tools, and the environment.
-Three design choices make it fast:
-
-- **Isolated WebAssembly agent loops.** Brain receives a precompiled
-  [Wasmtime](https://wasmtime.dev/) Component; compilation and source-language tooling are outside
-  its runtime contract. The Component runs each turn in a capability sandbox and calls back into
-  Brain for model calls and tool calls. Because Brain does the I/O, every effect is in the log
-  before it happens.
-- **One write-ahead journal.** The journal is the only durable session truth. Brain commits an
-  effect's intent before dispatch and never retries it automatically. An uncertain remote result is
-  recorded as unknown. In-memory status, transcript, Agentloop state, and event indexes rebuild as
-  projections on demand after a restart. A disposable checkpoint avoids ordinary full-history replay.
-- **Everything is observable.** Model calls, Tool results, lifecycle changes, transcript
-  replacements, and records the loop appends are committed Events projected from the journal. The
-  live feed also carries transient token deltas; reconnecting resumes at a committed sequence and
-  receives the completed result.
-
-Brain ships a native Rust server and an isolated Loophost worker on [Tokio](https://tokio.rs/).
-The server exposes HTTP and SSE with [Axum](https://github.com/tokio-rs/axum) and needs no external
-store for a local deployment.
+Brain is a native Rust server on [Tokio](https://tokio.rs/) and [Axum](https://github.com/tokio-rs/axum)
+with HTTP and SSE. A local deployment needs no external store. The
+[architecture decision records](references/adrs/README.md) explain the design and its evolution.
 
 ## Quick start
 
-In this example the tool is a plain function in your own process, placed in the host env. You
-declare it once and pass it to the session. The SDK registers your process as a host and answers
-commands over SSE, so your app needs no inbound server or open port.
+The tool below is a plain function in your own process. The SDK registers your process as a host
+over SSE, so your app needs no open port.
 
 Run a server:
 
@@ -177,13 +127,9 @@ await session.delete();
 
 ## Performance
 
-Brain releases session execution after each turn by default and opens history on demand. Admission
-retains compiled, prelinked Components; each invocation gets fresh state. Native Tools have capacity
-independent of waiting Agentloops. These properties are covered by regression tests.
-
-The earlier comparison numbers describe an older execution/storage design. See [BENCHMARKS.md](BENCHMARKS.md)
-for their provenance and [the benchmark guide](docs/reference/benchmarks.mdx) for current measurements
-and limits. New-session latency, whole-process memory, and resume cost must be measured together.
+Session execution is released after each turn and history opens on demand. Compiled Components stay
+resident; each invocation gets fresh state. See [BENCHMARKS.md](BENCHMARKS.md) and
+[the benchmark guide](docs/reference/benchmarks.mdx).
 
 ## Contact
 
