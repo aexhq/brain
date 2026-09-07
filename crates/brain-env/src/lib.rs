@@ -6,6 +6,7 @@ pub use environment::{BrainEnvironment, NativePolicy};
 mod limits;
 mod runtime;
 mod service;
+mod socket;
 mod supervisor;
 mod wire;
 
@@ -13,6 +14,7 @@ pub use client::{TurnBridge, WorkerClient};
 pub use limits::{EnvLimits, WorkerArgs};
 pub use runtime::{AdmissionEngine, AdmittedAgentloop, AdmittedTool, GuestHost, NativeToolInput};
 pub use service::WorkerService;
+pub use socket::{Listener, listen};
 pub use supervisor::{LoopError, WorkerPool};
 pub use wire::{
     Access, ComponentKind, HostCall, NativeEnvironment, WorkerRequest, WorkerResponse, Workspace,
