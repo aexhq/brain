@@ -18,15 +18,12 @@ impl LoopExecutor for Echo {
         _: &AgentloopRef,
         _: &Environment,
         input: TurnInput,
-        _: Arc<dyn brain::TurnServices>,
+        services: Arc<dyn brain::TurnServices>,
     ) -> Result<TurnOutput, brain::Error> {
         let mut transcript = input.transcript;
         transcript.push(Message::user_text(input.input.message));
-        Ok(TurnOutput {
-            transcript,
-            kv: input.kv,
-            result: None,
-        })
+        services.set_transcript(transcript).await?;
+        Ok(TurnOutput { result: None })
     }
 }
 

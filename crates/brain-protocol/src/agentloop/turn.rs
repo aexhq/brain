@@ -55,11 +55,8 @@ pub struct TurnInput {
 
 /// What the loop hands back when the turn is done.
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TurnOutput {
-    pub transcript: Vec<Message>,
-    /// Kv to keep. A key the loop leaves out keeps its previous value.
-    #[serde(default)]
-    pub kv: BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
 }

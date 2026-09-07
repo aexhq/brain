@@ -47,15 +47,24 @@ Receipts are `accepted`, `progress`, `result { output }`, `failure`, or `unknown
 is an Environment operation. An Agentloop adapter interprets its typed input and output above
 this generic boundary; an Environment can support both Agentloops and Tools.
 
+Execute requires a terminal `result`, `failure`, or `unknown` receipt. Returning `accepted` or
+`progress` leaves the dispatched outcome unknown. Failure fields `code`, `message`, `retryable`,
+and optional JSON `details` reach Tool results unchanged. Retryability is advisory; Brain does
+not retry or restore failed resources automatically.
+
 ## Invocation services
 
 An execution may receive `callback: { url, token, methods }`. POST `{ method, input }` to that
 URL with its bearer token. The response is the method's JSON result. Only listed methods are
 granted. A Tool receives `emit` and `telemetry`; an Agentloop also receives `events`, `model`,
-and `dispatch`. Dispatch input is an array of `{ call_id, name, environment, input }`; model
+`dispatch`, `set_transcript`, and `set_kv`. Dispatch input is an array of `{ call_id, name, environment, input }`; model
 input is `ModelRequest`; events input is a cursor number; emit input is `{ event_type, data }`;
 telemetry input is the diagnostic record. Results are respectively Tool results, ModelResult,
 EventPage, committed sequence, and null.
+
+`set_transcript` takes a message array and `set_kv` takes `{ key, value }`. Both return the committed
+sequence. These services belong only to the Agentloop. Turn output is `{ result? }`, with no
+transcript or kv snapshot.
 
 The token belongs to one invocation and is revoked on completion or cancellation. It is never
 part of the journal. It grants no lifecycle or general session API access. Cancellation makes

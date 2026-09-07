@@ -190,7 +190,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        for method in ["model", "dispatch", "events"] {
+        for method in ["model", "dispatch", "events", "set_transcript", "set_kv"] {
             assert!(
                 executions
                     .call(&session, 4, &callback.token, call(method))

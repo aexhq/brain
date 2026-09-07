@@ -269,6 +269,7 @@ impl BrainEnvironment {
         match result {
             Ok(output) => Ok(EnvironmentReceipt::Result { output }),
             Err(LoopError::Turn(error)) => Ok(EnvironmentReceipt::Failure {
+                details: None,
                 code: error.code,
                 message: error.message,
                 retryable: error.retryable,
@@ -390,6 +391,11 @@ impl TurnBridge for ServicesBridge {
         let parse =
             |text: &str| serde_json::from_str(text).map_err(|e| bridge_error("invalid_request", e));
         let (method, input) = match call {
+            HostCall::SetTranscript { messages_json } => ("set_transcript", parse(&messages_json)?),
+            HostCall::SetKv { key, value_json } => (
+                "set_kv",
+                serde_json::json!({"key": key, "value": parse(&value_json)?}),
+            ),
             HostCall::Events { after } => ("events", serde_json::json!(after)),
             HostCall::Model { request_json } => ("model", parse(&request_json)?),
             HostCall::Dispatch { calls_json } => ("dispatch", parse(&calls_json)?),

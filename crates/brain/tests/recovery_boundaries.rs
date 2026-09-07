@@ -73,15 +73,11 @@ async fn emitted_internal_kind_is_rejected_without_corrupting_recovery() {
         telemetry,
         4,
         1,
-        scripted(|input, services| async move {
+        scripted(|_input, services| async move {
             services
                 .emit("kv_set".into(), serde_json::json!({"ordinary":"event"}))
                 .await?;
-            Ok(TurnOutput {
-                transcript: input.transcript,
-                kv: Default::default(),
-                result: None,
-            })
+            Ok(TurnOutput { result: None })
         }),
         Arc::new(NoModels),
         Arc::new(NoTools),
@@ -154,6 +150,7 @@ async fn wall_deadline_records_unknown_model_outcome() {
         scripted(|_input, services| async move {
             services
                 .model(ModelRequest {
+                    options: Default::default(),
                     system: None,
                     tools: None,
                     messages: vec![brain_protocol::Message::user_text("go")],
@@ -193,6 +190,7 @@ async fn model_cancellation_records_ambiguous_failure() {
         scripted(|_input, services| async move {
             services
                 .model(ModelRequest {
+                    options: Default::default(),
                     system: None,
                     tools: None,
                     messages: vec![brain_protocol::Message::user_text("go")],

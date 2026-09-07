@@ -28,9 +28,17 @@ fn render_one(message: &Message) -> Result<Vec<Value>, Error> {
         Role::Assistant => {
             let mut text = String::new();
             let mut calls = Vec::new();
+            let mut reasoning = None;
             for block in &message.content {
                 match block {
                     ContentBlock::Text { text: t } => text.push_str(t),
+                    ContentBlock::Native { format, data } if format == "openai.chat.v1" => {
+                        if reasoning.is_some() || data.as_object().is_none_or(|data| data.len() != 1) || !data["reasoning_content"].is_string() {
+                            return Err(Error::InvalidState("invalid Chat continuation state".into()));
+                        }
+                        reasoning = Some(data["reasoning_content"].clone());
+                    }
+                    ContentBlock::Native { .. } | ContentBlock::Image { .. } => return Err(Error::InvalidState("unsupported Chat assistant content".into())),
                     ContentBlock::ToolUse { id, name, input } => calls.push(json!({
                         "id": id,
                         "type": "function",
@@ -48,6 +56,9 @@ fn render_one(message: &Message) -> Result<Vec<Value>, Error> {
             }
             let mut object = Map::new();
             object.insert("role".into(), json!("assistant"));
+            if let Some(reasoning) = reasoning {
+                object.insert("reasoning_content".into(), reasoning);
+            }
             object.insert(
                 "content".into(),
                 if text.is_empty() {
@@ -61,15 +72,27 @@ fn render_one(message: &Message) -> Result<Vec<Value>, Error> {
             }
             rendered.push(Value::Object(object));
         }
-        Role::User => {
-            let mut text = String::new();
+        Role::User | Role::Developer => {
+            let mut parts = Vec::new();
+            let role = if message.role == Role::Developer {
+                "developer"
+            } else {
+                "user"
+            };
             for block in &message.content {
                 match block {
                     ContentBlock::ToolResult {
                         tool_use_id,
                         content,
                         is_error,
+                        media,
                     } => {
+                        if message.role == Role::Developer {
+                            return Err(Error::InvalidState(
+                                "a tool_result block cannot appear in a developer message".into(),
+                            ));
+                        }
+                        append_content(&mut rendered, role, &mut parts);
                         // The dialect has no `is_error`. Dropping the signal
                         // entirely is what lets a failed tool read as a success,
                         // so it is carried in-band and marked, never silently lost.
@@ -84,8 +107,23 @@ fn render_one(message: &Message) -> Result<Vec<Value>, Error> {
                             "tool_call_id": tool_use_id,
                             "content": payload,
                         }));
+                        for brain_protocol::Media::Image { url } in media {
+                            super::validate_image(url)?;
+                            parts.push(json!({"type": "image_url", "image_url": {"url": url}}));
+                        }
                     }
-                    ContentBlock::Text { text: t } => text.push_str(t),
+                    ContentBlock::Image { url } => {
+                        super::validate_image(url)?;
+                        parts.push(json!({"type": "image_url", "image_url": {"url": url}}));
+                    }
+                    ContentBlock::Native { .. } => {
+                        return Err(Error::InvalidState(
+                            "native Chat state belongs to an assistant message".into(),
+                        ));
+                    }
+                    ContentBlock::Text { text } => {
+                        parts.push(json!({"type": "text", "text": text}))
+                    }
                     ContentBlock::ToolUse { .. } => {
                         return Err(Error::InvalidState(
                             "a tool_use block cannot appear in a user message".into(),
@@ -93,12 +131,28 @@ fn render_one(message: &Message) -> Result<Vec<Value>, Error> {
                     }
                 }
             }
-            if !text.is_empty() {
-                rendered.push(json!({"role": "user", "content": text}));
-            }
+            append_content(&mut rendered, role, &mut parts);
         }
     }
     Ok(rendered)
+}
+
+fn append_content(rendered: &mut Vec<Value>, role: &str, parts: &mut Vec<Value>) {
+    if parts.is_empty() {
+        return;
+    }
+    let content = if parts.iter().all(|part| part["type"] == "text") {
+        json!(
+            parts
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .collect::<String>()
+        )
+    } else {
+        json!(parts)
+    };
+    rendered.push(json!({"role": role, "content": content}));
+    parts.clear();
 }
 
 fn stringify(content: &Value) -> String {
@@ -150,7 +204,9 @@ pub fn body(
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools);
     }
-    if let Some(format) = &request.response_format {
+    if let Some(format) = &request.response_format
+        && !format.is_null()
+    {
         body["response_format"] = format.clone();
     }
     if let Some(tokens) = request.max_output_tokens {
@@ -162,6 +218,17 @@ pub fn body(
         };
         body[field] = json!(tokens);
     }
+    super::options(
+        &mut body,
+        &request.options,
+        &[
+            "reasoning_effort",
+            "thinking",
+            "temperature",
+            "top_p",
+            "stop",
+        ],
+    )?;
     Ok(body)
 }
 
@@ -183,11 +250,19 @@ pub fn decode(data: &str) -> Result<Vec<ModelStreamEvent>, Error> {
     if let Some(choices) = value.get("choices").and_then(Value::as_array) {
         for choice in choices {
             let delta = choice.get("delta").unwrap_or(&Value::Null);
+            if let Some(text) = delta.get("reasoning_content").and_then(Value::as_str) {
+                out.push(ModelStreamEvent::NativeDelta {
+                    index: 0,
+                    format: "openai.chat.v1".into(),
+                    field: "reasoning_content".into(),
+                    text: text.into(),
+                });
+            }
             if let Some(text) = delta.get("content").and_then(Value::as_str)
                 && !text.is_empty()
             {
                 out.push(ModelStreamEvent::TextDelta {
-                    index: 0,
+                    index: 1,
                     text: text.to_owned(),
                 });
             }
@@ -195,16 +270,14 @@ pub fn decode(data: &str) -> Result<Vec<ModelStreamEvent>, Error> {
                 && !text.is_empty()
             {
                 out.push(ModelStreamEvent::RefusalDelta {
-                    index: 0,
+                    index: 1,
                     text: text.to_owned(),
                 });
             }
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
-                    // `index` is what makes N parallel calls in one assistant
-                    // message distinguishable. +1 so index 0 stays reserved for
-                    // the text block.
-                    let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize + 1;
+                    // Reasoning and text occupy the first two positions.
+                    let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize + 2;
                     let function = call.get("function").unwrap_or(&Value::Null);
                     let id = call.get("id").and_then(Value::as_str);
                     let name = function.get("name").and_then(Value::as_str);
@@ -308,6 +381,7 @@ mod tests {
     #[test]
     fn the_output_token_cap_lands_in_the_field_the_provider_speaks() {
         let request = ModelRequest {
+            options: Default::default(),
             system: Some("sys".into()),
             tools: Some(tools()),
             messages: vec![Message::user_text("hi")],
@@ -346,6 +420,7 @@ mod tests {
     #[test]
     fn tool_results_become_tool_role_messages_and_keep_the_error_signal() {
         let request = ModelRequest {
+            options: Default::default(),
             system: Some("sys".into()),
             tools: Some(tools()),
             messages: vec![
@@ -356,6 +431,7 @@ mod tests {
                     input: serde_json::json!({}),
                 }]),
                 Message::tool_results(vec![ContentBlock::ToolResult {
+                    media: Vec::new(),
                     tool_use_id: "c0".into(),
                     content: serde_json::json!("child 3 of 4 failed"),
                     is_error: true,
@@ -385,9 +461,11 @@ mod tests {
     #[test]
     fn structured_tool_result_content_is_stringified() {
         let request = ModelRequest {
+            options: Default::default(),
             system: Some("sys".into()),
             tools: Some(tools()),
             messages: vec![Message::tool_results(vec![ContentBlock::ToolResult {
+                media: Vec::new(),
                 tool_use_id: "c1".into(),
                 content: serde_json::json!({"stdout": ""}),
                 is_error: false,

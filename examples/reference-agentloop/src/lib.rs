@@ -36,12 +36,17 @@ impl Guest for Reference {
             after = page.next_cursor;
         }
         kv.insert("observed_sequence".into(), after.into());
+        brain::agentloop::host::set_kv("observed_sequence", &after.to_string())?;
         let tools: Vec<brain_protocol::ActivationTool> = decode(&input.tools_json)?;
         let input: brain_protocol::UserInput = decode(&input.input_json)?;
-        transcript.push(Message::user_text(input.message));
+        let mut message = Message::user_text(input.message);
+        for brain_protocol::Media::Image { url } in input.media { message.content.push(ContentBlock::Image { url }); }
+        transcript.push(message);
         loop {
+            brain::agentloop::host::set_transcript(&encode(&transcript)?)?;
             let request = ModelRequest {
-                messages: transcript.clone(),
+                options: Default::default(),
+messages: transcript.clone(),
                 system: None,
                 tools: None,
                 response_format: None,
@@ -62,6 +67,7 @@ impl Guest for Reference {
                 })})
                 .collect::<Result<Vec<_>, TurnError>>()?;
             transcript.push(result.message);
+            brain::agentloop::host::set_transcript(&encode(&transcript)?)?;
             if calls.is_empty() {
                 break;
             }
@@ -71,7 +77,8 @@ impl Guest for Reference {
                 results
                     .into_iter()
                     .map(|result| ContentBlock::ToolResult {
-                        tool_use_id: result.call_id,
+                        media: Vec::new(),
+tool_use_id: result.call_id,
                         content: result.output,
                         is_error: result.is_error,
                     })
@@ -79,8 +86,6 @@ impl Guest for Reference {
             ));
         }
         Ok(TurnOutput {
-            transcript_json: encode(&transcript)?,
-            kv_json: encode(&kv)?,
             result_json: None,
         })
     }

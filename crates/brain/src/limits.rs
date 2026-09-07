@@ -5,6 +5,9 @@ use std::time::Duration;
 /// ceiling means no bound, except the live backlog, which must be at least 1.
 #[derive(Clone, Debug, clap::Args)]
 pub struct Limits {
+    /// Maximum encoded model request bytes, including retained native state and media.
+    #[arg(long, env = "BRAIN_MAX_MODEL_INPUT_BYTES", default_value_t = Limits::default().max_model_input_bytes)]
+    pub max_model_input_bytes: usize,
     /// Model calls one turn may make before the next fails with `model_call_limit`.
     #[arg(long, env = "BRAIN_MAX_MODEL_CALLS", default_value_t = Limits::default().max_model_calls)]
     pub max_model_calls: usize,
@@ -64,6 +67,7 @@ impl Default for Limits {
             max_emitted_bytes: 1024 * 1024,
             // A 64k-token answer is about 256 KiB of text; this leaves room for
             // several times that before a long answer fails the turn.
+            max_model_input_bytes: 16 * 1024 * 1024,
             max_model_output_bytes: 4 * 1024 * 1024,
             max_model_delta_bytes: 64 * 1024,
             max_model_stream_bytes: 32 * 1024 * 1024,

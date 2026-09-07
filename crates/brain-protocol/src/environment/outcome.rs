@@ -31,6 +31,8 @@ pub struct OutcomeError {
     pub code: String,
     #[schemars(length(max = 4096))]
     pub message: String,
+    #[serde(default)]
+    pub retryable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
 }

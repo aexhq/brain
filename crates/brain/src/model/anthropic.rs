@@ -28,11 +28,23 @@ fn render_one(message: &Message) -> Result<Value, Error> {
     let role = match message.role {
         Role::User => "user",
         Role::Assistant => "assistant",
+        Role::Developer => {
+            return Err(Error::InvalidState(
+                "Anthropic does not support developer messages; use the system prompt".into(),
+            ));
+        }
     };
     let mut blocks = Vec::with_capacity(message.content.len());
     for block in &message.content {
         blocks.push(match block {
             ContentBlock::Text { text } => json!({"type": "text", "text": text}),
+            ContentBlock::Image { url } => image(url)?,
+            ContentBlock::Native { format, data } => {
+                if format != "anthropic.messages.v1" || message.role != Role::Assistant || !matches!(data["type"].as_str(), Some("thinking" | "redacted_thinking")) {
+                    return Err(Error::InvalidState("unsupported Anthropic continuation item".into()));
+                }
+                data.clone()
+            }
             ContentBlock::ToolUse { id, name, input } => {
                 if message.role != Role::Assistant {
                     return Err(Error::InvalidState(
@@ -45,16 +57,19 @@ fn render_one(message: &Message) -> Result<Value, Error> {
                 tool_use_id,
                 content,
                 is_error,
+                media,
             } => {
                 if message.role != Role::User {
                     return Err(Error::InvalidState(
                         "a tool_result block cannot appear in an assistant message".into(),
                     ));
                 }
+                let mut parts = vec![json!({"type": "text", "text": stringify(content)})];
+                for brain_protocol::Media::Image { url } in media { parts.push(image(url)?); }
                 json!({
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
-                    "content": stringify(content),
+                    "content": if media.is_empty() { json!(stringify(content)) } else { json!(parts) },
                     // ALWAYS present. Never omitted on a failure.
                     "is_error": is_error,
                 })
@@ -71,8 +86,25 @@ fn stringify(content: &Value) -> String {
     }
 }
 
+fn image(url: &str) -> Result<Value, Error> {
+    super::validate_image(url)?;
+    let source = if let Some(data) = url.strip_prefix("data:") {
+        let (media_type, data) = data
+            .split_once(";base64,")
+            .ok_or_else(|| Error::InvalidState("image data URL must contain base64".into()))?;
+        json!({"type": "base64", "media_type": media_type, "data": data})
+    } else {
+        json!({"type": "url", "url": url})
+    };
+    Ok(json!({"type": "image", "source": source}))
+}
+
 pub fn body(model: &str, tools: &[ToolDefinition], request: &ModelRequest) -> Result<Value, Error> {
-    if request.response_format.is_some() {
+    if request
+        .response_format
+        .as_ref()
+        .is_some_and(|value| !value.is_null())
+    {
         // Rejected rather than silently dropped: a loop that asked for a response
         // format is owed the format or an error, never prose that ignores it.
         return Err(Error::InvalidState(
@@ -126,6 +158,18 @@ pub fn body(model: &str, tools: &[ToolDefinition], request: &ModelRequest) -> Re
         }
         body["tools"] = Value::Array(tools);
     }
+    super::options(
+        &mut body,
+        &request.options,
+        &[
+            "thinking",
+            "output_config",
+            "temperature",
+            "top_p",
+            "top_k",
+            "stop_sequences",
+        ],
+    )?;
     Ok(body)
 }
 
@@ -151,6 +195,15 @@ pub fn decode(data: &str) -> Result<Vec<ModelStreamEvent>, Error> {
         "content_block_start" => {
             let block = value.get("content_block").unwrap_or(&Value::Null);
             match block.get("type").and_then(Value::as_str) {
+                Some("thinking" | "redacted_thinking") => vec![ModelStreamEvent::NativeStart {
+                    index,
+                    format: "anthropic.messages.v1".into(),
+                    data: block.clone(),
+                }],
+                Some("text") => vec![ModelStreamEvent::TextDelta {
+                    index,
+                    text: block["text"].as_str().unwrap_or_default().into(),
+                }],
                 Some("tool_use") => vec![ModelStreamEvent::ToolUseStart {
                     index,
                     id: block
@@ -170,6 +223,22 @@ pub fn decode(data: &str) -> Result<Vec<ModelStreamEvent>, Error> {
         "content_block_delta" => {
             let delta = value.get("delta").unwrap_or(&Value::Null);
             match delta.get("type").and_then(Value::as_str) {
+                Some("thinking_delta" | "signature_delta") => {
+                    let field = if delta["type"] == "thinking_delta" {
+                        "thinking"
+                    } else {
+                        "signature"
+                    };
+                    vec![ModelStreamEvent::NativeDelta {
+                        index,
+                        format: "anthropic.messages.v1".into(),
+                        field: field.into(),
+                        text: delta[field]
+                            .as_str()
+                            .ok_or_else(|| Error::Ambiguous("invalid thinking delta".into()))?
+                            .into(),
+                    }]
+                }
                 Some("text_delta") => vec![ModelStreamEvent::TextDelta {
                     index,
                     text: delta
@@ -282,6 +351,7 @@ mod tests {
     #[test]
     fn the_body_is_well_formed_and_the_cache_breakpoint_sits_on_the_last_tool() {
         let request = ModelRequest {
+            options: Default::default(),
             system: Some("sys".into()),
             tools: Some(tools()),
             messages: vec![Message::user_text("hi")],
@@ -301,6 +371,7 @@ mod tests {
     #[test]
     fn a_toolless_request_caches_the_system_block() {
         let request = ModelRequest {
+            options: Default::default(),
             system: Some("sys".into()),
             tools: Some(tools()),
             messages: vec![Message::user_text("hi")],
@@ -308,6 +379,7 @@ mod tests {
             max_output_tokens: Some(64),
         };
         let request = ModelRequest {
+            options: Default::default(),
             system: Some("be terse".into()),
             tools: None,
             ..request
@@ -322,6 +394,7 @@ mod tests {
     #[test]
     fn response_format_is_rejected_instead_of_silently_dropped() {
         let request = ModelRequest {
+            options: Default::default(),
             system: Some("sys".into()),
             tools: Some(tools()),
             messages: vec![Message::user_text("hi")],
@@ -336,9 +409,11 @@ mod tests {
     #[test]
     fn tool_result_always_carries_is_error() {
         let request = ModelRequest {
+            options: Default::default(),
             system: Some("sys".into()),
             tools: Some(tools()),
             messages: vec![Message::tool_results(vec![ContentBlock::ToolResult {
+                media: Vec::new(),
                 tool_use_id: "t1".into(),
                 content: serde_json::json!({"stderr": "boom"}),
                 is_error: true,

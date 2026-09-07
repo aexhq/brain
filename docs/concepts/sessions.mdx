@@ -33,6 +33,12 @@ Extension Events use the same commit path. A turn may emit at most `BRAIN_MAX_EM
 across the serialized Event kinds and payloads, 1 MiB unless the deployment sets otherwise.
 Public system codes and private journal record names are reserved; extensions cannot emit them.
 
+Every new extension Event carries Brain-assigned `origin`: `kind` is `agentloop` or `tool`, and
+`sequence` references that execution's `activation_started` or `tool_call_started` record.
+Payload fields cannot change the origin. Historical Events without origin remain unauthenticated;
+never infer authorship from their names. An origin identifies the submitting execution, not the
+truth of its payload or a human approval.
+
 This makes `{session_id, sequence}` the stable name of an operation throughout the journal and its
 execution path. There is no other identifier: a record carries references, not copies.
 `tool_call_started` names the Tool, the invocation, and the deadline; where the call goes is the
@@ -41,12 +47,18 @@ Environment and carry the request.
 
 ## Transcript and Agentloop state
 
-The Agentloop owns transcript contents while Brain owns persistence. At model calls and turn end,
-Brain records the difference from the last transcript. Appends store only the tail; summaries,
-edits, and reorders restart at the first changed item. Recovery folds those deltas in journal order.
+The Agentloop owns transcript contents while Brain owns persistence. `set-transcript` commits the
+difference from the saved transcript. Appends store only the tail; summaries, edits, and reorders
+restart at the first changed item. Recovery folds those deltas in journal order.
 
-The Agentloop's returned kv follows the same rule. Every invocation uses a fresh Wasm instance;
-state must be present in the transcript or returned kv.
+`set-kv` commits one key/value change. Each operation is durable before it returns, independently
+of turn success. Every invocation uses a fresh Wasm instance; save state through these services.
+Turn completion cannot overwrite saved state with a returned snapshot.
+
+Model calls do not change the saved transcript. Their start records retain a message count and
+`context: { through_sequence, delta }`: apply the delta to the saved transcript at that journal
+sequence to reconstruct the exact request. This records auxiliary contexts without copying the
+entire conversation on every model call. Outcomes retain the complete model result.
 
 ## Turns
 
@@ -133,8 +145,20 @@ and have no journal sequence; reconnecting yields the completed committed model 
 that needs at-least-once delivery into another system owns its saved cursor, queue, retries, and
 deduplication.
 
+For recorded Events, SSE `data` contains the complete Event envelope, including origin. The SDK
+exposes the payload as `event.data` and provenance as `event.origin` on both pages and streams.
+
 ## Lifecycle
 
 `cancel` requests cancellation of work in flight. `end` refuses new messages and detaches the
 session's Environments while preserving history. `delete` removes the session directory, tears
 down its Environments, and forgets its credentials.
+
+`end` waits for active work. SIGTERM/server shutdown stops admitting work and drains admitted
+operations while their callbacks remain available, then closes subscriptions and workers. Deadlines,
+`cancel`, and forced process termination can still interrupt a turn and expose partial progress.
+
+An owning host Tool can pass its signal to `child.send(input, { signal: context.signal })`.
+Use a fresh handle for an exclusively owned child; do not concurrently send through other owners.
+The SDK waits for admission before cancelling and waits for any issued cancellation request before
+returning. Creating a session alone does not establish ownership or affect independent sessions.

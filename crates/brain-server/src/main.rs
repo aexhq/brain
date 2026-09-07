@@ -35,8 +35,12 @@ async fn main() -> anyhow::Result<()> {
             brain_http::router(api, &config.http_limits)
         }
     };
+    let drain_api = shutdown_api.clone();
     axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown())
+        .with_graceful_shutdown(async move {
+            shutdown().await;
+            drain_api.drain().await;
+        })
         .await?;
     shutdown_api.shutdown().await;
     Ok(())

@@ -11,22 +11,31 @@ give the resulting bytes to `component(...)`.
 
 The source of truth is
 [`crates/brain-env/wit/agentloop/agentloop.wit`](https://github.com/aexhq/brain/blob/main/crates/brain-env/wit/agentloop/agentloop.wit).
-The Component exports `turn` and imports five Brain services:
+The Component exports `turn` and imports these Brain services:
 
 - `events(after)` reads a finite `EventPage`; continue from `next_cursor` for more history;
 - `model` performs a model call;
 - `dispatch` invokes one or more Tools;
 - `emit` appends an extension Event and returns its committed sequence;
+- `set-transcript` durably replaces the saved conversation with the supplied messages;
+- `set-kv` durably sets one Agentloop key to a JSON value;
 - `telemetry` publishes best-effort operational telemetry.
 
 JSON strings on the WIT boundary use the generated session contract, also packaged as
 `@aexhq/brain/contracts/session.json`. It includes `ModelRequest`, `ModelResult`, `ToolResult`, and `EventPage`. A turn receives
 the current transcript, Agentloop kv, committed Events since its previous activation,
 configuration, system prompt, Tool definitions with authorized Environment names, and a deterministic logical-time/seed envelope.
-It returns the transcript, updated kv, and optional result.
+It returns only an optional result. Old transcript/kv fields in turn output are rejected.
 
-Brain commits model, Tool, and emitted Event records. An Agentloop must not depend on the Wasm heap
-surviving between activations; only returned transcript and kv are durable.
+Await state services at the point the change should become durable. Each write returns its
+committed sequence; later failure preserves completed writes. Separate writes are not a transaction.
+Model calls record their actual request and result without changing the saved conversation, so an
+auxiliary classification or summary request cannot replace it accidentally. Save the selected
+conversation explicitly. Neither guest memory nor an unsubmitted local mutation survives activation.
+
+Keep native model blocks unchanged when retaining their context. Common image blocks and
+Tool-result media carry actual model image input; arbitrary image-shaped Tool JSON does not.
+See [Model](/brain/docs/concepts/model) for adapter compatibility and format reset.
 
 ## Place the Component
 
@@ -108,4 +117,4 @@ These small examples use `--stub-wasi`: they demonstrate Python computation and 
 and do not provide Python filesystem or network APIs. A package that needs WASI must link only
 the worker's supported interfaces and declare the corresponding needs. Brain does not install
 Python or pip packages at runtime. Every execution has a fresh interpreter; persist Agentloop
-state through returned kv and retain files only in an explicitly granted Environment workspace.
+state through `set-kv` and retain files only in an explicitly granted Environment workspace.

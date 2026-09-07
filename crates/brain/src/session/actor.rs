@@ -4,11 +4,10 @@
 //! A turn is one call into the loop. While it runs, the loop reaches Brain through
 //! [`TurnHost`]: model calls, tool dispatch, its own records, telemetry. Each service
 //! journals before it acts, so the feed says what happened whether or not the loop
-//! comes back. When it does come back, the transcript and kv it hands over are
-//! diffed against what the journal already holds and only the difference is written.
+//! comes back. Transcript and kv writes commit inline; turn return carries only a result.
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -166,6 +165,9 @@ impl SessionActor {
             .await?[0]
             .sequence;
         let host = Arc::new(TurnHost {
+            origin: brain_protocol::EventOrigin::Agentloop {
+                sequence: activation,
+            },
             session_id: self.row.session_id.clone(),
             store: self.store.clone(),
             runtime: self.runtime.clone(),
@@ -175,6 +177,7 @@ impl SessionActor {
             cursor: Arc::new(Mutex::new(Cursor {
                 through_sequence: self.row.through_sequence,
                 transcript: std::mem::take(&mut self.folded.transcript),
+                kv: std::mem::take(&mut self.folded.kv),
                 emitted_bytes: 0,
                 max_emitted_bytes: self.runtime.limits.max_emitted_bytes,
             })),
@@ -217,12 +220,14 @@ impl SessionActor {
             Cursor {
                 through_sequence: cursor.through_sequence,
                 transcript: std::mem::take(&mut cursor.transcript),
+                kv: std::mem::take(&mut cursor.kv),
                 emitted_bytes: cursor.emitted_bytes,
                 max_emitted_bytes: cursor.max_emitted_bytes,
             }
         };
         self.row.through_sequence = cursor.through_sequence;
         self.folded.transcript = cursor.transcript;
+        self.folded.kv = cursor.kv;
         // A turn that was cancelled does not get to finish, whatever the loop brought
         // back: what the services already recorded stands, the rest is discarded.
         let outcome = match outcome {
@@ -256,30 +261,12 @@ impl SessionActor {
         }
     }
 
-    /// The loop came back: keep what it handed over, then close the turn.
+    /// Close the turn without overwriting state saved by its services.
     async fn finish_turn(
         &mut self,
         output: TurnOutput,
         events_through: u64,
     ) -> Result<SessionSummary, Error> {
-        let mut entries = Vec::new();
-        if let Some(delta) = delta(&self.folded.transcript, &output.transcript) {
-            entries.push(delta);
-        }
-        for (key, value) in output.kv {
-            if key == LAST_ACTIVATION_KEY {
-                continue;
-            }
-            if self.folded.kv.get(&key) != Some(&value) {
-                entries.push(JournalEntry::KvSet {
-                    key: key.clone(),
-                    value: value.clone(),
-                });
-                self.folded.kv.insert(key, value);
-            }
-        }
-        self.folded.transcript = output.transcript;
-        self.row.through_sequence = append_journal(self.store.clone(), entries).await?;
         self.commit(
             vec![AppendRecord::new(
                 codes::event::ACTIVATION_ENDED,
@@ -369,6 +356,7 @@ struct Cursor {
     through_sequence: u64,
     /// The transcript as last recorded, so the next delta is against it.
     transcript: Vec<Message>,
+    kv: BTreeMap<String, serde_json::Value>,
     emitted_bytes: usize,
     max_emitted_bytes: usize,
 }
@@ -390,6 +378,7 @@ impl Cursor {
 /// Brain's side of a running turn.
 #[derive(Clone)]
 pub struct TurnHost {
+    origin: brain_protocol::EventOrigin,
     session_id: brain_protocol::SessionId,
     store: Arc<dyn SessionStore>,
     runtime: Arc<SessionRuntime>,
@@ -440,6 +429,35 @@ impl TurnHost {
 
 #[async_trait::async_trait]
 impl TurnServices for TurnHost {
+    async fn set_transcript(&self, messages: Vec<Message>) -> Result<u64, Error> {
+        let mut cursor = self.cursor.lock().await;
+        self.check_cancelled()?;
+        if let Some(entry) = delta(&cursor.transcript, &messages) {
+            cursor.through_sequence = append_journal(self.store.clone(), vec![entry]).await?;
+            cursor.transcript = messages;
+        }
+        Ok(cursor.through_sequence)
+    }
+
+    async fn set_kv(&self, request: brain_protocol::KvSetRequest) -> Result<u64, Error> {
+        if !valid_kind(&request.key) || request.key == LAST_ACTIVATION_KEY {
+            return Err(Error::InvalidState(
+                "kv key must be an identifier not reserved by Brain".into(),
+            ));
+        }
+        let mut cursor = self.cursor.lock().await;
+        self.check_cancelled()?;
+        if cursor.kv.get(&request.key) != Some(&request.value) {
+            let entry = JournalEntry::KvSet {
+                key: request.key.clone(),
+                value: request.value.clone(),
+            };
+            cursor.through_sequence = append_journal(self.store.clone(), vec![entry]).await?;
+            cursor.kv.insert(request.key, request.value);
+        }
+        Ok(cursor.through_sequence)
+    }
+
     async fn events(&self, after: u64) -> Result<brain_protocol::EventPage, Error> {
         self.check_cancelled()?;
         let store = self.store.clone();
@@ -475,14 +493,16 @@ impl TurnServices for TurnHost {
             ));
         }
         let tools = self.offered_tools(&request)?;
-        // The messages are the transcript as the loop wants the model to see it; the
-        // journal keeps how they differ from what it last recorded, then the call.
+        // Auxiliary model views are auditable without replacing conversation state.
         let sequence = {
             let mut cursor = self.cursor.lock().await;
-            if let Some(entry) = delta(&cursor.transcript, &request.messages) {
-                cursor.through_sequence = append_journal(self.store.clone(), vec![entry]).await?;
-                cursor.transcript = request.messages.clone();
-            }
+            let context = delta(&cursor.transcript, &request.messages).unwrap_or(
+                JournalEntry::TranscriptDelta {
+                    keep: request.messages.len() as u64,
+                    append: Vec::new(),
+                },
+            );
+            let through_sequence = cursor.through_sequence;
             let saved = self
                 .append(
                     &mut cursor,
@@ -492,8 +512,10 @@ impl TurnServices for TurnHost {
                             "system": request.system,
                             "tools": request.tools,
                             "messages": request.messages.len(),
+                            "context": {"through_sequence": through_sequence, "delta": context},
                             "response_format": request.response_format,
                             "max_output_tokens": request.max_output_tokens,
+                            "options": request.options,
                         }),
                     )],
                 )
@@ -648,9 +670,12 @@ impl TurnServices for TurnHost {
                     let call = async {
                         let validator = jsonschema::validator_for(&dispatch.tool.input_schema).map_err(|e| Error::InvalidState(e.to_string()))?;
                         if let Err(error) = validator.validate(&dispatch.invocation.input) {
-                            return Ok(Outcome::Error { error: brain_protocol::OutcomeError { code: "invalid_input".into(), message: error.to_string(), details: None } });
+                            return Ok(Outcome::Error { error: brain_protocol::OutcomeError { retryable: false,
+code: "invalid_input".into(), message: error.to_string(), details: None } });
                         }
-                        executor.execute(dispatch, Arc::new(self.clone())).await
+                        let mut services = self.clone();
+                        services.origin = brain_protocol::EventOrigin::Tool { sequence };
+                        executor.execute(dispatch, Arc::new(services)).await
                     };
                     let cancelled = async {
                         while !cancel.load(Ordering::Acquire) {
@@ -674,7 +699,8 @@ impl TurnServices for TurnHost {
                         if let (Outcome::Ok { value }, Some(schema)) = (&outcome, &output_schema) {
                             let validator = jsonschema::validator_for(schema).map_err(|e| Error::Executor(e.to_string()))?;
                             if let Err(error) = validator.validate(value) {
-                                return Ok((Outcome::Error { error: brain_protocol::OutcomeError { code: "invalid_output".into(), message: error.to_string(), details: None } }, dropped));
+                                return Ok((Outcome::Error { error: brain_protocol::OutcomeError { retryable: false,
+code: "invalid_output".into(), message: error.to_string(), details: None } }, dropped));
                             }
                         }
                         Ok((outcome, dropped))
@@ -722,7 +748,8 @@ impl TurnServices for TurnHost {
 
     async fn emit(&self, kind: String, payload: serde_json::Value) -> Result<u64, Error> {
         self.check_cancelled()?;
-        if !valid_kind(&kind)
+        if kind == "_extension_event"
+            || !valid_kind(&kind)
             || JournalEntry::is_kind(&kind)
             || (codes::event::ALL.contains(&kind.as_str()) && kind != codes::event::OUTPUT_EMITTED)
         {
@@ -736,8 +763,9 @@ impl TurnServices for TurnHost {
             .ok_or_else(|| Error::EmitLimit("emitted Event size overflowed".into()))?;
         let mut cursor = self.cursor.lock().await;
         cursor.reserve_emit(bytes)?;
-        let saved =
-            TurnHost::append(self, &mut cursor, vec![AppendRecord::new(kind, payload)]).await?;
+        let mut record = AppendRecord::new(kind, payload);
+        record.origin = Some(self.origin.clone());
+        let saved = TurnHost::append(self, &mut cursor, vec![record]).await?;
         Ok(saved[0].sequence)
     }
 
@@ -931,7 +959,9 @@ fn streaming_event(sequence: u64, event: &ModelStreamEvent) -> Option<StreamingE
             "tool_call_delta",
             serde_json::json!({"index": index, "partial_json": partial_json}),
         ),
-        ModelStreamEvent::BlockDone { .. }
+        ModelStreamEvent::NativeStart { .. }
+        | ModelStreamEvent::NativeDelta { .. }
+        | ModelStreamEvent::BlockDone { .. }
         | ModelStreamEvent::Usage { .. }
         | ModelStreamEvent::MessageDone { .. } => return None,
     };
@@ -999,6 +1029,7 @@ mod tests {
     #[test]
     fn emitted_events_have_an_aggregate_byte_limit() {
         let mut cursor = Cursor {
+            kv: Default::default(),
             through_sequence: 0,
             transcript: Vec::new(),
             emitted_bytes: 1023,

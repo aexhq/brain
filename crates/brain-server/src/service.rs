@@ -56,7 +56,13 @@ pub struct ServerApi {
 }
 
 impl ServerApi {
+    pub async fn drain(&self) {
+        self.sessions.drain().await;
+        self.resources.feed.close();
+        self.resources.hosts.close();
+    }
     pub async fn shutdown(&self) {
+        self.drain().await;
         self.resources.loops.shutdown().await;
     }
     pub fn new(resources: ServerResources) -> Result<Self, brain::Error> {

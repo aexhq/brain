@@ -41,24 +41,26 @@ The Component exports one `turn` function. Its input contains:
 - committed events since its previous activation;
 - its configuration, system prompt, Tool definitions, and deterministic runtime envelope.
 
-During the activation it may call Brain's `events`, `model`, `dispatch`, `emit`, and `telemetry` imports.
+During the activation it may call Brain's `events`, `model`, `dispatch`, `emit`, `set-transcript`,
+`set-kv`, and `telemetry` imports.
 `model`, `dispatch`, and `emit` cross the Brain boundary. Brain commits an external-effect intent
 before dispatch, sends it once, and commits its terminal or unknown outcome before returning it.
 
-The Component returns the transcript and kv to keep. Brain journals their changes; every turn
-uses a fresh Wasm instance, while compiled and prelinked code is reused.
+The Component saves transcript and kv changes inline through the state imports, each committed
+before returning. Turn output carries only the result. Every turn uses a fresh Wasm instance,
+while compiled and prelinked code is reused.
 
 ## Where it runs
 
 An Agentloop may be placed in any Environment. The brain env runs it in a fresh Wasmtime instance
 per activation with exactly the grants its `needs` name, the same way it runs a Tool. An
 Environment reached over HTTP receives each turn with the address of Brain's turn routes for that
-turn and the token that opens them, and reaches the same five services through them; Brain
+turn and the token that opens them, and reaches the same services through them; Brain
 journals every call the same way. The factory always requires an explicit `env` so the placement
 is sealed into the session instead of inferred; Brain does not fall back to another placement.
 
 ## State and failures
 
-The transcript and returned kv are all that survives an activation. Host memory, open connections,
-and files are not. An activation interrupted by restart is recorded as failed and is not replayed.
+Saved transcript, kv, and effect records survive an activation. Guest memory and open connections
+do not. An activation interrupted by restart is recorded as failed and is not replayed.
 The next turn rebuilds its inputs from the canonical journal.

@@ -8,5 +8,6 @@ class WitWorld(WitWorld):
     def turn(self, input):
         kv = json.loads(input.kv_json)
         kv["calls"] = kv.get("calls", 0) + 1
+        host.set_kv("calls", json.dumps(kv["calls"]))
         sequence = host.emit("python_ran", json.dumps({"calls": kv["calls"]}))
-        return TurnOutput(input.transcript_json, json.dumps(kv), json.dumps({"sequence": sequence}))
+        return TurnOutput(json.dumps({"sequence": sequence, "calls": kv["calls"]}))

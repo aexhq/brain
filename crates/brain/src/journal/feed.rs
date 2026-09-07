@@ -5,6 +5,8 @@ use tokio::sync::broadcast;
 
 use crate::journal::SessionRecord;
 
+type Subscribers = HashMap<SessionId, broadcast::Sender<(SessionId, LiveEvent)>>;
+
 /// Records held for a subscriber that is not keeping up.
 ///
 /// A live subscription must never be able to slow a turn down, so this is a bound on
@@ -16,7 +18,7 @@ use crate::journal::SessionRecord;
 pub struct Feed {
     telemetry: TelemetryPublisher,
     backlog: usize,
-    live: Mutex<HashMap<SessionId, broadcast::Sender<(SessionId, LiveEvent)>>>,
+    live: Mutex<Option<Subscribers>>,
 }
 
 impl Feed {
@@ -29,7 +31,7 @@ impl Feed {
         Self {
             telemetry,
             backlog: limits.max_live_backlog.max(1),
-            live: Mutex::new(HashMap::new()),
+            live: Mutex::new(Some(HashMap::new())),
         }
     }
 
@@ -40,6 +42,9 @@ impl Feed {
     /// already seen by sequence.
     pub fn subscribe(&self, session_id: &SessionId) -> broadcast::Receiver<(SessionId, LiveEvent)> {
         let mut live = self.live.lock().expect("live feed poisoned");
+        let Some(live) = live.as_mut() else {
+            return broadcast::channel(1).1;
+        };
         live.retain(|_, sender| sender.receiver_count() > 0);
         live.entry(session_id.clone())
             .or_insert_with(|| broadcast::Sender::new(self.backlog))
@@ -48,11 +53,19 @@ impl Feed {
 
     pub fn send(&self, (session_id, event): (SessionId, LiveEvent)) {
         let mut live = self.live.lock().expect("live feed poisoned");
+        let Some(live) = live.as_mut() else {
+            return;
+        };
         if let Some(sender) = live.get(&session_id)
             && sender.send((session_id.clone(), event)).is_err()
         {
             live.remove(&session_id);
         }
+    }
+
+    /// Close subscriptions after active turns drain, including subsequent subscribers.
+    pub fn close(&self) {
+        self.live.lock().expect("live feed poisoned").take();
     }
 
     pub(crate) fn publish(&self, record: &SessionRecord) {
@@ -76,6 +89,23 @@ impl Feed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closing_the_feed_closes_existing_and_future_subscriptions() {
+        let (telemetry, _) = brain_telemetry::telemetry_channel();
+        let feed = Feed::new(telemetry);
+        let id = SessionId::new("session");
+        let mut existing = feed.subscribe(&id);
+        feed.close();
+        assert!(matches!(
+            existing.try_recv(),
+            Err(broadcast::error::TryRecvError::Closed)
+        ));
+        assert!(matches!(
+            feed.subscribe(&id).try_recv(),
+            Err(broadcast::error::TryRecvError::Closed)
+        ));
+    }
 
     #[test]
     fn unrelated_sessions_do_not_consume_a_subscribers_backlog() {

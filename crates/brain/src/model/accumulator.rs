@@ -24,6 +24,11 @@ pub struct Accumulator {
 #[derive(Debug)]
 enum PartialBlock {
     Empty,
+    Native {
+        format: String,
+        data: serde_json::Value,
+        done: bool,
+    },
     Text {
         text: String,
         done: bool,
@@ -62,6 +67,10 @@ impl Accumulator {
             ));
         }
         let added_bytes = match &ev {
+            ModelStreamEvent::NativeStart { format, data, .. } => {
+                format.len().saturating_add(data.to_string().len())
+            }
+            ModelStreamEvent::NativeDelta { text, .. } => text.len(),
             ModelStreamEvent::TextDelta { text, .. }
             | ModelStreamEvent::RefusalDelta { text, .. } => text.len(),
             ModelStreamEvent::ToolUseStart { id, name, .. } => id.len().saturating_add(name.len()),
@@ -70,7 +79,8 @@ impl Accumulator {
             | ModelStreamEvent::Usage { .. }
             | ModelStreamEvent::MessageDone { .. } => 0,
         };
-        if added_bytes > self.max_delta_bytes {
+        if added_bytes > self.max_delta_bytes && !matches!(ev, ModelStreamEvent::NativeStart { .. })
+        {
             return Err(protocol(format!(
                 "provider delta exceeds {} bytes",
                 self.max_delta_bytes
@@ -83,6 +93,55 @@ impl Accumulator {
             )));
         }
         match ev {
+            ModelStreamEvent::NativeStart {
+                index,
+                format,
+                data,
+            } => {
+                self.ensure(index);
+                if !matches!(self.blocks[index], PartialBlock::Empty) {
+                    return Err(block_type_conflict(index));
+                }
+                self.blocks[index] = PartialBlock::Native {
+                    format,
+                    data,
+                    done: false,
+                };
+            }
+            ModelStreamEvent::NativeDelta {
+                index,
+                format,
+                field,
+                text,
+            } => {
+                self.ensure(index);
+                if matches!(self.blocks[index], PartialBlock::Empty) {
+                    self.blocks[index] = PartialBlock::Native {
+                        format: format.clone(),
+                        data: serde_json::json!({}),
+                        done: false,
+                    };
+                }
+                match &mut self.blocks[index] {
+                    PartialBlock::Native {
+                        format: existing,
+                        data,
+                        done: false,
+                    } if *existing == format => {
+                        let object = data
+                            .as_object_mut()
+                            .ok_or_else(|| block_type_conflict(index))?;
+                        let value = object.entry(field).or_insert_with(|| serde_json::json!(""));
+                        let mut combined = value
+                            .as_str()
+                            .ok_or_else(|| block_type_conflict(index))?
+                            .to_owned();
+                        combined.push_str(&text);
+                        *value = serde_json::json!(combined);
+                    }
+                    _ => return Err(block_type_conflict(index)),
+                }
+            }
             ModelStreamEvent::TextDelta { index, text } => self.push_text(index, text)?,
             ModelStreamEvent::RefusalDelta { index, text } => {
                 self.saw_refusal = true;
@@ -121,13 +180,17 @@ impl Accumulator {
                             "provider emitted tool JSON before starting block {index}"
                         )));
                     }
-                    PartialBlock::Text { .. } => return Err(block_type_conflict(index)),
+                    _ => return Err(block_type_conflict(index)),
                 }
             }
             ModelStreamEvent::BlockDone { index } => {
                 self.ensure(index);
                 match &mut self.blocks[index] {
-                    PartialBlock::Text { done, .. } | PartialBlock::Tool { done, .. } if !*done => {
+                    PartialBlock::Text { done, .. }
+                    | PartialBlock::Tool { done, .. }
+                    | PartialBlock::Native { done, .. }
+                        if !*done =>
+                    {
                         *done = true
                     }
                     PartialBlock::Empty => {
@@ -172,7 +235,7 @@ impl Accumulator {
                     "provider emitted text for completed block {index}"
                 )));
             }
-            PartialBlock::Tool { .. } => return Err(block_type_conflict(index)),
+            _ => return Err(block_type_conflict(index)),
         }
         Ok(())
     }
@@ -197,9 +260,8 @@ impl Accumulator {
         let mut content = Vec::with_capacity(self.blocks.len());
         for (index, block) in self.blocks.into_iter().enumerate() {
             match block {
-                // OpenAI reserves index zero for text and starts tool calls at one.
-                // A pure tool-call response has exactly this one intentional gap.
-                PartialBlock::Empty if index == 0 => {}
+                // Chat reserves reasoning and text before its indexed tool calls.
+                PartialBlock::Empty if index < 2 => {}
                 PartialBlock::Empty => {
                     return Err(protocol(
                         "provider left a gap in its content block indexes".into(),
@@ -207,6 +269,9 @@ impl Accumulator {
                 }
                 PartialBlock::Text { text, .. } if text.is_empty() => {}
                 PartialBlock::Text { text, .. } => content.push(ContentBlock::Text { text }),
+                PartialBlock::Native { format, data, .. } => {
+                    content.push(ContentBlock::Native { format, data })
+                }
                 PartialBlock::Tool { id, name, json, .. } => {
                     let input: serde_json::Value = if json.trim().is_empty() {
                         serde_json::Value::Object(Default::default())
