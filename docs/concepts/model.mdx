@@ -14,15 +14,16 @@ model: {
 ```
 
 Around 185 providers ship built in, generated from the [models.dev](https://models.dev) catalog:
-every provider whose API speaks one of the two wire dialects Brain implements. The catalog is a
+providers speaking Chat Completions or Anthropic Messages. Brain also implements OpenAI Responses. The catalog is a
 snapshot vendored in the repo and refreshed manually with `tools/fetch-models-dev.mjs`, so the
-provider set is a reviewed, released artifact rather than a runtime fetch. Three entries are worth
+provider set is a reviewed, released artifact rather than a runtime fetch. These entries are worth
 naming:
 
 | Provider | Wire dialect | Model names | Default endpoint |
 | --- | --- | --- | --- |
 | `vercel-ai-gateway` | OpenAI Chat Completions | namespaced, `openai/gpt-5-mini` | `https://ai-gateway.vercel.sh/v1` |
 | `openai` | OpenAI Chat Completions | bare, `gpt-5-mini` | `https://api.openai.com/v1` |
+| `openai-responses` | OpenAI Responses | bare, `gpt-5-mini` | `https://api.openai.com/v1` |
 | `anthropic` | Anthropic Messages | bare, `claude-sonnet-4-5` | `https://api.anthropic.com/v1` |
 
 The rest -- `deepseek`, `openrouter`, `fireworks-ai`, and so on -- take bare model ids over the
@@ -30,8 +31,50 @@ OpenAI dialect. Admission is open: a model id the catalog has not heard of still
 day-zero model works without waiting for a snapshot refresh; the catalog's metadata (context
 windows, capabilities, cost) applies when the model is known.
 
-Message history is provider-neutral -- one shape in your agent loop and in the journal, rendered
-into the provider's wire format at request build time.
+Messages share text, Tool calls/results, image blocks, and user/assistant/developer roles.
+Anthropic rejects developer messages; supply its instructions through `system`.
+Adapters render this content at request time. User input accepts `media`, and a model Tool-result
+block may include `media`; supported images use HTTPS URLs or base64 PNG/JPEG/GIF/WebP data URLs.
+Tool execution still returns arbitrary JSON: the loop explicitly maps selected output into media.
+
+## Native continuation state
+
+`{ type: "native", format, data }` retains adapter-owned JSON in content order. Keep these blocks
+unchanged with the messages and Tool turns they accompany. The formats currently implemented are:
+
+| Format | Retained state |
+| --- | --- |
+| `anthropic.messages.v1` | Signed and redacted thinking blocks |
+| `openai.chat.v1` | Assistant `reasoning_content` |
+| `openai.responses.v1` | Reasoning and compaction items, including retained items returned by compaction |
+
+An incompatible adapter rejects the state. A format identifies its representation, not universal
+portability across endpoints, credentials, models, or provider versions. Previously discarded state
+cannot be recovered from older journals. Native blocks are not ordinary display text.
+
+Responses calls are stateless (`store: false`) and request encrypted reasoning. Set
+`options.operation` to `compact` to call `/responses/compact`; that operation accepts context and
+instructions only, with `response_format: null` to reset an inherited format. Save the returned
+message as the selected context before continuing. Brain does not compact automatically.
+
+The September 2026 live probe found that Vercel wraps Responses reasoning with `gwenc1`, while its
+compaction route forwards to OpenAI, which rejects that wrapper. After the Tool turn completed,
+explicitly selecting visible context for compaction succeeded, and the returned compaction state
+continued successfully. Brain preserves the provider error and never silently strips native state.
+
+## Per-call options
+
+An omitted `response_format` inherits the session format; a value replaces it; explicit `null`
+resets it. Other provider options are per request and pass only through the selected adapter:
+
+| Dialect | Allowed option keys |
+| --- | --- |
+| Chat | `reasoning_effort`, `thinking`, `temperature`, `top_p`, `stop` |
+| Anthropic | `thinking`, `output_config`, `temperature`, `top_p`, `top_k`, `stop_sequences` |
+| Responses | `operation`, `reasoning`, `temperature`, `top_p` |
+
+The provider validates supported values for its model. Options cannot override credentials,
+destinations, model binding, or Tool authority. Deployment limits bound encoded input and output.
 
 ## Custom providers
 
@@ -53,7 +96,7 @@ shape, merged over the catalog -- a definition with a catalog provider's name su
 }
 ```
 
-`dialect` is `openai_chat` or `anthropic_messages`; `max_tokens_field` says whether the endpoint
+`dialect` is `openai_chat`, `openai_responses`, or `anthropic_messages`; `max_tokens_field` says whether a Chat endpoint
 takes `max_completion_tokens` (OpenAI itself) or the original `max_tokens` (most compatible
 servers). Endpoints can also be overridden per provider without a file: `BRAIN_MODEL_BASE_URL`
 (the gateway), `BRAIN_OPENAI_BASE_URL`, and `BRAIN_ANTHROPIC_BASE_URL`.

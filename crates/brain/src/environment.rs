@@ -39,5 +39,6 @@ pub fn unsupported(what: &str) -> EnvironmentReceipt {
         code: "unsupported".into(),
         message: format!("this Environment does not {what}"),
         retryable: false,
+        details: None,
     }
 }

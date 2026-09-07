@@ -20,11 +20,14 @@ export function loopEnvironment({ fetch = globalThis.fetch } = {}) {
     return response.json();
   };
   async function turn(callback, input) {
-    const transcript = [...input.transcript, { role: "user", content: [{ type: "text", text: input.input.message }] }];
+    const transcript = [...input.transcript, { role: "user", content: [{ type: "text", text: input.input.message }, ...(input.input.media ?? [])] }];
+    await call(callback, "set_transcript", transcript);
     await call(callback, "emit", { event_type: "remote_note", data: { turns: (input.kv.turns ?? 0) + 1 } });
     const result = await call(callback, "model", { messages: transcript });
     transcript.push(result.message);
-    return { transcript, kv: { turns: (input.kv.turns ?? 0) + 1 }, result: { stop_reason: result.stop_reason } };
+    await call(callback, "set_transcript", transcript);
+    await call(callback, "set_kv", { key: "turns", value: (input.kv.turns ?? 0) + 1 });
+    return { result: { stop_reason: result.stop_reason } };
   }
   async function handle(command) {
     const op = command?.operation;

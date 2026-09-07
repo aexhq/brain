@@ -56,32 +56,7 @@ Promise 在提交完成后才返回。
 Agentloop 控制上下文，决定何时调用模型或工具；Brain 协调执行并记录结果。
 每个环境都通过同一套协议访问：服务器内的 brain env、作为你自己进程的 host env，以及通过 HTTP 访问的任何环境。
 
-```mermaid
-flowchart LR
-  subgraph App["你的应用"]
-    Client["SDK / HTTP 客户端"]
-    Host["host env<br/>作为函数的工具"]
-  end
-
-  subgraph Brain["Brain 运行时"]
-    Server["brain-server<br/>HTTP / SSE"]
-    Sessions["brain-sessions<br/>会话语义与生命周期策略"]
-    Journal[("本地日志<br/>对话、kv 和事件")]
-    subgraph BrainEnv["brain-env · 多进程 Wasmtime worker pool"]
-      Loop["Agentloop Component"]
-      Native["工具 Component"]
-    end
-    Server --> Sessions
-    Sessions <-->|"提交 / 读取"| Journal
-    Server <-->|"环境协议"| BrainEnv
-  end
-
-  Client <-->|"HTTP / SSE"| Server
-  Host <-->|"环境协议（host SSE）"| Server
-  Server <-->|"模型调用"| Models["模型提供商"]
-  Server <-->|"环境协议（HTTP）"| EnvA["环境 A<br/>工具与资源"]
-  Server <-->|"环境协议（HTTP）"| EnvB["环境 B<br/>工具与资源"]
-```
+![Brain 架构](references/architecture.png)
 
 每次执行使用新的 Wasm Store，对话与已记录事件仍可读取。调用方决定环境的存活时间；环境只实现
 setup、execute、detach 和 teardown，不负责空闲过期策略。工作目录按会话和环境名称隔离，保留到 teardown。

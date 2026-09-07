@@ -88,21 +88,21 @@ impl SessionConfig {
     }
 }
 
-/// What an application hands a session on `send`. The shape is closed on purpose:
-/// Brain owes every agentloop the same observation shape regardless of who wrote
-/// the client, so free-form content is not accepted. Multimodal parts will extend
-/// this record when they land — see the roadmap.
+/// What an application hands a session on `send`.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserInput {
     #[schemars(length(min = 1))]
     pub message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media: Vec<crate::Media>,
 }
 
 impl<T: Into<String>> From<T> for UserInput {
     fn from(message: T) -> Self {
         UserInput {
             message: message.into(),
+            media: Vec::new(),
         }
     }
 }
@@ -151,6 +151,16 @@ pub struct Event {
     #[schemars(schema_with = "crate::schema::identifier")]
     pub event_type: String,
     pub data: serde_json::Value,
+    /// Absent on kernel records and historical extension records without attribution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<EventOrigin>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EventOrigin {
+    Agentloop { sequence: u64 },
+    Tool { sequence: u64 },
 }
 
 /// What a live subscription carries.

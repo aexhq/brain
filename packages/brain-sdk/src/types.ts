@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import type { EventOrigin } from "./generated/session.js";
 
 declare const componentBrand: unique symbol;
 declare const agentloopBrand: unique symbol;
@@ -57,10 +58,12 @@ export type ModelSelection = VercelAiGatewayModel | KnownProviderModel | CustomP
 
 export type ModelContentBlock =
   | { readonly type: "text"; readonly text: string }
+  | Media
+  | { readonly type: "native"; readonly format: string; readonly data: unknown }
   | { readonly type: "tool_use"; readonly id: string; readonly name: string; readonly input: unknown }
-  | { readonly type: "tool_result"; readonly tool_use_id: string; readonly content: unknown; readonly is_error: boolean };
+  | { readonly type: "tool_result"; readonly tool_use_id: string; readonly content: unknown; readonly is_error: boolean; readonly media?: readonly Media[] };
 export interface ModelMessage {
-  readonly role: "user" | "assistant";
+  readonly role: "user" | "assistant" | "developer";
   readonly content: readonly ModelContentBlock[];
 }
 export type ModelStopReason = "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | "refusal" | "unknown";
@@ -78,7 +81,8 @@ export interface ModelResponse {
   readonly usage: ModelUsage;
 }
 
-export interface UserInput { readonly message: string }
+export type Media = { readonly type: "image"; readonly url: string };
+export interface UserInput { readonly message: string; readonly media?: readonly Media[] }
 
 export interface CreateSessionOptions {
   readonly model: ModelSelection;
@@ -91,6 +95,11 @@ export interface CreateSessionOptions {
 }
 
 export interface OperationOptions { readonly idempotencyKey?: string }
+export interface SendOptions extends OperationOptions {
+  /** Cancels an exclusively owned session turn when its owner is interrupted.
+   * Use a fresh handle and do not send concurrently through another owner. */
+  readonly signal?: AbortSignal;
+}
 export interface SessionState {
   readonly id: string;
   readonly status: "creating" | "idle" | "running" | "ending" | "ended" | "failed";
@@ -99,6 +108,7 @@ export interface SessionState {
 
 /** One journal record. `(session id, sequence)` names it. */
 export interface SessionEvent<Data = unknown> {
+  readonly origin?: EventOrigin;
   readonly sequence: number;
   readonly recordedAt: Date;
   readonly type: string;
@@ -106,6 +116,7 @@ export interface SessionEvent<Data = unknown> {
 }
 
 export interface SessionStreamEvent<Data = unknown> {
+  readonly origin?: EventOrigin;
   readonly sequence?: number;
   readonly type: string;
   readonly data: Data;

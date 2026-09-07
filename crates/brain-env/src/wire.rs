@@ -19,6 +19,8 @@ use crate::EnvLimits;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HostCall {
+    SetTranscript { messages_json: String },
+    SetKv { key: String, value_json: String },
     Events { after: u64 },
     Model { request_json: String },
     Dispatch { calls_json: String },

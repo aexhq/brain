@@ -54,6 +54,44 @@
         {
           "additionalProperties": false,
           "properties": {
+            "type": {
+              "const": "image",
+              "type": "string"
+            },
+            "url": {
+              "description": "HTTPS URL or an image data URL, rendered by the fixed model adapter.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "url"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": true,
+            "format": {
+              "description": "Versioned adapter format; incompatible adapters must reject the item.",
+              "type": "string"
+            },
+            "type": {
+              "const": "native",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "format",
+            "data"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
             "id": {
               "type": "string"
             },
@@ -81,6 +119,13 @@
             "is_error": {
               "description": "ALWAYS set on a failed tool. Omitting the flag on a failure lets the\nmodel read that failure as a success.",
               "type": "boolean"
+            },
+            "media": {
+              "description": "Model-visible media alongside the ordinary JSON Tool output.",
+              "items": {
+                "$ref": "#/$defs/Media"
+              },
+              "type": "array"
             },
             "tool_use_id": {
               "type": "string"
@@ -112,6 +157,10 @@
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
           "type": "string"
         },
+        "origin": {
+          "$ref": "#/$defs/EventOrigin",
+          "description": "Absent on kernel records and historical extension records without attribution."
+        },
         "recorded_at_ms": {
           "format": "uint64",
           "minimum": 0,
@@ -130,6 +179,69 @@
         "data"
       ],
       "type": "object"
+    },
+    "EventOrigin": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "agentloop",
+              "type": "string"
+            },
+            "sequence": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "sequence"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "tool",
+              "type": "string"
+            },
+            "sequence": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "sequence"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Media": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "image",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "url"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "Message": {
       "additionalProperties": false,
@@ -153,7 +265,8 @@
     "Role": {
       "enum": [
         "user",
-        "assistant"
+        "assistant",
+        "developer"
       ],
       "type": "string"
     },
@@ -237,31 +350,23 @@
       "type": "object"
     },
     "TurnOutput": {
+      "additionalProperties": false,
       "description": "What the loop hands back when the turn is done.",
       "properties": {
-        "kv": {
-          "additionalProperties": true,
-          "default": {},
-          "description": "Kv to keep. A key the loop leaves out keeps its previous value.",
-          "type": "object"
-        },
-        "result": true,
-        "transcript": {
-          "items": {
-            "$ref": "#/$defs/Message"
-          },
-          "type": "array"
-        }
+        "result": true
       },
-      "required": [
-        "transcript"
-      ],
       "type": "object"
     },
     "UserInput": {
       "additionalProperties": false,
-      "description": "What an application hands a session on `send`. The shape is closed on purpose:\nBrain owes every agentloop the same observation shape regardless of who wrote\nthe client, so free-form content is not accepted. Multimodal parts will extend\nthis record when they land — see the roadmap.",
+      "description": "What an application hands a session on `send`.",
       "properties": {
+        "media": {
+          "items": {
+            "$ref": "#/$defs/Media"
+          },
+          "type": "array"
+        },
         "message": {
           "minLength": 1,
           "type": "string"

@@ -90,6 +90,7 @@ remain in [the contracts](../../contracts), [user docs](../../docs), and
 | 2026-09-06 | [ADR-042: Each crate renders its own contract into its own generated directory](2026-09-06-01-per-crate-contracts.md) | Accepted |
 | 2026-09-06 | [ADR-043: Make every limit a deployment default injected at server start](2026-09-06-02-deployment-limits.md) | Accepted |
 | 2026-09-06 | [ADR-044: Separate session management from the built-in execution Environment](2026-09-06-03-sessions-and-brain-env.md) | Accepted |
+| 2026-09-07 | [ADR-045: Resolve protocol gaps before stable v1](2026-09-07-01-protocol-freeze.md) | Accepted |
 
 ## Important reversals
 

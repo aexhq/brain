@@ -220,8 +220,7 @@ fn rust_views_round_trip_contract_examples() {
     let output: TurnOutput =
         serde_json::from_value(read_json("tests/examples/agentloop/turn.json")["output"].clone())
             .unwrap();
-    assert_eq!(output.transcript.len(), 1);
-    assert_eq!(output.kv["memory"]["turns"], 1);
+    assert_eq!(output.result, Some(serde_json::json!({"ok": true})));
 }
 
 #[test]

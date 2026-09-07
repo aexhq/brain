@@ -115,7 +115,8 @@ export function fixture({ providers = {} } = {}) {
   f.stop = async (signal = "SIGTERM") => {
     if (child && child.exitCode === null) {
       const exited = once(child, "exit");
-      process.kill(-child.pid, signal);
+      if (signal === "SIGTERM") child.kill(signal);
+      else process.kill(-child.pid, signal);
       await exited;
     }
   };

@@ -1,9 +1,4 @@
-//! The provider-neutral message model.
-//!
-//! History is stored once, in this shape, and rendered per dialect at request
-//! build time. Storing a provider's wire shape and translating to the others
-//! would make one dialect a second-class citizen and would put that provider's
-//! schema into the journal, where it would then be frozen forever.
+//! Common content and adapter-owned continuation items, preserved in order.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -13,6 +8,7 @@ use serde::{Deserialize, Serialize};
 pub enum Role {
     User,
     Assistant,
+    Developer,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
@@ -20,6 +16,15 @@ pub enum Role {
 pub enum ContentBlock {
     Text {
         text: String,
+    },
+    Image {
+        /// HTTPS URL or an image data URL, rendered by the fixed model adapter.
+        url: String,
+    },
+    Native {
+        /// Versioned adapter format; incompatible adapters must reject the item.
+        format: String,
+        data: serde_json::Value,
     },
     ToolUse {
         id: String,
@@ -32,7 +37,16 @@ pub enum ContentBlock {
         /// ALWAYS set on a failed tool. Omitting the flag on a failure lets the
         /// model read that failure as a success.
         is_error: bool,
+        /// Model-visible media alongside the ordinary JSON Tool output.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        media: Vec<Media>,
     },
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Media {
+    Image { url: String },
 }
 
 impl ContentBlock {

@@ -37,8 +37,10 @@ fn growing_loop(calls: usize) -> Arc<common::ScriptedLoop> {
         let base = transcript.len();
         for index in 0..calls {
             transcript.push(filler(base + index));
+            services.set_transcript(transcript.clone()).await?;
             let result = services
                 .model(ModelRequest {
+                    options: Default::default(),
                     system: None,
                     tools: None,
                     messages: transcript.clone(),
@@ -48,9 +50,8 @@ fn growing_loop(calls: usize) -> Arc<common::ScriptedLoop> {
                 .await?;
             transcript.push(result.message);
         }
+        services.set_transcript(transcript).await?;
         Ok(TurnOutput {
-            transcript,
-            kv: Default::default(),
             result: Some(serde_json::json!({"ok": true})),
         })
     })
@@ -273,18 +274,15 @@ async fn a_rewritten_transcript_is_journalled_from_where_it_differs() {
         publisher,
         4,
         120,
-        scripted(|input, _services| async move {
+        scripted(|input, services| async move {
             let mut transcript = input.transcript;
             if transcript.len() >= 3 {
                 // Compact: replace everything with one summary.
                 transcript = vec![Message::assistant(vec![ContentBlock::text("summary")])];
             }
             transcript.push(Message::user_text(input.input.message));
-            Ok::<_, Error>(TurnOutput {
-                transcript,
-                kv: Default::default(),
-                result: None,
-            })
+            services.set_transcript(transcript).await?;
+            Ok::<_, Error>(TurnOutput { result: None })
         }),
         Arc::new(ScriptedModel),
         Arc::new(NoTools),

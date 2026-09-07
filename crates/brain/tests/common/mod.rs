@@ -239,12 +239,11 @@ impl LoopExecutor for ScriptedLoop {
 
 /// A loop that finishes at once with the transcript it was given plus the user message.
 pub fn echo_loop() -> Arc<ScriptedLoop> {
-    scripted(|input, _services| async move {
+    scripted(|input, services| async move {
         let mut transcript = input.transcript;
         transcript.push(Message::user_text(&input.input.message));
+        services.set_transcript(transcript).await?;
         Ok(TurnOutput {
-            transcript,
-            kv: Default::default(),
             result: Some(serde_json::json!({"ok": true})),
         })
     })

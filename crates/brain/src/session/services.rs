@@ -13,9 +13,12 @@ use crate::Error;
 pub trait TurnServices: Send + Sync {
     /// One finite page after a journal sequence. Reading does not advance the activation cursor.
     async fn events(&self, after: u64) -> Result<brain_protocol::EventPage, Error>;
+    /// Replaces conversation state and returns its durable journal sequence.
+    async fn set_transcript(&self, messages: Vec<brain_protocol::Message>) -> Result<u64, Error>;
+    /// Saves one value and returns its durable journal sequence.
+    async fn set_kv(&self, request: brain_protocol::KvSetRequest) -> Result<u64, Error>;
     /// One model call. What the request leaves unsaid is what the session was created
-    /// with; the messages are the transcript as the loop wants the model to see it, and
-    /// Brain journals how they differ from what it last recorded.
+    /// with. The request is journaled independently of conversation state.
     async fn model(&self, request: ModelRequest) -> Result<ModelResult, Error>;
     /// One or many tool calls, run together. Calling this once per call is sequential
     /// dispatch. The results come back in the calls' order.

@@ -9,6 +9,85 @@ use brain_protocol::{
 
 struct Echo;
 
+#[tokio::test]
+async fn graceful_drain_keeps_turn_services_alive_and_refuses_new_work() {
+    struct Held {
+        entered: tokio::sync::Notify,
+        finish: tokio::sync::Notify,
+    }
+    #[async_trait]
+    impl LoopExecutor for Held {
+        async fn turn(
+            &self,
+            _: &SessionId,
+            _: u64,
+            _: &AgentloopRef,
+            _: &Environment,
+            _: TurnInput,
+            services: Arc<dyn brain::TurnServices>,
+        ) -> Result<TurnOutput, brain::Error> {
+            self.entered.notify_one();
+            self.finish.notified().await;
+            services
+                .set_transcript(vec![Message::user_text("finished while draining")])
+                .await?;
+            services
+                .set_kv(brain_protocol::KvSetRequest {
+                    key: "saved".into(),
+                    value: serde_json::json!(true),
+                })
+                .await?;
+            Ok(TurnOutput::default())
+        }
+    }
+    let root = root("drain");
+    let mut api = api(&root);
+    let held = Arc::new(Held {
+        entered: tokio::sync::Notify::new(),
+        finish: tokio::sync::Notify::new(),
+    });
+    Arc::get_mut(&mut Arc::get_mut(&mut api.resources).unwrap().session_runtime)
+        .unwrap()
+        .loop_executor = held.clone();
+    let store = seed(&api, "ses_drain");
+    let running_api = api.clone();
+    let running = tokio::spawn(async move {
+        running_api
+            .send_message(
+                SessionId::new("ses_drain"),
+                MessageRequest { input: "go".into() },
+            )
+            .await
+    });
+    held.entered.notified().await;
+    let draining_api = api.clone();
+    let draining = tokio::spawn(async move { draining_api.drain().await });
+    while !api.draining.load(Ordering::Acquire) {
+        tokio::task::yield_now().await;
+    }
+    assert!(!draining.is_finished());
+    assert_eq!(
+        api.send_message(
+            SessionId::new("ses_drain"),
+            MessageRequest {
+                input: "later".into()
+            }
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "overloaded"
+    );
+    held.finish.notify_one();
+    running.await.unwrap().unwrap();
+    draining.await.unwrap();
+    assert_eq!(store.fold().unwrap().kv["saved"], true);
+    assert_eq!(
+        store.fold().unwrap().transcript,
+        vec![Message::user_text("finished while draining")]
+    );
+}
+
 #[async_trait]
 impl LoopExecutor for Echo {
     async fn turn(
@@ -18,15 +97,12 @@ impl LoopExecutor for Echo {
         _: &AgentloopRef,
         _: &Environment,
         input: TurnInput,
-        _: Arc<dyn brain::TurnServices>,
+        services: Arc<dyn brain::TurnServices>,
     ) -> Result<TurnOutput, brain::Error> {
         let mut transcript = input.transcript;
         transcript.push(Message::user_text(input.input.message));
-        Ok(TurnOutput {
-            transcript,
-            kv: input.kv,
-            result: None,
-        })
+        services.set_transcript(transcript).await?;
+        Ok(TurnOutput { result: None })
     }
 }
 

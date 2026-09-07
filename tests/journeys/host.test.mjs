@@ -5,9 +5,65 @@ import { hostEnv, tool, inspectTool } from "@aexhq/brain";
 import { fixture, collect, callTools, reply, deferred, failure } from "./support.mjs";
 
 const f = fixture();
+
+test("cancelling a parent reaches an owned child turn through the host Tool signal", { timeout: 30_000 }, async (t) => {
+  const entered = deferred();
+  const finished = deferred();
+  const child = await f.create(t);
+  const unrelated = await f.create(t);
+  const delegate = tool({ name: "delegate", description: "Run child", input: z.object({}), run: async (_, context) => {
+    try { return await child.send("child task", { signal: context.signal }); }
+    finally { finished.resolve(); }
+  } });
+  f.model = (request, response) => {
+    if (JSON.stringify(request.messages).includes("child task")) { entered.resolve(); return; }
+    callTools(response, [{ name: "delegate", input: {} }]);
+  };
+  const parent = await f.create(t, { tools: [delegate({ env: hostEnv({ name: "owner" }) })] });
+  const running = parent.send("delegate work");
+  await entered.promise;
+  await parent.cancel();
+  await running;
+  await finished.promise;
+  assert.equal((await f.brain.sessions.get(child.id)).state.status, "idle");
+  assert.equal((await f.brain.sessions.get(unrelated.id)).state.status, "idle");
+  const events = await collect(child.events());
+  assert.equal(events.filter((event) => event.type === "model_call_started").length, 1);
+  assert.ok(events.some((event) => event.type === "model_call_failed" && event.data.ambiguous));
+});
 const app = hostEnv({ name: "app" });
 const dispatch = (name, input) => (request, response) => request.messages.at(-1).role === "tool"
   ? reply(response) : callTools(response, [{ name, input }]);
+
+test("graceful shutdown lets a host Tool finish and saves the completed turn", { timeout: 30_000 }, async (t) => {
+  const entered = deferred();
+  const finish = deferred();
+  const wait = tool({ name: "wait", description: "Wait", input: z.object({}), run: async (_, context) => {
+    entered.resolve();
+    await finish.promise;
+    await context.emit("finished_during_drain", {});
+    return "completed";
+  } });
+  const session = await f.create(t, { tools: [wait({ env: app })] });
+  f.model = dispatch("wait", {});
+  const running = session.send("finish before shutdown");
+  await entered.promise;
+  const stopped = f.stop();
+  const admitted = [];
+  for (;;) {
+    try { admitted.push(await f.brain.sessions.create(f.options())); }
+    catch (error) { assert.ok(failure(503)(error)); break; }
+  }
+  finish.resolve();
+  await running;
+  await stopped;
+  await f.start();
+  for (const extra of admitted) { await extra.end(); await extra.delete(); }
+  const events = await collect(session.events());
+  assert.ok(events.some((event) => event.type === "finished_during_drain"));
+  assert.equal(events.at(-1).type, "turn_ended");
+  assert.equal((await session.transcript()).messages.at(-1).content[0].text, "answered");
+});
 
 test("a tool this process holds receives validated options and commits progress before its result", { timeout: 30_000 }, async (t) => {
   const contexts = [];
@@ -28,6 +84,13 @@ test("a tool this process holds receives validated options and commits progress 
   assert.ok(contexts[0].signal instanceof AbortSignal);
   const events = await collect(session.events());
   const started = events.find(({ type }) => type === "tool_call_started");
+  const progress = events.find(({ type }) => type === "lookup_progress");
+  assert.deepEqual(progress.origin, { kind: "tool", sequence: started.sequence });
+  const replay = session.stream(progress.sequence - 1);
+  const streamed = (await replay.next()).value;
+  assert.deepEqual(streamed.origin, progress.origin);
+  assert.deepEqual(streamed.data, progress.data);
+  await replay.return();
   assert.equal(contexts[0].sequence, started.sequence, "the call is named by its started record");
   assert.ok(events.find(({ type }) => type === "lookup_progress").sequence < events.find(({ type }) => type === "tool_call_ended").sequence);
   assert.ok(JSON.stringify(f.modelRequests.at(-1).messages).includes("item-42"));

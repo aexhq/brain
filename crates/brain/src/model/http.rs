@@ -8,7 +8,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     Error, ModelExecutor,
-    model::{Accumulator, Dialect, MaxTokensField, anthropic, openai, sse::SseDecoder},
+    model::{Accumulator, Dialect, MaxTokensField, anthropic, openai, responses, sse::SseDecoder},
 };
 
 pub struct RemoteModelConfig {
@@ -126,6 +126,7 @@ impl RemoteModelClient {
         tools: &[ToolDefinition],
     ) -> Result<Value, Error> {
         match self.dialect {
+            Dialect::OpenAiResponses => responses::body(&binding.name, tools, request),
             Dialect::OpenAiChat => {
                 openai::body(&binding.name, tools, request, self.max_tokens_field)
             }
@@ -135,13 +136,22 @@ impl RemoteModelClient {
 
     fn decode(&self, data: &str) -> Result<Vec<ModelStreamEvent>, Error> {
         match self.dialect {
+            Dialect::OpenAiResponses => responses::decode(data),
             Dialect::OpenAiChat => openai::decode(data),
             Dialect::AnthropicMessages => anthropic::decode(data),
         }
     }
 
-    fn request(&self, body: &Value) -> reqwest::RequestBuilder {
+    fn request(&self, body: &Value, compact: bool) -> reqwest::RequestBuilder {
         let (path, headers) = match self.dialect {
+            Dialect::OpenAiResponses => (
+                if compact {
+                    "/responses/compact"
+                } else {
+                    "/responses"
+                },
+                openai::headers(self.api_key.as_str()),
+            ),
             Dialect::OpenAiChat => (openai::path(), openai::headers(self.api_key.as_str())),
             Dialect::AnthropicMessages => {
                 (anthropic::path(), anthropic::headers(self.api_key.as_str()))
@@ -171,7 +181,15 @@ impl ModelExecutor for RemoteModelClient {
         on_event: &mut (dyn FnMut(ModelStreamEvent) + Send),
     ) -> Result<ModelResult, Error> {
         let body = self.body(binding, &request, tools)?;
-        let mut response = self.request(&body).send().await.map_err(|error| {
+        if body.to_string().len()
+            > crate::limits::ceiling(self.transport.limits.max_model_input_bytes)
+        {
+            return Err(Error::InvalidState(
+                "model request exceeds its byte limit".into(),
+            ));
+        }
+        let compact = self.dialect == Dialect::OpenAiResponses && responses::compact(&request)?;
+        let mut response = self.request(&body, compact).send().await.map_err(|error| {
             Error::Ambiguous(format!("model request outcome is unknown: {error}"))
         })?;
         if !response.status().is_success() {
@@ -203,6 +221,26 @@ impl ModelExecutor for RemoteModelClient {
             });
         }
         let limits = &self.transport.limits;
+        if compact {
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|e| Error::Ambiguous(e.to_string()))?
+            {
+                if bytes.len().saturating_add(chunk.len())
+                    > crate::limits::ceiling(limits.max_model_output_bytes)
+                {
+                    return Err(Error::Ambiguous(
+                        "compaction output exceeds its byte limit".into(),
+                    ));
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            return responses::compact_result(
+                serde_json::from_slice(&bytes).map_err(|e| Error::Ambiguous(e.to_string()))?,
+            );
+        }
         let mut decoder = SseDecoder::new(crate::limits::ceiling(limits.max_model_frame_bytes));
         let mut stream = response.bytes_stream();
         let mut total = 0_usize;
@@ -311,6 +349,7 @@ mod tests {
                 &session(),
                 &binding(),
                 ModelRequest {
+                    options: Default::default(),
                     system: Some("system".into()),
                     tools: Some(vec![ToolDefinition {
                         name: "read".into(),
@@ -406,6 +445,7 @@ mod tests {
                     name: "claude-test".into(),
                 },
                 ModelRequest {
+                    options: Default::default(),
                     system: Some("system".into()),
                     tools: None,
                     messages: vec![Message::user_text("hi")],
@@ -460,6 +500,7 @@ mod tests {
         })
         .unwrap();
         let request = ModelRequest {
+            options: Default::default(),
             system: None,
             tools: None,
             messages: vec![Message::user_text("hi")],
@@ -544,6 +585,7 @@ mod tests {
                 &session(),
                 &binding(),
                 ModelRequest {
+                    options: Default::default(),
                     system: None,
                     tools: None,
                     messages: vec![Message::user_text("hi")],
