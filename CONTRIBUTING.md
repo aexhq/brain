@@ -30,7 +30,10 @@ test. Performance probes are optional diagnostics during pre-launch iteration. S
 
 [SDK user journeys](tests/journeys/README.md) run against real Linux servers and workers with four
 isolated suites in parallel. They cover the public SDK lifecycle, tools, placement, events, and
-recovery on every pull request. Run them with `npm run test:journeys` after the documented builds.
+recovery on pull requests affecting Rust, the SDK, examples, or integration fixtures. Run them with
+`npm run test:journeys` after the documented builds. PR CI selects affected checks from the full PR
+diff; ordinary prose changes skip builds, while the generated configuration reference still runs
+contract verification. Pushes to `main` run the full suite.
 
 ## The Rust types are the source of the contracts
 

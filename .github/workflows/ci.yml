@@ -13,7 +13,58 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      contracts: ${{ github.event_name != 'pull_request' || steps.filter.outputs.common == 'true' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.npm == 'true' || steps.filter.outputs.generated-doc == 'true' }}
+      audit: ${{ github.event_name != 'pull_request' || steps.filter.outputs.common == 'true' || steps.filter.outputs.dependencies == 'true' }}
+      lint: ${{ github.event_name != 'pull_request' || steps.filter.outputs.common == 'true' || steps.filter.outputs.rust == 'true' }}
+      rust-core: ${{ github.event_name != 'pull_request' || steps.filter.outputs.common == 'true' || steps.filter.outputs.rust == 'true' }}
+      rust-platforms: ${{ github.event_name != 'pull_request' || steps.filter.outputs.common == 'true' || steps.filter.outputs.rust == 'true' }}
+      brain-env: ${{ github.event_name != 'pull_request' || steps.filter.outputs.common == 'true' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.npm == 'true' || steps.filter.outputs.runtime-tests == 'true' }}
+      image-smoke: ${{ github.event_name != 'pull_request' || steps.filter.outputs.common == 'true' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.image == 'true' }}
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      # Compare the tested merge commit with its base, including every PR commit and both rename paths.
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          token: ''
+          predicate-quantifier: every
+          filters: |
+            common:
+              - '!*.md'
+              - '!**/README*.md'
+              - '!docs/**/*.{md,mdx}'
+              - '!docs/**/meta.json'
+              - '!references/**/*.md'
+              - '!references/architecture.{png,excalidraw}'
+              - '!{crates,catalog,packages/brain-sdk,examples,tests}/**'
+              - '!{Cargo.toml,Cargo.lock,rust-toolchain.toml,rustfmt.toml,package.json,package-lock.json,Dockerfile,.dockerignore}'
+            rust:
+              - '{crates/**,catalog/**,Cargo.toml,Cargo.lock,rust-toolchain.toml,rustfmt.toml}'
+              - '!**/README*.md'
+            npm:
+              - '{packages/brain-sdk/**,examples/**,package.json,package-lock.json}'
+              - '!**/README*.md'
+            dependencies:
+              - '**/package{,-lock}.json'
+            runtime-tests:
+              - 'tests/**'
+              - '!**/README*.md'
+            image:
+              - '{Dockerfile,.dockerignore}'
+            generated-doc:
+              - 'docs/reference/configuration.mdx'
+
   contracts:
+    needs: changes
+    if: needs.changes.outputs.contracts == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -35,6 +86,8 @@ jobs:
       - run: npm run package-smoke
 
   audit:
+    needs: changes
+    if: needs.changes.outputs.audit == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -45,6 +98,8 @@ jobs:
       - run: npm audit --audit-level=high
 
   lint:
+    needs: changes
+    if: needs.changes.outputs.lint == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -58,6 +113,8 @@ jobs:
       - run: git diff --check
 
   rust-core:
+    needs: changes
+    if: needs.changes.outputs.rust-core == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -70,6 +127,8 @@ jobs:
       - run: cargo test --workspace --all-targets
 
   rust-platforms:
+    needs: changes
+    if: needs.changes.outputs.rust-platforms == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -84,6 +143,8 @@ jobs:
       - run: cargo test --workspace --all-targets
 
   brain-env:
+    needs: changes
+    if: needs.changes.outputs.brain-env == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -144,6 +205,8 @@ jobs:
         run: bash tools/check-release-fixtures.sh
 
   image-smoke:
+    needs: changes
+    if: needs.changes.outputs.image-smoke == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -166,23 +229,21 @@ jobs:
 
   build-test:
     if: always()
-    needs: [contracts, audit, lint, rust-core, rust-platforms, brain-env, image-smoke]
+    needs: [changes, contracts, audit, lint, rust-core, rust-platforms, brain-env, image-smoke]
     runs-on: ubuntu-24.04
     steps:
-      - name: Every release gate passed
+      - name: Every affected check passed
         env:
-          CONTRACTS: ${{ needs.contracts.result }}
-          AUDIT: ${{ needs.audit.result }}
-          LINT: ${{ needs.lint.result }}
-          CORE: ${{ needs.rust-core.result }}
-          PLATFORMS: ${{ needs.rust-platforms.result }}
-          ENV: ${{ needs.brain-env.result }}
-          IMAGE: ${{ needs.image-smoke.result }}
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          test "$CONTRACTS" = success
-          test "$AUDIT" = success
-          test "$LINT" = success
-          test "$CORE" = success
-          test "$PLATFORMS" = success
-          test "$ENV" = success
-          test "$IMAGE" = success
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const { changes, ...jobs } = JSON.parse(process.env.NEEDS);
+          assert.equal(changes.result, 'success', 'change detection must succeed');
+          for (const [name, job] of Object.entries(jobs)) {
+            const selected = changes.outputs[name];
+            assert.ok(['true', 'false'].includes(selected), `${name}: missing selection`);
+            const expected = selected === 'true' ? 'success' : 'skipped';
+            assert.equal(job.result, expected, `${name}: expected ${expected}, got ${job.result}`);
+          }
+          NODE
