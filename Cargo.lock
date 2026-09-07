@@ -357,8 +357,6 @@ dependencies = [
  "brain-protocol",
  "brain-telemetry",
  "clap",
- "http",
- "http-body-util",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -366,11 +364,31 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "url",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "brain-env-worker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.23.1",
+ "brain-env",
+ "brain-protocol",
+ "clap",
+ "http",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "url",
  "wasm-encoder",
  "wasmtime",
  "wasmtime-wasi",
  "wasmtime-wasi-http",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

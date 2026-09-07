@@ -34,7 +34,8 @@ where the Environment runs, how many workers it has, or how it retains those res
 | --- | --- |
 | brain | One session's ordered execution, canonical journal, projections, and injected execution ports |
 | brain-sessions | Multi-session management: create, load, list, activate, suspend, end, delete, and decide when to call session-scoped Environment lifecycle operations |
-| brain-env | The built-in Environment adapter and lifecycle implementations, Component admission, worker pool and IPC, Wasmtime execution, capability enforcement, and Environment resources |
+| brain-env | The built-in Environment adapter and lifecycle implementations, worker pool and IPC, capability policy, and Environment resources. Links no Wasm runtime |
+| brain-env-worker | The worker process: Component admission, Wasmtime execution, and capability enforcement inside the guest sandbox. The only crate that links a Wasm engine |
 | brain-server | Deployment configuration and composition, concrete storage and credential wiring, process lifecycle, health, and the API facade delegating to the composed services |
 | brain-http | HTTP routes and transport for the server API |
 | brain-sdk | Client access and extension authoring |

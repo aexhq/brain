@@ -19,7 +19,7 @@ executables:
 ```sh
 npm ci
 npm run build
-cargo build --release -p brain-server --bin brain -p brain-env --bin brain-env-worker
+cargo build --release -p brain-server --bin brain -p brain-env-worker --bin brain-env-worker
 ```
 
 Start Brain in one terminal:

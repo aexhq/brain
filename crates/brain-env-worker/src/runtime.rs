@@ -11,7 +11,7 @@ use wasmtime_wasi_http::{
     WasiHttpView,
 };
 
-use crate::{Access, EnvLimits, HostCall, NativeEnvironment, limits::ceiling};
+use brain_env::{Access, EnvLimits, HostCall, NativeEnvironment, NativeToolInput, ceiling};
 
 /// A long-running invocation yields to Tokio at this interval while retaining its fixed
 /// total fuel budget.
@@ -19,7 +19,7 @@ const FUEL_YIELD_INTERVAL: u64 = 10_000_000;
 
 mod bindings {
     wasmtime::component::bindgen!({
-        path: "wit/agentloop",
+        path: "../brain-env/wit/agentloop",
         world: "agentloop",
         imports: { default: async },
         exports: { default: async },
@@ -28,7 +28,7 @@ mod bindings {
 
 mod tool_bindings {
     wasmtime::component::bindgen!({
-        path: "wit/tool",
+        path: "../brain-env/wit/tool",
         world: "tool",
         imports: { default: async },
         exports: { default: async },
@@ -57,13 +57,6 @@ pub struct AdmittedAgentloop {
 pub struct AdmittedTool {
     pub digest: ToolId,
     pre: tool_bindings::ToolPre<HostState>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct NativeToolInput {
-    pub input: serde_json::Value,
-    pub configuration: serde_json::Value,
-    pub deadline_at_ms: u64,
 }
 
 impl AdmissionEngine {
@@ -309,7 +302,7 @@ fn network_allowed(allow: &[String], uri: &http::Uri) -> bool {
             let origin = format!("{scheme}://{authority}");
             allow
                 .iter()
-                .any(|entry| crate::network_covers(entry, &origin))
+                .any(|entry| brain_env::network_covers(entry, &origin))
         })
 }
 
@@ -719,11 +712,11 @@ mod tests {
             &["https://*.example.com".into()],
             &"https://notexample.com/".parse().unwrap()
         ));
-        assert!(crate::network_covers(
+        assert!(brain_env::network_covers(
             "https://*.example.com",
             "https://*.api.example.com"
         ));
-        assert!(!crate::network_covers(
+        assert!(!brain_env::network_covers(
             "https://*.api.example.com",
             "https://*.example.com"
         ));

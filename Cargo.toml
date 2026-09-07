@@ -3,6 +3,7 @@ members = [
   "crates/brain-protocol",
   "crates/brain-telemetry",
   "crates/brain-env",
+  "crates/brain-env-worker",
   "crates/brain",
   "crates/brain-http",
   "crates/brain-server",
@@ -24,6 +25,7 @@ brain-http = { path = "crates/brain-http" }
 brain-sessions = { path = "crates/brain-sessions" }
 brain-server = { path = "crates/brain-server" }
 brain-env = { path = "crates/brain-env" }
+brain-env-worker = { path = "crates/brain-env-worker" }
 
 anyhow = "1"
 async-trait = "0.1"
