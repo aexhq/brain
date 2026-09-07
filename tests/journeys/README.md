@@ -45,5 +45,7 @@ export BRAIN_TEST_REFERENCE_AGENTLOOP="$PWD/examples/reference-agentloop/target/
 npm run test:journeys
 ```
 
-Missing binaries or Components fail the suite; no journeys are conditionally skipped. Use WSL for
-these Linux process/worker tests on Windows. Portable SDK unit tests still run with `npm test`.
+Missing binaries or Components fail the suite; no journeys are conditionally skipped. The server
+and worker run natively on Windows too (the worker listens on a named pipe there), but the journey
+harness stops servers by process group, so run the journeys themselves in WSL on Windows. Portable
+SDK unit tests still run with `npm test`.

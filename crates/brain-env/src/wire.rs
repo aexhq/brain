@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-#[cfg(unix)]
 use crate::EnvLimits;
 
 /// What the guest asks Brain to do. Every payload is JSON in the shapes the
@@ -184,7 +183,6 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de
     serde_json::from_slice(&payload).map_err(|error| error.to_string())
 }
 
-#[cfg(unix)]
 pub(crate) fn max_request_bytes(request: &WorkerRequest, limits: &EnvLimits) -> usize {
     match request {
         WorkerRequest::Ping | WorkerRequest::Cancel => 1_024,

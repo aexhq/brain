@@ -80,8 +80,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.97.1"
+          targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --all-targets
+      - name: Build the diagnostic Components
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --manifest-path tests/fixtures/diagnostic-agentloop/Cargo.toml --target wasm32-wasip2 --release
+          cargo build --manifest-path tests/fixtures/diagnostic-tool/Cargo.toml --target wasm32-wasip2 --release
+          cargo build --manifest-path examples/reference-agentloop/Cargo.toml --target wasm32-wasip2 --release
+      - name: Admit and activate through the real worker process
+        shell: bash
+        env:
+          BRAIN_TEST_AGENTLOOP_PACKAGE: ${{ github.workspace }}/tests/fixtures/diagnostic-agentloop/target/wasm32-wasip2/release/diagnostic_agentloop.wasm
+          BRAIN_TEST_TOOL_COMPONENT: ${{ github.workspace }}/tests/fixtures/diagnostic-tool/target/wasm32-wasip2/release/diagnostic_tool.wasm
+          BRAIN_TEST_REFERENCE_AGENTLOOP: ${{ github.workspace }}/examples/reference-agentloop/target/wasm32-wasip2/release/reference_agentloop.wasm
+        run: cargo test -p brain-env --features integration-tests --test worker_process
 
   brain-env:
     runs-on: ubuntu-24.04

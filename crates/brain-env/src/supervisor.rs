@@ -1,4 +1,3 @@
-#[cfg(unix)]
 use std::process::Stdio;
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
@@ -193,7 +192,6 @@ struct WorkerState {
     incarnation: u64,
     agentloops: HashSet<AgentloopId>,
     tools: HashSet<ToolId>,
-    #[cfg(unix)]
     child: Option<tokio::process::Child>,
 }
 
@@ -371,7 +369,6 @@ impl WorkerSlot {
         }
     }
 
-    #[cfg(unix)]
     async fn ensure_worker(&self, state: &mut WorkerState) -> Result<(), String> {
         let exited = match state.child.as_mut() {
             Some(child) => child
@@ -388,17 +385,26 @@ impl WorkerSlot {
                     .map_err(|error| error.to_string())?;
                 secure_worker_directory(parent).await?;
             }
-            let _ = tokio::fs::remove_file(&self.socket).await;
-            let child = tokio::process::Command::new(&self.worker_binary)
+            crate::socket::unlink(&self.socket).map_err(|error| error.to_string())?;
+            let mut command = tokio::process::Command::new(&self.worker_binary);
+            command
                 .arg(&self.socket)
                 .args(self.limits.args())
-                .env_clear()
+                .env_clear();
+            // Winsock refuses to initialise in a process without SystemRoot.
+            #[cfg(windows)]
+            if let Some(root) = std::env::var_os("SystemRoot") {
+                command.env("SystemRoot", root);
+            }
+            let child = command
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .kill_on_drop(true)
                 .spawn()
                 .map_err(|error| format!("failed to start brain-env-worker: {error}"))?;
+            #[cfg(windows)]
+            tie_to_this_process(&child)?;
             state.child = Some(child);
             state.incarnation = state.incarnation.wrapping_add(1);
             state.agentloops.clear();
@@ -428,13 +434,6 @@ impl WorkerSlot {
         Ok(())
     }
 
-    #[cfg(not(unix))]
-    async fn ensure_worker(&self, _state: &mut WorkerState) -> Result<(), String> {
-        let _ = &self.worker_binary;
-        Err("brain-env-worker requires a Unix server".into())
-    }
-
-    #[cfg(unix)]
     async fn stop_worker(&self, state: &mut WorkerState) {
         if let Some(mut child) = state.child.take() {
             let _ = child.kill().await;
@@ -442,13 +441,7 @@ impl WorkerSlot {
         }
         state.agentloops.clear();
         state.tools.clear();
-        let _ = tokio::fs::remove_file(&self.socket).await;
-    }
-
-    #[cfg(not(unix))]
-    async fn stop_worker(&self, state: &mut WorkerState) {
-        state.agentloops.clear();
-        state.tools.clear();
+        let _ = crate::socket::unlink(&self.socket);
     }
 }
 
@@ -459,6 +452,71 @@ async fn secure_worker_directory(path: &std::path::Path) -> Result<(), String> {
     tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
         .await
         .map_err(|error| format!("failed to restrict worker socket directory: {error}"))
+}
+
+/// A named pipe is not in the directory. Its default security descriptor already gives
+/// other users read access only, so they cannot send the worker a request.
+#[cfg(not(unix))]
+async fn secure_worker_directory(_path: &std::path::Path) -> Result<(), String> {
+    Ok(())
+}
+
+/// Windows has no process group to kill with. A job object that kills on close ties every
+/// worker to this process however it ends; the handle is closed by the process's death.
+#[cfg(windows)]
+fn tie_to_this_process(child: &tokio::process::Child) -> Result<(), String> {
+    use std::sync::OnceLock;
+
+    use windows_sys::Win32::{
+        Foundation::HANDLE,
+        System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject,
+        },
+    };
+
+    struct Job(HANDLE);
+    // SAFETY: a job handle is a kernel object reference usable from any thread.
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+    static JOB: OnceLock<Result<Job, String>> = OnceLock::new();
+
+    let job = JOB
+        .get_or_init(|| {
+            // SAFETY: plain Win32 calls with a zeroed, correctly sized information block.
+            unsafe {
+                let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if handle.is_null() {
+                    return Err(std::io::Error::last_os_error().to_string());
+                }
+                let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+                limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                if SetInformationJobObject(
+                    handle,
+                    JobObjectExtendedLimitInformation,
+                    (&raw const limits).cast(),
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                ) == 0
+                {
+                    return Err(std::io::Error::last_os_error().to_string());
+                }
+                Ok(Job(handle))
+            }
+        })
+        .as_ref()
+        .map_err(|error| format!("failed to create the worker job object: {error}"))?;
+    let process = child
+        .raw_handle()
+        .ok_or("brain-env-worker exited before it could join the job object")?;
+    // SAFETY: both handles are live; the child handle is owned by `child`.
+    if unsafe { AssignProcessToJobObject(job.0, process.cast()) } == 0 {
+        return Err(format!(
+            "failed to tie brain-env-worker to this process: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
 }
 
 async fn persist_component(
@@ -472,15 +530,15 @@ async fn persist_component(
         .map_err(|error| error.to_string())?;
     let target = component_path(directory, kind, digest);
     let temporary = directory.join(format!(".{kind}-{digest}.tmp"));
-    tokio::fs::write(&temporary, package)
+    // One writable handle writes and syncs: Windows refuses to flush a read-only one.
+    let mut file = tokio::fs::File::create(&temporary)
         .await
         .map_err(|error| error.to_string())?;
-    tokio::fs::File::open(&temporary)
-        .await
-        .map_err(|error| error.to_string())?
-        .sync_all()
+    tokio::io::AsyncWriteExt::write_all(&mut file, package)
         .await
         .map_err(|error| error.to_string())?;
+    file.sync_all().await.map_err(|error| error.to_string())?;
+    drop(file);
     tokio::fs::rename(&temporary, &target)
         .await
         .map_err(|error| error.to_string())?;
