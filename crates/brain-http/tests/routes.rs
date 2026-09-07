@@ -191,6 +191,7 @@ impl BrainApi for Api {
             });
         }
         let events = matches!(after, 0 | 7).then(|| Event {
+            origin: None,
             sequence: after + 1,
             recorded_at_ms: 1_787_846_400_000,
             event_type: "test_event".into(),
@@ -412,13 +413,19 @@ async fn the_event_stream_starts_with_the_page_the_cursor_names() {
     let body = String::from_utf8(body.to_vec()).unwrap();
     assert!(body.contains("id: 8"));
     assert!(body.contains("event: test_event"));
-    assert!(body.contains("data: {\"ok\":true}"));
+    let data = body
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap();
+    let event: Event = serde_json::from_str(data).unwrap();
+    assert_eq!(event.data, serde_json::json!({"ok": true}));
 }
 
 #[tokio::test]
 async fn the_event_stream_drains_every_history_page_before_following_live() {
     let mut journal: Vec<Event> = (1..=1_002)
         .map(|sequence| Event {
+            origin: None,
             sequence,
             recorded_at_ms: 1_787_846_400_000 + sequence,
             event_type: "test_event".into(),
@@ -465,6 +472,7 @@ async fn a_terminal_cursor_and_a_failed_creation_close_the_event_stream() {
         (0, brain_protocol::codes::event::SESSION_CREATION_FAILED),
     ] {
         let journal = vec![Event {
+            origin: None,
             sequence: 1,
             recorded_at_ms: 1_787_846_400_000,
             event_type: event_type.into(),
@@ -723,6 +731,7 @@ async fn the_event_stream_carries_records_appended_after_it_opened() {
     live.send((
         SessionId::new("ses_test"),
         LiveEvent::Recorded(Event {
+            origin: None,
             sequence: 2,
             recorded_at_ms: 1_787_846_400_001,
             event_type: "assistant_delta".into(),
@@ -734,6 +743,7 @@ async fn the_event_stream_carries_records_appended_after_it_opened() {
     live.send((
         SessionId::new("ses_other"),
         LiveEvent::Recorded(Event {
+            origin: None,
             sequence: 3,
             recorded_at_ms: 1_787_846_400_002,
             event_type: "assistant_delta".into(),
@@ -814,6 +824,7 @@ async fn the_event_stream_carries_model_output_before_the_turn_finishes() {
     live.send((
         SessionId::new("ses_test"),
         LiveEvent::Recorded(Event {
+            origin: None,
             sequence: 2,
             recorded_at_ms: 1_787_846_400_003,
             event_type: "model_call_ended".into(),

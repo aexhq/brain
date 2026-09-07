@@ -436,7 +436,15 @@ impl LocalSessionStore {
         }
         let encoded = records
             .iter()
-            .map(|record| encode_unsequenced(&record.kind, &record.payload))
+            .map(|record| {
+                if record.origin.is_some() {
+                    let payload =
+                        serde_json::to_value(record).map_err(|e| Error::Journal(e.to_string()))?;
+                    encode_unsequenced("_extension_event", &payload)
+                } else {
+                    encode_unsequenced(&record.kind, &record.payload)
+                }
+            })
             .collect::<Result<Vec<_>, Error>>()?;
         let bytes = encoded.iter().try_fold(0_u64, |total, frame| {
             total
@@ -480,6 +488,7 @@ impl LocalSessionStore {
                     recorded_at_ms,
                     kind: record.kind,
                     payload: record.payload,
+                    origin: record.origin,
                 })
                 .collect::<Vec<_>>();
             Ok(Prepared {
@@ -764,6 +773,17 @@ impl SessionStore for LocalSessionStore {
         let locations: Vec<Location> = wanted.iter().map(|(_, location)| *location).collect();
         let mut sequences = wanted.into_iter().map(|(sequence, _)| sequence);
         self.journal.read_many(&locations, |frame| {
+            if frame.kind == "_extension_event" {
+                let record: AppendRecord = frame.decode()?;
+                return Ok(SessionRecord {
+                    session_id: session_id.clone(),
+                    sequence: sequences.next().unwrap_or(frame.sequence),
+                    recorded_at_ms: frame.recorded_at_ms,
+                    kind: record.kind,
+                    payload: record.payload,
+                    origin: record.origin,
+                });
+            }
             let (kind, payload) = if frame.kind == "transcript_delta" {
                 let entry = frame.decode::<JournalEntry>()?;
                 let JournalEntry::TranscriptDelta { keep, append } = entry else {
@@ -784,6 +804,7 @@ impl SessionStore for LocalSessionStore {
                 recorded_at_ms: frame.recorded_at_ms,
                 kind,
                 payload,
+                origin: None,
             })
         })
     }
@@ -820,6 +841,7 @@ fn project_transcript_replacement(
         recorded_at_ms,
         kind: codes::event::TRANSCRIPT_REPLACED.into(),
         payload: serde_json::json!({"keep": keep, "append": append}),
+        origin: None,
     }
 }
 

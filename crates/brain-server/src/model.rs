@@ -306,6 +306,7 @@ mod tests {
                     name: "test-model".into(),
                 },
                 ModelRequest {
+                    options: Default::default(),
                     system: None,
                     tools: None,
                     messages: vec![Message::user_text("hi")],

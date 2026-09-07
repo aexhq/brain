@@ -21,6 +21,8 @@ use super::generated::{CATALOG, CatalogModel, CatalogProvider};
 pub enum Dialect {
     #[serde(rename = "openai_chat")]
     OpenAiChat,
+    #[serde(rename = "openai_responses")]
+    OpenAiResponses,
     #[serde(rename = "anthropic_messages")]
     AnthropicMessages,
 }
@@ -207,6 +209,12 @@ fn curated() -> Vec<ProviderDef> {
             .unwrap_or_default(),
     };
     vec![
+        plain(
+            "openai-responses",
+            Dialect::OpenAiResponses,
+            "https://api.openai.com/v1",
+            true,
+        ),
         ProviderDef {
             name: "vercel-ai-gateway".into(),
             dialect: Dialect::OpenAiChat,

@@ -16,6 +16,7 @@ impl Guest for Diagnostic {
             .unwrap_or(0)
             + 1;
         kv["memory"] = serde_json::json!({"turns": turns});
+        brain::agentloop::host::set_kv("memory", &kv["memory"].to_string())?;
         brain::agentloop::host::emit("note", &serde_json::json!({"turns": turns}).to_string())?;
         let message = serde_json::from_str::<serde_json::Value>(&input.input_json)
             .map_err(error)?
@@ -24,8 +25,6 @@ impl Guest for Diagnostic {
             .unwrap_or_default()
             .to_owned();
         Ok(TurnOutput {
-            transcript_json: input.transcript_json,
-            kv_json: kv.to_string(),
             result_json: Some(serde_json::json!({"turns": turns, "message": message}).to_string()),
         })
     }

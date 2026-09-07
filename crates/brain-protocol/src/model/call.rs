@@ -35,17 +35,41 @@ pub struct ModelRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<crate::ToolDefinition>>,
     pub messages: Vec<Message>,
-    /// Absent means the one the session was created with, if any. Filled in like `system`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Absent inherits the session default; null resets it; an object sets it.
+    #[serde(
+        default,
+        deserialize_with = "present_value",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub response_format: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
+    /// Presentation options validated by the selected adapter; never execution authority.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub options: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+fn present_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(deserializer).map(Some)
 }
 
 /// Dialect-neutral live observations; the completed model result is journaled separately.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ModelStreamEvent {
+    NativeStart {
+        index: usize,
+        format: String,
+        data: serde_json::Value,
+    },
+    NativeDelta {
+        index: usize,
+        format: String,
+        field: String,
+        text: String,
+    },
     TextDelta {
         index: usize,
         text: String,

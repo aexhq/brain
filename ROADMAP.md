@@ -18,6 +18,8 @@ The MVP keeps Tool and Agentloop placements explicit and fixed at session creati
 - [x] Cross-session native workspace isolation test
 - [x] Public SDK user journeys against real servers and workers, with isolated suites running in parallel
 - [ ] Native subagent support, parent and child links between sessions
+- [x] Caller-owned child cancellation through `send` with the owning Tool's AbortSignal
+  ([ADR-045, section 5](references/adrs/2026-09-07-01-protocol-freeze.md#5-propagate-cancellation-to-owned-child-sessions))
 - [x] Agentloops running in an Environment reached over HTTP: Brain's turn services as session
   routes with a per-turn token, so a loop can run on another server
 - [ ] Post-MVP official `tool-env` Tool extension: inspect the session's placements and Environment
@@ -50,8 +52,18 @@ The MVP keeps Tool and Agentloop placements explicit and fixed at session creati
   environment variable ([ADR-043](references/adrs/2026-09-06-02-deployment-limits.md))
 - [ ] Optional worker isolation integrations such as gVisor or MicroVMs for deployments needing
   an additional boundary around Wasm execution
-- [ ] Multimodal input, images and files on `send`
+- [x] Image input on `send` and explicit image media in model Tool results
+- [ ] File input on `send`
 - [ ] Freeze a v1 API with tagged releases
+- [x] Resolve Event provenance, model content/continuation state, and error fidelity
+  before protocol freeze ([ADR-045](references/adrs/2026-09-07-01-protocol-freeze.md))
+- [x] Inline transcript/kv mutation services with automatic durable commit per operation;
+  preserve immediate model/Tool effect journaling and support graceful turn draining
+  ([ADR-045, section 3](references/adrs/2026-09-07-01-protocol-freeze.md#3-persist-author-directed-operations-inline-within-the-turn))
+- [ ] Post-v1 evaluate author-controlled state commits or automatic end-of-turn state
+  buffering when a concrete workflow requires atomic updates across operations;
+  retain effect records independently. Initial direction is automatic commit per operation
+  ([deferred scope](references/adrs/2026-09-07-01-protocol-freeze.md#deferred-roadmap))
 - [ ] File access and workspace sync
 - [ ] crates.io publication
 - [ ] Sessions spread across machines sharing environments

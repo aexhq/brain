@@ -23,6 +23,20 @@ struct RecordingBridge {
 impl TurnBridge for RecordingBridge {
     async fn call(&self, call: HostCall) -> Result<String, TurnError> {
         match call {
+            HostCall::SetKv { key, value_json } => {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(format!("kv {key} {value_json}"));
+                Ok("7".into())
+            }
+            HostCall::SetTranscript { messages_json } => {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(format!("transcript {messages_json}"));
+                Ok("7".into())
+            }
             HostCall::Events { after } => {
                 Ok(serde_json::json!({"events": [], "next_cursor": after}).to_string())
             }
@@ -93,12 +107,23 @@ fn tool_path() -> String {
 #[tokio::test]
 async fn reference_loop_reads_interruptions_and_hands_tool_failures_to_the_model() {
     struct Model {
+        kv: Mutex<serde_json::Value>,
+        transcript: Mutex<Vec<brain_protocol::Message>>,
         calls: std::sync::atomic::AtomicUsize,
     }
     #[async_trait]
     impl TurnBridge for Model {
         async fn call(&self, call: HostCall) -> Result<String, TurnError> {
             let answer = match call {
+                HostCall::SetKv { key, value_json } => {
+                    self.kv.lock().unwrap()[key] = serde_json::from_str(&value_json).unwrap();
+                    serde_json::json!(7)
+                }
+                HostCall::SetTranscript { messages_json } => {
+                    *self.transcript.lock().unwrap() =
+                        serde_json::from_str(&messages_json).unwrap();
+                    serde_json::json!(7)
+                }
                 HostCall::Events { after: 0 } => {
                     serde_json::json!({"events": [{"sequence": 3, "recorded_at_ms": 1, "event_type": "turn_failed", "data": {"code": "interrupted"}}], "next_cursor": 3})
                 }
@@ -154,9 +179,11 @@ async fn reference_loop_reads_interruptions_and_hands_tool_failures_to_the_model
         .await
         .unwrap();
     let model = Model {
+        kv: Mutex::new(serde_json::json!({})),
+        transcript: Mutex::new(Vec::new()),
         calls: std::sync::atomic::AtomicUsize::new(0),
     };
-    let output = pool
+    let _output = pool
         .turn(
             digest,
             environment(),
@@ -177,8 +204,8 @@ async fn reference_loop_reads_interruptions_and_hands_tool_failures_to_the_model
         .await
         .unwrap();
     assert_eq!(model.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(output.kv["observed_sequence"], 3);
-    assert_eq!(output.transcript.len(), 5);
+    assert_eq!(model.kv.lock().unwrap()["observed_sequence"], 3);
+    assert_eq!(model.transcript.lock().unwrap().len(), 5);
 }
 
 fn environment() -> NativeEnvironment {
@@ -196,6 +223,7 @@ async fn a_worker_crash_does_not_replay_or_stop_its_sibling_and_shutdown_reaps_b
     impl TurnBridge for Held {
         async fn call(&self, call: HostCall) -> Result<String, TurnError> {
             match call {
+                HostCall::SetKv { .. } => Ok("7".into()),
                 HostCall::Events { after } => {
                     Ok(serde_json::json!({"events": [], "next_cursor": after}).to_string())
                 }
@@ -306,6 +334,7 @@ async fn saturated_parent_turns_can_all_invoke_native_tools() {
         }
         async fn call(&self, call: HostCall) -> Result<String, TurnError> {
             match call {
+                HostCall::SetKv { .. } => Ok("7".into()),
                 HostCall::Events { after } => {
                     Ok(serde_json::json!({"events": [], "next_cursor": after}).to_string())
                 }
@@ -420,7 +449,14 @@ async fn real_worker_admits_and_runs_a_turn_of_the_diagnostic_loop() {
         .turn(digest, environment(), input("hello"), &bridge)
         .await
         .unwrap();
-    assert_eq!(output.kv["memory"]["turns"], 1);
+    assert!(
+        bridge
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| call == "kv memory {\"turns\":1}")
+    );
     assert_eq!(
         output.result,
         Some(serde_json::json!({"turns": 1, "message": "hello"}))
@@ -514,13 +550,23 @@ async fn concurrent_turns_all_reach_the_agentloop() {
                 calls: Mutex::new(Vec::new()),
                 cancelled: AtomicBool::new(false),
             };
-            pool.turn(
-                digest,
-                environment(),
-                input(&format!("turn {index}")),
-                &bridge,
-            )
-            .await
+            let output = pool
+                .turn(
+                    digest,
+                    environment(),
+                    input(&format!("turn {index}")),
+                    &bridge,
+                )
+                .await?;
+            assert!(
+                bridge
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|call| call == "kv memory {\"turns\":1}")
+            );
+            Ok(output)
         }));
     }
 
@@ -528,8 +574,7 @@ async fn concurrent_turns_all_reach_the_agentloop() {
     let mut refused = Vec::new();
     for turn in turns {
         match turn.await.unwrap() {
-            Ok(output) => {
-                assert_eq!(output.kv["memory"]["turns"], 1);
+            Ok::<_, brain_env::LoopError>(_output) => {
                 reached += 1;
             }
             Err(error) => refused.push(error.to_string()),

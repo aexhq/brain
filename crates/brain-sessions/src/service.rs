@@ -8,7 +8,10 @@ use brain_protocol::{
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, Mutex as StdMutex, Weak},
+    sync::{
+        Arc, Mutex as StdMutex, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
@@ -24,6 +27,8 @@ pub struct SessionResources {
 
 #[derive(Clone)]
 pub struct Sessions {
+    draining: Arc<AtomicBool>,
+    active: Arc<tokio::sync::RwLock<()>>,
     resources: Arc<SessionResources>,
     sessions: Arc<StdMutex<HashMap<SessionId, Entry>>>,
     stores: Arc<StdMutex<HashMap<SessionId, Weak<LocalSessionStore>>>>,
@@ -44,6 +49,8 @@ impl Sessions {
         std::fs::create_dir_all(&resources.sessions_dir)
             .map_err(|error| brain::Error::Journal(error.to_string()))?;
         Ok(Self {
+            draining: Arc::default(),
+            active: Arc::default(),
             resources: Arc::new(resources),
             sessions: Arc::default(),
             stores: Arc::default(),
@@ -68,6 +75,23 @@ impl Sessions {
                 api.suspend_idle().await;
             }
         })
+    }
+
+    /// Refuse new turns and Environment calls while existing work finishes with its services intact.
+    pub async fn drain(&self) {
+        self.draining.store(true, Ordering::Release);
+        let _finished = self.active.write().await;
+    }
+
+    async fn admit_work(&self) -> Result<tokio::sync::RwLockReadGuard<'_, ()>, ApiError> {
+        if self.draining.load(Ordering::Acquire) {
+            return Err(ApiError::overloaded("Brain is draining active work"));
+        }
+        let guard = self.active.read().await;
+        if self.draining.load(Ordering::Acquire) {
+            return Err(ApiError::overloaded("Brain is draining active work"));
+        }
+        Ok(guard)
     }
 
     pub async fn suspend_idle(&self) {
@@ -289,6 +313,7 @@ impl Sessions {
         config: SessionConfig,
         transcript: Vec<brain_protocol::Message>,
     ) -> Result<SessionSummary, ApiError> {
+        let _active = self.admit_work().await?;
         let session_lock = self.session_lock(&session_id)?;
         let _session_guard = session_lock.lock().await;
         let store_lock = self.store_locks.acquire(session_id.clone())?;
@@ -437,6 +462,7 @@ impl Sessions {
         session_id: SessionId,
         request: MessageRequest,
     ) -> Result<SessionSummary, ApiError> {
+        let _active = self.admit_work().await?;
         Session::validate_message(&request).map_err(api_error)?;
         let lock = self.session_lock(&session_id)?;
         let _guard = lock.lock().await;
@@ -465,6 +491,7 @@ impl Sessions {
         name: String,
         request: EnvironmentCallRequest,
     ) -> Result<EnvironmentCallResult, ApiError> {
+        let _active = self.admit_work().await?;
         if !valid_identifier(&name) {
             return Err(ApiError::invalid_request(
                 "Environment method name is invalid",

@@ -14,10 +14,6 @@
     }
   },
   "output": {
-    "transcript": [
-      { "role": "user", "content": [{ "type": "text", "text": "hello" }] }
-    ],
-    "kv": { "memory": { "turns": 1 } },
     "result": { "ok": true }
   }
 }

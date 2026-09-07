@@ -674,7 +674,7 @@ fn is_last(event: &brain_protocol::Event) -> bool {
 /// One journal record as it goes out on the wire. The id is the sequence, so a client
 /// that reconnects with `Last-Event-ID` resumes from exactly what it saw.
 fn sse(event: brain_protocol::Event) -> Result<SseEvent, std::convert::Infallible> {
-    let data = serde_json::to_string(&event.data).expect("JSON event payload is serializable");
+    let data = serde_json::to_string(&event).expect("recorded Event is serializable");
     Ok(SseEvent::default()
         .id(event.sequence.to_string())
         .event(event.event_type)

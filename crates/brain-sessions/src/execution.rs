@@ -8,6 +8,10 @@ use brain_protocol::{
     Outcome, SessionId, ToolCancellation, ToolDispatch, codes,
 };
 use serde_json::{Value, json};
+
+#[cfg(test)]
+#[path = "execution_tests.rs"]
+mod tests;
 use std::sync::Arc;
 
 /// Runs each turn in the Environment the Agentloop names, through the same interface
@@ -57,6 +61,7 @@ impl LoopExecutor for EnvironmentLoopExecutor {
                 code,
                 message,
                 retryable,
+                ..
             } => {
                 if code == codes::failure::CANCELLED {
                     return Err(brain::Error::Cancelled(message));
@@ -68,7 +73,7 @@ impl LoopExecutor for EnvironmentLoopExecutor {
                 }))
             }
             EnvironmentReceipt::Unknown { message } => Err(brain::Error::Ambiguous(message)),
-            _ => Err(brain::Error::Executor(
+            _ => Err(brain::Error::Ambiguous(
                 "Environment returned a nonterminal turn receipt".into(),
             )),
         }
@@ -115,15 +120,21 @@ impl ToolExecutor for SessionToolExecutor {
             .await?
         {
             EnvironmentReceipt::Result { output } => Ok(Outcome::Ok { value: output }),
-            EnvironmentReceipt::Failure { code, message, .. } => Ok(Outcome::Error {
+            EnvironmentReceipt::Failure {
+                code,
+                message,
+                retryable,
+                details,
+            } => Ok(Outcome::Error {
                 error: brain_protocol::OutcomeError {
                     code,
                     message,
-                    details: None,
+                    retryable,
+                    details,
                 },
             }),
             EnvironmentReceipt::Unknown { message } => Err(brain::Error::Ambiguous(message)),
-            _ => Err(brain::Error::Executor(
+            _ => Err(brain::Error::Ambiguous(
                 "Environment returned a nonterminal Tool receipt".into(),
             )),
         }
@@ -162,7 +173,15 @@ pub enum SessionServices {
 impl ExecutionServices for SessionServices {
     fn methods(&self) -> &'static [&'static str] {
         match self {
-            Self::Loop(_) => &["events", "model", "dispatch", "emit", "telemetry"],
+            Self::Loop(_) => &[
+                "events",
+                "model",
+                "dispatch",
+                "emit",
+                "telemetry",
+                "set_transcript",
+                "set_kv",
+            ],
             Self::Tool(_) => &["emit", "telemetry"],
         }
     }
@@ -171,6 +190,16 @@ impl ExecutionServices for SessionServices {
             return Err(brain::Error::Cancelled("execution cancelled".into()));
         }
         match (self, method) {
+            (Self::Loop(services), "set_transcript") => Ok(json!(
+                services
+                    .set_transcript(serde_json::from_value(input).map_err(json_error)?)
+                    .await?
+            )),
+            (Self::Loop(services), "set_kv") => Ok(json!(
+                services
+                    .set_kv(serde_json::from_value(input).map_err(json_error)?)
+                    .await?
+            )),
             (Self::Loop(services), "events") => serde_json::to_value(
                 services
                     .events(serde_json::from_value(input).map_err(json_error)?)

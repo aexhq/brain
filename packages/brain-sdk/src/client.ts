@@ -8,7 +8,7 @@ import type {
 } from "./generated/session.js";
 import type {
   Component, CreateSessionOptions, Environment, OperationOptions, PlacedAgentloop, PlacedTool,
-  SessionEvent, SessionState, SessionStreamEvent, UserInput,
+  SessionEvent, SessionState, SessionStreamEvent, UserInput, SendOptions,
 } from "./types.js";
 
 export interface BrainOptions {
@@ -85,7 +85,11 @@ export class BrainClient {
   }
 
   async *stream(sessionId: string, after = 0, signal?: AbortSignal): AsyncGenerator<SessionStreamEvent> {
-    yield* this.streamPath(`/v1/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`, signal);
+    for await (const event of this.streamPath(`/v1/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`, signal)) {
+      if (event.sequence === undefined) { yield event; continue; }
+      const record = event.data as EventPage["events"][number];
+      yield { sequence: record.sequence, type: record.event_type, data: record.data, ...(record.origin == null ? {} : { origin: record.origin }) };
+    }
   }
 
   async *streamPath(path: string, signal?: AbortSignal, onOpen?: () => void): AsyncGenerator<SessionStreamEvent> {
@@ -301,11 +305,41 @@ export class SessionHandle {
   ) {}
   get id(): string { return this.state.id; }
 
-  async send(input: UserInput | string, operation: OperationOptions = {}): Promise<SessionState> {
+  async send(input: UserInput | string, operation: SendOptions = {}): Promise<SessionState> {
     const normalized = typeof input === "string" ? { message: input } : input;
     if (typeof normalized?.message !== "string" || normalized.message === "") throw new TypeError("send needs a non-empty message");
-    const session = await this.client.request<WireSession>("POST", `/v1/sessions/${encodeURIComponent(this.id)}/messages`, { input: normalized }, keyOf(operation));
-    return (this.state = toSessionState(session));
+    operation.signal?.throwIfAborted();
+    const after = this.state.lastSequence;
+    const pending = this.client.request<WireSession>("POST", `/v1/sessions/${encodeURIComponent(this.id)}/messages`, { input: normalized }, keyOf(operation));
+    if (operation.signal === undefined) return (this.state = toSessionState(await pending));
+    const watching = new AbortController();
+    let completed = false;
+    let cancelling: Promise<void> | undefined;
+    void pending.then(() => { completed = true; }, () => { completed = true; });
+    let interrupt!: () => void;
+    const interrupted = new Promise<void>((resolve) => { interrupt = resolve; });
+    operation.signal.addEventListener("abort", interrupt, { once: true });
+    if (operation.signal.aborted) interrupt();
+    const cancellation = (async () => {
+      await interrupted;
+      // Cancellation before admission must wait for the turn's start, not cancel an idle session.
+      for await (const event of this.client.stream(this.id, after, watching.signal)) {
+        if (event.type === "turn_started") {
+          if (completed) break;
+          cancelling = this.cancel();
+          await cancelling;
+          break;
+        }
+      }
+      return pending;
+    })();
+    try {
+      return (this.state = toSessionState(await Promise.race([pending, cancellation])));
+    } finally {
+      operation.signal.removeEventListener("abort", interrupt);
+      watching.abort();
+      await cancelling;
+    }
   }
 
   transcript(): Promise<SessionTranscript> {
@@ -319,7 +353,7 @@ export class SessionHandle {
       let cursor = after;
       for (;;) {
         const page = await client.request<EventPage>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}/events?after=${cursor}`);
-        for (const event of page.events) yield { sequence: event.sequence, recordedAt: new Date(event.recorded_at_ms), type: event.event_type, data: event.data };
+        for (const event of page.events) yield { sequence: event.sequence, recordedAt: new Date(event.recorded_at_ms), type: event.event_type, data: event.data, ...(event.origin == null ? {} : { origin: event.origin }) };
         if (page.next_cursor === cursor) return;
         cursor = page.next_cursor;
       }

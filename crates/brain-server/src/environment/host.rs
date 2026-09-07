@@ -29,6 +29,7 @@ pub struct HostEnvironment {
 }
 
 struct State {
+    closed: bool,
     log: File,
     hosts: HashMap<HostId, Host>,
 }
@@ -127,7 +128,11 @@ impl HostEnvironment {
             }
         }
         Ok(Self {
-            inner: Arc::new(Mutex::new(State { log, hosts })),
+            inner: Arc::new(Mutex::new(State {
+                log,
+                hosts,
+                closed: false,
+            })),
             limits: limits.clone(),
         })
     }
@@ -246,6 +251,9 @@ impl HostEnvironment {
         token: &str,
     ) -> Result<brain_http::HostConnection, ApiError> {
         let mut state = self.lock()?;
+        if state.closed {
+            return Err(ApiError::overloaded("Brain has drained its active work"));
+        }
         let host = authorized(&mut state, host_id, token)?;
         let (sender, receiver) = mpsc::channel(self.limits.max_host_commands.max(1));
         let (disconnect, displaced) = oneshot::channel();
@@ -444,6 +452,17 @@ impl HostEnvironment {
         }
     }
 
+    pub fn close(&self) {
+        let mut state = self.inner.lock().expect("host state poisoned");
+        state.closed = true;
+        for host in state.hosts.values_mut() {
+            host.commands = None;
+            if let Some(disconnect) = host.disconnect.take() {
+                let _ = disconnect.send(());
+            }
+        }
+    }
+
     fn close_connection(&self, host_id: &HostId, connection: u64) {
         if let Ok(mut state) = self.inner.lock()
             && let Some(host) = state.hosts.get_mut(host_id)
@@ -511,18 +530,21 @@ impl EnvironmentAdapter for HostEnvironment {
                     Outcome::Error { error } => EnvironmentReceipt::Failure {
                         code: error.code,
                         message: error.message,
-                        retryable: false,
+                        retryable: error.retryable,
+                        details: error.details,
                     },
                     Outcome::Unknown { message } => EnvironmentReceipt::Unknown { message },
                     Outcome::Timeout => EnvironmentReceipt::Failure {
                         code: "timeout".into(),
                         message: "host invocation timed out".into(),
                         retryable: false,
+                        details: None,
                     },
                     Outcome::Cancelled => EnvironmentReceipt::Failure {
                         code: "cancelled".into(),
                         message: "host invocation cancelled".into(),
                         retryable: false,
+                        details: None,
                     },
                 })
             }

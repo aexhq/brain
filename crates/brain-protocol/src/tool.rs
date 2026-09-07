@@ -136,6 +136,7 @@ impl ToolResult {
                 output: serde_json::json!({
                     "code": error.code,
                     "message": error.message,
+                    "retryable": error.retryable,
                     "details": error.details,
                 }),
                 is_error: true,

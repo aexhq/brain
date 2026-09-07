@@ -1,10 +1,12 @@
-use brain_protocol::{Event, SessionId};
+use brain_protocol::{Event, EventOrigin, SessionId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AppendRecord {
     pub kind: String,
     pub payload: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<EventOrigin>,
 }
 
 impl AppendRecord {
@@ -12,6 +14,7 @@ impl AppendRecord {
         Self {
             kind: kind.into(),
             payload,
+            origin: None,
         }
     }
 }
@@ -24,6 +27,8 @@ pub struct SessionRecord {
     pub recorded_at_ms: u64,
     pub kind: String,
     pub payload: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<EventOrigin>,
 }
 
 impl SessionRecord {
@@ -34,6 +39,7 @@ impl SessionRecord {
             recorded_at_ms: self.recorded_at_ms,
             event_type: self.kind,
             data: self.payload,
+            origin: self.origin,
         }
     }
 }

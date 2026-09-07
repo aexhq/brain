@@ -29,7 +29,8 @@ const f = fixture({ providers: { selector: async ({ operation }) => {
       call_id: block.id, name: block.name, environment: block.input.environment, input: block.input.input,
     })));
     transcript.push({ role: "user", content: results.map((result) => ({ type: "tool_result", tool_use_id: result.call_id, content: result.output, is_error: result.is_error })) });
-    receipt = { type: "result", output: { transcript, kv: {}, result: results[0].output } };
+    await call("set_transcript", transcript);
+    receipt = { type: "result", output: { result: results[0].output } };
   }
   return { contract: "environment/v1", sequence, receipt };
 } } });

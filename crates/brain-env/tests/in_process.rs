@@ -10,12 +10,23 @@ use brain_env::{
 };
 use brain_protocol::{RuntimeEnvelope, TurnError, TurnInput};
 
-struct Answering;
+#[derive(Default)]
+struct Answering {
+    kv: std::sync::Mutex<std::collections::BTreeMap<String, serde_json::Value>>,
+}
 
 #[async_trait]
 impl GuestHost for Answering {
     async fn call(&self, call: HostCall) -> Result<String, TurnError> {
         match call {
+            HostCall::SetKv { key, value_json } => {
+                self.kv
+                    .lock()
+                    .unwrap()
+                    .insert(key, serde_json::from_str(&value_json).unwrap());
+                Ok("7".into())
+            }
+            HostCall::SetTranscript { .. } => Ok("7".into()),
             HostCall::Events { after } => {
                 Ok(serde_json::json!({"events": [], "next_cursor": after}).to_string())
             }
@@ -69,28 +80,33 @@ async fn python_agentloop_calls_a_brain_host_service() {
     )
     .unwrap();
     let admitted = engine.admit(&package).unwrap();
+    let services = Arc::new(Answering::default());
     let output = admitted
         .turn(
             engine.engine(),
             &limits,
             environment(),
             input("python", Default::default()),
-            Arc::new(Answering),
+            services.clone(),
         )
         .await
         .unwrap();
-    assert_eq!(output.result, Some(serde_json::json!({"sequence": 7})));
-    let second = admitted
+    assert_eq!(
+        output.result,
+        Some(serde_json::json!({"sequence": 7, "calls": 1}))
+    );
+    let next_kv = services.kv.lock().unwrap().clone();
+    let _second = admitted
         .turn(
             engine.engine(),
             &limits,
             environment(),
-            input("again", output.kv),
-            Arc::new(Answering),
+            input("again", next_kv),
+            services.clone(),
         )
         .await
         .unwrap();
-    assert_eq!(second.kv["calls"], 2);
+    assert_eq!(services.kv.lock().unwrap()["calls"], 2);
 }
 
 #[tokio::test]
@@ -105,6 +121,7 @@ async fn a_packaged_python_tool_calls_its_granted_service() {
     };
     let engine = AdmissionEngine::new(limits.clone(), Vec::new()).unwrap();
     let admitted = engine.admit_tool(&component).unwrap();
+    let services = Arc::new(Answering::default());
     let output = admitted
         .run(
             engine.engine(),
@@ -115,7 +132,7 @@ async fn a_packaged_python_tool_calls_its_granted_service() {
                 configuration: serde_json::json!({}),
                 deadline_at_ms: u64::MAX,
             },
-            Arc::new(Answering),
+            services.clone(),
         )
         .await
         .unwrap();
@@ -145,33 +162,35 @@ async fn the_diagnostic_component_takes_two_turns_in_fresh_stores() {
     )
     .unwrap();
     let admitted = engine.admit(&package).unwrap();
+    let services = Arc::new(Answering::default());
     let first = admitted
         .turn(
             engine.engine(),
             &limits,
             environment(),
             input("hello", Default::default()),
-            Arc::new(Answering),
+            services.clone(),
         )
         .await
         .unwrap();
-    assert_eq!(first.kv["memory"]["turns"], 1);
+    assert_eq!(services.kv.lock().unwrap()["memory"]["turns"], 1);
     assert_eq!(
         first.result,
         Some(serde_json::json!({"turns": 1, "message": "hello"}))
     );
 
-    let second = admitted
+    let next_kv = services.kv.lock().unwrap().clone();
+    let _second = admitted
         .turn(
             engine.engine(),
             &limits,
             environment(),
-            input("again", first.kv),
-            Arc::new(Answering),
+            input("again", next_kv),
+            services.clone(),
         )
         .await
         .unwrap();
-    assert_eq!(second.kv["memory"]["turns"], 2);
+    assert_eq!(services.kv.lock().unwrap()["memory"]["turns"], 2);
 }
 
 #[tokio::test]
@@ -184,6 +203,7 @@ async fn a_tool_component_runs_in_a_fresh_store() {
     let limits = EnvLimits::default();
     let engine = AdmissionEngine::new(limits.clone(), Vec::new()).unwrap();
     let admitted = engine.admit_tool(&component).unwrap();
+    let services = Arc::new(Answering::default());
     let output = admitted
         .run(
             engine.engine(),
@@ -194,7 +214,7 @@ async fn a_tool_component_runs_in_a_fresh_store() {
                 configuration: serde_json::json!({}),
                 deadline_at_ms: 1_000,
             },
-            Arc::new(Answering),
+            services.clone(),
         )
         .await
         .unwrap();

@@ -30,16 +30,19 @@ fn user(text: &str) -> Message {
     Message::user_text(text)
 }
 
-fn done(transcript: Vec<Message>) -> Result<TurnOutput, Error> {
+async fn done(
+    services: &dyn brain::TurnServices,
+    transcript: Vec<Message>,
+) -> Result<TurnOutput, Error> {
+    services.set_transcript(transcript).await?;
     Ok(TurnOutput {
-        transcript,
-        kv: Default::default(),
         result: Some(serde_json::json!({"ok": true})),
     })
 }
 
 fn request(messages: Vec<Message>) -> ModelRequest {
     ModelRequest {
+        options: Default::default(),
         system: None,
         tools: None,
         messages,
@@ -221,7 +224,7 @@ async fn the_started_record_precedes_the_model_effect() {
         transcript.push(user(&input.input.message));
         let result = services.model(request(transcript.clone())).await?;
         transcript.push(result.message);
-        done(transcript)
+        done(&*services, transcript).await
     });
     let runtime = runtime(&data_dir, loop_executor, model.clone(), Arc::new(NoTools));
     let handle = runtime.create(&config(), &[]).unwrap();
@@ -260,7 +263,7 @@ async fn cancel_interrupts_an_inflight_model_request() {
         transcript.push(user(&input.input.message));
         let result = services.model(request(transcript.clone())).await?;
         transcript.push(result.message);
-        done(transcript)
+        done(&*services, transcript).await
     });
     let runtime = runtime(
         &data_dir,
@@ -321,7 +324,7 @@ async fn cancel_forwards_inflight_tool_cancellation_to_the_environment_port() {
             .await?;
         let mut transcript = input.transcript;
         transcript.push(user(&format!("{} results", results.len())));
-        done(transcript)
+        done(&*services, transcript).await
     });
     let runtime = runtime_with_deadline(&data_dir, loop_executor, tools.clone(), 120);
     let handle = runtime.create(&tool_config("slow", vec![]), &[]).unwrap();
@@ -376,7 +379,7 @@ async fn wall_deadline_keeps_completed_tool_results_and_records_unknown_cancella
                 invocation("lookup", "slow"),
             ])
             .await?;
-        done(input.transcript)
+        done(&*services, input.transcript).await
     });
     let mut runtime = runtime(&data_dir, executor, Arc::new(NoModels), Arc::new(Tools));
     Arc::get_mut(&mut runtime.config)
@@ -432,7 +435,7 @@ async fn a_subscriber_sees_model_output_while_the_turn_is_running() {
         transcript.push(user(&input.input.message));
         let result = services.model(request(transcript.clone())).await?;
         transcript.push(result.message);
-        done(transcript)
+        done(&*services, transcript).await
     });
     let runtime = runtime(
         &data_dir,
@@ -473,13 +476,13 @@ async fn a_session_can_be_created_with_a_transcript() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let loop_executor = {
         let seen = seen.clone();
-        scripted(move |input, _services| {
+        scripted(move |input, services| {
             let seen = seen.clone();
             async move {
                 *seen.lock().unwrap() = input.transcript.clone();
                 let mut transcript = input.transcript;
                 transcript.push(user(&input.input.message));
-                done(transcript)
+                done(&*services, transcript).await
             }
         })
     };
@@ -529,7 +532,7 @@ async fn a_loop_cannot_append_brains_own_kinds() {
         services
             .emit("note".into(), serde_json::json!({"text": "mine"}))
             .await?;
-        done(input.transcript)
+        done(&*services, input.transcript).await
     });
     let runtime = runtime(
         &data_dir,
@@ -560,7 +563,7 @@ async fn the_journal_is_the_only_thing_written() {
         transcript.push(user(&input.input.message));
         let result = services.model(request(transcript.clone())).await?;
         transcript.push(result.message);
-        done(transcript)
+        done(&*services, transcript).await
     });
     let runtime = runtime(
         &data_dir,
@@ -656,7 +659,7 @@ async fn a_tool_call_record_names_the_tool_and_nothing_else_about_it() {
         services
             .dispatch(vec![invocation("bash", "call_1")])
             .await?;
-        done(input.transcript)
+        done(&*services, input.transcript).await
     });
     let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 5);
     let handle = runtime
@@ -695,6 +698,7 @@ async fn invoke_outcomes_map_onto_tool_results() {
         (
             Outcome::Error {
                 error: OutcomeError {
+                    retryable: false,
                     code: "boom".into(),
                     message: "it broke".into(),
                     details: None,
@@ -728,7 +732,7 @@ async fn invoke_outcomes_map_onto_tool_results() {
                         .dispatch(vec![invocation("tool", "call_1")])
                         .await?;
                     *seen.lock().unwrap() = results;
-                    done(input.transcript)
+                    done(&*services, input.transcript).await
                 }
             })
         };
@@ -776,7 +780,7 @@ async fn an_overdue_invoke_is_cancelled_and_recorded_as_unknown() {
                     .dispatch(vec![invocation("slow", "call_1")])
                     .await?;
                 *seen.lock().unwrap() = results;
-                done(input.transcript)
+                done(&*services, input.transcript).await
             }
         })
     };
@@ -818,7 +822,7 @@ async fn a_tool_in_a_host_env_uses_the_configured_executor() {
                     }])
                     .await?;
                 *seen.lock().unwrap() = results;
-                done(input.transcript)
+                done(&*services, input.transcript).await
             }
         })
     };
@@ -858,7 +862,7 @@ async fn an_unanswered_host_call_becomes_unknown_and_journals_the_cancellation()
                     }])
                     .await?;
                 *seen.lock().unwrap() = results;
-                done(input.transcript)
+                done(&*services, input.transcript).await
             }
         })
     };
@@ -898,13 +902,14 @@ async fn the_transcript_folds_back_from_its_deltas() {
         transcript.push(user("and then"));
         let second = services.model(request(transcript.clone())).await?;
         transcript.push(second.message);
-        let mut kv = std::collections::BTreeMap::new();
-        kv.insert("memory".to_string(), serde_json::json!({"turns": 1}));
-        Ok(TurnOutput {
-            transcript,
-            kv,
-            result: None,
-        })
+        services.set_transcript(transcript).await?;
+        services
+            .set_kv(brain_protocol::KvSetRequest {
+                key: "memory".into(),
+                value: serde_json::json!({"turns": 1}),
+            })
+            .await?;
+        Ok(TurnOutput { result: None })
     });
     let runtime = runtime(
         &data_dir,
@@ -943,7 +948,7 @@ async fn a_session_resumes_from_its_store_after_its_task_is_dropped() {
                 transcript.push(user(&input.input.message));
                 let result = services.model(request(transcript.clone())).await?;
                 transcript.push(result.message);
-                done(transcript)
+                done(&*services, transcript).await
             }
         })
     };
@@ -999,7 +1004,7 @@ async fn events_since_the_last_activation_reach_the_loop() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let loop_executor = {
         let seen = seen.clone();
-        scripted(move |input, _services| {
+        scripted(move |input, services| {
             let seen = seen.clone();
             async move {
                 *seen.lock().unwrap() = input
@@ -1007,7 +1012,7 @@ async fn events_since_the_last_activation_reach_the_loop() {
                     .iter()
                     .map(|event| event.event_type.clone())
                     .collect();
-                done(input.transcript)
+                done(&*services, input.transcript).await
             }
         })
     };
@@ -1069,7 +1074,7 @@ async fn one_activation_can_read_more_than_the_initial_event_page() {
                 .windows(2)
                 .all(|pair| pair[0].sequence < pair[1].sequence)
         );
-        done(input.transcript)
+        done(&*services, input.transcript).await
     });
     let runtime = runtime(
         &data_dir,
@@ -1107,7 +1112,7 @@ async fn transcript_replacement_reaches_the_live_feed_and_next_activation() {
     let loop_executor = {
         let turn = turn.clone();
         let seen = seen.clone();
-        scripted(move |input, _services| {
+        scripted(move |input, services| {
             let turn = turn.fetch_add(1, Ordering::SeqCst);
             let seen = seen.clone();
             async move {
@@ -1119,9 +1124,9 @@ async fn transcript_replacement_reaches_the_live_feed_and_next_activation() {
                         .collect::<Vec<_>>(),
                 );
                 if turn == 0 {
-                    done(vec![user("summary")])
+                    done(&*services, vec![user("summary")]).await
                 } else {
-                    done(input.transcript)
+                    done(&*services, input.transcript).await
                 }
             }
         })
@@ -1172,7 +1177,7 @@ async fn a_bounded_event_page_does_not_skip_the_rest() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let loop_executor = {
         let seen = seen.clone();
-        scripted(move |input, _services| {
+        scripted(move |input, services| {
             let seen = seen.clone();
             async move {
                 seen.lock().unwrap().extend(
@@ -1182,7 +1187,7 @@ async fn a_bounded_event_page_does_not_skip_the_rest() {
                         .filter(|event| event.event_type == "queued")
                         .filter_map(|event| event.data["index"].as_u64()),
                 );
-                done(input.transcript)
+                done(&*services, input.transcript).await
             }
         })
     };

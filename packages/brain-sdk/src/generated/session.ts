@@ -26,6 +26,21 @@ export type ContentBlock =
       type: "text";
     }
   | {
+      type: "image";
+      /**
+       * HTTPS URL or an image data URL, rendered by the fixed model adapter.
+       */
+      url: string;
+    }
+  | {
+      data: unknown;
+      /**
+       * Versioned adapter format; incompatible adapters must reject the item.
+       */
+      format: string;
+      type: "native";
+    }
+  | {
       id: string;
       input: unknown;
       name: string;
@@ -38,9 +53,21 @@ export type ContentBlock =
        * model read that failure as a success.
        */
       is_error: boolean;
+      /**
+       * Model-visible media alongside the ordinary JSON Tool output.
+       */
+      media?: Media[];
       tool_use_id: string;
       type: "tool_result";
     };
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "Media".
+ */
+export type Media = {
+  type: "image";
+  url: string;
+};
 /**
  * One Environment a session declares: a name unique within the session, how Brain
  * reaches it, and its own configuration, which Brain carries and never reads.
@@ -76,7 +103,20 @@ export type HostId = string;
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "Role".
  */
-export type Role = "user" | "assistant";
+export type Role = "user" | "assistant" | "developer";
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EventOrigin".
+ */
+export type EventOrigin =
+  | {
+      kind: "agentloop";
+      sequence: number;
+    }
+  | {
+      kind: "tool";
+      sequence: number;
+    };
 /**
  * What a host is asked to do for a session placed in it. A call is named by the
  * command's `(session_id, sequence)`; the Tool's own call id never leaves Brain.
@@ -304,6 +344,18 @@ export interface EnvironmentCallResult {
 export interface Event {
   data: unknown;
   event_type: string;
+  /**
+   * Absent on kernel records and historical extension records without attribution.
+   */
+  origin?:
+    | {
+        kind: "agentloop";
+        sequence: number;
+      }
+    | {
+        kind: "tool";
+        sequence: number;
+      };
   recorded_at_ms: number;
   sequence: number;
 }
@@ -396,6 +448,15 @@ export interface OutcomeError {
   code: string;
   details?: unknown;
   message: string;
+  retryable?: boolean;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "KvSetRequest".
+ */
+export interface KvSetRequest {
+  key: string;
+  value: unknown;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
@@ -405,15 +466,13 @@ export interface MessageRequest {
   input: UserInput;
 }
 /**
- * What an application hands a session on `send`. The shape is closed on purpose:
- * Brain owes every agentloop the same observation shape regardless of who wrote
- * the client, so free-form content is not accepted. Multimodal parts will extend
- * this record when they land — see the roadmap.
+ * What an application hands a session on `send`.
  *
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "UserInput".
  */
 export interface UserInput {
+  media?: Media[];
   message: string;
 }
 /**
@@ -424,7 +483,13 @@ export interface ModelRequest {
   max_output_tokens?: number;
   messages: Message[];
   /**
-   * Absent means the one the session was created with, if any. Filled in like `system`.
+   * Presentation options validated by the selected adapter; never execution authority.
+   */
+  options?: {
+    [k: string]: unknown | undefined;
+  };
+  /**
+   * Absent inherits the session default; null resets it; an object sets it.
    */
   response_format?: {
     [k: string]: unknown | undefined;

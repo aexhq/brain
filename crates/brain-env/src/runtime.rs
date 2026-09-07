@@ -326,6 +326,21 @@ fn bounded_http_options(options: Option<RequestOptions>, limits: &EnvLimits) -> 
 }
 
 impl bindings::brain::agentloop::host::Host for HostState {
+    async fn set_transcript(&mut self, messages_json: String) -> Result<u64, wit::TurnError> {
+        let answer = self
+            .call(HostCall::SetTranscript { messages_json })
+            .await
+            .map_err(wit_error)?;
+        serde_json::from_str(&answer).map_err(|error| wit_error(host_failure(error)))
+    }
+
+    async fn set_kv(&mut self, key: String, value_json: String) -> Result<u64, wit::TurnError> {
+        let answer = self
+            .call(HostCall::SetKv { key, value_json })
+            .await
+            .map_err(wit_error)?;
+        serde_json::from_str(&answer).map_err(|error| wit_error(host_failure(error)))
+    }
     async fn events(&mut self, after: u64) -> Result<String, wit::TurnError> {
         self.call(HostCall::Events { after })
             .await
@@ -514,7 +529,6 @@ impl AdmittedAgentloop {
             Err(error) => return Err(host_failure(turn_error(error))),
         };
         let output = from_wit_output(output).map_err(host_failure)?;
-        validate_output(&output).map_err(host_failure)?;
         Ok(output)
     }
 }
@@ -621,31 +635,12 @@ mod erased_serialize {
 
 fn from_wit_output(output: wit::TurnOutput) -> Result<TurnOutput, String> {
     Ok(TurnOutput {
-        transcript: serde_json::from_str(&output.transcript_json)
-            .map_err(|error| format!("Agentloop transcript is invalid JSON: {error}"))?,
-        kv: serde_json::from_str(&output.kv_json)
-            .map_err(|error| format!("Agentloop kv is invalid JSON: {error}"))?,
         result: output
             .result_json
             .map(|value| serde_json::from_str(&value))
             .transpose()
             .map_err(|error| format!("Agentloop result is invalid JSON: {error}"))?,
     })
-}
-
-fn validate_output(output: &TurnOutput) -> Result<(), String> {
-    if output.kv.keys().any(|key| !valid_identifier(key)) {
-        return Err("Agentloop kv keys must be identifiers".into());
-    }
-    Ok(())
-}
-
-fn valid_identifier(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 128
-        && value.bytes().enumerate().all(|(index, byte)| {
-            byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'.' | b'_' | b':' | b'-'))
-        })
 }
 
 fn hex_digest(bytes: &[u8]) -> String {

@@ -80,6 +80,32 @@ components:
         type: object
       - additionalProperties: false
         properties:
+          type:
+            const: image
+            type: string
+          url:
+            description: HTTPS URL or an image data URL, rendered by the fixed model adapter.
+            type: string
+        required:
+        - type
+        - url
+        type: object
+      - additionalProperties: false
+        properties:
+          data: true
+          format:
+            description: Versioned adapter format; incompatible adapters must reject the item.
+            type: string
+          type:
+            const: native
+            type: string
+        required:
+        - type
+        - format
+        - data
+        type: object
+      - additionalProperties: false
+        properties:
           id:
             type: string
           input: true
@@ -102,6 +128,11 @@ components:
               ALWAYS set on a failed tool. Omitting the flag on a failure lets the
               model read that failure as a success.
             type: boolean
+          media:
+            description: Model-visible media alongside the ordinary JSON Tool output.
+            items:
+              $ref: '#/components/schemas/Media'
+            type: array
           tool_use_id:
             type: string
           type:
@@ -244,6 +275,9 @@ components:
         event_type:
           pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
           type: string
+        origin:
+          $ref: '#/components/schemas/EventOrigin'
+          description: Absent on kernel records and historical extension records without attribution.
         recorded_at_ms:
           format: uint64
           minimum: 0
@@ -258,6 +292,34 @@ components:
       - event_type
       - data
       type: object
+    EventOrigin:
+      oneOf:
+      - additionalProperties: false
+        properties:
+          kind:
+            const: agentloop
+            type: string
+          sequence:
+            format: uint64
+            minimum: 0
+            type: integer
+        required:
+        - kind
+        - sequence
+        type: object
+      - additionalProperties: false
+        properties:
+          kind:
+            const: tool
+            type: string
+          sequence:
+            format: uint64
+            minimum: 0
+            type: integer
+        required:
+        - kind
+        - sequence
+        type: object
     EventPage:
       properties:
         events:
@@ -418,6 +480,30 @@ components:
       - sequence
       - outcome
       type: object
+    KvSetRequest:
+      additionalProperties: false
+      properties:
+        key:
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
+          type: string
+        value: true
+      required:
+      - key
+      - value
+      type: object
+    Media:
+      oneOf:
+      - additionalProperties: false
+        properties:
+          type:
+            const: image
+            type: string
+          url:
+            type: string
+        required:
+        - type
+        - url
+        type: object
     Message:
       additionalProperties: false
       properties:
@@ -450,8 +536,12 @@ components:
           items:
             $ref: '#/components/schemas/Message'
           type: array
+        options:
+          additionalProperties: true
+          description: Presentation options validated by the selected adapter; never execution authority.
+          type: object
         response_format:
-          description: Absent means the one the session was created with, if any. Filled in like `system`.
+          description: Absent inherits the session default; null resets it; an object sets it.
         system:
           description: |-
             The system prompt for this call. Absent means the one the session was created
@@ -559,6 +649,9 @@ components:
         message:
           maxLength: 4096
           type: string
+        retryable:
+          default: false
+          type: boolean
       required:
       - code
       - message
@@ -567,6 +660,7 @@ components:
       enum:
       - user
       - assistant
+      - developer
       type: string
     SessionId:
       pattern: ^ses_[A-Za-z0-9]{20,32}$
@@ -793,12 +887,12 @@ components:
       type: object
     UserInput:
       additionalProperties: false
-      description: |-
-        What an application hands a session on `send`. The shape is closed on purpose:
-        Brain owes every agentloop the same observation shape regardless of who wrote
-        the client, so free-form content is not accepted. Multimodal parts will extend
-        this record when they land — see the roadmap.
+      description: What an application hands a session on `send`.
       properties:
+        media:
+          items:
+            $ref: '#/components/schemas/Media'
+          type: array
         message:
           minLength: 1
           type: string
