@@ -62,16 +62,7 @@ are plain functions. Any other Environment is reached over HTTP.
 
 ## Architecture
 
-```mermaid
-flowchart TB
-  access[HTTP and SDK] --> server[brain-server]
-  server --> sessions[brain-sessions]
-  server --> env[brain-env worker pool]
-  sessions --> core[brain: durable session actor]
-  sessions --> port[Environment adapter]
-  port --> env
-  port --> external[HTTP and host Environments]
-```
+![Brain architecture](references/architecture.png)
 
 - **Kernel** owns the session. It commits every effect to the append-only journal before dispatch,
   sends it once and never retries on its own. Status, transcript and Events rebuild from the journal
