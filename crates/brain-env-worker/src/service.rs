@@ -13,11 +13,12 @@ use std::{
 use brain_protocol::{TurnError, TurnInput, codes};
 use tokio::sync::{Semaphore, mpsc, oneshot};
 
-use crate::{
-    AdmissionEngine, AdmittedAgentloop, AdmittedTool, ComponentKind, EnvLimits, GuestHost,
-    HostCall, NativeEnvironment, NativeToolInput, WorkerRequest, WorkerResponse,
-    wire::{read_frame, write_frame},
+use brain_env::{
+    ComponentKind, EnvLimits, HostCall, NativeEnvironment, NativeToolInput, WorkerRequest,
+    WorkerResponse, read_frame, write_frame,
 };
+
+use crate::{AdmissionEngine, AdmittedAgentloop, AdmittedTool, GuestHost};
 
 pub struct WorkerService {
     engine: Arc<AdmissionEngine>,

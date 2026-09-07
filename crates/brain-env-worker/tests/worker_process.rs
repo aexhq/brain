@@ -620,18 +620,18 @@ async fn host_calls_queued_before_cancel_are_not_answered_after_cancel() {
     let worker = tokio::spawn(async move {
         let mut stream = listener.accept().await.unwrap();
         assert!(matches!(
-            brain_env::worker_read(&mut stream, &EnvLimits::default())
+            brain_env_worker::worker_read(&mut stream, &EnvLimits::default())
                 .await
                 .unwrap(),
             WorkerRequest::Execute { .. }
         ));
         assert!(matches!(
-            brain_env::worker_read(&mut stream, &EnvLimits::default())
+            brain_env_worker::worker_read(&mut stream, &EnvLimits::default())
                 .await
                 .unwrap(),
             WorkerRequest::Cancel
         ));
-        brain_env::worker_write(
+        brain_env_worker::worker_write(
             &mut stream,
             &WorkerResponse::HostCall {
                 id: 1,
@@ -644,7 +644,7 @@ async fn host_calls_queued_before_cancel_are_not_answered_after_cancel() {
         )
         .await
         .unwrap();
-        brain_env::worker_write(
+        brain_env_worker::worker_write(
             &mut stream,
             &WorkerResponse::TurnFailed {
                 error: TurnError::new(brain_protocol::codes::failure::CANCELLED, "cancelled"),
@@ -654,7 +654,7 @@ async fn host_calls_queued_before_cancel_are_not_answered_after_cancel() {
         .await
         .unwrap();
         assert!(
-            brain_env::worker_read(&mut stream, &EnvLimits::default())
+            brain_env_worker::worker_read(&mut stream, &EnvLimits::default())
                 .await
                 .is_err()
         );

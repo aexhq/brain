@@ -6,7 +6,8 @@
 
 use std::sync::Arc;
 
-use brain_env::{CAPABILITY_IMPORTS, RUNTIME_SHIM_IMPORTS, WorkerArgs, WorkerService};
+use brain_env::WorkerArgs;
+use brain_env_worker::{CAPABILITY_IMPORTS, RUNTIME_SHIM_IMPORTS, WorkerService};
 use clap::Parser as _;
 
 #[tokio::main]
