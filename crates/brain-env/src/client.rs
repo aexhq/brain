@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use brain_protocol::{AgentloopId, ToolId, TurnError, TurnInput, TurnOutput};
 
-#[cfg(unix)]
 use crate::wire::{max_request_bytes, read_frame, write_frame};
 use crate::{
     ComponentKind, EnvLimits, HostCall, LoopError, NativeEnvironment, NativeToolInput,
@@ -24,7 +23,6 @@ pub trait TurnBridge: Send + Sync {
 #[derive(Clone, Debug)]
 pub struct WorkerClient {
     socket: PathBuf,
-    #[cfg_attr(not(unix), allow(dead_code))]
     limits: EnvLimits,
 }
 
@@ -112,7 +110,6 @@ impl WorkerClient {
 
     /// Callback waits do not consume the worker liveness budget. Cancellation uses
     /// the same connection without dropping a partially read response frame.
-    #[cfg(unix)]
     async fn execute(
         &self,
         kind: ComponentKind,
@@ -122,7 +119,7 @@ impl WorkerClient {
         bridge: &dyn TurnBridge,
     ) -> Result<serde_json::Value, LoopError> {
         let liveness = self.limits.worker_liveness();
-        let mut stream = tokio::net::UnixStream::connect(&self.socket)
+        let mut stream = crate::socket::connect(&self.socket)
             .await
             .map_err(|error| error.to_string())?;
         write_frame(
@@ -144,7 +141,7 @@ impl WorkerClient {
                 error
             }
         })?;
-        let (mut reader, mut writer) = stream.split();
+        let (mut reader, mut writer) = tokio::io::split(stream);
         let mut cancelled = false;
         let mut poll = tokio::time::interval(std::time::Duration::from_millis(50));
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -207,23 +204,10 @@ impl WorkerClient {
         }
     }
 
-    #[cfg(not(unix))]
-    async fn execute(
-        &self,
-        _kind: ComponentKind,
-        _digest: String,
-        _environment: NativeEnvironment,
-        _input: serde_json::Value,
-        _bridge: &dyn TurnBridge,
-    ) -> Result<serde_json::Value, LoopError> {
-        Err("brain-env-worker IPC requires Unix domain sockets".into())
-    }
-
-    #[cfg(unix)]
     async fn call(&self, request: WorkerRequest) -> Result<WorkerResponse, String> {
         let max = max_request_bytes(&request, &self.limits);
         let response = async {
-            let mut stream = tokio::net::UnixStream::connect(&self.socket)
+            let mut stream = crate::socket::connect(&self.socket)
                 .await
                 .map_err(|error| error.to_string())?;
             write_frame(&mut stream, &request, max).await?;
@@ -232,10 +216,5 @@ impl WorkerClient {
         tokio::time::timeout(self.limits.worker_liveness(), response)
             .await
             .map_err(|_| "brain-env-worker stopped answering".to_owned())?
-    }
-
-    #[cfg(not(unix))]
-    async fn call(&self, _request: WorkerRequest) -> Result<WorkerResponse, String> {
-        Err("brain-env-worker IPC requires Unix domain sockets".into())
     }
 }

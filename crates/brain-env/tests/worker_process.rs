@@ -1,5 +1,3 @@
-#![cfg(unix)]
-
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -618,9 +616,9 @@ async fn host_calls_queued_before_cancel_are_not_answered_after_cancel() {
 
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("worker.sock");
-    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let mut listener = brain_env::listen(&socket).unwrap();
     let worker = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut stream = listener.accept().await.unwrap();
         assert!(matches!(
             brain_env::worker_read(&mut stream, &EnvLimits::default())
                 .await
