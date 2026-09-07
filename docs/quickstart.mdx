@@ -14,7 +14,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 Or build both executables:
 
 ```sh
-cargo build --release -p brain-server --bin brain -p brain-env --bin brain-env-worker
+cargo build --release -p brain-server --bin brain -p brain-env-worker --bin brain-env-worker
 BRAIN_DATA_DIR="$PWD/brain-data" \
 BRAIN_ENV_WORKER="$PWD/target/release/brain-env-worker" \
 ./target/release/brain --listen 127.0.0.1:8080

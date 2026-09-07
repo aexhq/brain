@@ -4,10 +4,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use brain_env::{
-    AdmissionEngine, CAPABILITY_IMPORTS, EnvLimits, GuestHost, HostCall, NativeEnvironment,
-    NativeToolInput, RUNTIME_SHIM_IMPORTS,
-};
+use brain_env::{EnvLimits, HostCall, NativeEnvironment, NativeToolInput};
+use brain_env_worker::{AdmissionEngine, CAPABILITY_IMPORTS, GuestHost, RUNTIME_SHIM_IMPORTS};
 use brain_protocol::{RuntimeEnvelope, TurnError, TurnInput};
 
 #[derive(Default)]

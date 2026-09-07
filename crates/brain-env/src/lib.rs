@@ -1,72 +1,23 @@
-//! Native Environment adapter, Component admission, and worker process pool.
+//! Native Environment adapter, worker supervision, and the Brain↔worker wire.
+//!
+//! Guest code runs in a separate process: `brain-env-worker` owns the Wasmtime engine and
+//! everything that compiles or instantiates a Component. This crate is the server's side of
+//! that boundary — it starts workers, addresses them, and speaks the wire below — so a
+//! binary that links it carries no Wasm runtime.
 
 mod client;
 mod environment;
 pub use environment::{BrainEnvironment, NativePolicy};
 mod limits;
-mod runtime;
-mod service;
 mod socket;
 mod supervisor;
 mod wire;
 
 pub use client::{TurnBridge, WorkerClient};
-pub use limits::{EnvLimits, WorkerArgs};
-pub use runtime::{AdmissionEngine, AdmittedAgentloop, AdmittedTool, GuestHost, NativeToolInput};
-pub use service::WorkerService;
+pub use limits::{EnvLimits, WorkerArgs, ceiling};
 pub use socket::{Listener, listen};
 pub use supervisor::{LoopError, WorkerPool};
 pub use wire::{
-    Access, ComponentKind, HostCall, NativeEnvironment, WorkerRequest, WorkerResponse, Workspace,
-    network_covers,
+    Access, ComponentKind, HostCall, NativeEnvironment, NativeToolInput, WorkerRequest,
+    WorkerResponse, Workspace, max_request_bytes, network_covers, read_frame, write_frame,
 };
-
-/// The interfaces a guest may import: the contract's own types and the host services.
-pub const RUNTIME_SHIM_IMPORTS: &[&str] =
-    &["brain:agentloop/types@0.1.0", "brain:agentloop/host@0.1.0"];
-pub const CAPABILITY_IMPORTS: &[&str] = &[
-    "wasi:cli/environment@0.2.9",
-    "wasi:cli/exit@0.2.9",
-    "wasi:cli/stderr@0.2.9",
-    "wasi:cli/stdin@0.2.9",
-    "wasi:cli/stdout@0.2.9",
-    "wasi:cli/terminal-input@0.2.9",
-    "wasi:cli/terminal-output@0.2.9",
-    "wasi:cli/terminal-stderr@0.2.9",
-    "wasi:cli/terminal-stdin@0.2.9",
-    "wasi:cli/terminal-stdout@0.2.9",
-    "wasi:clocks/monotonic-clock@0.2.9",
-    "wasi:clocks/wall-clock@0.2.9",
-    "wasi:filesystem/types@0.2.9",
-    "wasi:filesystem/preopens@0.2.9",
-    "wasi:http/types@0.2.9",
-    "wasi:http/outgoing-handler@0.2.9",
-    "wasi:io/error@0.2.9",
-    "wasi:io/poll@0.2.9",
-    "wasi:io/streams@0.2.9",
-    "wasi:filesystem/types@0.2.12",
-    "wasi:filesystem/preopens@0.2.12",
-    "wasi:io/error@0.2.12",
-    "wasi:io/poll@0.2.12",
-    "wasi:io/streams@0.2.12",
-    "wasi:http/types@0.2.12",
-    "wasi:http/outgoing-handler@0.2.12",
-];
-pub const TOOL_IMPORTS: &[&str] = &["brain:tool/types@0.1.0", "brain:tool/host@0.1.0"];
-
-#[doc(hidden)]
-pub async fn worker_read<R: tokio::io::AsyncRead + Unpin>(
-    reader: &mut R,
-    limits: &EnvLimits,
-) -> Result<WorkerRequest, String> {
-    wire::read_frame(reader, limits.max_request_frame_bytes()).await
-}
-
-#[doc(hidden)]
-pub async fn worker_write<W: tokio::io::AsyncWrite + Unpin>(
-    writer: &mut W,
-    response: &WorkerResponse,
-    limits: &EnvLimits,
-) -> Result<(), String> {
-    wire::write_frame(writer, response, limits.max_response_frame_bytes()).await
-}

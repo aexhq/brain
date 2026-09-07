@@ -97,19 +97,19 @@ impl EnvLimits {
 
     /// The largest request frame the worker accepts: a package arrives base64-encoded,
     /// everything else is a turn input plus its envelope.
-    pub(crate) fn max_request_frame_bytes(&self) -> usize {
+    pub fn max_request_frame_bytes(&self) -> usize {
         ceiling(self.max_package_bytes)
             .saturating_mul(2)
             .max(self.max_turn_frame_bytes())
     }
 
     /// A turn or Tool request frame: the input plus its envelope.
-    pub(crate) fn max_turn_frame_bytes(&self) -> usize {
+    pub fn max_turn_frame_bytes(&self) -> usize {
         ceiling(self.max_execution_input_bytes).saturating_add(1_024)
     }
 
     /// A response frame from the worker: the output plus its envelope.
-    pub(crate) fn max_response_frame_bytes(&self) -> usize {
+    pub fn max_response_frame_bytes(&self) -> usize {
         ceiling(self.max_execution_output_bytes).saturating_add(1_024)
     }
 }
@@ -124,7 +124,7 @@ pub struct WorkerArgs {
 }
 
 /// A byte or count ceiling as the code compares against it: zero means no bound.
-pub(crate) fn ceiling(value: usize) -> usize {
+pub fn ceiling(value: usize) -> usize {
     if value == 0 { usize::MAX } else { value }
 }
 

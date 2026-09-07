@@ -4,31 +4,12 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Bounded Wasmtime Component host for Brain Agentloops"
+description = "Native Environment adapter and worker supervision for Brain"
 publish = false
-autobins = false
-
-[features]
-integration-tests = []
-
-[[bin]]
-name = "brain-env-worker"
-path = "src/worker/main.rs"
-
-[[test]]
-name = "worker_process"
-path = "tests/worker_process.rs"
-required-features = ["integration-tests"]
-
-[[test]]
-name = "in_process"
-path = "tests/in_process.rs"
-required-features = ["integration-tests"]
 
 [dependencies]
 brain = { workspace = true }
 brain-telemetry = { workspace = true }
-url = { workspace = true }
 brain-protocol = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -37,19 +18,10 @@ clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-http = { workspace = true }
-http-body-util = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs", "process", "net", "io-util", "sync", "macros", "rt-multi-thread"] }
-wasmtime = { workspace = true }
-wasmtime-wasi = { workspace = true }
-wasmtime-wasi-http = { workspace = true }
+url = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
-
-[dev-dependencies]
-# Builds the smallest possible runaway guest for the fuel-exhaustion test. Already in the
-# lock file as a Wasmtime component dependency, so it costs no new crate.
-wasm-encoder = "0.254"

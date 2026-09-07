@@ -5,7 +5,7 @@ COPY . .
 # change to process readiness. It is set here rather than in `[profile.release]` so
 # CI, benchmarks and local release builds keep symbolicated panic backtraces.
 ENV RUSTFLAGS="-C strip=symbols"
-RUN cargo build --locked --release -p brain-server --bin brain -p brain-env --bin brain-env-worker
+RUN cargo build --locked --release -p brain-server --bin brain -p brain-env-worker --bin brain-env-worker
 
 FROM debian:bookworm-slim
 RUN apt-get update \
