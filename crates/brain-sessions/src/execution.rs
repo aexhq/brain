@@ -39,7 +39,6 @@ impl LoopExecutor for EnvironmentLoopExecutor {
             session_id: session.clone(),
             request: EnvironmentRequest::Execute {
                 implementation: agentloop.implementation.clone(),
-                needs: agentloop.needs.clone(),
                 input: serde_json::to_value(input).map_err(json_error)?,
                 deadline_ms: self.deadline_ms,
                 callback: None,
@@ -105,7 +104,6 @@ impl ToolExecutor for SessionToolExecutor {
             request: EnvironmentRequest::Execute {
                 implementation: dispatch.placement.implementation,
                 callback: None,
-                needs: dispatch.placement.needs,
                 input: dispatch.invocation.input,
                 deadline_ms: dispatch.deadline_ms,
             },
@@ -180,7 +178,9 @@ impl ExecutionServices for SessionServices {
                 "emit",
                 "telemetry",
                 "set_transcript",
-                "set_kv",
+                "kv_put",
+                "kv_read",
+                "kv_delete",
             ],
             Self::Tool(_) => &["emit", "telemetry"],
         }
@@ -195,9 +195,21 @@ impl ExecutionServices for SessionServices {
                     .set_transcript(serde_json::from_value(input).map_err(json_error)?)
                     .await?
             )),
-            (Self::Loop(services), "set_kv") => Ok(json!(
+            (Self::Loop(services), "kv_put") => Ok(json!(
                 services
-                    .set_kv(serde_json::from_value(input).map_err(json_error)?)
+                    .kv_put(serde_json::from_value(input).map_err(json_error)?)
+                    .await?
+            )),
+            (Self::Loop(services), "kv_read") => {
+                let key = serde_json::from_value(input).map_err(json_error)?;
+                Ok(match services.kv_read(key).await? {
+                    Some(value) => json!({"value": value}),
+                    None => json!({}),
+                })
+            }
+            (Self::Loop(services), "kv_delete") => Ok(json!(
+                services
+                    .kv_delete(serde_json::from_value(input).map_err(json_error)?)
                     .await?
             )),
             (Self::Loop(services), "events") => serde_json::to_value(

@@ -2,7 +2,7 @@ mod common;
 
 use brain::{Error, LocalSessionStore, SessionStore, ToolExecutor, ToolServices};
 use brain_protocol::{
-    EventOrigin, KvSetRequest, Message, MessageRequest, ModelRequest, Outcome, ToolCancellation,
+    EventOrigin, KvPutRequest, Message, MessageRequest, ModelRequest, Outcome, ToolCancellation,
     ToolDispatch, ToolInvocation, TurnOutput,
 };
 use common::{Runtime, ScriptedModel, config, scripted, temporary_directory};
@@ -51,14 +51,39 @@ async fn inline_state_and_execution_provenance_survive_a_failed_turn_and_reopen(
         scripted(|_, services| async move {
             services.set_transcript(conversation()).await?;
             services
-                .set_kv(KvSetRequest {
+                .kv_put(KvPutRequest {
                     key: "phase".into(),
                     value: json!("saved"),
                 })
                 .await?;
+            assert_eq!(services.kv_read("missing".into()).await?, None);
+            let written = services
+                .kv_put(KvPutRequest {
+                    key: "deleted".into(),
+                    value: json!(null),
+                })
+                .await?;
+            assert_eq!(services.kv_read("deleted".into()).await?, Some(json!(null)));
+            let deleted = services.kv_delete("deleted".into()).await?;
+            assert!(deleted > written);
+            assert_eq!(services.kv_read("deleted".into()).await?, None);
+            assert_eq!(services.kv_delete("deleted".into()).await?, deleted);
             assert!(
                 services
-                    .set_kv(KvSetRequest {
+                    .kv_delete("brain.last_activation".into())
+                    .await
+                    .is_err()
+            );
+            assert!(
+                services
+                    .kv_read("brain.last_activation".into())
+                    .await
+                    .is_err()
+            );
+            assert!(services.kv_delete("../bad".into()).await.is_err());
+            assert!(
+                services
+                    .kv_put(KvPutRequest {
                         key: "brain.last_activation".into(),
                         value: json!(0)
                     })
@@ -106,7 +131,7 @@ async fn inline_state_and_execution_provenance_survive_a_failed_turn_and_reopen(
         Arc::new(EmittingTool),
     );
     let mut config = config();
-    config.tools = vec![serde_json::from_value(json!({"name":"emit", "description":"Emit", "input_schema":{"type":"object"}, "placements":{"workspace":{"implementation":{}, "needs":[]}}})).unwrap()];
+    config.tools = vec![serde_json::from_value(json!({"name":"emit", "description":"Emit", "input_schema":{"type":"object"}, "placements":{"workspace":{"implementation":{}}}})).unwrap()];
     let session = runtime.create(&config, &[]).unwrap();
     let mut live = runtime.feed.subscribe(session.id());
     session
@@ -117,6 +142,7 @@ async fn inline_state_and_execution_provenance_survive_a_failed_turn_and_reopen(
     let folded = store.fold().unwrap();
     assert_eq!(folded.transcript, conversation());
     assert_eq!(folded.kv["phase"], "saved");
+    assert!(!folded.kv.contains_key("deleted"));
     let records = store.records_after(0, 100).unwrap();
     let activation = records
         .iter()

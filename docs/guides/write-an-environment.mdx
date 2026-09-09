@@ -35,8 +35,8 @@ The response carries the same contract and sequence and a receipt.
 
 | Request | Responsibility |
 | --- | --- |
-| `setup { configuration, needs }` | Accept the union of needs placed here, or reject with the unmet URI. Allocation can be lazy. |
-| `execute { implementation, needs, input, deadline_ms, callback? }` | Resolve the opaque descriptor and execute with only these grants. |
+| `setup { configuration }` | Validate Environment-owned options and establish the binding. Allocation can be lazy. |
+| `execute { implementation, input, deadline_ms, callback? }` | Prepare and run the opaque implementation within configured authority. |
 | `call { name, input }` | An Environment-specific operation, such as explicit workspace reset. |
 | `cancel { target_sequence }` | Best-effort cancellation of the named invocation. |
 | `detach` | Release session attachment mechanisms while retaining owned resources. |
@@ -57,14 +57,17 @@ not retry or restore failed resources automatically.
 An execution may receive `callback: { url, token, methods }`. POST `{ method, input }` to that
 URL with its bearer token. The response is the method's JSON result. Only listed methods are
 granted. A Tool receives `emit` and `telemetry`; an Agentloop also receives `events`, `model`,
-`dispatch`, `set_transcript`, and `set_kv`. Dispatch input is an array of `{ call_id, name, environment, input }`; model
+`dispatch`, `set_transcript`, `kv_read`, `kv_put`, and `kv_delete`. Dispatch input is an array of `{ call_id, name, environment, input }`; model
 input is `ModelRequest`; events input is a cursor number; emit input is `{ event_type, data }`;
 telemetry input is the diagnostic record. Results are respectively Tool results, ModelResult,
 EventPage, committed sequence, and null.
 
-`set_transcript` takes a message array and `set_kv` takes `{ key, value }`. Both return the committed
-sequence. These services belong only to the Agentloop. Turn output is `{ result? }`, with no
-transcript or kv snapshot.
+`set_transcript` takes a message array. `kv_put` takes `{ key, value }`; `kv_delete` takes
+an identifier string. Mutations return the committed sequence. `kv_read` takes an identifier
+string and returns `{}` for absence or `{ value }` for a stored value, including JSON null.
+The author binding exposes these as `ctx.kv.read/put/delete`; reads after an awaited mutation
+observe it. These services belong only to the Agentloop. Turn output is `{ result? }`, with
+no transcript or KV snapshot. Deletion appends a journal mutation, preserving earlier records.
 
 The token belongs to one invocation and is revoked on completion or cancellation. It is never
 part of the journal. It grants no lifecycle or general session API access. Cancellation makes
@@ -87,3 +90,22 @@ tests concurrent first allocation and caller-controlled cleanup. The
 [remote Agentloop example](https://github.com/aexhq/brain/blob/main/examples/loop-environment.mjs)
 resolves a JavaScript implementation and calls granted Brain services. Both bind loopback and
 are authoring examples; they do not isolate untrusted code.
+
+## Optional implementation preparation
+
+Keep dependency details inside the implementation's package and this Environment's loader.
+The descriptor can select a project with a lockfile and optional setup script. Bootstrap the
+interpreter and import-time dependencies before loading setup or run functions. A setup function
+written in Python cannot install the Python interpreter required to invoke itself.
+
+The [Python Environment example](https://github.com/aexhq/brain/blob/main/examples/python-environment.mjs)
+uses operator-selected projects, `uv sync --locked`, an optional setup module, then
+`uv run --no-sync`. Concurrent first use shares preparation by installation directory, even
+across sessions. Detach and teardown release the binding, not the externally owned installation.
+A failed preparation remains failed until the operator replaces the loader; no request silently
+retries it. A preprepared package needs no custom setup hook.
+
+This helper is an OS-runtime example, not a sandbox. The operator must supply an isolated
+runtime, package-network policy, and appropriately limited process credentials. Project paths
+and module names are operator configuration, not arbitrary session input. Brain does not
+run these commands, resolve dependencies, or fall back from incompatible Wasm placement.

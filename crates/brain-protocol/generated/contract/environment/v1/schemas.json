@@ -135,23 +135,11 @@
       ]
     },
     "EnvironmentRequest": {
-      "description": "What Brain asks an Environment to do. An Environment provides resources and learns\nwhat runs in it only when asked to run it: setup carries its configuration and the\nneeds of everything placed there; execute carries an opaque implementation and input.",
+      "description": "What Brain asks an Environment to do. An Environment provides resources and learns\nwhat runs in it only when asked to run it: setup carries its configuration;\nexecute carries an opaque implementation and input.",
       "oneOf": [
         {
           "properties": {
             "configuration": true,
-            "needs": {
-              "description": "Every need of every Tool and the Agentloop placed here, as URIs. The\nEnvironment refuses at setup what it cannot honour, naming the URI.",
-              "items": {
-                "format": "uri",
-                "maxLength": 2048,
-                "minLength": 1,
-                "type": "string"
-              },
-              "maxItems": 64,
-              "type": "array",
-              "uniqueItems": true
-            },
             "type": {
               "const": "setup",
               "type": "string"
@@ -159,8 +147,7 @@
           },
           "required": [
             "type",
-            "configuration",
-            "needs"
+            "configuration"
           ],
           "type": "object"
         },
@@ -198,17 +185,6 @@
               "description": "Interpreted only by the Environment; fixes the runtime entrypoint and configuration."
             },
             "input": true,
-            "needs": {
-              "items": {
-                "format": "uri",
-                "maxLength": 2048,
-                "minLength": 1,
-                "type": "string"
-              },
-              "maxItems": 64,
-              "type": "array",
-              "uniqueItems": true
-            },
             "type": {
               "const": "execute",
               "type": "string"
@@ -217,7 +193,6 @@
           "required": [
             "type",
             "implementation",
-            "needs",
             "input",
             "deadline_ms"
           ],

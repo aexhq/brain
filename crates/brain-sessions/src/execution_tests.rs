@@ -25,8 +25,8 @@ impl ToolServices for Leaf {
 
 fn dispatch() -> ToolDispatch {
     serde_json::from_value(json!({
-        "sequence":1,"session_id":"ses_test", "tool":{"name":"test","description":"Test","input_schema":{},"placements":{"remote":{"implementation":{},"needs":[]}}},
-        "placement":{"implementation":{},"needs":[]}, "environment":{"name":"remote","driver":"http","url":"https://example.com"},
+        "sequence":1,"session_id":"ses_test", "tool":{"name":"test","description":"Test","input_schema":{},"placements":{"remote":{"implementation":{}}}},
+        "placement":{"implementation":{}}, "environment":{"name":"remote","driver":"http","url":"https://example.com"},
         "invocation":{"name":"test","environment":"remote","call_id":"one","input":{}},"deadline_ms":1000
     })).unwrap()
 }

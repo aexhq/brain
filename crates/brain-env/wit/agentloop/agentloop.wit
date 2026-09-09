@@ -54,7 +54,9 @@ interface host {
   // A finite EventPage after this sequence. Continue with next_cursor until empty.
   events: func(after: u64) -> result<string, turn-error>;
   set-transcript: func(messages-json: string) -> result<u64, turn-error>;
-  set-kv: func(key: string, value-json: string) -> result<u64, turn-error>;
+  kv-put: func(key: string, value-json: string) -> result<u64, turn-error>;
+  kv-read: func(key: string) -> result<option<string>, turn-error>;
+  kv-delete: func(key: string) -> result<u64, turn-error>;
 
   // One model call. `request-json` is a ModelRequest; the answer is a ModelResult.
   model: func(request-json: string) -> result<string, turn-error>;

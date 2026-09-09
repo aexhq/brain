@@ -42,7 +42,7 @@ The core mechanism that bridges the LLM, controls context and dispatches tools. 
 - Codex
 
 ### Tool Extensions
-The hands that let the LLM do work. A tool declares the resources it needs and how to act. [Write a tool](https://aex.dev/brain/docs/guides/write-a-tool).
+The hands that let the LLM do work. A tool declares its typed input/output and how to act. Its Environment prepares dependencies and enforces access. [Write a tool](https://aex.dev/brain/docs/guides/write-a-tool).
 - Bash
 - Inline function
 - Web_search/Web_fetch
@@ -57,7 +57,7 @@ An environment provides the resources a tool needs to complete its tasks. [Write
 Official extensions are written the same way you would write yours: [aexhq/extensions](https://github.com/aexhq/extensions).
 
 Brain ships two Environments of its own. `brainEnv` runs Components in a fresh Wasmtime instance
-per invocation, granted only what their `needs` name. `hostEnv` is your own process, for Tools that
+per invocation, with explicitly configured Environment grants bounded by server policy. `hostEnv` is your own process, for Tools that
 are plain functions. Any other Environment is reached over HTTP.
 
 ## Architecture

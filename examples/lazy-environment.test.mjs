@@ -8,9 +8,9 @@ test("setup allocates nothing; concurrent calls share allocation and teardown is
   let sequence = 0;
   const send = (request, session = "ses_one") => env.handle({ contract: "environment/v1",
     operation: { environment: "east", session_id: session, sequence: ++sequence, request } });
-  assert.equal((await send({ type: "setup", configuration: {}, needs: ["file:///workspace?access=write"] })).receipt.type, "accepted");
+  assert.equal((await send({ type: "setup", configuration: {} })).receipt.type, "accepted");
   assert.equal(allocations, 0);
-  const invoke = (input) => send({ type: "execute", implementation: { type: "reference_echo" }, needs: [], input, deadline_ms: 1000 });
+  const invoke = (input) => send({ type: "execute", implementation: { type: "reference_echo" }, input, deadline_ms: 1000 });
   const outcomes = await Promise.all([invoke("one"), invoke("two")]);
   assert(outcomes.every(({ receipt }) => receipt.type === "result"));
   assert.equal(allocations, 1);
@@ -22,8 +22,8 @@ test("setup allocates nothing; concurrent calls share allocation and teardown is
   assert.equal(allocations, 2);
   await send({ type: "teardown" });
   assert.equal((await invoke("after teardown")).receipt.code, "unavailable");
-  assert.equal((await send({ type: "execute", implementation: { type: "reference_echo" }, needs: [], input: {}, deadline_ms: 1 }, "ses_other")).receipt.code, "unavailable");
-  const refused = await send({ type: "setup", configuration: {}, needs: ["pkg:apt/ffmpeg"] }, "ses_other");
-  assert.equal(refused.receipt.code, "unmet_need");
-  assert.match(refused.receipt.message, /pkg:apt\/ffmpeg/u);
+  assert.equal((await send({ type: "execute", implementation: { type: "reference_echo" }, input: {}, deadline_ms: 1 }, "ses_other")).receipt.code, "unavailable");
+  const refused = await send({ type: "setup", configuration: { package: "ffmpeg" } }, "ses_other");
+  assert.equal(refused.receipt.code, "invalid_configuration");
+  assert.match(refused.receipt.message, /label/u);
 });

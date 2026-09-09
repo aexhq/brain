@@ -1,12 +1,12 @@
 ---
 title: Tools
-description: One typed contract, what it needs, and the Environment that runs it.
+description: One typed contract, its implementation, and the Environment that runs it.
 ---
 
 A Tool is the model-visible contract for one action: a name, description, input schema, and
 optional output schema. A Tool can have placements in several Environments of its session,
 each declared with `{ env, ...options }`. Each `(Tool name, Environment name)` pair has one
-implementation and its own needs. Where that Environment is, and how Brain reaches it, is the
+implementation. Where that Environment is, and how Brain reaches it, is the
 Environment's concern; the Tool's declaration is the same everywhere.
 
 ## A function this process holds
@@ -53,10 +53,9 @@ const inspect = tool({
   input: z.object({ path: z.string() }),
   options: z.object({ depth: z.number().int().positive() }),
   implementation: component(new URL("./inspect.wasm", import.meta.url)),
-  needs: ["file:///workspace"],
 });
 
-const placed = inspect({ env: brainEnv({ name: "brain" }), depth: 2 });
+const placed = inspect({ env: brainEnv({ name: "reader", filesystem: { workspace: "read" } }), depth: 2 });
 ```
 
 `implementation` may be a Component, an opaque object the Environment understands, or a function of
@@ -65,20 +64,18 @@ the parsed options that returns that object. A Component implements
 it receives JSON input, its configuration, and a deadline, and can emit committed extension events
 through its host import.
 
-## What a Tool needs
+## Dependencies and resource access
 
-`needs` is a list of URIs, the same list for every kind of Environment:
+Package dependencies with the implementation or let the chosen Environment prepare them using
+its loader, lockfile, or optional setup script. Preparation must finish before import-time
+dependencies or the entrypoint are used. Brain has no universal `needs` declaration and installs
+nothing in its own process.
 
-- `pkg:` names software as a [Package URL](https://github.com/package-url/purl-spec), for example
-  `pkg:apt/ffmpeg` or `pkg:pypi/numpy@2.1.0`;
-- `https:` or `wss:` names a network destination, with `https://*.example.com` for a family of hosts;
-- `file:` names a filesystem location, read-only unless it carries `?access=write`.
-
-Brain checks the shape and hands the list to the Environment: all of them at setup, so the
-Environment provisions what this session uses, and the Tool's own with every invoke. The
-Environment honours what it can and refuses the rest at setup, naming the URI. Brain reads none
-of them and carries nothing at run time on the Tool's behalf: the code obtains what it needs
-through the platform of its Environment.
+The application configures access through the Environment. For example,
+`brainEnv({ name: "reader", filesystem: { workspace: "read" } })` requests a workspace within
+the server's allow-list. Use separate Environment bindings for different grants; every Tool in
+one native binding receives that binding's authority. A denied grant or unsupported runtime
+fails explicitly. Setup failures reach the ordinary Tool error path, without automatic retry.
 
 ## One execution rule
 

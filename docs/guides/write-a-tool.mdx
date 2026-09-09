@@ -1,6 +1,6 @@
 ---
 title: Write a Tool
-description: Declare one typed contract, what it needs, and place it where it runs.
+description: Declare one typed contract, its implementation, and place it where it runs.
 ---
 
 Every Tool has a model-visible name, description, input schema, and optional output schema, and is
@@ -94,10 +94,9 @@ export const inspect = tool({
   input: z.object({ path: z.string() }),
   options: z.object({ depth: z.number().int().positive() }),
   implementation: component(new URL("./inspect.wasm", import.meta.url)),
-  needs: ["file:///workspace"],
 });
 
-const placed = inspect({ env: brainEnv({ name: "brain" }), depth: 2 });
+const placed = inspect({ env: brainEnv({ name: "reader", filesystem: { workspace: "read" } }), depth: 2 });
 ```
 
 The Component implements
@@ -123,7 +122,6 @@ const fetchIssue = tool({
     method: "GET",
     path: `/repos/${repository}/issues/{number}`,
   }),
-  needs: ["https://api.github.com"],
 });
 
 const placed = fetchIssue({ env: github, repository: "aexhq/brain" });
@@ -131,15 +129,18 @@ const placed = fetchIssue({ env: github, repository: "aexhq/brain" });
 
 Brain treats the descriptor as opaque and hands it to the Environment with every invoke.
 
-## What a Tool needs
+## Dependencies and resource access
 
-`needs` is a list of URIs the Environment receives and Brain never reads: `pkg:` for software as a
-Package URL, `https:` or `wss:` for a network destination with `https://*.example.com` for a family
-of hosts, and `file:` for a filesystem location, read-only unless it says `?access=write`. Brain
-hands every placed Tool's needs to the Environment at setup, so it provisions what this session
-uses, and the Tool's own with each invoke. The Environment refuses at setup what it cannot honour,
-naming the URI, and the create fails. Anything a Tool needs beyond that, it loads itself through
-the platform of its Environment.
+Package dependencies with the implementation or let the chosen Environment prepare them using
+its loader, lockfile, or optional setup script. Preparation must finish before import-time
+dependencies or the entrypoint are used. Brain has no universal `needs` declaration and installs
+nothing in its own process.
+
+The application configures access through the Environment. For example,
+`brainEnv({ name: "reader", filesystem: { workspace: "read" } })` requests a workspace within
+the server's allow-list. Use separate Environment bindings for different grants; every Tool in
+one native binding receives that binding's authority. A denied grant or unsupported runtime
+fails explicitly. Setup failures reach the ordinary Tool error path, without automatic retry.
 
 ## Execution context
 

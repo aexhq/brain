@@ -18,10 +18,9 @@ test("extensions are immutable factories with explicit placement", () => {
   });
   assert.deepEqual(inspectEnvironment(hostEnv({ name: "app" })).driver, { driver: "host" });
 
-  const pi = agentloop({ options: z.object({ compactAt: z.number() }), implementation: wasm, needs: ["https://*.example.com"] });
+  const pi = agentloop({ options: z.object({ compactAt: z.number() }), implementation: wasm });
   const loop = pi({ env: native, compactAt: 0.8 });
   assert.deepEqual(inspectAgentloop(loop).configuration, { compactAt: 0.8 });
-  assert.deepEqual(inspectAgentloop(loop).needs, ["https://*.example.com"]);
   assert.equal(inspectAgentloop(loop).environment, native);
   assert.equal("use" in loop, false);
 
@@ -30,11 +29,9 @@ test("extensions are immutable factories with explicit placement", () => {
     description: "Read a file.",
     input: z.object({ path: z.string() }),
     implementation: wasm,
-    needs: ["file:///workspace"],
   });
   const placed = read({ env: native });
   assert.equal(inspectTool(placed).implementation, wasm);
-  assert.deepEqual(inspectTool(placed).needs, ["file:///workspace"]);
   assert.equal(inspectTool(placed).handler, undefined);
   assert.equal(Object.isFrozen(placed), true);
 });
@@ -84,16 +81,25 @@ test("an environment extension configures each instance and says how it is reach
   assert.throws(() => environment({ url: () => "https://user:pw@tool.example" })({ name: "x" }), /credentials/u);
 });
 
-test("needs are URIs and the built-in Environments take only their own options", () => {
+test("the built-in Environments validate their own grant options", () => {
   const wasm = component(new Uint8Array([1]));
-  assert.throws(() => tool({ name: "t", description: "d", input: z.object({}), implementation: wasm, needs: ["fs"] }), /not a URI/u);
-  assert.throws(() => tool({ name: "t", description: "d", input: z.object({}), implementation: wasm, needs: ["https://a b"] }), /not a URI/u);
-  assert.throws(() => tool({ name: "t", description: "d", input: z.object({}), implementation: wasm, needs: ["pkg:apt/x", "pkg:apt/x"] }), /duplicate/u);
-  assert.throws(() => agentloop({ implementation: wasm, needs: ["../fs"] }), /not a URI/u);
   assert.throws(() => tool({ name: "t", description: "d", input: z.object({}) }), /exactly one of run or implementation/u);
   assert.throws(() => tool({ name: "t", description: "d", input: z.object({}), implementation: wasm, run: async () => null }), /exactly one of run or implementation/u);
   assert.throws(() => brainEnv({ name: "brain", secrets: ["bad/name"] }), /invalid name/u);
-  assert.throws(() => brainEnv({ name: "brain", network: { allow: [] } }), /does not accept network/u);
-  assert.throws(() => brainEnv({}), /identifier/u);
+  assert.throws(() => brainEnv({ name: "brain", network: { allow: [] } }), /array/u);
+  assert.throws(() => brainEnv({}), /name/u);
   assert.throws(() => hostEnv({ name: "../x" }), /identifier/u);
+});
+
+test("native grants are explicit, validated, and independent between bindings", () => {
+  const configured = brainEnv({ name: "writer", filesystem: { workspace: "write", scratch: "read" }, network: ["https://*.example.com"] });
+  assert.deepEqual(inspectEnvironment(configured).configuration, {
+    filesystem: { workspace: "write", scratch: "read" }, network: ["https://*.example.com"],
+  });
+  assert.deepEqual(inspectEnvironment(brainEnv({ name: "other" })).configuration, {});
+  for (const network of [["file:///workspace"], ["https://example.com/path"], ["https://user:password@example.com"], ["https://example.com?x"]]) {
+    assert.throws(() => brainEnv({ name: "bad", network }), /HTTP\(S\) origins/u);
+  }
+  assert.throws(() => brainEnv({ name: "bad", filesystem: { workspace: "root" } }), /read/u);
+  assert.throws(() => brainEnv({ name: "bad", filesystem: { home: "read" } }), /Unrecognized/u);
 });

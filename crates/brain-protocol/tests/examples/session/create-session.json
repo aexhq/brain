@@ -2,7 +2,6 @@
   "agentloop": {
     "configuration": {},
     "environment": "brain",
-    "needs": [],
     "implementation": {
       "type": "brain_component",
       "entrypoint": "turn",
@@ -24,9 +23,6 @@
       },
       "placements": {
         "sandbox": {
-          "needs": [
-            "file:///workspace"
-          ],
           "implementation": {
             "artifact_id": "artifact_read_v1"
           }

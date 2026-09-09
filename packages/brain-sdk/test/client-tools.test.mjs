@@ -101,7 +101,7 @@ test("one host runs the Tools placed in it and commits ctx.emit before its resul
   const createRequest = requests.find((request) => new URL(request.url).pathname === "/v1/sessions");
   const body = await createRequest.json();
   assert.deepEqual(body.environments[1], { name: "app", driver: "host", host_id: "host_12345678901234567890", configuration: {} });
-  assert.deepEqual(body.tools[0].placements.app, { needs: [], implementation: { type: "host_function", name: "lookup" } });
+  assert.deepEqual(body.tools[0].placements.app, { implementation: { type: "host_function", name: "lookup" } });
   assert.equal("implementation" in body.tools[0], false);
   const eventRequest = requests.find((request) => new URL(request.url).pathname.endsWith("/events"));
   const resultRequest = requests.find((request) => new URL(request.url).pathname.endsWith("/results"));

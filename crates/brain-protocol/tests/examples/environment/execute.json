@@ -9,9 +9,6 @@
       "implementation": {
         "artifact_id": "artifact_read_v1"
       },
-      "needs": [
-        "file:///workspace?access=write"
-      ],
       "input": {
         "path": "README.md"
       },

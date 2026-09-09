@@ -10,14 +10,14 @@ const east = lazyEnvironment({ allocate: async () => { allocations++; return new
 const west = lazyEnvironment({ allocate: async () => { allocations++; return new Map(); } });
 const f = fixture({ providers: { east: east.handle, west: west.handle } });
 const dispatch = (calls) => (request, response) => request.messages.at(-1).role === "tool" ? reply(response) : callTools(response, calls);
-const echo = (name, needs = []) => tool({ name, description: "Echo in a provider", input: z.object({ value: z.string() }), implementation: { type: "reference_echo" }, needs });
+const echo = (name) => tool({ name, description: "Echo in a provider", input: z.object({ value: z.string() }), implementation: { type: "reference_echo" } });
 
 test("compose separately configured environments and allocate only on first invocation", { timeout: 30_000 }, async (t) => {
   const eastEnv = f.provider("east", { label: "east workspace" });
   const westEnv = f.provider("west");
   assert.equal(inspectEnvironment(eastEnv).configuration.label, "east workspace");
   assert.equal(inspectEnvironment(eastEnv).driver.url, `${f.upstreamUrl}/east`);
-  const first = echo("first", ["file:///workspace?access=write"])({ env: eastEnv });
+  const first = echo("first")({ env: eastEnv });
   assert.equal(inspectTool(first).environment, eastEnv);
   const before = allocations;
   const session = await f.create(t, { tools: [first, echo("second")({ env: westEnv })] });
@@ -30,16 +30,19 @@ test("compose separately configured environments and allocate only on first invo
   const started = events.find(({ type }) => type === "tool_call_started");
   assert.deepEqual(Object.keys(started.data).sort(), ["deadline_ms", "environment", "invocation", "tool"]);
   const setup = events.find(({ type, data }) => type === "environment_setup_started" && data.environment === "east");
-  assert.deepEqual(setup.data.request.needs, ["file:///workspace?access=write"]);
+  assert.deepEqual(setup.data.request.configuration, { label: "east workspace" });
+  assert.equal("needs" in setup.data.request, false);
   assert.ok(JSON.stringify(f.modelRequests.at(-1).messages).includes("east"));
   assert.ok(JSON.stringify(f.modelRequests.at(-1).messages).includes("west"));
 });
 
-test("a need the environment cannot honour fails the create naming the need", { timeout: 30_000 }, async (t) => {
-  await assert.rejects(
-    f.create(t, { tools: [echo("first", ["pkg:apt/ffmpeg"])({ env: f.provider("east") })] }),
-    (error) => { assert.match(error.message, /pkg:apt\/ffmpeg/u); return true; },
-  );
+test("the environment validates its own configuration at setup", { timeout: 30_000 }, async () => {
+  const result = await east.handle({ contract: "environment/v1", operation: {
+    sequence: 1, environment: "east", session_id: "ses_invalid_config",
+    request: { type: "setup", configuration: { label: 123 } },
+  } });
+  assert.equal(result.receipt.type, "failure");
+  assert.equal(result.receipt.code, "invalid_configuration");
 });
 
 test("caller teardown is visible without replacement allocation", { timeout: 30_000 }, async (t) => {
@@ -70,8 +73,8 @@ test("admit a native tool and use it from a model-driven conversation", { timeou
 
 test("native workspaces persist between turns but remain separate between sessions", { timeout: 30_000 }, async (t) => {
   const workspace = tool({ name: "workspace", description: "Read and write a marker", input: z.object({ workspace: z.boolean(), write: z.string().optional() }),
-    implementation: f.toolComponent, needs: ["file:///workspace?access=write"] });
-  const placed = workspace({ env: brainEnv({ name: "brain" }) });
+    implementation: f.toolComponent });
+  const placed = workspace({ env: brainEnv({ name: "workspace", filesystem: { workspace: "write" } }) });
   const first = await f.create(t, { tools: [placed] });
   const second = await f.create(t, { tools: [placed] });
   f.model = dispatch([{ name: "workspace", input: { workspace: true, write: "private marker" } }]);
@@ -97,9 +100,9 @@ test("a native tool that needs no workspace cannot write one", { timeout: 30_000
 });
 
 test("the brain env refuses at create what it cannot grant", { timeout: 30_000 }, async (t) => {
-  const fetcher = tool({ name: "fetcher", description: "Reach the network", input: z.object({}), implementation: f.toolComponent, needs: ["https://api.example.com"] });
+  const fetcher = tool({ name: "fetcher", description: "Reach the network", input: z.object({}), implementation: f.toolComponent });
   await assert.rejects(
-    f.create(t, { tools: [fetcher({ env: brainEnv({ name: "brain" }) })] }),
+    f.create(t, { tools: [fetcher({ env: brainEnv({ name: "network", network: ["https://api.example.com"] }) })] }),
     (error) => { assert.match(error.message, /https:\/\/api\.example\.com/u); return true; },
   );
 });

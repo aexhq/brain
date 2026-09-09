@@ -51,7 +51,8 @@ The Agentloop owns transcript contents while Brain owns persistence. `set-transc
 difference from the saved transcript. Appends store only the tail; summaries, edits, and reorders
 restart at the first changed item. Recovery folds those deltas in journal order.
 
-`set-kv` commits one key/value change. Each operation is durable before it returns, independently
+`kv-put` commits one key/value change; `kv-delete` commits removal from current state without
+erasing history. `kv-read` distinguishes a missing key from stored JSON null. Each operation is durable before it returns, independently
 of turn success. Every invocation uses a fresh Wasm instance; save state through these services.
 Turn completion cannot overwrite saved state with a returned snapshot.
 

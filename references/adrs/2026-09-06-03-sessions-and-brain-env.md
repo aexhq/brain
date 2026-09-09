@@ -12,6 +12,10 @@ own Environment ordinary at the session boundary. Revises the single-worker impl
 described by [ADR-034](2026-09-05-03-wasm-worker.md) and revises the Environment-owned TTL
 and cleanup policy in [ADR-037](2026-09-05-06-ephemeral.md).
 
+Amended by [ADR-046](2026-09-09-01-minimal-extension-contract.md): dependency preparation and
+resource grants belong to Environments, universal `needs` is removed, and Agentloop KV uses
+read/put/delete with inline durable mutations.
+
 ## Context
 
 Loophost was named for hosting the Agentloop. It now runs both Agentloop and Tool Components,

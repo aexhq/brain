@@ -39,19 +39,7 @@
     "ToolPlacement": {
       "additionalProperties": false,
       "properties": {
-        "implementation": true,
-        "needs": {
-          "default": [],
-          "items": {
-            "format": "uri",
-            "maxLength": 2048,
-            "minLength": 1,
-            "type": "string"
-          },
-          "maxItems": 64,
-          "type": "array",
-          "uniqueItems": true
-        }
+        "implementation": true
       },
       "required": [
         "implementation"

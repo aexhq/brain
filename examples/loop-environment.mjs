@@ -20,13 +20,19 @@ export function loopEnvironment({ fetch = globalThis.fetch } = {}) {
     return response.json();
   };
   async function turn(callback, input) {
+    const kv = {
+      read: async (key) => (await call(callback, "kv_read", key)).value,
+      put: (key, value) => call(callback, "kv_put", { key, value }),
+      delete: (key) => call(callback, "kv_delete", key),
+    };
+    const turns = (await kv.read("turns") ?? 0) + 1;
     const transcript = [...input.transcript, { role: "user", content: [{ type: "text", text: input.input.message }, ...(input.input.media ?? [])] }];
     await call(callback, "set_transcript", transcript);
-    await call(callback, "emit", { event_type: "remote_note", data: { turns: (input.kv.turns ?? 0) + 1 } });
+    await call(callback, "emit", { event_type: "remote_note", data: { turns: turns } });
     const result = await call(callback, "model", { messages: transcript });
     transcript.push(result.message);
     await call(callback, "set_transcript", transcript);
-    await call(callback, "set_kv", { key: "turns", value: (input.kv.turns ?? 0) + 1 });
+    await kv.put("turns", turns);
     return { result: { stop_reason: result.stop_reason } };
   }
   async function handle(command) {
@@ -39,9 +45,10 @@ export function loopEnvironment({ fetch = globalThis.fetch } = {}) {
     const key = `${op.session_id}/${op.environment}`;
     let receipt;
     if (request?.type === "setup") {
-      const unmet = (request.needs ?? []).find((need) => !need.startsWith("https://"));
-      if (unmet !== undefined) receipt = failure("unmet_need", `this Environment reaches the network only; it cannot honour ${unmet}`);
-      else { sessions.add(key); receipt = accepted(); }
+      if (!request.configuration || typeof request.configuration !== "object"
+        || Array.isArray(request.configuration) || Object.keys(request.configuration).length !== 0) {
+        receipt = failure("invalid_configuration", "this Environment accepts no options");
+      } else { sessions.add(key); receipt = accepted(); }
     } else if (request?.type === "teardown") {
       sessions.delete(key);
       receipt = accepted();

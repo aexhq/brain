@@ -24,25 +24,12 @@ components:
       additionalProperties: false
       description: |-
         The admitted Agentloop a session runs: which one, how it is configured, which
-        Environment of the session runs it, and what it needs there.
+        Environment of the session runs it.
       properties:
         configuration: true
         environment:
           $ref: '#/components/schemas/EnvironmentName'
         implementation: true
-        needs:
-          default: []
-          description: |-
-            What the Agentloop needs from its Environment, as URIs. Brain hands them to the
-            Environment at setup and with every turn, and reads none of them.
-          items:
-            format: uri
-            maxLength: 2048
-            minLength: 1
-            type: string
-          maxItems: 64
-          type: array
-          uniqueItems: true
       required:
       - implementation
       - configuration
@@ -480,7 +467,7 @@ components:
       - sequence
       - outcome
       type: object
-    KvSetRequest:
+    KvPutRequest:
       additionalProperties: false
       properties:
         key:
@@ -802,16 +789,6 @@ components:
       additionalProperties: false
       properties:
         implementation: true
-        needs:
-          default: []
-          items:
-            format: uri
-            maxLength: 2048
-            minLength: 1
-            type: string
-          maxItems: 64
-          type: array
-          uniqueItems: true
       required:
       - implementation
       type: object

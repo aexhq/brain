@@ -214,7 +214,7 @@ export interface ApiError {
 }
 /**
  * The admitted Agentloop a session runs: which one, how it is configured, which
- * Environment of the session runs it, and what it needs there.
+ * Environment of the session runs it.
  *
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "AgentloopRef".
@@ -223,13 +223,6 @@ export interface AgentloopRef {
   configuration: unknown;
   environment: EnvironmentName;
   implementation: unknown;
-  /**
-   * What the Agentloop needs from its Environment, as URIs. Brain hands them to the
-   * Environment at setup and with every turn, and reads none of them.
-   *
-   * @maxItems 64
-   */
-  needs?: string[];
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
@@ -307,10 +300,6 @@ export interface Tool {
  */
 export interface ToolPlacement {
   implementation: unknown;
-  /**
-   * @maxItems 64
-   */
-  needs?: string[];
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
@@ -452,9 +441,9 @@ export interface OutcomeError {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "KvSetRequest".
+ * via the `definition` "KvPutRequest".
  */
-export interface KvSetRequest {
+export interface KvPutRequest {
   key: string;
   value: unknown;
 }

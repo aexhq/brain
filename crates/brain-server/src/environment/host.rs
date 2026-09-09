@@ -651,7 +651,6 @@ mod tests {
         operation(EnvironmentRequest::Execute {
             implementation: serde_json::json!({"type": "host_function", "name": "read_dom"}),
             callback: None,
-            needs: Vec::new(),
             input: serde_json::json!({}),
             deadline_ms: 5_000,
         })
@@ -686,7 +685,6 @@ mod tests {
             session_id: session.clone(),
             ..operation(EnvironmentRequest::Setup {
                 configuration: serde_json::json!({}),
-                needs: Vec::new(),
             })
         };
         hosts
@@ -738,7 +736,6 @@ mod tests {
         let registration = hosts.register().unwrap();
         let setup = operation(EnvironmentRequest::Setup {
             configuration: serde_json::json!({}),
-            needs: Vec::new(),
         });
         assert!(
             hosts

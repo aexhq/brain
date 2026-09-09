@@ -10,7 +10,7 @@ These examples use the public TypeScript SDK and HTTP API against a locally runn
 | `raw-http.mjs` | Admit raw Agentloop Component bytes and run a session using only HTTP. |
 | `example-brain.mjs` | Wrap a compiled Agentloop Component in the SDK factory. |
 | `reference-agentloop/` | A Rust Agentloop Component written against Brain's public contracts alone. |
-| `lazy-environment.mjs` | A standalone Environment: logical setup with needs, lazy allocation, idle expiry, explicit restart. |
+| `lazy-environment.mjs` | A standalone Environment: logical setup with configuration, lazy allocation, caller-controlled cleanup, explicit restart. |
 | `loop-environment.mjs` | A standalone Environment that runs an Agentloop on another server, calling Brain's turn routes back. |
 
 On Linux, from the repository root, install dependencies, build the SDK, and build the two Brain
@@ -74,3 +74,23 @@ process: set `BRAIN_PUBLIC_URL` when that is not the listen address.
 `session.events(cursor)` reads the public Event projection from the canonical journal. It is not an external
 queue or an at-least-once delivery guarantee. Applications that forward events own their queue,
 cursor persistence, retries, and deduplication.
+
+### Python project preparation
+
+`python-environment.mjs` exports an Environment handler for operator-selected projects. Supply
+`{ projects: { name: { directory, module, setup? } }, uv? }`, then serve its `handle` function
+over the Environment protocol in an isolated OS runtime. An implementation descriptor is
+`{ type: "python_project", name }`; session setup accepts an empty configuration. Python and
+`uv` are Environment bootstrap prerequisites, not dependencies resolved by Brain.
+
+The loader runs `uv sync --locked`, optionally runs a setup module, then invokes the module with
+JSON stdin and reads JSON stdout. Preparation is shared by installation directory across
+concurrent invocations and sessions. Setup failure prevents execution and remains an explicit
+failure until the operator replaces the loader. Bindings can detach without deleting the installation.
+No custom setup hook is required for ordinary packaged dependencies.
+
+Run the real preparation tests with `BRAIN_TEST_UV=/path/to/uv node --test examples/python-environment.test.mjs`
+from the repository root. CI runs this gate with uv 0.8.15. The locked fixture imports an installed
+package, proves setup-before-entrypoint, rejects incompatible placement, and checks concurrency
+and failure without mocked Python execution. This example does not itself sandbox processes,
+filter network access, or provide durable background jobs.

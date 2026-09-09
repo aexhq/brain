@@ -14,6 +14,7 @@ use brain_protocol::{RuntimeEnvelope, TurnError, TurnInput};
 /// what the guest asked for.
 struct RecordingBridge {
     calls: Mutex<Vec<String>>,
+    kv: Mutex<std::collections::BTreeMap<String, serde_json::Value>>,
     cancelled: AtomicBool,
 }
 
@@ -21,11 +22,24 @@ struct RecordingBridge {
 impl TurnBridge for RecordingBridge {
     async fn call(&self, call: HostCall) -> Result<String, TurnError> {
         match call {
-            HostCall::SetKv { key, value_json } => {
+            HostCall::KvPut { key, value_json } => {
+                self.kv
+                    .lock()
+                    .unwrap()
+                    .insert(key.clone(), serde_json::from_str(&value_json).unwrap());
                 self.calls
                     .lock()
                     .unwrap()
                     .push(format!("kv {key} {value_json}"));
+                Ok("7".into())
+            }
+            HostCall::KvRead { key } => Ok(match self.kv.lock().unwrap().get(&key) {
+                Some(value) => serde_json::json!({"value": value}),
+                None => serde_json::json!({}),
+            }
+            .to_string()),
+            HostCall::KvDelete { key } => {
+                self.kv.lock().unwrap().remove(&key);
                 Ok("7".into())
             }
             HostCall::SetTranscript { messages_json } => {
@@ -113,8 +127,21 @@ async fn reference_loop_reads_interruptions_and_hands_tool_failures_to_the_model
     impl TurnBridge for Model {
         async fn call(&self, call: HostCall) -> Result<String, TurnError> {
             let answer = match call {
-                HostCall::SetKv { key, value_json } => {
+                HostCall::KvPut { key, value_json } => {
                     self.kv.lock().unwrap()[key] = serde_json::from_str(&value_json).unwrap();
+                    serde_json::json!(7)
+                }
+                HostCall::KvRead { key } => match self.kv.lock().unwrap().get(&key) {
+                    Some(value) => serde_json::json!({"value": value}),
+                    None => serde_json::json!({}),
+                },
+                HostCall::KvDelete { key } => {
+                    self.kv
+                        .lock()
+                        .unwrap()
+                        .as_object_mut()
+                        .unwrap()
+                        .remove(&key);
                     serde_json::json!(7)
                 }
                 HostCall::SetTranscript { messages_json } => {
@@ -221,7 +248,8 @@ async fn a_worker_crash_does_not_replay_or_stop_its_sibling_and_shutdown_reaps_b
     impl TurnBridge for Held {
         async fn call(&self, call: HostCall) -> Result<String, TurnError> {
             match call {
-                HostCall::SetKv { .. } => Ok("7".into()),
+                HostCall::KvPut { .. } => Ok("7".into()),
+                HostCall::KvRead { .. } => Ok("{}".into()),
                 HostCall::Events { after } => {
                     Ok(serde_json::json!({"events": [], "next_cursor": after}).to_string())
                 }
@@ -301,6 +329,7 @@ async fn a_worker_crash_does_not_replay_or_stop_its_sibling_and_shutdown_reaps_b
     assert_eq!(pid(1).await, second);
     let bridge = RecordingBridge {
         calls: Mutex::new(Vec::new()),
+        kv: Mutex::new(Default::default()),
         cancelled: AtomicBool::new(false),
     };
     for _ in 0..2 {
@@ -332,7 +361,8 @@ async fn saturated_parent_turns_can_all_invoke_native_tools() {
         }
         async fn call(&self, call: HostCall) -> Result<String, TurnError> {
             match call {
-                HostCall::SetKv { .. } => Ok("7".into()),
+                HostCall::KvPut { .. } => Ok("7".into()),
+                HostCall::KvRead { .. } => Ok("{}".into()),
                 HostCall::Events { after } => {
                     Ok(serde_json::json!({"events": [], "next_cursor": after}).to_string())
                 }
@@ -354,6 +384,7 @@ async fn saturated_parent_turns_can_all_invoke_native_tools() {
                             },
                             &RecordingBridge {
                                 calls: Mutex::new(Vec::new()),
+                                kv: Mutex::new(Default::default()),
                                 cancelled: AtomicBool::new(false),
                             },
                         )
@@ -441,10 +472,11 @@ async fn real_worker_admits_and_runs_a_turn_of_the_diagnostic_loop() {
     let digest = pool.admit(package).await.unwrap();
     let bridge = RecordingBridge {
         calls: Mutex::new(Vec::new()),
+        kv: Mutex::new(Default::default()),
         cancelled: AtomicBool::new(false),
     };
     let output = pool
-        .turn(digest, environment(), input("hello"), &bridge)
+        .turn(digest, environment(), input("kv"), &bridge)
         .await
         .unwrap();
     assert!(
@@ -457,7 +489,7 @@ async fn real_worker_admits_and_runs_a_turn_of_the_diagnostic_loop() {
     );
     assert_eq!(
         output.result,
-        Some(serde_json::json!({"turns": 1, "message": "hello"}))
+        Some(serde_json::json!({"turns": 1, "message": "kv"}))
     );
     // The diagnostic loop emits one note through the host before it finishes.
     let calls = bridge.calls.lock().unwrap();
@@ -481,6 +513,7 @@ async fn tool_workspaces_are_shared_within_a_session_and_isolated_between_sessio
     let digest = pool.admit_tool(component).await.unwrap();
     let bridge = RecordingBridge {
         calls: Mutex::new(Vec::new()),
+        kv: Mutex::new(Default::default()),
         cancelled: AtomicBool::new(false),
     };
     let invoke = |input: serde_json::Value| NativeToolInput {
@@ -546,6 +579,7 @@ async fn concurrent_turns_all_reach_the_agentloop() {
         turns.push(tokio::spawn(async move {
             let bridge = RecordingBridge {
                 calls: Mutex::new(Vec::new()),
+                kv: Mutex::new(Default::default()),
                 cancelled: AtomicBool::new(false),
             };
             let output = pool
@@ -600,6 +634,7 @@ async fn a_cancelled_turn_ends_at_its_next_host_call() {
     let digest = pool.admit(package).await.unwrap();
     let bridge = RecordingBridge {
         calls: Mutex::new(Vec::new()),
+        kv: Mutex::new(Default::default()),
         cancelled: AtomicBool::new(true),
     };
     let error = pool
@@ -661,6 +696,7 @@ async fn host_calls_queued_before_cancel_are_not_answered_after_cancel() {
     });
     let bridge = RecordingBridge {
         calls: Mutex::new(Vec::new()),
+        kv: Mutex::new(Default::default()),
         cancelled: AtomicBool::new(true),
     };
     let error = WorkerClient::new(socket, &EnvLimits::default())

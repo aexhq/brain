@@ -54,18 +54,22 @@ const inspect = tool({
   description: "Inspect the workspace.",
   input: z.object({ path: z.string() }),
   implementation: component(new URL("./inspect.wasm", import.meta.url)),
-  needs: ["file:///workspace"],
 });
 
-const env = brainEnv({ name: "brain" });
+const env = brainEnv({ name: "reader", filesystem: { workspace: "read" } });
 const placedLoop = loop({ env });
 const placedTool = inspect({ env });
 ```
 
-`needs` is a list of URIs interpreted by the selected Environment: `pkg:` for software,
-`https:` or `wss:` for a network destination, `file:` for a filesystem location. The brain env
-grants each invocation exactly what its needs name, bounded by the server's `BRAIN_ENV_*`
-allow-lists; the deployment above must include `workspace` in `BRAIN_ENV_FILESYSTEM_ALLOW`.
+Resource grants are Environment options. `brainEnv` accepts `filesystem: { workspace?, scratch? }`
+with `"read"` or `"write"` access, `network` as HTTP(S) origins, and `secrets` as server-variable
+names. Omitted access stays denied; the server's `BRAIN_ENV_*` allow-lists remain the ceiling.
+The example requires `workspace` in `BRAIN_ENV_FILESYSTEM_ALLOW`. Use separate bindings if the
+loop and Tool should receive different grants.
+
+There is no universal `needs`. Dependencies belong to packages and Environment-owned preparation,
+which completes before imports or execution. Unsupported placement and setup failure are explicit
+errors, never a reason for Brain to install packages or choose another Environment.
 
 A Tool with `run` is a function this process holds and is placed in `hostEnv`. The SDK registers
 this process as a host over SSE, receives commands, validates inputs and outputs, and posts one
@@ -102,3 +106,14 @@ Agentloop authors can import generated `ModelRequest`, `ModelResult`, `ToolResul
 at `@aexhq/brain/contracts/agentloop.wit` and `@aexhq/brain/contracts/tool.wit`. `events(after)` reads
 history during an activation, and `emit` appends extension Events. Model, Tool, and Environment
 failures are never retried by Brain.
+
+## Upgrading to 0.20
+
+Upgrade the server and SDK together and rebuild Agentloop Components against the packaged WIT.
+Replace `set_kv` with `kv_put`; bindings expose `kv.read/put/delete`. Remove `needs` from
+extension declarations and configure native resource grants explicitly on their Environment.
+Do not translate per-Tool grants into a shared union without choosing that authority boundary.
+
+This pre-stable change does not migrate retained 0.19 sessions or old Agentloop binaries.
+Keep their matching server/artifacts for recovery; use a separately admitted new session for
+the new contract. Deployment must not discard or rewrite existing session data implicitly.

@@ -10,18 +10,13 @@ use crate::{
 pub const SESSION_CONTRACT: &str = "session/v1";
 
 /// The admitted Agentloop a session runs: which one, how it is configured, which
-/// Environment of the session runs it, and what it needs there.
+/// Environment of the session runs it.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentloopRef {
     pub implementation: serde_json::Value,
     pub configuration: serde_json::Value,
     pub environment: EnvironmentName,
-    /// What the Agentloop needs from its Environment, as URIs. Brain hands them to the
-    /// Environment at setup and with every turn, and reads none of them.
-    #[serde(default)]
-    #[schemars(schema_with = "crate::schema::needs")]
-    pub needs: Vec<String>,
 }
 
 #[derive(Clone, Deserialize, JsonSchema, Serialize)]

@@ -5,7 +5,7 @@ const accepted = () => ({ type: "accepted" });
 const failure = (code, message) => ({ type: "failure", code, message, retryable: false });
 const identifier = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
 
-// Setup records needs; the first execution allocates the workspace. The caller
+// Setup records configuration; the first execution allocates the workspace. The caller
 // decides when to detach or tear it down; this Environment has no idle policy.
 export function lazyEnvironment({ allocate = async () => new Map() } = {}) {
   const environments = new Map();
@@ -20,9 +20,12 @@ export function lazyEnvironment({ allocate = async () => new Map() } = {}) {
     let env = environments.get(key(op));
     let receipt;
     if (request?.type === "setup") {
-      const unmet = (request.needs ?? []).find((need) => !need.startsWith("file:"));
-      if (unmet !== undefined) receipt = failure("unmet_need", `this Environment offers a workspace only; it cannot honour ${unmet}`);
-      else if (env) receipt = failure("already_exists", "Environment already exists");
+      const options = request.configuration;
+      if (!options || typeof options !== "object" || Array.isArray(options)
+        || Object.keys(options).some((key) => key !== "label")
+        || (options.label !== undefined && typeof options.label !== "string")) {
+        receipt = failure("invalid_configuration", "this Environment accepts only an optional label string");
+      } else if (env) receipt = failure("already_exists", "Environment already exists");
       else {
         environments.set(key(op), { active: 0 });
         receipt = accepted();

@@ -32,7 +32,7 @@ async fn graceful_drain_keeps_turn_services_alive_and_refuses_new_work() {
                 .set_transcript(vec![Message::user_text("finished while draining")])
                 .await?;
             services
-                .set_kv(brain_protocol::KvSetRequest {
+                .kv_put(brain_protocol::KvPutRequest {
                     key: "saved".into(),
                     value: serde_json::json!(true),
                 })

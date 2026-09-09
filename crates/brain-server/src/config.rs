@@ -20,7 +20,7 @@ pub struct ServerConfig {
     /// OS worker processes in the built-in Environment pool.
     #[arg(long, env = "BRAIN_ENV_WORKERS", default_value = "2")]
     pub env_workers: std::num::NonZeroUsize,
-    /// Origins the brain env may grant a Component that needs them: exact, or
+    /// Origins the brain env may grant through Environment configuration: exact, or
     /// `https://*.example.com` for a family of hosts.
     #[arg(long, env = "BRAIN_ENV_NETWORK_ALLOW", value_delimiter = ',')]
     pub env_network_allow: Vec<String>,

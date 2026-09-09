@@ -13,7 +13,7 @@ pub struct TurnEmitRequest {
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct KvSetRequest {
+pub struct KvPutRequest {
     #[schemars(schema_with = "crate::schema::identifier")]
     pub key: String,
     pub value: serde_json::Value,

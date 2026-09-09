@@ -20,18 +20,15 @@ impl EnvironmentRegistry {
         Self { adapter }
     }
 
-    /// Sets up one Environment as part of session admission: its own configuration and
-    /// the needs of everything placed in it, recorded before they are sent.
+    /// Sets up one Environment with its configuration, recorded before delivery.
     pub async fn setup(
         &self,
         creation: &mut CreatingSession,
         environment: &Environment,
-        needs: Vec<String>,
     ) -> Result<(), brain::Error> {
         let kind = codes::event::call::ENVIRONMENT_SETUP;
         let request = EnvironmentRequest::Setup {
             configuration: environment.configuration.clone(),
-            needs,
         };
         let sequence = creation.record(
             &format!("{kind}_started"),

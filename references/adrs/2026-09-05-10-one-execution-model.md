@@ -10,6 +10,10 @@ and callers own lifecycle policy. The built-in implementation moves into brain-e
 
 Extends: [ADR-022: Let Environments execute implementations using their own platform APIs](2026-09-02-05-resources.md), whose create-time check of Tool needs against declared resources this record removes; [ADR-033: Distinguish resident Tools from explicitly placed extensions](2026-09-05-02-placement.md); [ADR-040: Identify records by session and sequence, and everything inside a session by name](2026-09-05-09-session-names.md).
 
+Amended by [ADR-046](2026-09-09-01-minimal-extension-contract.md): dependency preparation and
+resource grants belong to Environments, universal `needs` is removed, and Agentloop KV uses
+read/put/delete with inline durable mutations.
+
 ## Context
 
 Brain describes two ways a Tool can run: placed in an Environment that Brain reaches over HTTP, or inside the application that created the session, reached over a connection the application holds open. The distinction leaks into every layer. A Tool carries a `hosting` flag, a `host_id` beside an optional `environment_id`, and six cross-field validation rules that say which of those may be present together. The dispatcher branches on the flag. The host registration table is an Environment lifecycle in disguise: it tracks the sessions each registered host serves, adds one at create, and removes it at end. Where an HTTP Environment lives is decided by a routes file the server operator writes, so an Environment extension cannot let the application configure its own address.

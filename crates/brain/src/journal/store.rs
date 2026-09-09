@@ -86,11 +86,14 @@ pub enum JournalEntry {
         key: String,
         value: serde_json::Value,
     },
+    KvDelete {
+        key: String,
+    },
 }
 
 impl JournalEntry {
     pub(crate) fn is_kind(kind: &str) -> bool {
-        matches!(kind, "transcript_delta" | "kv_set")
+        matches!(kind, "transcript_delta" | "kv_set" | "kv_delete")
     }
 }
 
@@ -112,6 +115,9 @@ impl Folded {
             }
             JournalEntry::KvSet { key, value } => {
                 self.kv.insert(key, value);
+            }
+            JournalEntry::KvDelete { key } => {
+                self.kv.remove(&key);
             }
         }
     }

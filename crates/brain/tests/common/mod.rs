@@ -182,7 +182,6 @@ pub fn config() -> SessionConfig {
         agentloop: AgentloopRef {
             configuration: serde_json::json!({}),
             environment: EnvironmentName::new("workspace"),
-            needs: Vec::new(),
             implementation: serde_json::json!({"type": "brain_component", "entrypoint": "turn", "id": AgentloopId::new("a".repeat(64))}),
         },
         model: ModelBinding {
