@@ -89,9 +89,9 @@ fn checked_in_examples_validate() {
     );
 }
 
-/// A Tool has at least one placement; each has its own implementation and URI needs.
+/// A Tool has at least one placement; each has its own implementation.
 #[test]
-fn a_tool_names_one_environment_and_its_needs_as_uris() {
+fn a_tool_names_its_placement_and_refuses_obsolete_needs() {
     let schema =
         jsonschema::draft202012::new(&read_json("generated/contract/tool/v1/schemas.json"))
             .unwrap();
@@ -108,14 +108,9 @@ fn a_tool_names_one_environment_and_its_needs_as_uris() {
         old[deleted] = serde_json::json!("x");
         assert!(schema.validate(&old).is_err(), "{deleted} must be refused");
     }
-    let mut repeated = example.clone();
-    repeated["placements"]["sandbox"]["needs"] =
-        serde_json::json!(["pkg:apt/bash", "pkg:apt/bash"]);
-    assert!(schema.validate(&repeated).is_err());
-    let mut too_many = example.clone();
-    too_many["placements"]["sandbox"]["needs"] =
-        serde_json::json!((0..65).map(|i| format!("pkg:apt/p{i}")).collect::<Vec<_>>());
-    assert!(schema.validate(&too_many).is_err());
+    let mut obsolete = example.clone();
+    obsolete["placements"]["sandbox"]["needs"] = serde_json::json!([]);
+    assert!(schema.validate(&obsolete).is_err());
     let mut host_tool = example;
     host_tool["placements"]["sandbox"]
         .as_object_mut()
@@ -174,10 +169,6 @@ fn rust_views_round_trip_contract_examples() {
             .placements
             .contains_key(&session.environments[1].name)
     );
-    assert_eq!(
-        session.tools[0].placements.values().next().unwrap().needs,
-        vec!["file:///workspace"]
-    );
     assert!(
         session.tools[0]
             .placements
@@ -203,7 +194,7 @@ fn rust_views_round_trip_contract_examples() {
         serde_json::from_value(read_json("tests/examples/environment/setup.json")).unwrap();
     assert!(matches!(
         setup.operation.request,
-        EnvironmentRequest::Setup { ref needs, .. } if needs.len() == 3
+        EnvironmentRequest::Setup { .. }
     ));
     let response: EnvironmentResponse =
         serde_json::from_value(read_json("tests/examples/environment/execute-result.json"))

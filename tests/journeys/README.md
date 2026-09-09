@@ -20,7 +20,7 @@ Linux worker job, then runs all journeys as a required part of `build-test`.
 | `events`, `stream`, client `stream` | Durable cursors, a full page boundary, replay-to-live delivery, reconnect, abort, authentication, session isolation |
 | `tool` with `run` in `hostEnv`, options, schemas, context | Progress ordering, input/output errors, handler errors, deadlines/signals, the call's sequence, concurrent sessions, protected Event rejection |
 | `register`, `credentials`, reattachment | Save credentials, close the host connection, reject mismatched placements, restore matching handlers, preserve active-call cancellation on creation replay |
-| `environment`, `brainEnv`, placed Tools, `needs` | Independent authenticated Environments per instance, lazy allocation, expiry without retry, needs at setup, a refused need failing the create, native workspace persistence/isolation, a need the brain env cannot grant |
+| `environment`, `brainEnv`, placed Tools | Independent authenticated Environments, lazy allocation, configuration validation, explicit native grants and denied access, workspace persistence/isolation |
 | An Agentloop placed in an Environment reached over HTTP | The turn's model call, emit, and dispatch through Brain's turn routes, a dispatched Tool running in the host env, and the routes closing with the turn |
 | `timeoutMs` | Explicit client timeout leaves the server's execution observable and does not retry the model call |
 
@@ -49,3 +49,6 @@ Missing binaries or Components fail the suite; no journeys are conditionally ski
 and worker run natively on Windows too (the worker listens on a named pipe there), but the journey
 harness stops servers by process group, so run the journeys themselves in WSL on Windows. Portable
 SDK unit tests still run with `npm test`.
+
+HTTP Agentloop journeys also exercise `kv_read`, `kv_put`, and `kv_delete` across a failed
+turn and server restart, preserving the distinction between absent keys and JSON null.

@@ -17,11 +17,20 @@ struct Answering {
 impl GuestHost for Answering {
     async fn call(&self, call: HostCall) -> Result<String, TurnError> {
         match call {
-            HostCall::SetKv { key, value_json } => {
+            HostCall::KvPut { key, value_json } => {
                 self.kv
                     .lock()
                     .unwrap()
                     .insert(key, serde_json::from_str(&value_json).unwrap());
+                Ok("7".into())
+            }
+            HostCall::KvRead { key } => Ok(match self.kv.lock().unwrap().get(&key) {
+                Some(value) => serde_json::json!({"value": value}),
+                None => serde_json::json!({}),
+            }
+            .to_string()),
+            HostCall::KvDelete { key } => {
+                self.kv.lock().unwrap().remove(&key);
                 Ok("7".into())
             }
             HostCall::SetTranscript { .. } => Ok("7".into()),

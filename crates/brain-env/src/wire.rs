@@ -19,7 +19,9 @@ use crate::EnvLimits;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HostCall {
     SetTranscript { messages_json: String },
-    SetKv { key: String, value_json: String },
+    KvPut { key: String, value_json: String },
+    KvRead { key: String },
+    KvDelete { key: String },
     Events { after: u64 },
     Model { request_json: String },
     Dispatch { calls_json: String },
@@ -52,7 +54,7 @@ pub enum WorkerRequest {
     Cancel,
 }
 
-/// What one invocation is granted: computed from what it declared it needs, bounded
+/// What one invocation is granted: its Environment configuration, bounded
 /// by the deployment's allow-lists, and nothing else.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct NativeEnvironment {

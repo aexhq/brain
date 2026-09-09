@@ -9,6 +9,10 @@ decisions, alternatives, and validation requirements together.
 The model-state decision refines [ADR-012](2026-08-30-01-provider-model.md). This does not declare
 the entire v1 API frozen. The original reproductions below describe the pre-change revision.
 
+Amended by [ADR-046](2026-09-09-01-minimal-extension-contract.md): dependency preparation and
+resource grants belong to Environments, universal `needs` is removed, and Agentloop KV uses
+read/put/delete with inline durable mutations.
+
 ## 1. Attribute extension Events to their originating execution
 
 ### Context

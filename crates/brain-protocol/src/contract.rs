@@ -57,7 +57,7 @@ pub fn session() -> Value {
             define::<SessionSummary>(generator);
             define::<crate::SessionTranscript>(generator);
             define::<TurnEmitRequest>(generator);
-            define::<crate::KvSetRequest>(generator);
+            define::<crate::KvPutRequest>(generator);
             marker(SESSION_CONTRACT)
         },
     )

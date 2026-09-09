@@ -1,13 +1,6 @@
-//! Brain's native Environment adapter; guest code runs in managed worker processes.
-//!
-//! A Tool placed here is a Component admitted through `POST /v1/tools`; the Agentloop
-//! is one admitted through `POST /v1/agentloops`. Each runs in a fresh Wasmtime store
-//! with exactly the grants its needs name, bounded by the deployment's allow-lists:
-//! `file:///workspace` is the session's directory, `file:///scratch` lives for one
-//! invocation, both read-only unless the need says `?access=write`; an `https:` or
-//! `http:` origin, exact or `scheme://*.domain`, opens `wasi:http` to it. Secrets are the
-//! Environment's own option, `{ "secrets": [names] }`, read from the process environment
-//! and mounted under `/secrets`. Nothing is installed: `pkg:` is refused.
+//! Brain's native Environment adapter; guests run in managed worker processes.
+//! Each invocation receives its Environment's configured grants, bounded by the
+//! deployment policy. Components bring their own code; this runtime installs nothing.
 
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
@@ -47,6 +40,15 @@ pub struct BrainEnvironment {
 #[serde(default, deny_unknown_fields)]
 struct Configuration {
     secrets: Vec<String>,
+    network: Vec<String>,
+    filesystem: Filesystem,
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Filesystem {
+    workspace: Option<Access>,
+    scratch: Option<Access>,
 }
 
 impl BrainEnvironment {
@@ -67,14 +69,11 @@ impl BrainEnvironment {
         })
     }
 
-    /// The grants one invocation receives: its needs, bounded by the policy, plus the
-    /// Environment's secrets.
     async fn grants(
         &self,
         session: &SessionId,
         environment: &brain_protocol::EnvironmentName,
         configuration: &Configuration,
-        needs: &[String],
     ) -> Result<NativeEnvironment, brain::Error> {
         let mut granted = NativeEnvironment::default();
         for name in &configuration.secrets {
@@ -87,8 +86,39 @@ impl BrainEnvironment {
                 .map_err(|_| refused(format!("secret `{name}` is not configured")))?;
             granted.secrets.insert(name.clone(), value);
         }
-        for need in needs {
-            self.grant(session, environment, need, &mut granted)?;
+        if let Some(access) = configuration.filesystem.workspace {
+            self.filesystem_granted("workspace")?;
+            granted.workspace = Some(Workspace {
+                path: self
+                    .workspaces
+                    .join(session.as_str())
+                    .join(environment.as_str())
+                    .to_string_lossy()
+                    .into_owned(),
+                access,
+            });
+        }
+        if let Some(access) = configuration.filesystem.scratch {
+            self.filesystem_granted("scratch")?;
+            granted.scratch = Some(access);
+        }
+        for requested in &configuration.network {
+            let uri = url::Url::parse(requested)
+                .map_err(|error| refused(format!("network origin `{requested}`: {error}")))?;
+            let origin = network_origin(&uri).ok_or_else(|| {
+                refused(format!("network `{requested}` must be an HTTP(S) origin"))
+            })?;
+            if !self
+                .policy
+                .network
+                .iter()
+                .any(|grant| network_covers(grant, &origin))
+            {
+                return Err(refused(format!(
+                    "network `{requested}` is not granted by this server"
+                )));
+            }
+            granted.network_allow.push(origin);
         }
         if let Some(workspace) = &granted.workspace {
             tokio::fs::create_dir_all(&workspace.path)
@@ -98,94 +128,12 @@ impl BrainEnvironment {
         Ok(granted)
     }
 
-    fn grant(
-        &self,
-        session: &SessionId,
-        environment: &brain_protocol::EnvironmentName,
-        need: &str,
-        granted: &mut NativeEnvironment,
-    ) -> Result<(), brain::Error> {
-        let uri = url::Url::parse(need)
-            .map_err(|error| refused(format!("need `{need}` is not a URI: {error}")))?;
-        match uri.scheme() {
-            "file" => {
-                let access = file_access(&uri).ok_or_else(|| {
-                    refused(format!(
-                        "need `{need}` carries a query other than access=read or access=write"
-                    ))
-                })?;
-                let root = uri.path().trim_end_matches('/');
-                if uri.host_str().is_some_and(|host| !host.is_empty()) {
-                    return Err(refused(format!(
-                        "need `{need}` names a host; the brain env has file:///workspace and file:///scratch"
-                    )));
-                }
-                match root {
-                    "/workspace" => {
-                        self.filesystem_granted("workspace", need)?;
-                        let path = self
-                            .workspaces
-                            .join(session.as_str())
-                            .join(environment.as_str());
-                        granted.workspace = Some(Workspace {
-                            path: path.to_string_lossy().into_owned(),
-                            access: widest(granted.workspace.as_ref().map(|w| w.access), access),
-                        });
-                    }
-                    "/scratch" => {
-                        self.filesystem_granted("scratch", need)?;
-                        granted.scratch = Some(widest(granted.scratch, access));
-                    }
-                    _ => {
-                        return Err(refused(format!(
-                            "need `{need}` names a location the brain env does not have; it has file:///workspace and file:///scratch"
-                        )));
-                    }
-                }
-            }
-            "https" | "http" => {
-                let origin = network_origin(&uri).ok_or_else(|| {
-                    refused(format!(
-                        "need `{need}` must be an origin, `scheme://host[:port]`, with nothing after it"
-                    ))
-                })?;
-                if !self
-                    .policy
-                    .network
-                    .iter()
-                    .any(|grant| network_covers(grant, &origin))
-                {
-                    return Err(refused(format!(
-                        "need `{need}` is not within the network this server grants"
-                    )));
-                }
-                granted.network_allow.push(origin);
-            }
-            "pkg" => {
-                return Err(refused(format!(
-                    "need `{need}` cannot be met: the brain env installs nothing, a Component brings its own code"
-                )));
-            }
-            "wss" => {
-                return Err(refused(format!(
-                    "need `{need}` cannot be met: the brain env has no WebSocket, a Component reaches the network through wasi:http"
-                )));
-            }
-            _ => {
-                return Err(refused(format!(
-                    "need `{need}` names a scheme the brain env does not honour"
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    fn filesystem_granted(&self, root: &str, need: &str) -> Result<(), brain::Error> {
+    fn filesystem_granted(&self, root: &str) -> Result<(), brain::Error> {
         if self.policy.filesystem.contains(root) {
             return Ok(());
         }
         Err(refused(format!(
-            "need `{need}` asks for a filesystem root this server does not grant"
+            "filesystem `{root}` is not granted by this server"
         )))
     }
 
@@ -197,7 +145,6 @@ impl BrainEnvironment {
     ) -> Result<EnvironmentReceipt, brain::Error> {
         let EnvironmentRequest::Execute {
             implementation,
-            needs,
             input,
             deadline_ms,
             ..
@@ -230,7 +177,6 @@ impl BrainEnvironment {
                 &operation.session_id,
                 &operation.environment,
                 &Self::configuration(environment)?,
-                needs,
             )
             .await?;
         let bridge = ServicesBridge(services);
@@ -291,12 +237,11 @@ impl EnvironmentAdapter for BrainEnvironment {
         services: Services,
     ) -> Result<EnvironmentReceipt, brain::Error> {
         match (&operation.request, services) {
-            (EnvironmentRequest::Setup { needs, .. }, _) => {
+            (EnvironmentRequest::Setup { .. }, _) => {
                 self.grants(
                     &operation.session_id,
                     &operation.environment,
                     &Self::configuration(environment)?,
-                    needs,
                 )
                 .await?;
                 Ok(EnvironmentReceipt::Accepted)
@@ -328,32 +273,11 @@ impl EnvironmentAdapter for BrainEnvironment {
     }
 }
 
-/// The access a `file:` need asks for: read unless it says `?access=write`; `None`
-/// for any other query.
-fn file_access(uri: &url::Url) -> Option<Access> {
-    let mut access = Access::Read;
-    for (key, value) in uri.query_pairs() {
-        match (&*key, &*value) {
-            ("access", "read") => {}
-            ("access", "write") => access = Access::Write,
-            _ => return None,
-        }
-    }
-    Some(access)
-}
-
-fn widest(current: Option<Access>, requested: Access) -> Access {
-    match (current, requested) {
-        (Some(Access::Write), _) | (_, Access::Write) => Access::Write,
-        _ => Access::Read,
-    }
-}
-
-/// `scheme://host[:port]`, lowercased, for a need that is exactly an origin. A host of
-/// `*.domain` is a family of hosts.
+/// An HTTP(S) origin, optionally naming a family of hosts with `*.domain`.
 fn network_origin(uri: &url::Url) -> Option<String> {
     let host = uri.host_str()?;
-    if !uri.username().is_empty()
+    if !matches!(uri.scheme(), "http" | "https")
+        || !uri.username().is_empty()
         || uri.password().is_some()
         || !matches!(uri.path(), "" | "/")
         || uri.query().is_some()
@@ -392,10 +316,12 @@ impl TurnBridge for ServicesBridge {
             |text: &str| serde_json::from_str(text).map_err(|e| bridge_error("invalid_request", e));
         let (method, input) = match call {
             HostCall::SetTranscript { messages_json } => ("set_transcript", parse(&messages_json)?),
-            HostCall::SetKv { key, value_json } => (
-                "set_kv",
+            HostCall::KvPut { key, value_json } => (
+                "kv_put",
                 serde_json::json!({"key": key, "value": parse(&value_json)?}),
             ),
+            HostCall::KvRead { key } => ("kv_read", serde_json::json!(key)),
+            HostCall::KvDelete { key } => ("kv_delete", serde_json::json!(key)),
             HostCall::Events { after } => ("events", serde_json::json!(after)),
             HostCall::Model { request_json } => ("model", parse(&request_json)?),
             HostCall::Dispatch { calls_json } => ("dispatch", parse(&calls_json)?),
@@ -489,7 +415,7 @@ mod tests {
             let entry = Environment {
                 name: brain_protocol::EnvironmentName::new(name),
                 driver: brain_protocol::Driver::Brain {},
-                configuration: serde_json::json!({}),
+                configuration: serde_json::json!({"filesystem": {"workspace": "write"}}),
             };
             let operation = EnvironmentOperation {
                 session_id: session(),
@@ -497,7 +423,6 @@ mod tests {
                 sequence: 1,
                 request: EnvironmentRequest::Setup {
                     configuration: serde_json::json!({}),
-                    needs: vec!["file:///workspace?access=write".into()],
                 },
             };
             brain.execute(&entry, &operation, None).await.unwrap();
@@ -539,7 +464,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn needs_become_grants_bounded_by_the_deployment_policy() {
+    async fn configured_grants_are_bounded_by_the_deployment_policy() {
         let root = tempfile::tempdir().unwrap();
         let brain = environment(
             NativePolicy {
@@ -553,16 +478,29 @@ mod tests {
             .grants(
                 &session(),
                 &brain_protocol::EnvironmentName::new("brain"),
-                &Configuration::default(),
-                &[
-                    "file:///workspace".into(),
-                    "file:///workspace?access=write".into(),
-                    "file:///scratch".into(),
-                    "https://API.example.com/".into(),
-                ],
+                &Configuration {
+                    filesystem: Filesystem {
+                        workspace: Some(Access::Write),
+                        scratch: Some(Access::Read),
+                    },
+                    network: vec!["https://API.example.com/".into()],
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
+        let empty = brain
+            .grants(
+                &session(),
+                &brain_protocol::EnvironmentName::new("other"),
+                &Configuration::default(),
+            )
+            .await
+            .unwrap();
+        assert!(empty.workspace.is_none());
+        assert!(empty.scratch.is_none());
+        assert!(empty.secrets.is_empty());
+        assert!(empty.network_allow.is_empty());
         let workspace = granted.workspace.unwrap();
         assert_eq!(workspace.access, Access::Write);
         assert!(std::path::Path::new(&workspace.path).is_dir());
@@ -584,8 +522,10 @@ mod tests {
                 .grants(
                     &session(),
                     &brain_protocol::EnvironmentName::new("brain"),
-                    &Configuration::default(),
-                    &[refused.into()],
+                    &Configuration {
+                        network: vec![refused.into()],
+                        ..Default::default()
+                    },
                 )
                 .await
                 .expect_err(refused)
@@ -603,8 +543,13 @@ mod tests {
                 .grants(
                     &session(),
                     &brain_protocol::EnvironmentName::new("brain"),
-                    &Configuration::default(),
-                    &["file:///scratch".into()]
+                    &Configuration {
+                        filesystem: Filesystem {
+                            scratch: Some(Access::Read),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }
                 )
                 .await
                 .is_err()
@@ -616,8 +561,8 @@ mod tests {
                     &brain_protocol::EnvironmentName::new("brain"),
                     &Configuration {
                         secrets: vec!["BRAIN_API_TOKEN".into()],
+                        ..Default::default()
                     },
-                    &[],
                 )
                 .await
                 .is_err()
@@ -629,7 +574,7 @@ mod tests {
         };
         assert!(
             BrainEnvironment::configuration(&entry).is_err(),
-            "the brain env has no options but secrets"
+            "network grants must be an array of origins"
         );
     }
 }

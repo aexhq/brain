@@ -31,26 +31,13 @@
     },
     "AgentloopRef": {
       "additionalProperties": false,
-      "description": "The admitted Agentloop a session runs: which one, how it is configured, which\nEnvironment of the session runs it, and what it needs there.",
+      "description": "The admitted Agentloop a session runs: which one, how it is configured, which\nEnvironment of the session runs it.",
       "properties": {
         "configuration": true,
         "environment": {
           "$ref": "#/$defs/EnvironmentName"
         },
-        "implementation": true,
-        "needs": {
-          "default": [],
-          "description": "What the Agentloop needs from its Environment, as URIs. Brain hands them to the\nEnvironment at setup and with every turn, and reads none of them.",
-          "items": {
-            "format": "uri",
-            "maxLength": 2048,
-            "minLength": 1,
-            "type": "string"
-          },
-          "maxItems": 64,
-          "type": "array",
-          "uniqueItems": true
-        }
+        "implementation": true
       },
       "required": [
         "implementation",
@@ -635,7 +622,7 @@
       ],
       "type": "object"
     },
-    "KvSetRequest": {
+    "KvPutRequest": {
       "additionalProperties": false,
       "properties": {
         "key": {
@@ -1076,19 +1063,7 @@
     "ToolPlacement": {
       "additionalProperties": false,
       "properties": {
-        "implementation": true,
-        "needs": {
-          "default": [],
-          "items": {
-            "format": "uri",
-            "maxLength": 2048,
-            "minLength": 1,
-            "type": "string"
-          },
-          "maxItems": 64,
-          "type": "array",
-          "uniqueItems": true
-        }
+        "implementation": true
       },
       "required": [
         "implementation"

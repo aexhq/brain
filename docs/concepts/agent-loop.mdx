@@ -20,7 +20,6 @@ import { z } from "zod";
 const assistant = agentloop({
   options: z.object({ compactAt: z.number().min(0).max(1) }),
   implementation: component(new URL("./assistant.wasm", import.meta.url)),
-  needs: ["https://models.example.com"],
 });
 
 const placed = assistant({ env: brainEnv({ name: "brain" }), compactAt: 0.8 });
@@ -28,8 +27,8 @@ const placed = assistant({ env: brainEnv({ name: "brain" }), compactAt: 0.8 });
 
 `component(...)` accepts a `URL` or `Uint8Array`. The client reads the raw bytes, admits them, and
 creates the session with the resulting id, the parsed options, and the Environment. Every Agentloop
-factory is placed with `{ env, ...options }`, and the loop declares `needs` exactly as a Tool does:
-they join the others at setup, and its id and needs arrive with every turn.
+factory is placed with `{ env, ...options }`. Dependencies are packaged with the implementation
+or prepared by its Environment; resource grants belong to that Environment’s configuration.
 
 ## The Component contract
 
@@ -42,9 +41,13 @@ The Component exports one `turn` function. Its input contains:
 - its configuration, system prompt, Tool definitions, and deterministic runtime envelope.
 
 During the activation it may call Brain's `events`, `model`, `dispatch`, `emit`, `set-transcript`,
-`set-kv`, and `telemetry` imports.
+`kv-read`, `kv-put`, `kv-delete`, and `telemetry` imports.
 `model`, `dispatch`, and `emit` cross the Brain boundary. Brain commits an external-effect intent
 before dispatch, sends it once, and commits its terminal or unknown outcome before returning it.
+
+KV reads distinguish absence from JSON null. Put creates or replaces one value; delete removes a
+key from the current projection without erasing journal history. Missing-key deletion is a no-op.
+JavaScript bindings expose `ctx.kv.read(key)`, `ctx.kv.put(key, value)`, and `ctx.kv.delete(key)`.
 
 The Component saves transcript and kv changes inline through the state imports, each committed
 before returning. Turn output carries only the result. Every turn uses a fresh Wasm instance,
@@ -53,7 +56,7 @@ while compiled and prelinked code is reused.
 ## Where it runs
 
 An Agentloop may be placed in any Environment. The brain env runs it in a fresh Wasmtime instance
-per activation with exactly the grants its `needs` name, the same way it runs a Tool. An
+per activation with its Environment’s configured grants, the same way it runs a Tool. An
 Environment reached over HTTP receives each turn with the address of Brain's turn routes for that
 turn and the token that opens them, and reaches the same services through them; Brain
 journals every call the same way. The factory always requires an explicit `env` so the placement

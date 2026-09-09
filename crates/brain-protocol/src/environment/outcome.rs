@@ -1,8 +1,7 @@
 //! The vocabulary between a Tool and the Environment that executes it.
 //!
 //! An environment is a place that executes Tools and offers resources. A tool
-//! declares its implementation and what it needs, as URIs; the environment honours or
-//! refuses them. Brain journals every call and never wraps the platform: inside the
+//! declares its implementation; the Environment prepares it and enforces configured access. Brain journals every call and never wraps the platform: inside the
 //! environment a program reaches its resources through the platform's own APIs, and
 //! policy is enforced at the platform boundary, not by Brain.
 

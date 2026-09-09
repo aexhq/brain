@@ -340,15 +340,12 @@ impl Sessions {
         };
         self.cache_store(&store)?;
         drop(store_guard);
-        // Each Environment is set up with the needs of everything placed in it, in
-        // declaration order; the first refusal fails the create and tears down the rest.
         let mut ready = Vec::with_capacity(config.environments.len());
         for environment in &config.environments {
-            let needs = needs_for(&config, &environment.name);
             if let Err(error) = self
                 .resources
                 .environments
-                .setup(&mut creation, environment, needs)
+                .setup(&mut creation, environment)
                 .await
             {
                 creation
@@ -571,27 +568,6 @@ impl Sessions {
     }
 }
 
-fn needs_for(config: &SessionConfig, environment: &EnvironmentName) -> Vec<String> {
-    let mut needs = Vec::new();
-    let placed = config
-        .tools
-        .iter()
-        .filter_map(|tool| tool.placements.get(environment))
-        .flat_map(|placement| placement.needs.iter())
-        .chain(
-            (&config.agentloop.environment == environment)
-                .then_some(config.agentloop.needs.iter())
-                .into_iter()
-                .flatten(),
-        );
-    for need in placed {
-        if !needs.contains(need) {
-            needs.push(need.clone());
-        }
-    }
-    needs
-}
-
 fn valid_identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
@@ -615,35 +591,3 @@ fn internal(message: impl Into<String>) -> ApiError {
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod session_tests;
-
-#[cfg(test)]
-mod tests {
-    use super::needs_for;
-    /// An Environment sees the needs of exactly what is placed in it, once each, so
-    /// it provisions what this session uses and nothing else.
-    #[test]
-    fn an_environment_is_set_up_with_the_needs_of_what_is_placed_in_it() {
-        let config: brain_protocol::SessionConfig = serde_json::from_value(serde_json::json!({
-            "agentloop": {"implementation": {"type": "brain_component", "entrypoint": "turn", "id": "a".repeat(64)}, "configuration": {}, "environment": "brain", "needs": ["https://api.example.com"]},
-            "model": {"provider": "openai", "name": "gpt-5-mini"},
-            "tools": [
-                {"name": "read", "description": "d", "input_schema": {}, "placements": {"brain": {"needs": ["file:///workspace", "https://api.example.com"], "implementation": {}}}},
-                {"name": "bash", "description": "d", "input_schema": {}, "placements": {"sandbox": {"needs": ["pkg:apt/bash"], "implementation": {}}}},
-                {"name": "note", "description": "d", "input_schema": {}, "placements": {"sandbox": {"needs": [], "implementation": {}}}}
-            ],
-            "environments": [
-                {"name": "brain", "driver": "brain"},
-                {"name": "sandbox", "driver": "http", "url": "https://sandbox.example"},
-                {"name": "app", "driver": "host", "host_id": "host_12345678901234567890"}
-            ]
-        }))
-        .unwrap();
-        let needs = |name: &str| needs_for(&config, &brain_protocol::EnvironmentName::new(name));
-        assert_eq!(
-            needs("brain"),
-            vec!["file:///workspace", "https://api.example.com"]
-        );
-        assert_eq!(needs("sandbox"), vec!["pkg:apt/bash"]);
-        assert!(needs("app").is_empty());
-    }
-}

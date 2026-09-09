@@ -16,7 +16,11 @@ pub trait TurnServices: Send + Sync {
     /// Replaces conversation state and returns its durable journal sequence.
     async fn set_transcript(&self, messages: Vec<brain_protocol::Message>) -> Result<u64, Error>;
     /// Saves one value and returns its durable journal sequence.
-    async fn set_kv(&self, request: brain_protocol::KvSetRequest) -> Result<u64, Error>;
+    async fn kv_put(&self, request: brain_protocol::KvPutRequest) -> Result<u64, Error>;
+    /// Reads current state; absence is distinct from JSON null.
+    async fn kv_read(&self, key: String) -> Result<Option<serde_json::Value>, Error>;
+    /// Removes one key durably. Missing keys are a no-op.
+    async fn kv_delete(&self, key: String) -> Result<u64, Error>;
     /// One model call. What the request leaves unsaid is what the session was created
     /// with. The request is journaled independently of conversation state.
     async fn model(&self, request: ModelRequest) -> Result<ModelResult, Error>;

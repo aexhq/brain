@@ -30,14 +30,12 @@ interface AgentloopSource {
   readonly kind: "agentloop";
   readonly implementation: Component | Readonly<Record<string, unknown>>;
   readonly configuration: unknown;
-  readonly needs: readonly string[];
   readonly environment: Environment;
 }
 
 interface ToolSource {
   readonly kind: "tool";
   readonly definition: ToolDefinition;
-  readonly needs: readonly string[];
   /** What the Environment interprets: a Component to admit, a descriptor, or nothing
    * when the Tool is a function this process holds. */
   readonly implementation: Component | Readonly<Record<string, unknown>> | undefined;
@@ -102,24 +100,37 @@ export function environment<OptionsSchema extends Schema | undefined = undefined
 
 export interface BrainEnvOptions {
   readonly name: string;
-  /** Process environment variables the server mounts under `/secrets`, by name. */
+  /** Server environment variables mounted under `/secrets`, by name. */
   readonly secrets?: readonly string[];
+  /** HTTP(S) origins, optionally `scheme://*.domain`, within server policy. */
+  readonly network?: readonly string[];
+  readonly filesystem?: {
+    readonly workspace?: "read" | "write";
+    readonly scratch?: "read" | "write";
+  };
 }
 
-/** Brain's own Environment, hosted inside brain-server: a fresh Wasmtime instance per
- * invocation, granted exactly what the Tool or loop placed there needs. */
+const brainOptions = z.strictObject({
+  name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u),
+  secrets: z.array(z.string()).optional(),
+  network: z.array(z.string().refine((value) => {
+    try {
+      const url = new URL(value);
+      return ["http:", "https:"].includes(url.protocol) && url.username === "" && url.password === ""
+        && ["", "/"].includes(url.pathname) && url.search === "" && url.hash === "";
+    } catch { return false; }
+  }, "network must contain HTTP(S) origins")).optional(),
+  filesystem: z.strictObject({ workspace: z.enum(["read", "write"]).optional(), scratch: z.enum(["read", "write"]).optional() }).optional(),
+});
+
+/** A fresh Wasmtime instance per invocation, with this Environment's configured grants.
+ * The server's policy is the ceiling; omitted access stays denied. */
 export function brainEnv(options: BrainEnvOptions): Environment {
-  if (!isRecord(options)) throw new TypeError("brainEnv needs { name }");
-  identifier(options.name, "Environment name");
-  const secrets = uniqueNames(options.secrets ?? [], "brainEnv secrets", identifierPattern);
-  for (const key of Object.keys(options)) {
-    if (key !== "name" && key !== "secrets") throw new TypeError(`brainEnv does not accept ${key}`);
-  }
+  const { name, secrets, ...configuration } = brainOptions.parse(options);
+  if (secrets !== undefined) uniqueNames(secrets, "brainEnv secrets", identifierPattern);
   return branded({
-    kind: "environment",
-    name: options.name,
-    driver: { driver: "brain" },
-    configuration: secrets.length === 0 ? {} : { secrets: [...secrets] },
+    kind: "environment", name, driver: { driver: "brain" },
+    configuration: { ...configuration, ...(secrets === undefined ? {} : { secrets }) },
   });
 }
 
@@ -134,8 +145,6 @@ export function hostEnv(options: { readonly name: string }): Environment {
 export interface AgentloopContract<OptionsSchema extends Schema | undefined = undefined> {
   readonly options?: OptionsSchema;
   readonly implementation: Component | Readonly<Record<string, unknown>> | ((options: Options<OptionsSchema>) => Readonly<Record<string, unknown>>);
-  /** What the loop needs from its Environment, as URIs. */
-  readonly needs?: readonly string[];
 }
 
 type Placement<OptionsSchema extends Schema | undefined> = { readonly env: Environment } &
@@ -144,14 +153,12 @@ type Placement<OptionsSchema extends Schema | undefined> = { readonly env: Envir
 export function agentloop<OptionsSchema extends Schema | undefined = undefined>(
   contract: AgentloopContract<OptionsSchema>,
 ): (placement: Placement<OptionsSchema>) => PlacedAgentloop {
-  const needs = uniqueNeeds(contract.needs ?? [], "Agentloop needs");
   return ((raw: unknown) => {
     const { env, options } = placedOptions(contract.options, raw);
     return branded({
       kind: "agentloop",
       implementation: typeof contract.implementation === "function" ? clone(contract.implementation(options as never)) : isComponent(contract.implementation) ? contract.implementation : clone(contract.implementation),
       configuration: clone(options),
-      needs,
       environment: env,
     });
   }) as (placement: Placement<OptionsSchema>) => PlacedAgentloop;
@@ -162,7 +169,7 @@ export interface ToolRunContext<Options> extends HostToolCall {
   emit(kind: string, data: unknown): Promise<number>;
 }
 
-/** One Tool: what the model is told, what it needs from its Environment, and either a
+/** One Tool: what the model is told and either a
  * function this process runs or an implementation its Environment interprets. Where it
  * runs is decided at placement, `{ env }`. */
 export interface ToolContract<OptionsSchema extends Schema | undefined, InputSchema extends Schema, OutputSchema extends Schema | undefined> {
@@ -171,9 +178,6 @@ export interface ToolContract<OptionsSchema extends Schema | undefined, InputSch
   readonly input: InputSchema;
   readonly output?: OutputSchema;
   readonly options?: OptionsSchema;
-  /** URIs: `pkg:` for software, `https:` or `wss:` for a network destination, `file:`
-   * for a filesystem location. The Environment honours or refuses them. */
-  readonly needs?: readonly string[];
   readonly run?: (
     input: SchemaOutput<InputSchema>,
     context: ToolRunContext<Options<OptionsSchema>>,
@@ -185,7 +189,6 @@ export function tool<OptionsSchema extends Schema | undefined = undefined, Input
   contract: ToolContract<OptionsSchema, InputSchema, OutputSchema>,
 ): (placement: Placement<OptionsSchema>) => PlacedTool<SchemaInput<InputSchema>, OutputSchema extends Schema ? SchemaOutput<OutputSchema> : unknown> {
   const definition = toolDefinition(contract);
-  const needs = uniqueNeeds(contract.needs ?? [], "Tool needs");
   if ((typeof contract.run === "function") === ("implementation" in contract && contract.implementation !== undefined)) {
     throw new TypeError("tool needs exactly one of run or implementation");
   }
@@ -202,7 +205,6 @@ export function tool<OptionsSchema extends Schema | undefined = undefined, Input
       return branded({
         kind: "tool",
         definition,
-        needs,
         implementation: undefined,
         handler: (input: unknown, call: HostToolCall) => run(input as never, { ...call, options } as never),
         contract: hostContract,
@@ -216,7 +218,6 @@ export function tool<OptionsSchema extends Schema | undefined = undefined, Input
     return branded({
       kind: "tool",
       definition,
-      needs,
       implementation: isComponent(implementation) ? implementation : clone(implementation as Readonly<Record<string, unknown>>),
       configuration: clone(options),
       environment: env,
@@ -317,19 +318,6 @@ function identifier(value: unknown, subject: string): asserts value is string {
 function uniqueNames(values: readonly string[], subject: string, pattern: RegExp): readonly string[] {
   if (!Array.isArray(values) || values.some((value) => typeof value !== "string" || !pattern.test(value))) {
     throw new TypeError(`${subject} contains an invalid name`);
-  }
-  if (new Set(values).size !== values.length) throw new TypeError(`${subject} contains a duplicate`);
-  return Object.freeze([...values]);
-}
-
-/** A need is a URI: it has a scheme, and nothing Brain reads beyond that. */
-function uniqueNeeds(values: readonly string[], subject: string): readonly string[] {
-  if (!Array.isArray(values) || values.length > 64) throw new TypeError(`${subject} must be at most 64 URIs`);
-  for (const value of values) {
-    if (typeof value !== "string" || value.length === 0 || value.length > 2_048 || /[\s\p{Cc}]/u.test(value) || !/^[A-Za-z][A-Za-z0-9+.-]*:./u.test(value)) {
-      throw new TypeError(`${subject} contains ${JSON.stringify(value)}, which is not a URI`);
-    }
-    try { new URL(value); } catch { throw new TypeError(`${subject} contains ${value}, which is not a URI`); }
   }
   if (new Set(values).size !== values.length) throw new TypeError(`${subject} contains a duplicate`);
   return Object.freeze([...values]);

@@ -56,21 +56,19 @@ test("session creation admits Components and names every placement", async () =>
     credential: ({ token }) => token,
     configure: ({ region }) => ({ region }),
   })({ name: "sandbox", url: "https://sandbox.example", region: "eu", token: "sandbox-key" });
-  const pi = agentloop({ implementation: component(new Uint8Array([1])), needs: ["https://api.example.com"] });
+  const pi = agentloop({ implementation: component(new Uint8Array([1])) });
   const read = tool({
     name: "read",
     description: "Read one file.",
     input: z.object({ path: z.string() }),
     implementation: component(new Uint8Array([2])),
-    needs: ["file:///workspace"],
-  });
+    });
   const bash = tool({
     name: "bash",
     description: "Run a command.",
     input: z.object({ command: z.string() }),
     implementation: { artifact: "bash_v1" },
-    needs: ["pkg:apt/bash", "file:///workspace?access=write"],
-  });
+    });
   const client = new Brain({ baseUrl: "https://brain.example/", token: "brain-token", fetch: fetchStub });
   const session = await client.sessions.create({
     model: { provider: "openai", name: "gpt-5", apiKey: "model-token" },
@@ -87,17 +85,15 @@ test("session creation admits Components and names every placement", async () =>
     { name: "brain", driver: "brain", configuration: { secrets: ["MODEL_TOKEN"] } },
     { name: "sandbox", driver: "http", url: "https://sandbox.example", credential: "sandbox-key", configuration: { region: "eu" } },
   ]);
-  assert.deepEqual(body.agentloop, { implementation: { type: "brain_component", entrypoint: "turn", id: "a".repeat(64) }, configuration: {}, environment: "brain", needs: ["https://api.example.com"] });
+  assert.deepEqual(body.agentloop, { implementation: { type: "brain_component", entrypoint: "turn", id: "a".repeat(64) }, configuration: {}, environment: "brain" });
   assert.deepEqual(body.tools[0], {
     name: "read",
     description: "Read one file.",
     input_schema: body.tools[0].input_schema,
-    placements: { brain: { needs: ["file:///workspace"],
-    implementation: { type: "brain_component", entrypoint: "run", id: "b".repeat(64), configuration: {} } } },
+    placements: { brain: { implementation: { type: "brain_component", entrypoint: "run", id: "b".repeat(64), configuration: {} } } },
   });
   assert.deepEqual(Object.keys(body.tools[1].placements), ["sandbox"]);
   assert.deepEqual(body.tools[1].placements.sandbox.implementation, { artifact: "bash_v1" });
-  assert.deepEqual(body.tools[1].placements.sandbox.needs, ["pkg:apt/bash", "file:///workspace?access=write"]);
 });
 
 test("one name for two different Environments is refused before any request", async () => {

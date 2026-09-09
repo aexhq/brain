@@ -22,8 +22,7 @@ use brain_protocol::{
 };
 use brain_telemetry::telemetry_channel;
 use common::{
-    NoModels, NoTools, Runtime, ScriptedModel, SlowModel, config, echo_loop, scripted,
-    temporary_directory,
+    NoModels, NoTools, Runtime, ScriptedModel, SlowModel, config, scripted, temporary_directory,
 };
 
 fn user(text: &str) -> Message {
@@ -60,8 +59,8 @@ fn invocation(name: &str, call_id: &str) -> ToolInvocation {
     }
 }
 
-/// A configuration placing one Tool with the given `needs` in the Agentloop's Environment.
-fn tool_config(tool_name: &str, needs: Vec<&str>) -> SessionConfig {
+/// A configuration placing one Tool in the Agentloop's Environment.
+fn tool_config(tool_name: &str) -> SessionConfig {
     let mut config = config();
     config.tools = vec![Tool {
         name: tool_name.into(),
@@ -71,7 +70,6 @@ fn tool_config(tool_name: &str, needs: Vec<&str>) -> SessionConfig {
         placements: std::collections::BTreeMap::from([(
             EnvironmentName::new("workspace"),
             brain_protocol::ToolPlacement {
-                needs: needs.into_iter().map(String::from).collect(),
                 implementation: serde_json::json!({"kind": "test"}),
             },
         )]),
@@ -98,7 +96,6 @@ fn host_tool_config(tool_name: &str) -> SessionConfig {
         placements: std::collections::BTreeMap::from([(
             EnvironmentName::new("app"),
             brain_protocol::ToolPlacement {
-                needs: Vec::new(),
                 implementation: serde_json::json!({"type": "host_function", "name": tool_name}),
             },
         )]),
@@ -327,7 +324,7 @@ async fn cancel_forwards_inflight_tool_cancellation_to_the_environment_port() {
         done(&*services, transcript).await
     });
     let runtime = runtime_with_deadline(&data_dir, loop_executor, tools.clone(), 120);
-    let handle = runtime.create(&tool_config("slow", vec![]), &[]).unwrap();
+    let handle = runtime.create(&tool_config("slow"), &[]).unwrap();
     let turning = {
         let handle = handle.clone();
         tokio::spawn(async move { handle.message(MessageRequest { input: "go".into() }).await })
@@ -386,7 +383,7 @@ async fn wall_deadline_keeps_completed_tool_results_and_records_unknown_cancella
         .unwrap()
         .limits
         .max_turn_secs = 2;
-    let session = runtime.create(&tool_config("lookup", vec![]), &[]).unwrap();
+    let session = runtime.create(&tool_config("lookup"), &[]).unwrap();
     let turning = tokio::spawn({
         let session = session.clone();
         async move { session.message(MessageRequest { input: "go".into() }).await }
@@ -614,35 +611,6 @@ async fn the_journal_is_the_only_thing_written() {
     assert!(!found.iter().any(|name| name.contains("/events/")));
 }
 
-/// What a Tool needs is the Environment's business: Brain admits the declaration and
-/// hands it over unread, so a need it could never satisfy itself is not a reason to
-/// refuse the session.
-#[tokio::test]
-async fn needs_are_admitted_unread() {
-    let data_dir = temporary_directory("needs");
-    let runtime = runtime(
-        &data_dir,
-        echo_loop(),
-        Arc::new(NoModels),
-        Arc::new(NoTools),
-    );
-    let handle = runtime
-        .create(
-            &tool_config(
-                "bash",
-                vec!["pkg:apt/ffmpeg", "file:///workspace?access=write"],
-            ),
-            &[],
-        )
-        .unwrap();
-    assert!(matches!(
-        runtime.session(handle.id()).status,
-        brain_protocol::SessionStatus::Idle
-    ));
-    drop(handle);
-    settle(runtime, data_dir).await;
-}
-
 /// The started record identifies the authorized placement used for this invocation.
 #[tokio::test]
 async fn a_tool_call_record_names_the_tool_and_nothing_else_about_it() {
@@ -662,9 +630,7 @@ async fn a_tool_call_record_names_the_tool_and_nothing_else_about_it() {
         done(&*services, input.transcript).await
     });
     let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 5);
-    let handle = runtime
-        .create(&tool_config("bash", vec!["pkg:apt/ffmpeg"]), &[])
-        .unwrap();
+    let handle = runtime.create(&tool_config("bash"), &[]).unwrap();
     handle
         .message(MessageRequest { input: "go".into() })
         .await
@@ -737,7 +703,7 @@ async fn invoke_outcomes_map_onto_tool_results() {
             })
         };
         let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 5);
-        let handle = runtime.create(&tool_config("tool", vec![]), &[]).unwrap();
+        let handle = runtime.create(&tool_config("tool"), &[]).unwrap();
         handle
             .message(MessageRequest { input: "go".into() })
             .await
@@ -785,7 +751,7 @@ async fn an_overdue_invoke_is_cancelled_and_recorded_as_unknown() {
         })
     };
     let runtime = runtime_with_deadline(&data_dir, loop_executor, tools.clone(), 1);
-    let handle = runtime.create(&tool_config("slow", vec![]), &[]).unwrap();
+    let handle = runtime.create(&tool_config("slow"), &[]).unwrap();
     let started = std::time::Instant::now();
     handle
         .message(MessageRequest { input: "go".into() })
@@ -904,7 +870,7 @@ async fn the_transcript_folds_back_from_its_deltas() {
         transcript.push(second.message);
         services.set_transcript(transcript).await?;
         services
-            .set_kv(brain_protocol::KvSetRequest {
+            .kv_put(brain_protocol::KvPutRequest {
                 key: "memory".into(),
                 value: serde_json::json!({"turns": 1}),
             })

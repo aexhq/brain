@@ -439,12 +439,8 @@ impl TurnServices for TurnHost {
         Ok(cursor.through_sequence)
     }
 
-    async fn set_kv(&self, request: brain_protocol::KvSetRequest) -> Result<u64, Error> {
-        if !valid_kind(&request.key) || request.key == LAST_ACTIVATION_KEY {
-            return Err(Error::InvalidState(
-                "kv key must be an identifier not reserved by Brain".into(),
-            ));
-        }
+    async fn kv_put(&self, request: brain_protocol::KvPutRequest) -> Result<u64, Error> {
+        validate_kv_key(&request.key)?;
         let mut cursor = self.cursor.lock().await;
         self.check_cancelled()?;
         if cursor.kv.get(&request.key) != Some(&request.value) {
@@ -454,6 +450,28 @@ impl TurnServices for TurnHost {
             };
             cursor.through_sequence = append_journal(self.store.clone(), vec![entry]).await?;
             cursor.kv.insert(request.key, request.value);
+        }
+        Ok(cursor.through_sequence)
+    }
+
+    async fn kv_read(&self, key: String) -> Result<Option<serde_json::Value>, Error> {
+        validate_kv_key(&key)?;
+        let cursor = self.cursor.lock().await;
+        self.check_cancelled()?;
+        Ok(cursor.kv.get(&key).cloned())
+    }
+
+    async fn kv_delete(&self, key: String) -> Result<u64, Error> {
+        validate_kv_key(&key)?;
+        let mut cursor = self.cursor.lock().await;
+        self.check_cancelled()?;
+        if cursor.kv.contains_key(&key) {
+            cursor.through_sequence = append_journal(
+                self.store.clone(),
+                vec![JournalEntry::KvDelete { key: key.clone() }],
+            )
+            .await?;
+            cursor.kv.remove(&key);
         }
         Ok(cursor.through_sequence)
     }
@@ -924,6 +942,15 @@ pub(crate) fn delta(recorded: &[Message], wanted: &[Message]) -> Option<JournalE
         keep: keep as u64,
         append: wanted[keep..].to_vec(),
     })
+}
+
+fn validate_kv_key(key: &str) -> Result<(), Error> {
+    if !valid_kind(key) || key == LAST_ACTIVATION_KEY {
+        return Err(Error::InvalidState(
+            "kv key must be an identifier not reserved by Brain".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn valid_kind(kind: &str) -> bool {

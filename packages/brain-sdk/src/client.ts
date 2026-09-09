@@ -442,7 +442,7 @@ function compileSession(
       if (Object.hasOwn(known.placements, environment)) throw new TypeError(`Tool ${definition.name} is duplicated in Environment ${environment}`);
     }
     const entry = known ?? { ...definition, placements: Object.create(null) as WireTool["placements"] };
-    entry.placements[environment] = { needs: [...tool.needs], implementation: structuredClone(implementations.get(selected)) };
+    entry.placements[environment] = { implementation: structuredClone(implementations.get(selected)) };
     tools.set(definition.name, entry);
   }
   const loop = inspectAgentloop(options.agentloop);
@@ -451,7 +451,6 @@ function compileSession(
       implementation: structuredClone(agentloopImplementation),
       configuration: structuredClone(loop.configuration),
       environment: inspectEnvironment(loop.environment).name,
-      needs: [...loop.needs],
     },
     model: { provider: options.model.provider, name: options.model.name, api_key: options.model.apiKey },
     system: options.system ?? "",

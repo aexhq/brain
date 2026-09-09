@@ -341,25 +341,6 @@ fn validate_session_contract(config: &SessionConfig) -> Result<(), Error> {
             "Environment name is not an identifier".into(),
         ));
     }
-    // Needs are handed to the Environment unread; Brain checks only that they are a
-    // bounded list of distinct URIs, so a malformed one is refused here rather than
-    // silently ignored there.
-    let declared = config
-        .tools
-        .iter()
-        .flat_map(|tool| {
-            tool.placements
-                .values()
-                .map(|placement| (tool.name.as_str(), &placement.needs))
-        })
-        .chain(std::iter::once(("agentloop", &config.agentloop.needs)));
-    for (subject, needs) in declared {
-        if !needs_valid(needs) {
-            return Err(Error::InvalidState(format!(
-                "`{subject}` names an invalid or repeated need"
-            )));
-        }
-    }
     // The server seals an Environment credential beside the model key; a configuration
     // still carrying one would write it into the journal.
     if config.environments.iter().any(|environment| {
@@ -423,35 +404,6 @@ fn identifier_valid(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
 }
 
-/// At most 64 distinct URIs, each with a scheme and no whitespace or control characters.
-fn needs_valid(needs: &[String]) -> bool {
-    needs.len() <= 64
-        && needs.iter().all(|need| uri_shaped(need))
-        && needs
-            .iter()
-            .enumerate()
-            .all(|(index, need)| !needs[..index].contains(need))
-}
-
-fn uri_shaped(value: &str) -> bool {
-    let Some((scheme, rest)) = value.split_once(':') else {
-        return false;
-    };
-    let scheme_valid = scheme
-        .bytes()
-        .next()
-        .is_some_and(|byte| byte.is_ascii_alphabetic())
-        && scheme
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'));
-    scheme_valid
-        && !rest.is_empty()
-        && value.len() <= 2_048
-        && !value
-            .chars()
-            .any(|character| character.is_whitespace() || character.is_control())
-}
-
 pub fn random_id(prefix: &str) -> String {
     let mut bytes = [0_u8; 16];
     rand::rng().fill_bytes(&mut bytes);
@@ -502,7 +454,6 @@ mod tests {
             placements: std::collections::BTreeMap::from([(
                 EnvironmentName::new("workspace"),
                 brain_protocol::ToolPlacement {
-                    needs: Vec::new(),
                     implementation: serde_json::json!({"kind": "test"}),
                 },
             )]),
@@ -524,7 +475,6 @@ mod tests {
             agentloop: AgentloopRef {
                 configuration: serde_json::json!({}),
                 environment: EnvironmentName::new("workspace"),
-                needs: Vec::new(),
                 implementation: serde_json::json!({"type": "brain_component", "entrypoint": "turn", "id": AgentloopId::new(digest())}),
             },
             model: ModelBinding {
@@ -573,15 +523,6 @@ mod tests {
         placed_elsewhere.tools[0]
             .placements
             .insert(EnvironmentName::new("sandbox"), placement);
-        placed_elsewhere.tools[0]
-            .placements
-            .values_mut()
-            .next()
-            .unwrap()
-            .needs = vec![
-            "file:///workspace?access=write".into(),
-            "pkg:pypi/numpy".into(),
-        ];
         validate_session_contract(&placed_elsewhere).unwrap();
     }
 
@@ -651,35 +592,6 @@ mod tests {
                 "Environment name",
             ),
             (
-                "a Tool need that is not a URI",
-                |request| {
-                    request.tools[0]
-                        .placements
-                        .values_mut()
-                        .next()
-                        .unwrap()
-                        .needs = vec!["../fs".into()]
-                },
-                "invalid or repeated need",
-            ),
-            (
-                "a Tool need repeated",
-                |request| {
-                    request.tools[0]
-                        .placements
-                        .values_mut()
-                        .next()
-                        .unwrap()
-                        .needs = vec!["pkg:apt/ffmpeg".into(), "pkg:apt/ffmpeg".into()];
-                },
-                "invalid or repeated need",
-            ),
-            (
-                "an Agentloop need with whitespace",
-                |request| request.agentloop.needs = vec!["https://api.example.com /".into()],
-                "invalid or repeated need",
-            ),
-            (
                 "an Environment credential left unsealed",
                 |request| {
                     request.environments.push(environment(
@@ -741,32 +653,5 @@ mod tests {
         assert!(!identifier_valid("has/slash"));
         assert!(!identifier_valid("../escape"));
         assert!(!identifier_valid("na\u{ef}ve"));
-    }
-
-    #[test]
-    fn a_need_is_any_uri_and_nothing_else() {
-        for valid in [
-            "pkg:apt/ffmpeg",
-            "pkg:pypi/numpy@2.1.0",
-            "https://api.example.com",
-            "https://*.example.com",
-            "wss://stream.example.com",
-            "file:///workspace?access=write",
-            "aws:iam",
-        ] {
-            assert!(uri_shaped(valid), "{valid}");
-        }
-        for invalid in [
-            "",
-            "fs",
-            "../fs",
-            "https://a b",
-            "1pkg:x",
-            "pkg:",
-            ":x",
-            "a\tb:c",
-        ] {
-            assert!(!uri_shaped(invalid), "{invalid}");
-        }
     }
 }

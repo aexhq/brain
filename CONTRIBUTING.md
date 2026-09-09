@@ -25,8 +25,9 @@ npm test
 npm run package-smoke
 ```
 
-CI additionally runs real loop worker and HTTP lifecycle integration tests and an image smoke
-test. Performance probes are optional diagnostics during pre-launch iteration. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+CI additionally runs real loop worker and HTTP lifecycle integration tests, the locked Python
+Environment preparation test, and an image smoke test. Run the Python check with
+`BRAIN_TEST_UV=/path/to/uv node --test examples/python-environment.test.mjs`; CI installs uv 0.8.15. Performance probes are optional diagnostics during pre-launch iteration. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 [SDK user journeys](tests/journeys/README.md) run against real Linux servers and workers with four
 isolated suites in parallel. They cover the public SDK lifecycle, tools, placement, events, and

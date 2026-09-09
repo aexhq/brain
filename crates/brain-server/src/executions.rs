@@ -190,7 +190,15 @@ mod tests {
                 .await
                 .is_err()
         );
-        for method in ["model", "dispatch", "events", "set_transcript", "set_kv"] {
+        for method in [
+            "model",
+            "dispatch",
+            "events",
+            "set_transcript",
+            "kv_put",
+            "kv_read",
+            "kv_delete",
+        ] {
             assert!(
                 executions
                     .call(&session, 4, &callback.token, call(method))

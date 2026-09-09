@@ -88,7 +88,7 @@ try {
   const artifact = component(pathToFileURL(process.env.BRAIN_TEST_REFERENCE_AGENTLOOP));
   await brain.admitAgentloop(artifact);
   const loop = agentloop({ implementation: artifact });
-  const provider = environment({ options: z.object({ url: z.url(), token: z.string() }), url: ({ url }) => url, credential: ({ token }) => token });
+  const provider = environment({ options: z.object({ url: z.url(), token: z.string() }), url: ({ url }) => url, credential: ({ token }) => token, configure: () => ({}) });
   const tools = ["first", "second"].map((name) => tool({ name, input: z.object({ value: z.string() }),
     implementation: { type: "reference_echo" }, description: "Echo input" })({ env: provider({ name, url: providers[name], token: name }) }));
   const options = { model: { provider: "vercel-ai-gateway", name: "test/scripted", apiKey: "test" }, agentloop: loop({ env: brainEnv({ name: "brain" }) }), tools };

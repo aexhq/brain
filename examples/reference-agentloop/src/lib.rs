@@ -36,7 +36,7 @@ impl Guest for Reference {
             after = page.next_cursor;
         }
         kv.insert("observed_sequence".into(), after.into());
-        brain::agentloop::host::set_kv("observed_sequence", &after.to_string())?;
+        brain::agentloop::host::kv_put("observed_sequence", &after.to_string())?;
         let tools: Vec<brain_protocol::ActivationTool> = decode(&input.tools_json)?;
         let input: brain_protocol::UserInput = decode(&input.input_json)?;
         let mut message = Message::user_text(input.message);

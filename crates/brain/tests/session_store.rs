@@ -481,3 +481,43 @@ fn committed_completion_prefix_survives_without_inventing_turn_success() {
         assert!(!reopened.interrupt_unfinished_turn().unwrap());
     }
 }
+
+#[test]
+fn kv_deletion_replays_from_the_unchanged_journal_without_a_checkpoint() {
+    let directory = temporary("kv-delete");
+    let writer = Writer::spawn();
+    let store = created(&directory, &writer);
+    store
+        .append_journal_sync(&[
+            JournalEntry::KvSet {
+                key: "removed".into(),
+                value: serde_json::Value::Null,
+            },
+            JournalEntry::KvSet {
+                key: "kept".into(),
+                value: serde_json::Value::Null,
+            },
+        ])
+        .unwrap();
+    store.checkpoint().unwrap();
+    let sequence = store
+        .append_journal_sync(&[JournalEntry::KvDelete {
+            key: "removed".into(),
+        }])
+        .unwrap();
+    let expected = store.fold().unwrap();
+    assert!(!expected.kv.contains_key("removed"));
+    assert_eq!(expected.kv.get("kept"), Some(&serde_json::Value::Null));
+    assert_eq!(expected.through_sequence, sequence);
+    drop(store);
+    let path = directory.join("ses_1");
+    let store = LocalSessionStore::open(&path, writer.clone(), feed()).unwrap();
+    assert_eq!(store.fold().unwrap(), expected);
+    drop(store);
+    fs::write(path.join("checkpoint"), b"damaged").unwrap();
+    let store = LocalSessionStore::open(&path, writer.clone(), feed()).unwrap();
+    assert_eq!(store.fold().unwrap(), expected);
+    drop(store);
+    drop(writer);
+    fs::remove_dir_all(directory).unwrap();
+}

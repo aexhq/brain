@@ -1,0 +1,5 @@
+[project]
+name = "brain-python-environment-fixture"
+version = "0.0.0"
+requires-python = ">=3.11"
+dependencies = ["six==1.17.0"]

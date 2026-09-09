@@ -69,17 +69,13 @@ pub struct EnvironmentResponse {
 }
 
 /// What Brain asks an Environment to do. An Environment provides resources and learns
-/// what runs in it only when asked to run it: setup carries its configuration and the
-/// needs of everything placed there; execute carries an opaque implementation and input.
+/// what runs in it only when asked to run it: setup carries its configuration;
+/// execute carries an opaque implementation and input.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EnvironmentRequest {
     Setup {
         configuration: serde_json::Value,
-        /// Every need of every Tool and the Agentloop placed here, as URIs. The
-        /// Environment refuses at setup what it cannot honour, naming the URI.
-        #[schemars(schema_with = "crate::schema::needs")]
-        needs: Vec<String>,
     },
     Call {
         #[schemars(schema_with = "crate::schema::identifier")]
@@ -89,8 +85,6 @@ pub enum EnvironmentRequest {
     Execute {
         /// Interpreted only by the Environment; fixes the runtime entrypoint and configuration.
         implementation: serde_json::Value,
-        #[schemars(schema_with = "crate::schema::needs")]
-        needs: Vec<String>,
         input: serde_json::Value,
         #[schemars(range(min = 1))]
         deadline_ms: u64,

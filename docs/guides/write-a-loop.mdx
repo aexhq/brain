@@ -18,7 +18,9 @@ The Component exports `turn` and imports these Brain services:
 - `dispatch` invokes one or more Tools;
 - `emit` appends an extension Event and returns its committed sequence;
 - `set-transcript` durably replaces the saved conversation with the supplied messages;
-- `set-kv` durably sets one Agentloop key to a JSON value;
+- `kv-read(key)` returns an optional JSON string, distinguishing absence from stored null;
+- `kv-put(key, value-json)` durably creates or replaces one value;
+- `kv-delete(key)` durably removes a key; deleting an absent key is a no-op;
 - `telemetry` publishes best-effort operational telemetry.
 
 JSON strings on the WIT boundary use the generated session contract, also packaged as
@@ -29,6 +31,8 @@ It returns only an optional result. Old transcript/kv fields in turn output are 
 
 Await state services at the point the change should become durable. Each write returns its
 committed sequence; later failure preserves completed writes. Separate writes are not a transaction.
+Bindings expose `ctx.kv.read/put/delete`; the initial KV snapshot is a transport detail, not a
+second mutable author API. KV deletion changes the projection, never earlier journal records.
 Model calls record their actual request and result without changing the saved conversation, so an
 auxiliary classification or summary request cannot replace it accidentally. Save the selected
 conversation explicitly. Neither guest memory nor an unsubmitted local mutation survives activation.
@@ -46,7 +50,6 @@ import { z } from "zod";
 export const assistant = agentloop({
   options: z.object({ compactAt: z.number().min(0).max(1) }),
   implementation: component(new URL("./assistant.wasm", import.meta.url)),
-  needs: ["https://models.example.com"],
 });
 
 const loop = assistant({ env: brainEnv({ name: "brain" }), compactAt: 0.8 });
@@ -115,6 +118,6 @@ the default eight instances cannot hold their interpreter and generated adapters
 
 These small examples use `--stub-wasi`: they demonstrate Python computation and Brain callbacks,
 and do not provide Python filesystem or network APIs. A package that needs WASI must link only
-the worker's supported interfaces and declare the corresponding needs. Brain does not install
+the worker's supported interfaces and be placed in an Environment with the corresponding grants. Brain does not install
 Python or pip packages at runtime. Every execution has a fresh interpreter; persist Agentloop
-state through `set-kv` and retain files only in an explicitly granted Environment workspace.
+state through `kv-put` and `kv-delete` and retain files only in an explicitly granted Environment workspace.

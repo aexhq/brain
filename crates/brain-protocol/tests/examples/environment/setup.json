@@ -8,12 +8,7 @@
       "type": "setup",
       "configuration": {
         "region": "eu"
-      },
-      "needs": [
-        "file:///workspace?access=write",
-        "pkg:apt/ripgrep",
-        "https://api.example.com"
-      ]
+      }
     }
   }
 }

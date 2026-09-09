@@ -327,9 +327,27 @@ impl bindings::brain::agentloop::host::Host for HostState {
         serde_json::from_str(&answer).map_err(|error| wit_error(host_failure(error)))
     }
 
-    async fn set_kv(&mut self, key: String, value_json: String) -> Result<u64, wit::TurnError> {
+    async fn kv_put(&mut self, key: String, value_json: String) -> Result<u64, wit::TurnError> {
         let answer = self
-            .call(HostCall::SetKv { key, value_json })
+            .call(HostCall::KvPut { key, value_json })
+            .await
+            .map_err(wit_error)?;
+        serde_json::from_str(&answer).map_err(|error| wit_error(host_failure(error)))
+    }
+
+    async fn kv_read(&mut self, key: String) -> Result<Option<String>, wit::TurnError> {
+        let answer = self
+            .call(HostCall::KvRead { key })
+            .await
+            .map_err(wit_error)?;
+        let value: serde_json::Value =
+            serde_json::from_str(&answer).map_err(|error| wit_error(host_failure(error)))?;
+        Ok(value.get("value").map(serde_json::Value::to_string))
+    }
+
+    async fn kv_delete(&mut self, key: String) -> Result<u64, wit::TurnError> {
+        let answer = self
+            .call(HostCall::KvDelete { key })
             .await
             .map_err(wit_error)?;
         serde_json::from_str(&answer).map_err(|error| wit_error(host_failure(error)))

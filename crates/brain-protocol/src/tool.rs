@@ -53,9 +53,6 @@ pub struct Tool {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolPlacement {
-    #[serde(default)]
-    #[schemars(schema_with = "crate::schema::needs")]
-    pub needs: Vec<String>,
     pub implementation: serde_json::Value,
 }
 

@@ -19,10 +19,40 @@ const dispatching = loopEnvironment({ fetch: async (url, init) => {
   }
   return fetch(url, init);
 } });
-const f = fixture({ providers: { loop: remote.handle, dispatcher: dispatching.handle } });
+async function kvEnvironment(command) {
+  const op = command.operation;
+  if (op.request.type !== "execute") return { contract: command.contract, sequence: op.sequence, receipt: { type: "accepted" } };
+  const callback = op.request.callback;
+  const call = async (method, input) => {
+    assert.ok(callback.methods.includes(method));
+    const response = await fetch(callback.url, { method: "POST", headers: { authorization: `Bearer ${callback.token}`, "content-type": "application/json" }, body: JSON.stringify({ method, input }) });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  let receipt;
+  if (op.request.input.input.message === "save") {
+    assert.deepEqual(await call("kv_read", "removed"), {});
+    const put = await call("kv_put", { key: "removed", value: null });
+    assert.deepEqual(await call("kv_read", "removed"), { value: null });
+    const removed = await call("kv_delete", "removed");
+    assert.ok(removed > put);
+    assert.equal(await call("kv_delete", "removed"), removed);
+    assert.deepEqual(await call("kv_read", "removed"), {});
+    await call("kv_put", { key: "kept", value: null });
+    receipt = { type: "failure", code: "after_commit", message: "failed after KV commits", retryable: false };
+  } else {
+    assert.deepEqual(await call("kv_read", "removed"), {});
+    assert.deepEqual(await call("kv_read", "kept"), { value: null });
+    await call("kv_delete", "kept");
+    assert.deepEqual(await call("kv_read", "kept"), {});
+    receipt = { type: "result", output: { result: "recovered" } };
+  }
+  return { contract: command.contract, sequence: op.sequence, receipt };
+}
+const f = fixture({ providers: { loop: remote.handle, dispatcher: dispatching.handle, kv: kvEnvironment } });
 
 test("an Agentloop placed in an Environment reached over HTTP runs its turn through Brain's granted execution services", { timeout: 30_000 }, async (t) => {
-  const loop = agentloop({ implementation: { type: "reference_agentloop" }, needs: ["https://models.example.com"] })({ env: f.provider("loop") });
+  const loop = agentloop({ implementation: { type: "reference_agentloop" } })({ env: f.provider("loop") });
   const session = await f.create(t, { agentloop: loop });
   await session.send("hello from afar");
   assert.equal(f.modelRequests.length, 1, "the model call went through Brain, which journaled it");
@@ -57,4 +87,16 @@ test("a Tool the remote loop dispatches runs where it was placed, and the invoca
     body: JSON.stringify({ method: "emit", input: { event_type: "late", data: {} } }) });
   assert.equal(closed.status, 404, "a finished invocation's callbacks answer nothing");
   await assert.rejects(f.brain.withToken("wrong").request("POST", new URL(callback.base).pathname, { method: "emit", input: { event_type: "late", data: {} } }), failure(404));
+});
+
+test("HTTP KV commits survive a failed turn and server restart; deletion preserves missing versus null", { timeout: 60_000 }, async (t) => {
+  const session = await f.create(t, { agentloop: agentloop({ implementation: { type: "kv_test" } })({ env: f.provider("kv") }) });
+  await session.send("save");
+  assert.equal((await collect(session.events())).at(-1).type, "turn_failed");
+  await f.stop();
+  await f.start();
+  await session.send("recover");
+  const ended = (await collect(session.events())).at(-1);
+  assert.equal(ended.type, "turn_ended");
+  assert.equal(ended.data.result, "recovered");
 });

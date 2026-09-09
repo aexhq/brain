@@ -12,24 +12,33 @@ Environment's concern. Brain ships two, and any other is an extension.
 
 `brainEnv({ name })` is Brain's own Environment, managed by the server in a separate pool of OS worker processes. A Tool placed here is a
 Component admitted through `POST /v1/tools`; the Agentloop is one admitted through
-`POST /v1/agentloops`. Each invocation runs in a fresh Wasmtime instance granted exactly what its
-`needs` name, bounded by the deployment's allow-lists:
+`POST /v1/agentloops`. Each invocation receives this Environment's configured grants,
+bounded by the deployment's allow-lists:
 
-- `file:///workspace` is the directory for this session and Environment name, retained until teardown;
-  `file:///scratch` lives for one invocation. Both are read-only unless the need says
-  `?access=write`. The root must appear in `BRAIN_ENV_FILESYSTEM_ALLOW`.
-- An `https:` or `http:` origin, exact or `https://*.example.com`, opens `wasi:http` to it. It must be
-  within `BRAIN_ENV_NETWORK_ALLOW`.
-- `pkg:` is refused: a Component brings its own code.
+- `filesystem.workspace` is `"read"` or `"write"` for the session and Environment's retained
+  `/workspace`; `filesystem.scratch` grants an invocation-local `/scratch`. The root must
+  appear in `BRAIN_ENV_FILESYSTEM_ALLOW`.
+- `network` lists HTTP(S) origins, optionally `https://*.example.com`, within
+  `BRAIN_ENV_NETWORK_ALLOW`.
+- `secrets` names process environment variables within `BRAIN_ENV_SECRET_ALLOW`, mounted
+  read-only under `/secrets`.
 
 ```ts
 import { brainEnv } from "@aexhq/brain";
 
-const brain = brainEnv({ name: "brain", secrets: ["MODEL_TOKEN"] });
+const writer = brainEnv({
+  name: "writer",
+  filesystem: { workspace: "write", scratch: "read" },
+  network: ["https://api.example.com"],
+  secrets: ["SERVICE_TOKEN"],
+});
 ```
 
-`secrets` is the brain env's one option: process environment variables named in
-`BRAIN_ENV_SECRET_ALLOW`, mounted read-only under `/secrets`. Every server grant is empty by default.
+Omitted access is denied, and all server allow-lists are empty by default. Tools in the same
+Environment share its grants; use separate named bindings for different authority. Do not
+silently union old per-Tool grants. Components bring their own code; this Environment installs
+no OS packages or interpreters.
+
 By default each invocation receives 10 billion Wasmtime fuel units for guest computation; model, Tool,
 HTTP, and filesystem waits consume no fuel. `BRAIN_MAX_TURN_SECS` still bounds the whole turn.
 
@@ -76,11 +85,15 @@ const session = await brain.sessions.create({
 
 ## What an Environment is told
 
-Setup carries the Environment's configuration and one flat list: the `needs` of every Tool and the
-Agentloop placed in it. The Environment provisions what this session uses and refuses what it
-cannot honour, naming the URI; a refusal fails the create. Every execution carries an opaque
-implementation descriptor, needs, input, deadline, and optional invocation-scoped service grants.
-An Environment learns what runs in it only when asked to run it.
+Setup carries only the Environment's configuration. Execute carries an opaque implementation,
+input, deadline, and optional invocation-scoped service grants. There is no universal dependency
+manifest. The Environment's loader may prepare a project before its first execution, using
+normal lockfiles, scripts, or images. Preparation finishes before imports and the entrypoint.
+Concurrent first uses share preparation of one installation; reuse follows the actual resource
+lifetime, not a turn or automatically a session. Setup code cannot widen configured authority.
+
+A lazy preparation failure can happen after session creation succeeds. It is an ordinary
+execution failure; Brain does not retry, change placement, or claim partial effects were undone.
 
 ## Lifecycle and delivery
 

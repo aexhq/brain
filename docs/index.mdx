@@ -21,7 +21,7 @@ and there is no upgrade path from earlier builds.
 | --- | --- | --- |
 | [Agentloop](/brain/docs/concepts/agent-loop) | A raw WebAssembly Component placed in an Environment | Activates it there and performs its model and Tool requests |
 | [Model](/brain/docs/concepts/model) | A provider, model name, and credential | Seals the credential for the session and makes calls |
-| [Tool](/brain/docs/concepts/tool) | A typed contract, what it needs, and where it runs | Commits the call before dispatch and records its outcome |
+| [Tool](/brain/docs/concepts/tool) | A typed contract, its implementation, and where it runs | Commits the call before dispatch and records its outcome |
 | [Environment](/brain/docs/concepts/environment) | A named place that runs Tools and the loop | Sets it up, invokes, cancels, detaches, and tears it down |
 
 Application code composes these values explicitly. `component(...)` wraps already-built Wasm,

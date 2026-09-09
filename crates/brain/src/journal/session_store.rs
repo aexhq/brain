@@ -548,6 +548,7 @@ impl LocalSessionStore {
                 let kind = match entry {
                     JournalEntry::TranscriptDelta { .. } => "transcript_delta",
                     JournalEntry::KvSet { .. } => "kv_set",
+                    JournalEntry::KvDelete { .. } => "kv_delete",
                 };
                 let payload = serde_json::to_value(entry).map_err(json_error)?;
                 encode_unsequenced(kind, &payload)

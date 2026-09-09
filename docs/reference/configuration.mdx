@@ -16,7 +16,7 @@ its output token ceiling, is not here: Brain neither sets nor overrides it.
 | `BRAIN_DATA_DIR` | `--data-dir` | `brain-data` | Where journals, admitted Components, and local state live |
 | `BRAIN_ENV_WORKER` | `--env-worker` | `brain-env-worker` | Path to the loop worker executable |
 | `BRAIN_ENV_WORKERS` | `--env-workers` | `2` | OS worker processes in the built-in Environment pool |
-| `BRAIN_ENV_NETWORK_ALLOW` | `--env-network-allow` | none | Origins the brain env may grant a Component that needs them: exact, or `https://*.example.com` for a family of hosts |
+| `BRAIN_ENV_NETWORK_ALLOW` | `--env-network-allow` | none | Origins the brain env may grant through Environment configuration: exact, or `https://*.example.com` for a family of hosts |
 | `BRAIN_ENV_SECRET_ALLOW` | `--env-secret-allow` | none | Process environment variable names the brain env may mount under `/secrets` |
 | `BRAIN_ENV_FILESYSTEM_ALLOW` | `--env-filesystem-allow` | none | Filesystem roots the brain env may grant: `scratch` or `workspace` |
 | `BRAIN_MODEL_BASE_URL` | `--model-base-url` | `https://ai-gateway.vercel.sh/v1` | Endpoint for the `vercel-ai-gateway` provider. Kept under its historic name because deploys and tests already set it |
@@ -98,7 +98,7 @@ Brain refuses to start on a non-loopback address without `BRAIN_API_TOKEN`. Bind
 no token is a mistake worth failing on rather than serving.
 
 The three `BRAIN_ENV_*` allow-lists are the ceiling on what the brain env may grant a Component
-whose needs ask for it. Keep them empty in a multi-tenant deployment unless its control plane
+whose Environment configuration explicitly requests it. Keep them empty in a multi-tenant deployment unless its control plane
 supplies the corresponding tenant custody, egress, and storage boundary. Never place Brain's own
 API or cloud credentials in the secret allow-list. A session can make the server call any
 Environment URL it names with the session's own credential; a hosted multi-tenant deployment may

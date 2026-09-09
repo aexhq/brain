@@ -223,12 +223,12 @@ impl BrainApi for Api {
 async fn exposes_every_v1_route_with_its_contract_status() {
     let digest = "a".repeat(64);
     let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    // A create request in the execution shape: a tool declaring what it needs and its
+    // A create request in the execution shape: a tool declaring its implementation and
     // implementation, placed in an environment reached over HTTP with a credential.
     let create = serde_json::json!({
         "agentloop": {"implementation": {"type": "brain_component", "entrypoint": "turn", "id": digest}, "configuration": {}, "environment": "env_1"},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
-        "tools": [{"name": "bash", "description": "Run a shell command.", "input_schema": {"type": "object"}, "placements": {"env_1": {"needs": ["pkg:apt/bash", "file:///workspace?access=write"], "implementation": {"kind": "test"}}}}],
+        "tools": [{"name": "bash", "description": "Run a shell command.", "input_schema": {"type": "object"}, "placements": {"env_1": {"implementation": {"kind": "test"}}}}],
         "environments": [{
             "name": "env_1",
             "driver": "http",
@@ -345,7 +345,7 @@ async fn request_bodies_reject_unknown_fields() {
     let create = serde_json::json!({
         "agentloop": {"implementation": {"type": "brain_component", "entrypoint": "turn", "id": digest}, "configuration": {}, "environment": "env_1"},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
-        "tools": [{"name": "bash", "description": "Run a shell command.", "input_schema": {"type": "object"}, "binding_names": [], "hosting": "resident", "host_id": "host_12345678901234567890", "placements": {"env_1": {"needs": [], "implementation": {"type": "host_function", "name": "bash"}}}}],
+        "tools": [{"name": "bash", "description": "Run a shell command.", "input_schema": {"type": "object"}, "binding_names": [], "hosting": "resident", "host_id": "host_12345678901234567890", "placements": {"env_1": {"implementation": {"type": "host_function", "name": "bash"}}}}],
         "environments": [{
             "name": "env_1",
             "driver": "brain"
