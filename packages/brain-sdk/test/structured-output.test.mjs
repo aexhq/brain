@@ -148,6 +148,21 @@ test("provider and transport failures never trigger output corrections", async (
   }
 });
 
+test("a committed turn failure is preserved as the cause without correction", async () => {
+  const f = fixture(['"unused"']);
+  const events = f.session.events.bind(f.session);
+  const failure = { code: "model_failed", message: "provider unavailable", retryable: false };
+  f.session.events = after => ({ async *[Symbol.asyncIterator]() {
+    for await (const event of events(after)) yield event.type === "turn_ended" ? { ...event, type: "turn_failed", data: failure } : event;
+  } });
+  await assert.rejects(f.session.send("Extract", { output: { type: z.string() } }), error => {
+    assert.equal(error.message, "Structured output turn failed");
+    assert.deepEqual(error.cause, failure);
+    return true;
+  });
+  assert.equal(f.posts.length, 1);
+});
+
 test("cancellation before send or during async validation prevents further turns", async () => {
   const first = fixture([]);
   await assert.rejects(first.session.send("Extract", { output: { type: z.string() }, signal: AbortSignal.abort() }), { name: "AbortError" });

@@ -64,6 +64,7 @@ async function answer(events: AsyncIterable<SessionEvent>, terminal: number, sig
       if (data?.type === "assistant_message") output = typeof data.message === "string" ? data.message : undefined;
     }
     if (event.sequence === terminal) {
+      if (event.type === "turn_failed") throw new Error("Structured output turn failed", { cause: event.data });
       if (event.type === "turn_ended" && started && output !== undefined) return output;
       break;
     }
