@@ -1,0 +1,63 @@
+---
+title: Structured output
+description: Request a typed answer on an individual send using a Zod schema.
+---
+
+Pass `output: { type: schema, maxRetries: 2 }` in the second argument to
+`session.send`. The SDK adds the schema to the prompt, reads that completed turn's
+assistant output, parses JSON, and validates it locally with Zod. The returned
+value has the schema's inferred output type. Omitting `output` preserves the normal
+session-state return value.
+
+The executable [structured-output example](https://github.com/aexhq/brain/blob/main/examples/structured-output.mjs)
+extracts a person's name and age. It uses the same server and compiled Agentloop
+setup as the other repository examples. Set `BRAIN_AGENTLOOP_WASM` to a Component
+that emits assistant output, such as the published Pi or Codex Component.
+
+## Validation and corrections
+
+`maxRetries` counts additional correction turns and defaults to two: one initial
+answer and at most two corrections. Zero validates only the first answer. Invalid
+JSON or Zod validation issues cause a follow-up message asking for a complete
+corrected answer. Fenced JSON and surrounding prose fail JSON parsing.
+
+Normal Zod parsing semantics apply: `z.object` strips unknown properties, while
+`z.strictObject` rejects them. Defaults and transforms apply locally. The prompt
+describes the schema's input shape; the return value is its parsed output. Async
+refinements and transforms are supported. Custom refinements run locally and may
+need descriptions or correction feedback to explain constraints to the model.
+Schemas whose input shape cannot be converted to JSON Schema fail before sending.
+Exceptions thrown by custom validation code propagate without correction retries.
+
+Exhaustion throws the exported `StructuredOutputError`, with `attempts`,
+`lastOutput`, and `issues`. Provider, transport and unsupported-output failures
+propagate without automatic retries. No provider-native response format is set;
+avoid conflicting session-level `responseFormat` settings.
+
+## Session behavior
+
+Each attempt is an ordinary durable turn. Corrections can invoke the session's
+tools: the SDK asks the agent not to repeat actions but cannot enforce that through
+a prompt. Model and tool calls inside a turn are additional to the retry count.
+
+The caller runs validation and retries. If the calling process exits, the SDK does
+not schedule further attempts. Invalid answers and corrective messages remain in
+history. A locally rejected answer can still belong to a successfully completed
+server turn. Streams expose raw, provisional output; the returned value is validated.
+
+Use one caller for the session during a structured send. Overlapping sends through
+the same handle are rejected while it is running; other handles and processes
+require application coordination. Optional `signal` stays alongside `output` and
+cancels the current turn and stops corrections. An asynchronous custom validator
+finishes before its result is checked for cancellation.
+
+An explicit `idempotencyKey` identifies the first turn; correction turns use distinct
+derived keys. Repeating the same operation reuses completed turns when its prompts
+and validation feedback are identical. This is not an atomic server operation or
+a cross-process retry scheduler; nondeterministic validation can conflict on replay.
+
+The loop must emit `output_emitted` with an Agentloop-origin
+`{ type: "assistant_message", message: string }` payload. Pi and Codex use this
+convention; the minimal reference loop does not. The SDK selects the last such message in the exact
+completed turn and fails clearly if it is absent. It does not scrape internal model
+calls or classify refusals from arbitrary output text.

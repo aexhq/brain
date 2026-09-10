@@ -100,6 +100,13 @@ export interface SendOptions extends OperationOptions {
    * Use a fresh handle and do not send concurrently through another owner. */
   readonly signal?: AbortSignal;
 }
+export interface StructuredSendOptions<S extends Schema> extends SendOptions {
+  readonly output: {
+    readonly type: S;
+    /** Additional correction turns after the first answer. Default 2; zero disables retries. */
+    readonly maxRetries?: number;
+  };
+}
 export interface SessionState {
   readonly id: string;
   readonly status: "creating" | "idle" | "running" | "ending" | "ended" | "failed";
