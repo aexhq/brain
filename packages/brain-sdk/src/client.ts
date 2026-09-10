@@ -2,6 +2,7 @@ import { HostPump } from "./client-pump.js";
 import { BrainError } from "./errors.js";
 import { inspectAgentloop, inspectComponent, inspectEnvironment, inspectTool, isComponent } from "./extensions.js";
 import { HostToolRegistry } from "./host.js";
+import { structuredOutput } from "./structured-output.js";
 import type {
   AgentloopAdmission, CreateSessionRequest, Environment as WireEnvironment, EventPage, HostRegistration,
   SessionList, SessionSummary as WireSession, SessionTranscript, Tool as WireTool, ToolAdmission,
@@ -9,6 +10,7 @@ import type {
 import type {
   Component, CreateSessionOptions, Environment, OperationOptions, PlacedAgentloop, PlacedTool,
   SessionEvent, SessionState, SessionStreamEvent, UserInput, SendOptions,
+  Schema, SchemaOutput, StructuredSendOptions,
 } from "./types.js";
 
 export interface BrainOptions {
@@ -66,7 +68,7 @@ export class BrainClient {
     return new BrainClient({ baseUrl: this.baseUrl, token, timeoutMs: this.timeoutMs, fetch: this.transport });
   }
 
-  async request<T>(method: string, path: string, body?: unknown, idempotencyKey?: string, contentType = "application/json"): Promise<T> {
+  async request<T>(method: string, path: string, body?: unknown, idempotencyKey?: string, contentType = "application/json", signal?: AbortSignal): Promise<T> {
     const headers = new Headers({ accept: "application/json" });
     if (body !== undefined) headers.set("content-type", contentType);
     if (this.token !== undefined) headers.set("authorization", `Bearer ${this.token}`);
@@ -75,7 +77,7 @@ export class BrainClient {
       method,
       headers,
       body: body === undefined ? undefined : body instanceof Uint8Array ? new Uint8Array(body).buffer : JSON.stringify(body),
-      ...(this.timeoutMs === undefined ? {} : { signal: AbortSignal.timeout(this.timeoutMs) }),
+      signal: this.timeoutMs === undefined ? signal : signal === undefined ? AbortSignal.timeout(this.timeoutMs) : AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]),
     });
     if (!response.ok) {
       const error = (await response.json().catch(() => ({}))) as Partial<BrainError>;
@@ -298,6 +300,8 @@ export class Sessions {
 }
 
 export class SessionHandle {
+  private activeSends = 0;
+  private structuredSend = false;
   constructor(
     private readonly client: BrainClient,
     public state: SessionState,
@@ -305,9 +309,27 @@ export class SessionHandle {
   ) {}
   get id(): string { return this.state.id; }
 
-  async send(input: UserInput | string, operation: SendOptions = {}): Promise<SessionState> {
+  send<S extends Schema>(input: UserInput | string, operation: StructuredSendOptions<S>): Promise<SchemaOutput<S>>;
+  send(input: UserInput | string, operation?: SendOptions): Promise<SessionState>;
+  async send(input: UserInput | string, operation: SendOptions | StructuredSendOptions<Schema> = {}): Promise<unknown> {
     const normalized = typeof input === "string" ? { message: input } : input;
     if (typeof normalized?.message !== "string" || normalized.message === "") throw new TypeError("send needs a non-empty message");
+    const output = "output" in operation ? operation.output : undefined;
+    if (this.structuredSend || (output !== undefined && this.activeSends !== 0)) throw new Error("structured output requires exclusive sends on this session handle");
+    this.activeSends++;
+    this.structuredSend = output !== undefined;
+    try {
+      if (output === undefined) return await this.sendTurn(normalized, operation);
+      return await structuredOutput(normalized, { ...operation, output }, keyOf(operation),
+        (message, options) => this.sendTurn(message, options),
+        (after) => this.events(after, operation.signal), () => this.state.lastSequence);
+    } finally {
+      this.activeSends--;
+      this.structuredSend = false;
+    }
+  }
+
+  private async sendTurn(normalized: UserInput, operation: SendOptions): Promise<SessionState> {
     operation.signal?.throwIfAborted();
     const after = this.state.lastSequence;
     const pending = this.client.request<WireSession>("POST", `/v1/sessions/${encodeURIComponent(this.id)}/messages`, { input: normalized }, keyOf(operation));
@@ -346,13 +368,13 @@ export class SessionHandle {
     return this.client.request("GET", `/v1/sessions/${encodeURIComponent(this.id)}/transcript`);
   }
 
-  events(after = 0): AsyncIterable<SessionEvent> {
+  events(after = 0, signal?: AbortSignal): AsyncIterable<SessionEvent> {
     const client = this.client;
     const sessionId = this.id;
     return { async *[Symbol.asyncIterator]() {
       let cursor = after;
       for (;;) {
-        const page = await client.request<EventPage>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}/events?after=${cursor}`);
+        const page = await client.request<EventPage>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}/events?after=${cursor}`, undefined, undefined, "application/json", signal);
         for (const event of page.events) yield { sequence: event.sequence, recordedAt: new Date(event.recorded_at_ms), type: event.event_type, data: event.data, ...(event.origin == null ? {} : { origin: event.origin }) };
         if (page.next_cursor === cursor) return;
         cursor = page.next_cursor;

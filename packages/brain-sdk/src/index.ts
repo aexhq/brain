@@ -22,6 +22,7 @@ export type {
 } from "./extensions.js";
 export type { HostToolCall } from "./host.js";
 export { BrainError } from "./errors.js";
+export { StructuredOutputError } from "./structured-output.js";
 export type { EventPage, ModelRequest, ModelResult, SessionTranscript, ToolResult } from "./generated/session.js";
 export type {
   AgentloopAdmission,
@@ -39,6 +40,7 @@ export type {
   ModelUsage,
   OperationOptions,
   SendOptions,
+  StructuredSendOptions,
   Media,
   UserInput,
   Outcome,

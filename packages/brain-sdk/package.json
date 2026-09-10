@@ -1,6 +1,6 @@
 {
   "name": "@aexhq/brain",
-  "version": "0.20.0",
+  "version": "0.21.0",
   "description": "TypeScript SDK for an independently runnable Brain server",
   "license": "MIT",
   "repository": {
@@ -37,7 +37,7 @@
     "gen": "node scripts/gen.mjs",
     "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc -p tsconfig.json",
-    "test": "tsc -p tsconfig.json && node --test test/*.test.mjs",
+    "test": "tsc -p tsconfig.json && tsc -p test/types/tsconfig.json && node --test test/*.test.mjs",
     "prepack": "npm run build"
   },
   "devDependencies": {
