@@ -84,6 +84,7 @@ test("one host runs the Tools placed in it and commits ctx.emit before its resul
     description: "Look up one value.",
     input: z.object({ id: z.string() }),
     run: async ({ id }, ctx) => {
+      assert.equal(ctx.sessionId, sessionId);
       assert.equal(ctx.sequence, 3);
       assert.equal(await ctx.emit("lookup_progress", { id }), 4);
       return { id };

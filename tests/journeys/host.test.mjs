@@ -113,6 +113,7 @@ test("a tool this process holds receives validated options and commits progress 
   const session = await f.create(t, { tools: [placed] });
   await session.send("find item");
   assert.equal(contexts.length, 1);
+  assert.equal(contexts[0].sessionId, session.id);
   assert.ok(contexts[0].deadline instanceof Date);
   assert.ok(contexts[0].signal instanceof AbortSignal);
   const events = await collect(session.events());

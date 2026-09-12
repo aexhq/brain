@@ -11,6 +11,7 @@ export interface HostToolContract<InputSchema extends Schema = Schema, OutputSch
 }
 
 export interface HostToolCall {
+  readonly sessionId: string;
   /** The sequence of the `tool_call_started` record: with the session id, the name of
    * this call everywhere. */
   readonly sequence: number;
@@ -27,6 +28,7 @@ export type HostToolHandler<Input, Output> = (input: Input, call: HostToolCall) 
 /** One invocation as the pump hands it to the registry. `deadline_ms` is the
  * remaining budget, not an epoch. */
 export interface InvokeFrame {
+  readonly sessionId: string;
   readonly environment: string;
   readonly sequence: number;
   readonly name: string;
@@ -98,6 +100,7 @@ export class HostToolRegistry {
     try {
       const value = await Promise.race([
         Promise.resolve(registered.handler(input, {
+          sessionId: frame.sessionId,
           sequence: frame.sequence,
           deadline: new Date(Date.now() + deadlineMs),
           signal: call.controller.signal,
