@@ -28,8 +28,11 @@ Brain permits an unauthenticated loopback listener. A non-loopback listener requ
 Install the client, an Agentloop, and Zod:
 
 ```sh
-npm install @aexhq/brain@0.24.1 @aexhq/agentloop-pi@6.1.0 zod
+npm install @aexhq/brain@0.24.0 @aexhq/agentloop-pi@6.1.0 zod
 ```
+
+Pi 6.1.0 depends on SDK 0.24.0. Keep these client versions together; the media runtime patch
+works with this pair.
 
 Save this as `order.mjs`:
 
