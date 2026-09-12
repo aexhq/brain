@@ -44,7 +44,7 @@ test("the Tool outcome example returns structured failure despite its successful
   const result = events.find(event => event.type === "tool_call_ended").data.result;
   assert.equal(result.is_error, true);
   assert.deepEqual(result.output, { code: "not_found", message: "Record not found", retryable: false, details: { id: "missing" } });
-  assert.deepEqual(JSON.parse(f.modelRequests.at(-1).messages.at(-1).content), result.output);
+  assert.equal(f.modelRequests.at(-1).messages.at(-1).content, `ERROR: ${JSON.stringify(result.output)}`);
   f.model = dispatch("lookup_record", { id: "1" });
   await session.send("find Ada");
   assert.match(f.modelRequests.at(-1).messages.at(-1).content, /Ada/u);
