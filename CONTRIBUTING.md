@@ -37,8 +37,10 @@ diff; ordinary prose changes skip builds, while the generated configuration refe
 contract verification. Pushes to `main` run the full suite.
 
 Before promotion, run `media-integration.yml` on the exact candidate commit. Its protected
-`media-integration` environment needs `OPENAI_API_KEY`, `VERCEL_AI_GATEWAY_API_KEY` and
-`ANTHROPIC_API_KEY`. The probe uses the committed visual image/PDF fixtures to verify user media,
+`media-integration` environment needs `OPENAI_API_KEY` and `VERCEL_AI_GATEWAY_API_KEY`.
+OpenAI and Anthropic models use Vercel's Responses endpoint and gateway key, alongside a direct
+OpenAI reference check. Anthropic Messages payloads remain covered by the regular adapter tests.
+The probe reads the committed image fixture and PDF report text to verify user media,
 Tool-result files, continuation and Responses compaction. Missing credentials fail the check;
 promotion requires a successful run for the same commit. For a local probe, run
 `cargo run --locked -p brain --example media-probe -- --help` for the required environment variables
