@@ -127,7 +127,7 @@ fn validate_native_media(item: &Value) -> Result<(), Error> {
                     ));
                 }
             };
-            if part.get("file_data").is_some() || part.get("file_id").is_some() {
+            if !part["file_data"].is_null() || !part["file_id"].is_null() {
                 return Err(Error::InvalidState(
                     "native media requires an HTTPS URL".into(),
                 ));
