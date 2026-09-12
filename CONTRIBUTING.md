@@ -44,6 +44,9 @@ promotion requires a successful run for the same commit. For a local probe, run
 `cargo run --locked -p brain --example media-probe -- --help` for the required environment variables
 and supply accessible HTTPS URLs for the two fixtures. Keep secrets out of shell arguments and logs.
 
+Main CI publishes immutable candidate images. Only release promotion moves the image and npm
+`latest` tags, after the media gate passes.
+
 ## The Rust types are the source of the contracts
 
 The wire is defined once, as the types in [`crates/brain-protocol`](crates/brain-protocol) and the
