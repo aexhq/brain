@@ -131,7 +131,7 @@ impl ToolExecutor for SessionToolExecutor {
                     details,
                 },
             }),
-            EnvironmentReceipt::Unknown { message } => Err(brain::Error::Ambiguous(message)),
+            EnvironmentReceipt::Unknown { message } => Ok(Outcome::Unknown { message }),
             _ => Err(brain::Error::Ambiguous(
                 "Environment returned a nonterminal Tool receipt".into(),
             )),

@@ -45,6 +45,19 @@ journal sequence of the call, the absolute deadline, the Tool, and the input. Th
 input, calls the registered function, validates configured output, and posts one outcome to the
 host result endpoint.
 
+### Return values and outcomes
+
+Return ordinary output for success, or return an `Outcome` directly. An error outcome preserves
+`error.code`, `error.message`, `error.retryable` and `error.details`. See the executable
+[Tool outcomes example](https://github.com/aexhq/brain/blob/main/examples/tool-outcomes.mjs).
+Thrown exceptions become `tool_error`.
+
+The top-level `status` values `ok`, `error`, `timeout`, `cancelled` and `unknown` are reserved for
+outcome envelopes. A malformed envelope becomes `invalid_output`. Successful-output validation
+applies to ordinary output or an explicit `ok.value`; non-success outcomes bypass it. If business
+data itself uses a reserved status, return it as the `value` of an explicit `ok` outcome. The SDK
+does not inspect that value for another outcome. Other status values remain ordinary data.
+
 ### Context
 
 The second `run` argument contains:
@@ -66,9 +79,13 @@ run: async (input, ctx) => {
 }
 ```
 
-Brain sends each invocation once and does not retry after disconnect. If deadline or cancellation
-wins after dispatch, the host returns an unknown outcome because the function may still finish.
-The SDK cancels local in-flight work and reconnects the same registered host for future commands;
+Brain sends each invocation once. Its deadline returns `timeout`; explicit SDK cancellation returns
+`cancelled`. Both are failed Tool results and describe why the caller stopped waiting, without
+promising rollback. The first terminal cause is retained even if the function later finishes.
+Connection loss after dispatch, without a reliable result, returns `unknown`. Known validation,
+execution and protocol failures return `error`.
+
+The SDK aborts local in-flight work and reconnects the same registered host for future commands;
 it never replays the disconnected command. Cooperative functions should observe `ctx.signal` and
 stop promptly.
 

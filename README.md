@@ -86,6 +86,10 @@ with HTTP and SSE. A local deployment needs no external store. The
 The tool below is a plain function in your own process. The SDK registers your process as a host
 over SSE, so your app needs no open port.
 
+Host functions can return ordinary output or an `Outcome` directly, preserving structured errors.
+Tool deadlines yield `timeout`, explicit cancellation yields `cancelled`, and missing results after
+dispatch yield `unknown`. Each is a failed Tool result; see [Tool outcomes](docs/guides/write-a-tool.mdx#return-values-and-outcomes).
+
 Run a server:
 
 ```sh

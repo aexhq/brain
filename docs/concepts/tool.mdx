@@ -85,6 +85,12 @@ Brain validates canonical input and output schemas for every placement. Brain re
 `ok`, `error`, `timeout`, `cancelled`, or `unknown` before the Agentloop sees the result, and never
 automatically retries a Tool call.
 
+The invocation deadline produces `timeout`, explicit cancellation produces `cancelled`, and a known
+failure produces `error` with its structured details. `unknown` is reserved for a possibly dispatched
+operation whose result cannot be established. All four are failed Tool results. Timeout and
+cancellation describe the stop cause and do not imply rollback. A host function may return an
+Outcome directly; see [Write a Tool](/brain/docs/guides/write-a-tool#return-values-and-outcomes).
+
 
 ## Placement and model presentation
 

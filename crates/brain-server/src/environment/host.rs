@@ -397,9 +397,7 @@ impl HostEnvironment {
                 () = command_sender.closed() => break Err(brain::Error::Ambiguous(
                     "the host disconnected after dispatch".into(),
                 )),
-                () = &mut deadline => break Err(brain::Error::Ambiguous(
-                    "the Tool deadline elapsed after dispatch".into(),
-                )),
+                () = &mut deadline => break Ok(Outcome::Timeout),
                 Some(event) = event_receiver.recv() => {
                     let answer = services.call("emit", serde_json::json!({"event_type": event.kind, "data": event.data})).await.and_then(|value| serde_json::from_value(value).map_err(|error| brain::Error::Executor(error.to_string()))).map_err(|error| error.to_string());
                     let _ = event.reply.send(answer);
@@ -798,6 +796,37 @@ mod tests {
             executing.await.unwrap().unwrap(),
             EnvironmentReceipt::Result { output: value } if value == serde_json::json!({"ok": true})
         ));
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_host_command_returns_a_timeout_receipt() {
+        let hosts = test_hosts();
+        let registration = hosts.register().unwrap();
+        let mut connection = hosts
+            .connect(&registration.host_id, &registration.token)
+            .unwrap();
+        let executing = tokio::spawn({
+            let hosts = hosts.clone();
+            let entry = entry(registration.host_id);
+            async move {
+                let mut invocation = invoke();
+                if let EnvironmentRequest::Execute { deadline_ms, .. } = &mut invocation.request {
+                    *deadline_ms = 20;
+                }
+                hosts
+                    .execute(
+                        &entry,
+                        &invocation,
+                        Some(Arc::new(brain_sessions::SessionServices::Tool(Arc::new(
+                            NoEvents,
+                        )))),
+                    )
+                    .await
+            }
+        });
+        connection.commands.recv().await.unwrap();
+        assert!(matches!(executing.await.unwrap().unwrap(),
+            EnvironmentReceipt::Failure { code, .. } if code == "timeout"));
     }
 
     #[tokio::test]

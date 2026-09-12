@@ -43,6 +43,7 @@ remain in [the contracts](../../contracts), [user docs](../../docs), and
 - [ADR-044: Separate session management from the built-in execution Environment](2026-09-06-03-sessions-and-brain-env.md)
 
 - [ADR-046: Keep dependency preparation in Environments and give Agentloop KV one API](2026-09-09-01-minimal-extension-contract.md)
+- [ADR-047: Preserve known Tool stop causes and accept host outcomes directly](2026-09-12-01-tool-outcomes.md)
 
 ## Chronological index
 
@@ -94,6 +95,7 @@ remain in [the contracts](../../contracts), [user docs](../../docs), and
 | 2026-09-06 | [ADR-044: Separate session management from the built-in execution Environment](2026-09-06-03-sessions-and-brain-env.md) | Accepted |
 | 2026-09-07 | [ADR-045: Resolve protocol gaps before stable v1](2026-09-07-01-protocol-freeze.md) | Accepted |
 | 2026-09-09 | [ADR-046: Keep dependency preparation in Environments and give Agentloop KV one API](2026-09-09-01-minimal-extension-contract.md) | Accepted |
+| 2026-09-12 | [ADR-047: Preserve known Tool stop causes and accept host outcomes directly](2026-09-12-01-tool-outcomes.md) | Accepted |
 
 ## Important reversals
 
