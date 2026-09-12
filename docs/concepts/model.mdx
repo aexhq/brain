@@ -45,6 +45,8 @@ Brain passes the URL to Responses `input_image.image_url` / `input_file.file_url
 URL image / document source. Brain does not fetch, host, upload, convert or refresh attachments.
 Inline data, local paths and provider file IDs are unsupported, including in known native input
 positions. Opaque signed thinking and encrypted continuation state remain unchanged.
+Responses continuation may include `file_id: null` or `file_data: null` beside an HTTPS source;
+Brain preserves those empty optional fields, including after compaction.
 
 The caller owns file storage, access and lifetime. Keep the same bytes available at the same URL
 for every later turn that needs them. Expiry can cause a later model call to fail, and cannot

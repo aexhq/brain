@@ -66,7 +66,14 @@ fn responses_reasoning_and_compaction_preserve_native_items() {
     let body = responses::body("test", &[], &request(vec![message])).unwrap();
     assert_eq!(body["input"][0], reasoning);
     assert_eq!(body["input"][1]["call_id"], "call");
-    let retained = json!([{"type":"message","role":"user","content":[{"type":"input_text","text":"task"}]}, {"type":"compaction","encrypted_content":"compact"}]);
+    let retained = json!([
+        {"type":"message","role":"user","content":[
+            {"type":"input_text","text":"task"},
+            {"type":"input_image","image_url":"https://example.com/view.png","file_id":null,"detail":"auto"},
+            {"type":"input_file","file_url":"https://example.com/report.pdf","file_id":null,"detail":"auto"}
+        ]},
+        {"type":"compaction","encrypted_content":"compact"}
+    ]);
     let result = responses::compact_result(json!({"output":retained})).unwrap();
     let restored = serde_json::from_slice(&serde_json::to_vec(&result.message).unwrap()).unwrap();
     assert_eq!(
