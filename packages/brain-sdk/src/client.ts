@@ -39,8 +39,13 @@ export class BrainClient {
   private readonly transport: typeof globalThis.fetch;
   private readonly agentloops = new WeakMap<object, Promise<string>>();
   private readonly tools = new WeakMap<object, Promise<string>>();
+  private readonly controller = new AbortController();
+  private readonly requests = new Set<Promise<unknown>>();
+  private readonly readers = new Set<ReadableStreamDefaultReader<Uint8Array>>();
+  private closing?: Promise<void>;
   private registration?: HostRegistration;
   private host?: Promise<Host>;
+  private hostClient?: BrainClient;
 
   constructor(options: BrainOptions) {
     let end = options.baseUrl.length;
@@ -65,7 +70,35 @@ export class BrainClient {
   }
 
   withToken(token: string): BrainClient {
+    this.controller.signal.throwIfAborted();
     return new BrainClient({ baseUrl: this.baseUrl, token, timeoutMs: this.timeoutMs, fetch: this.transport });
+  }
+
+  /** Release this client's I/O and local handlers without ending its stored sessions. */
+  close(): Promise<void> {
+    if (this.closing !== undefined) return this.closing;
+    const opening = this.host;
+    const hostClient = this.hostClient;
+    this.closing = Promise.resolve().then(async () => {
+      const readers = [...this.readers].map((reader) => reader.cancel().catch(() => {}));
+      const host = await opening?.catch(() => undefined);
+      host?.pump.stop();
+      await Promise.allSettled([...readers, ...this.requests, hostClient?.close(), host?.pump.closed]);
+      this.readers.clear();
+    });
+    this.controller.abort(new DOMException("Brain client is closed", "AbortError"));
+    void hostClient?.close();
+    return this.closing;
+  }
+
+  private async io<T>(operation: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    this.controller.signal.throwIfAborted();
+    const combined = signal === undefined ? this.controller.signal : AbortSignal.any([this.controller.signal, signal]);
+    combined.throwIfAborted();
+    const pending = operation(combined);
+    this.requests.add(pending);
+    try { return await pending; }
+    finally { this.requests.delete(pending); }
   }
 
   async models(provider?: string): Promise<import("./generated/session.js").ModelList> {
@@ -78,17 +111,22 @@ export class BrainClient {
     if (body !== undefined) headers.set("content-type", contentType);
     if (this.token !== undefined) headers.set("authorization", `Bearer ${this.token}`);
     if (idempotencyKey !== undefined) headers.set("idempotency-key", idempotencyKey);
-    const response = await this.transport(`${this.baseUrl}${path}`, {
-      method,
-      headers,
-      body: body === undefined ? undefined : body instanceof Uint8Array ? new Uint8Array(body).buffer : JSON.stringify(body),
-      signal: this.timeoutMs === undefined ? signal : signal === undefined ? AbortSignal.timeout(this.timeoutMs) : AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]),
-    });
-    if (!response.ok) {
-      const error = (await response.json().catch(() => ({}))) as Partial<BrainError>;
-      throw new BrainError(response.status, error.code ?? "http_error", error.message ?? response.statusText, error.retryable ?? false, error.details);
-    }
-    return (response.status === 204 ? undefined : await response.json()) as T;
+    return this.io(async (signal) => {
+      const response = await this.transport(`${this.baseUrl}${path}`, {
+        method,
+        headers,
+        body: body === undefined ? undefined : body instanceof Uint8Array ? new Uint8Array(body).buffer : JSON.stringify(body),
+        signal,
+      });
+      if (!response.ok) {
+        const error = (await response.json().catch(() => ({}))) as Partial<BrainError>;
+        signal.throwIfAborted();
+        throw new BrainError(response.status, error.code ?? "http_error", error.message ?? response.statusText, error.retryable ?? false, error.details);
+      }
+      const value = response.status === 204 ? undefined : await response.json();
+      signal.throwIfAborted();
+      return value as T;
+    }, this.timeoutMs === undefined ? signal : signal === undefined ? AbortSignal.timeout(this.timeoutMs) : AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]));
   }
 
   async *stream(sessionId: string, after = 0, signal?: AbortSignal): AsyncGenerator<SessionStreamEvent> {
@@ -102,13 +140,20 @@ export class BrainClient {
   async *streamPath(path: string, signal?: AbortSignal, onOpen?: () => void): AsyncGenerator<SessionStreamEvent> {
     const headers = new Headers({ accept: "text/event-stream" });
     if (this.token !== undefined) headers.set("authorization", `Bearer ${this.token}`);
-    const response = await this.transport(`${this.baseUrl}${path}`, { headers, signal });
+    const response = await this.io((signal) => this.transport(`${this.baseUrl}${path}`, { headers, signal }), signal);
+    if (this.controller.signal.aborted) {
+      await response.body?.cancel().catch(() => {});
+      this.controller.signal.throwIfAborted();
+    }
     if (!response.ok || response.body === null) {
       const error = (await response.json().catch(() => ({}))) as Partial<BrainError>;
+      this.controller.signal.throwIfAborted();
+      signal?.throwIfAborted();
       throw new BrainError(response.status, error.code ?? "http_error", error.message ?? response.statusText, error.retryable ?? false, error.details);
     }
     onOpen?.();
     const reader = response.body.getReader();
+    this.readers.add(reader);
     const decoder = new TextDecoder();
     let buffer = "";
     try {
@@ -133,11 +178,14 @@ export class BrainClient {
           const text = data.join("\n");
           let payload: unknown = text;
           try { payload = JSON.parse(text); } catch { /* keep non-JSON payloads */ }
+          this.controller.signal.throwIfAborted();
+          signal?.throwIfAborted();
           yield { ...(id === undefined || id === "" ? {} : { sequence: Number(id) }), type, data: payload };
         }
       }
     } finally {
       await reader.cancel().catch(() => {});
+      this.readers.delete(reader);
     }
   }
 
@@ -155,31 +203,34 @@ export class BrainClient {
     return this.admitComponent(value, this.tools, "/v1/tools", "Tool");
   }
 
-  /** Registers this process as a host, or resumes the registration the client was
-   * given, and keeps its command stream open for as long as a session is placed here. */
+  /** Registers this process as a host, or resumes its registration, until client close. */
   async register(): Promise<Host> {
+    this.controller.signal.throwIfAborted();
     if (this.host !== undefined) return this.host;
     const opening = (async () => {
       const registration = this.registration ?? await this.request<HostRegistration>("POST", "/v1/hosts");
       this.registration = registration;
       const hostClient = this.withToken(registration.token);
+      this.hostClient = hostClient;
       const pump = new HostPump({
         stream: (signal, onOpen) => hostClient.streamPath(`/v1/hosts/${encodeURIComponent(registration.host_id)}/commands`, signal, onOpen),
         result: (value) => hostClient.request("POST", `/v1/hosts/${encodeURIComponent(registration.host_id)}/results`, value),
         emit: (value) => hostClient.request<{ sequence: number }>("POST", `/v1/hosts/${encodeURIComponent(registration.host_id)}/events`, value),
       });
-      await pump.start();
-      void pump.closed.then(() => {
+      const stop = () => pump.stop();
+      this.controller.signal.addEventListener("abort", stop, { once: true });
+      void pump.closed.then(async () => {
+        this.controller.signal.removeEventListener("abort", stop);
+        await hostClient.close();
+        if (this.hostClient === hostClient) this.hostClient = undefined;
         if (this.host === opening) this.host = undefined;
       });
+      await pump.start();
+      this.controller.signal.throwIfAborted();
       return {
         hostId: registration.host_id,
         pump,
-        unregister: (sessionId: string) => {
-          if (pump.unregister(sessionId) && this.host === opening) {
-            this.host = undefined;
-          }
-        },
+        unregister: (sessionId: string) => pump.unregister(sessionId),
       };
     })();
     this.host = opening;
@@ -195,6 +246,7 @@ export class BrainClient {
   }
 
   private async admitComponent(value: Component, cache: WeakMap<object, Promise<string>>, path: string, subject: string): Promise<string> {
+    this.controller.signal.throwIfAborted();
     const source = inspectComponent(value);
     const cached = cache.get(value);
     if (cached !== undefined) return cached;
@@ -202,8 +254,12 @@ export class BrainClient {
       const bytes = source.artifact instanceof Uint8Array
         ? source.artifact
         : source.artifact.protocol === "file:"
-          ? new Uint8Array(await (await import("node:fs/promises")).readFile(source.artifact))
-          : new Uint8Array(await (await this.transport(source.artifact)).arrayBuffer());
+          ? await this.io(async (signal) => new Uint8Array(await (await import("node:fs/promises")).readFile(source.artifact as URL, { signal })))
+          : await this.io(async (signal) => {
+              const response = await this.transport(source.artifact as URL, { signal });
+              if (!response.ok) throw new BrainError(response.status, "http_error", response.statusText, false);
+              return new Uint8Array(await response.arrayBuffer());
+            });
       if (bytes.byteLength === 0) throw new TypeError(`${subject} Component cannot be empty`);
       const idempotencyKey = `${subject.toLowerCase()}-${await sha256(bytes)}`;
       const result = await this.request<AgentloopAdmission | ToolAdmission>("POST", path, bytes, idempotencyKey, "application/octet-stream");
@@ -235,8 +291,6 @@ export class Sessions {
     const implementation = isComponent(loop.implementation)
       ? { type: "brain_component", entrypoint: "turn", id: await this.client.admitAgentloop(loop.implementation) }
       : structuredClone(loop.implementation);
-    const hosted = [...environments.keys()].some((environment) => inspectEnvironment(environment).driver.driver === "host");
-    const host = hosted ? await this.client.register() : undefined;
     const implementations = new Map<PlacedTool, unknown>();
     for (const [placed, tool] of tools) {
       if (tool.implementation === undefined) {
@@ -253,15 +307,16 @@ export class Sessions {
             configuration: structuredClone(tool.configuration),
           });
     }
-    const request = compileSession(options, implementation, environments, implementations, host?.hostId);
-    const session = await this.client.request<WireSession>("POST", "/v1/sessions", request, key);
-    if (host !== undefined) {
-      const registry = new HostToolRegistry();
-      for (const [, tool] of tools) {
-        if (tool.handler !== undefined && tool.contract !== undefined) registry.register(inspectEnvironment(tool.environment).name, tool.contract, tool.handler);
-      }
-      host.pump.register(session.session_id, registry);
+    const compiledTools = compileTools(options.tools ?? [], implementations);
+    const registry = new HostToolRegistry();
+    for (const [, tool] of tools) {
+      if (tool.handler !== undefined && tool.contract !== undefined) registry.register(inspectEnvironment(tool.environment).name, tool.contract, tool.handler);
     }
+    const hosted = [...environments.keys()].some((environment) => inspectEnvironment(environment).driver.driver === "host");
+    const host = hosted ? await this.client.register() : undefined;
+    const request = compileSession(options, implementation, environments, compiledTools, host?.hostId);
+    const session = await this.client.request<WireSession>("POST", "/v1/sessions", request, key);
+    host?.pump.register(session.session_id, registry);
     return new SessionHandle(
       this.client,
       toSessionState(session),
@@ -353,7 +408,7 @@ export class SessionHandle {
       for await (const event of this.client.stream(this.id, after, watching.signal)) {
         if (event.type === "turn_started") {
           if (completed) break;
-          cancelling = this.cancel();
+          cancelling = this.interrupt();
           await cancelling;
           break;
         }
@@ -391,7 +446,7 @@ export class SessionHandle {
     return this.client.stream(this.id, after, signal);
   }
 
-  async cancel(operation: OperationOptions = {}): Promise<void> {
+  async interrupt(operation: OperationOptions = {}): Promise<void> {
     await this.client.request("POST", `/v1/sessions/${encodeURIComponent(this.id)}/cancel`, undefined, keyOf(operation));
   }
 
@@ -432,7 +487,7 @@ function compileSession(
   options: CreateSessionOptions,
   agentloopImplementation: unknown,
   environments: ReadonlySet<Environment>,
-  implementations: ReadonlyMap<PlacedTool, unknown>,
+  tools: WireTool[],
   hostId?: string,
 ): CreateSessionRequest {
   const entries: WireEnvironment[] = [...environments].map((environment) => {
@@ -453,8 +508,26 @@ function compileSession(
         };
     }
   });
+  const loop = inspectAgentloop(options.agentloop);
+  return {
+    agentloop: {
+      implementation: structuredClone(agentloopImplementation),
+      configuration: structuredClone(loop.configuration),
+      environment: inspectEnvironment(loop.environment).name,
+    },
+    model: { provider: options.model.provider, name: options.model.name, api_key: options.model.apiKey },
+    system: options.system ?? "",
+    ...(options.responseFormat === undefined ? {} : { response_format: structuredClone(options.responseFormat) as CreateSessionRequest["response_format"] }),
+    tools,
+    environments: entries,
+    ...(options.transcript === undefined ? {} : { transcript: structuredClone(options.transcript) as CreateSessionRequest["transcript"] }),
+    ...(options.idleTtlMs === undefined ? {} : { idle_ttl_ms: options.idleTtlMs }),
+  };
+}
+
+function compileTools(selectedTools: readonly PlacedTool[], implementations: ReadonlyMap<PlacedTool, unknown>): WireTool[] {
   const tools = new Map<string, WireTool>();
-  for (const selected of options.tools ?? []) {
+  for (const selected of selectedTools) {
     const tool = inspectTool(selected);
     const definition = {
       name: tool.definition.name, description: tool.definition.description,
@@ -472,21 +545,7 @@ function compileSession(
     entry.placements[environment] = { implementation: structuredClone(implementations.get(selected)) };
     tools.set(definition.name, entry);
   }
-  const loop = inspectAgentloop(options.agentloop);
-  return {
-    agentloop: {
-      implementation: structuredClone(agentloopImplementation),
-      configuration: structuredClone(loop.configuration),
-      environment: inspectEnvironment(loop.environment).name,
-    },
-    model: { provider: options.model.provider, name: options.model.name, api_key: options.model.apiKey },
-    system: options.system ?? "",
-    ...(options.responseFormat === undefined ? {} : { response_format: structuredClone(options.responseFormat) as CreateSessionRequest["response_format"] }),
-    tools: [...tools.values()],
-    environments: entries,
-    ...(options.transcript === undefined ? {} : { transcript: structuredClone(options.transcript) as CreateSessionRequest["transcript"] }),
-    ...(options.idleTtlMs === undefined ? {} : { idle_ttl_ms: options.idleTtlMs }),
-  };
+  return [...tools.values()];
 }
 
 function validateSessionOptions(options: CreateSessionOptions): void {

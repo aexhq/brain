@@ -22,7 +22,7 @@ test("create, list, reopen, end, and delete a conversation", { timeout: 30_000 }
 
 test("cancel an idle session and repeat deletion using the same operation key", { timeout: 30_000 }, async (t) => {
   const session = await f.create(t);
-  await session.cancel();
+  await session.interrupt();
   assert.equal((await f.brain.sessions.get(session.id)).state.status, "idle");
   await session.send("still usable");
   await session.end();

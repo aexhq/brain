@@ -296,7 +296,7 @@ function toolDefinition(contract: { readonly name: string; readonly description:
   return Object.freeze({
     name: contract.name,
     description: contract.description,
-    inputSchema: z.toJSONSchema(contract.input) as Readonly<Record<string, unknown>>,
+    inputSchema: z.toJSONSchema(contract.input, { io: "input" }) as Readonly<Record<string, unknown>>,
     ...(contract.output === undefined ? {} : { outputSchema: z.toJSONSchema(contract.output) as Readonly<Record<string, unknown>> }),
   });
 }

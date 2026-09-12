@@ -18,18 +18,22 @@ const lookup = tool({
 });
 
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });
-const session = await brain.sessions.create({
-  model: {
-    provider: "vercel-ai-gateway",
-    name: "openai/gpt-5-mini",
-    apiKey: process.env.VERCEL_AI_GATEWAY_API_KEY!,
-  },
-  agentloop: pi({ env: brainEnv({ name: "brain" }) }),
-  tools: [lookup({ env: hostEnv({ name: "app" }) })],
-});
+try {
+  const session = await brain.sessions.create({
+    model: {
+      provider: "vercel-ai-gateway",
+      name: "openai/gpt-5-mini",
+      apiKey: process.env.VERCEL_AI_GATEWAY_API_KEY!,
+    },
+    agentloop: pi({ env: brainEnv({ name: "brain" }) }),
+    tools: [lookup({ env: hostEnv({ name: "app" }) })],
+  });
 
-await session.send("Look up item 42.");
-for await (const event of session.events()) console.log(event);
+  await session.send("Look up item 42.");
+  for await (const event of session.events()) console.log(event);
+} finally {
+  await brain.close();
+}
 ```
 
 Every Tool and Agentloop is placed in a named Environment with `{ env, ...options }`. Three kinds
@@ -77,6 +81,18 @@ terminal outcome. `ctx.emit(kind, data)` appends an extension event to the sessi
 journal before its promise resolves. Save `await brain.credentials()` and pass it back as
 `credentials` to resume the host after a restart.
 
+The host connection belongs to the client and stays open until `await brain.close()`, including
+after failed creation or ending the last session. Put creation inside `try` and close in `finally`.
+Close is idempotent, aborts client I/O and local handlers, and rejects subsequent operations.
+It leaves stored sessions available. Use `session.interrupt()` to stop the current turn,
+`session.end()` to finish a session while keeping history, and `session.delete()` to remove an
+ended or failed session. See the [lifecycle example](../../examples/session-lifecycle.mjs).
+Clients returned by `withToken` have independent lifetimes.
+
+Tool input schemas use Zod's input semantics: defaulted arguments are optional, and handlers
+receive parsed defaults and transforms. Ordinary objects strip extra properties; strict objects
+reject them. Output schemas continue to describe parsed output.
+
 Host functions may return ordinary successful output or an `Outcome` directly. The top-level
 statuses `ok`, `error`, `timeout`, `cancelled` and `unknown` declare outcomes; malformed envelopes
 fail as `invalid_output`. Only successful values pass through the output schema. Structured errors
@@ -117,7 +133,14 @@ at `@aexhq/brain/contracts/agentloop.wit` and `@aexhq/brain/contracts/tool.wit`.
 history during an activation, and `emit` appends extension Events. Model, Tool, and Environment
 failures are never retried by Brain.
 
-## Upgrading to 0.20
+## Upgrading to 0.24
+
+Replace SDK `session.cancel()` with `session.interrupt()` and close each client when finished.
+The HTTP cancellation route and stored session format are unchanged. Host streams now remain
+open for the client lifetime. `register()` and `credentials()` retain their existing roles;
+saved host credentials are separate from provider and API credentials.
+
+## Upgrading from 0.19
 
 Upgrade the server and SDK together and rebuild Agentloop Components against the packaged WIT.
 Replace `set_kv` with `kv_put`; bindings expose `kv.read/put/delete`. Remove `needs` from

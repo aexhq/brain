@@ -9,31 +9,35 @@ const brain = new Brain({
   ...(process.env.BRAIN_API_TOKEN ? { token: process.env.BRAIN_API_TOKEN } : {}),
 });
 
-const session = await brain.sessions.create({
-  model: {
-    provider: "vercel-ai-gateway",
-    name: process.env.BRAIN_MODEL ?? "openai/gpt-5-mini",
-    apiKey,
-  },
-  agentloop: example({ env: brainEnv({ name: "brain" }) }),
-});
-
 try {
-  await session.send("Reply with FIRST.");
-  await session.send("Reply with SECOND.");
+  const session = await brain.sessions.create({
+    model: {
+      provider: "vercel-ai-gateway",
+      name: process.env.BRAIN_MODEL ?? "openai/gpt-5-mini",
+      apiKey,
+    },
+    agentloop: example({ env: brainEnv({ name: "brain" }) }),
+  });
 
-  const complete = [];
-  for await (const event of session.events()) complete.push(event);
-  const firstTurn = complete.find((event) => event.type === "turn_ended");
-  if (!firstTurn) throw new Error("the first turn did not finish");
+  try {
+    await session.send("Reply with FIRST.");
+    await session.send("Reply with SECOND.");
 
-  console.log(`Public Events through sequence ${complete.at(-1)?.sequence ?? 0}`);
-  console.log(`Events after the first turn (${firstTurn.sequence}):`);
+    const complete = [];
+    for await (const event of session.events()) complete.push(event);
+    const firstTurn = complete.find((event) => event.type === "turn_ended");
+    if (!firstTurn) throw new Error("the first turn did not finish");
 
-  for await (const event of session.events(firstTurn.sequence)) {
-    console.log(event.sequence, event.type);
+    console.log(`Public Events through sequence ${complete.at(-1)?.sequence ?? 0}`);
+    console.log(`Events after the first turn (${firstTurn.sequence}):`);
+
+    for await (const event of session.events(firstTurn.sequence)) {
+      console.log(event.sequence, event.type);
+    }
+  } finally {
+    await session.end();
+    await session.delete();
   }
 } finally {
-  await session.end();
-  await session.delete();
+  await brain.close();
 }

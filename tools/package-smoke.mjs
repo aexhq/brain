@@ -54,11 +54,14 @@ try {
       `globalThis.fetch = async () => { throw new Error("validated Brain reached fetch"); };\n` +
       `const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });\n` +
       `assert.equal(typeof brain.sessions.create, "function");\n` +
+      `assert.equal(typeof brainSdk.SessionHandle.prototype.interrupt, "function");\n` +
       `assert.deepEqual(Object.keys(simple({ env: runtime })), []);\n` +
       `await assert.rejects(brain.sessions.create({ model: { provider: "vercel-ai-gateway", name: "openai/test", apiKey: "test" }, agentloop: simple({ env: runtime }) }), /validated Brain reached fetch/u);\n` +
       `assert.equal(typeof brainSdk.tool, "function");\n` +
       `assert.equal(typeof brainSdk.environment, "function");\n` +
-      `assert.equal("DurableEventBridge" in brainSdk, false);\n`,
+      `assert.equal("DurableEventBridge" in brainSdk, false);\n` +
+      `await brain.close();\n` +
+      `await assert.rejects(brain.sessions.list(), { name: "AbortError" });\n`,
   );
   execFileSync(process.execPath, ["smoke.mjs"], { cwd: directory, stdio: "inherit" });
   process.stdout.write("packed Brain packages passed an empty-consumer smoke test\n");

@@ -11,30 +11,34 @@ const brain = new Brain({ baseUrl, token });
 const diagnostic = agentloop({
   implementation: component(new URL("./diagnostic-agentloop.wasm", import.meta.url)),
 });
-const session = await brain.sessions.create({
-  model: {
-    provider: "vercel-ai-gateway",
-    name: "openai/gpt-5-mini",
-    apiKey: "release-smoke-key",
-  },
-  agentloop: diagnostic({ env: brainEnv({ name: "brain" }) }),
-});
+try {
+  const session = await brain.sessions.create({
+    model: {
+      provider: "vercel-ai-gateway",
+      name: "openai/gpt-5-mini",
+      apiKey: "release-smoke-key",
+    },
+    agentloop: diagnostic({ env: brainEnv({ name: "brain" }) }),
+  });
 
-const completed = await session.send("finish without external capabilities");
-assert.equal(completed.status, "idle");
+  const completed = await session.send("finish without external capabilities");
+  assert.equal(completed.status, "idle");
 
-const events = [];
-for await (const event of session.events()) events.push(event);
-assert.deepEqual(
-  events.slice(-5).map(({ type }) => type),
-  ["turn_started", "activation_started", "note", "activation_ended", "turn_ended"],
-);
-assert.deepEqual(events.at(-1)?.data.result, { turns: 1, message: "finish without external capabilities" });
-assert.ok(events.every(({ recordedAt }) => recordedAt instanceof Date && !Number.isNaN(recordedAt.valueOf())));
-// One sequence counter numbers both logs, so the feed is strictly increasing, not contiguous.
-assert.ok(events.every(({ sequence }, index) => index === 0 || sequence > events[index - 1].sequence));
+  const events = [];
+  for await (const event of session.events()) events.push(event);
+  assert.deepEqual(
+    events.slice(-5).map(({ type }) => type),
+    ["turn_started", "activation_started", "note", "activation_ended", "turn_ended"],
+  );
+  assert.deepEqual(events.at(-1)?.data.result, { turns: 1, message: "finish without external capabilities" });
+  assert.ok(events.every(({ recordedAt }) => recordedAt instanceof Date && !Number.isNaN(recordedAt.valueOf())));
+  // One sequence counter numbers both logs, so the feed is strictly increasing, not contiguous.
+  assert.ok(events.every(({ sequence }, index) => index === 0 || sequence > events[index - 1].sequence));
 
-assert.deepEqual((await session.transcript()).messages, []);
+  assert.deepEqual((await session.transcript()).messages, []);
 
-await session.end();
-await session.delete();
+  await session.end();
+  await session.delete();
+} finally {
+  await brain.close();
+}

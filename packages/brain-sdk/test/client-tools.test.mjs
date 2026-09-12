@@ -10,7 +10,7 @@ const sessionId = "ses_12345678901234567890";
 const sse = (data) => `event: command\ndata: ${JSON.stringify(data)}\n\n`;
 const model = { provider: "openai", name: "gpt-5", apiKey: "model-token" };
 
-test("saved host credentials reattach handlers to an existing session", async () => {
+test("saved host credentials reattach handlers to an existing session", async (t) => {
   const credentials = { hostId: "host_12345678901234567890", token: "saved-token" };
   let controller;
   let finish;
@@ -33,6 +33,7 @@ test("saved host credentials reattach handlers to an existing session", async ()
     if (path === `/v1/sessions/${sessionId}`) return Response.json({ session_id: sessionId, environment: "app", status: "idle", last_sequence: 1 });
     throw new Error(`unexpected request ${path}`);
   } });
+  t.after(() => client.close());
   const lookup = tool({ name: "lookup", description: "Lookup.", input: z.object({}), run: async () => "restored" });
   const session = await client.sessions.get(sessionId, { tools: [lookup({ env: hostEnv({ name: "app" }) })] });
   assert.deepEqual(await client.credentials(), credentials);
@@ -41,7 +42,7 @@ test("saved host credentials reattach handlers to an existing session", async ()
   await session.end();
 });
 
-test("one host runs the Tools placed in it and commits ctx.emit before its result", async () => {
+test("one host runs the Tools placed in it and commits ctx.emit before its result", async (t) => {
   const requests = [];
   let releaseStream;
   let releaseCommand;
@@ -92,6 +93,7 @@ test("one host runs the Tools placed in it and commits ctx.emit before its resul
   });
   const pi = agentloop({ implementation: component(new Uint8Array([1])) });
   const client = new Brain({ baseUrl: "https://brain.example", token: "brain-token", fetch: fetchStub });
+  t.after(() => client.close());
   const app = hostEnv({ name: "app" });
   const session = await client.sessions.create({
     model,
@@ -114,7 +116,7 @@ test("one host runs the Tools placed in it and commits ctx.emit before its resul
   await session.delete();
 });
 
-test("session creation waits for the host command stream", async () => {
+test("session creation waits for the host command stream", async (t) => {
   const paths = [];
   const client = new Brain({ baseUrl: "https://brain.example", fetch: async (input, init) => {
     const request = new Request(input, init);
@@ -126,6 +128,7 @@ test("session creation waits for the host command stream", async () => {
     if (path === "/v1/sessions") throw new Error("session create raced the host connection");
     throw new Error(`unexpected request ${request.method} ${path}`);
   } });
+  t.after(() => client.close());
   const pi = agentloop({ implementation: component(new Uint8Array([1])) });
   const local = tool({
     name: "local",
@@ -180,6 +183,7 @@ test("a host reconnects without replaying old commands", async () => {
   assert.equal(connections, 2);
   assert.deepEqual(result.outcome, { status: "ok", value: { id: "2" } });
   pump.unregister(sessionId);
+  pump.stop();
   await pump.closed;
 });
 
@@ -211,9 +215,10 @@ test("losing the command stream reports an in-flight call as unknown without rep
   assert.equal(calls, 1);
 });
 
-test("a new session reconnects the durable host after its previous stream stopped", async () => {
+test("a new session shares the host connection after the previous session ends", async (t) => {
   let hosts = 0;
   let sessions = 0;
+  let connections = 0;
   const placements = [];
   const client = new Brain({ baseUrl: "https://brain.example", fetch: async (input, init) => {
     const request = new Request(input, init);
@@ -226,6 +231,7 @@ test("a new session reconnects the durable host after its previous stream stoppe
       return Response.json({ host_id: `host_${hosts}`, token: `token_${hosts}` });
     }
     if (path.endsWith("/commands")) {
+      connections++;
       return new Response(new ReadableStream({
         start(controller) {
           request.signal.addEventListener("abort", () => controller.close(), { once: true });
@@ -243,6 +249,7 @@ test("a new session reconnects the durable host after its previous stream stoppe
     }
     throw new Error(`unexpected request ${request.method} ${path}`);
   } });
+  t.after(() => client.close());
   const pi = agentloop({ implementation: component(new Uint8Array([1])) });
   const local = tool({
     name: "local",
@@ -262,5 +269,6 @@ test("a new session reconnects the durable host after its previous stream stoppe
   await second.end();
 
   assert.equal(hosts, 1);
+  assert.equal(connections, 1);
   assert.deepEqual(placements, ["host_1", "host_1"]);
 });
