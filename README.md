@@ -99,7 +99,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 ```
 
 ```sh
-npm install @aexhq/brain @aexhq/agentloop-pi zod
+npm install @aexhq/brain@0.24.1 @aexhq/agentloop-pi@6.1.0 zod
 ```
 
 Save as `order.mjs` and run with `node order.mjs`:
