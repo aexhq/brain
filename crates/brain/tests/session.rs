@@ -269,6 +269,7 @@ async fn cancel_interrupts_an_inflight_model_request() {
         Arc::new(NoTools),
     );
     let handle = runtime.create(&config(), &[]).unwrap();
+    let mut feed = runtime.subscribe(handle.id());
     let turning = {
         let handle = handle.clone();
         tokio::spawn(async move {
@@ -279,7 +280,17 @@ async fn cancel_interrupts_an_inflight_model_request() {
                 .await
         })
     };
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let (_, LiveEvent::Recorded(event)) = feed.recv().await.unwrap()
+                && event.event_type == "model_call_started"
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the model call must start before cancellation");
     handle.cancel().await.unwrap();
     let summary = tokio::time::timeout(Duration::from_secs(5), turning)
         .await

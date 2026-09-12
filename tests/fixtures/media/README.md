@@ -1,10 +1,11 @@
 # Native media fixtures
 
-`diagram.png` contains two red circles. `diagram.pdf` contains an embedded image of three blue
-squares and no answer text. The live probe checks these counts in user input, Tool results,
-continuation and Responses compaction using HTTPS URLs at the tested commit.
+`diagram.png` contains two red circles. `report.pdf` contains the text `Report code: HARBOR-7391`.
+The live probe reads the image count and PDF code through user input, Tool results, continuation
+and Responses compaction using HTTPS URLs at the tested commit. The prompt and Tool-result text
+do not supply the report code.
 
-`diagram-vector.pdf` preserves the same three blue squares as vector drawings. Direct OpenAI and
-Vercel Responses did not recognize its visual content in the September 2026 controls, while the
-image-based PDF passed. Keep it for reproducing that provider compatibility issue; the release
-probe uses `diagram.pdf`.
+OpenAI and Anthropic models use Vercel's Responses endpoint with `VERCEL_AI_GATEWAY_API_KEY`;
+the direct OpenAI reference check uses `OPENAI_API_KEY`. Anthropic Messages payloads are verified
+by the regular adapter tests, independently of the live gateway check.
+The probe verifies native attachment delivery and continuation, without testing PDF drawing recognition.

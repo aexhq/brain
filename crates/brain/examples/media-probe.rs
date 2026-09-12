@@ -81,8 +81,10 @@ fn verify(message: &Message) -> Result<()> {
             _ => None,
         })
         .collect::<String>();
-    if !answer.contains("RED=2") || !answer.contains("BLUE=3") {
-        return Err(format!("provider did not identify both visual counts: {answer}").into());
+    if !answer.contains("RED=2") || !answer.contains("REPORT=HARBOR-7391") {
+        return Err(
+            format!("provider did not read the image count and PDF report code: {answer}").into(),
+        );
     }
     Ok(())
 }
@@ -128,7 +130,7 @@ async fn run(args: &Args) -> Result<()> {
         media_type: FileMediaType::Pdf,
         url: args.pdf_url.clone(),
     };
-    let prompt = "Count the red circles in the image and the blue squares in the PDF. Reply only RED=n BLUE=n with the observed counts.";
+    let prompt = "Count the red circles in the image and read the report code in the PDF. Reply only RED=n REPORT=code.";
     let mut history = vec![user(vec![
         text(prompt),
         ContentBlock::Image {
@@ -141,13 +143,13 @@ async fn run(args: &Args) -> Result<()> {
     println!("{}: user image and PDF passed", binding.provider);
     let tools = [ToolDefinition {
         name: "read_report".into(),
-        description: "Read the PDF containing the blue shapes.".into(),
+        description: "Read the PDF report.".into(),
         input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
         output_schema: None,
     }];
     history = vec![user(vec![
         text(
-            "Count the red circles in the image. Call read_report to obtain the PDF, then count its blue squares. After reading the Tool result, reply only RED=n BLUE=n.",
+            "Count the red circles in the image. Call read_report to obtain the PDF, then read its report code. After reading the Tool result, reply only RED=n REPORT=code.",
         ),
         ContentBlock::Image {
             url: args.image_url.clone(),
@@ -177,7 +179,7 @@ async fn run(args: &Args) -> Result<()> {
     );
     history.push(answer);
     history.push(user(vec![text(
-        "Repeat the two observed counts as RED=n BLUE=n.",
+        "Repeat the observed image count and report code as RED=n REPORT=code.",
     )]));
     let answer = call(&client, &binding, history.clone(), &tools, false).await?;
     verify(&answer)?;
@@ -202,7 +204,7 @@ async fn run(args: &Args) -> Result<()> {
                 vec![
                     compacted,
                     user(vec![text(
-                        "Repeat the two observed counts as RED=n BLUE=n.",
+                        "Repeat the observed image count and report code as RED=n REPORT=code.",
                     )]),
                 ],
                 &[],
