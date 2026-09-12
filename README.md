@@ -99,11 +99,10 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 ```
 
 ```sh
-npm install @aexhq/brain@0.24.0 @aexhq/agentloop-pi@6.1.0 zod
+npm install @aexhq/brain@0.24.2 @aexhq/agentloop-pi@6.1.1 zod
 ```
 
-Pi 6.1.0 depends on SDK 0.24.0. Keep these client versions together; the media runtime patch
-works with this pair.
+Keep the Brain SDK version aligned with the version required by your extensions.
 
 Save as `order.mjs` and run with `node order.mjs`:
 
