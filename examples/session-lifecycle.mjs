@@ -9,23 +9,27 @@ const brain = new Brain({
   ...(process.env.BRAIN_API_TOKEN ? { token: process.env.BRAIN_API_TOKEN } : {}),
 });
 
-const created = await brain.sessions.create({
-  model: {
-    provider: "vercel-ai-gateway",
-    name: process.env.BRAIN_MODEL ?? "openai/gpt-5-mini",
-    apiKey,
-  },
-  agentloop: example({ env: brainEnv({ name: "brain" }) }),
-});
+try {
+  const created = await brain.sessions.create({
+    model: {
+      provider: "vercel-ai-gateway",
+      name: process.env.BRAIN_MODEL ?? "openai/gpt-5-mini",
+      apiKey,
+    },
+    agentloop: example({ env: brainEnv({ name: "brain" }) }),
+  });
 
-console.log("created", created.state);
-console.log("listed", (await brain.sessions.list()).map(({ id, status }) => ({ id, status })));
+  console.log("created", created.state);
+  console.log("listed", (await brain.sessions.list()).map(({ id, status }) => ({ id, status })));
 
-const session = await brain.sessions.get(created.id);
-console.log("reopened", session.state);
+  const session = await brain.sessions.get(created.id);
+  console.log("reopened", session.state);
 
-await session.cancel();
-console.log("ended", await session.end());
-await session.delete();
+  await session.interrupt();
+  console.log("ended", await session.end());
+  await session.delete();
 
-console.log("remaining", await brain.sessions.list());
+  console.log("remaining", await brain.sessions.list());
+} finally {
+  await brain.close();
+}

@@ -32,8 +32,8 @@ test("cancel a running turn, inspect its outcome, and explicitly send again", { 
   const pending = session.send("wait for cancellation").then((value) => ({ value }), (error) => ({ error }));
   await entered.promise;
   assert.equal((await f.brain.sessions.get(session.id)).state.status, "running");
-  await session.cancel({ idempotencyKey: "cancel-once" });
-  await session.cancel({ idempotencyKey: "cancel-once" });
+  await session.interrupt({ idempotencyKey: "cancel-once" });
+  await session.interrupt({ idempotencyKey: "cancel-once" });
   await pending;
   const events = await collect(session.events());
   assert.ok(events.some(({ type }) => type === "turn_failed"));

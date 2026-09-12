@@ -118,17 +118,21 @@ const lookupOrder = tool({
 });
 
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080", token: "quickstart" });
-const session = await brain.sessions.create({
-  model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
-  agentloop: pi({ env: brainEnv({ name: "brain" }) }),
-  tools: [lookupOrder({ env: hostEnv({ name: "app" }) })],
-});
+try {
+  const session = await brain.sessions.create({
+    model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
+    agentloop: pi({ env: brainEnv({ name: "brain" }) }),
+    tools: [lookupOrder({ env: hostEnv({ name: "app" }) })],
+  });
 
-await session.send("Where is order A-1001?");
-for await (const event of session.events()) console.log(event.sequence, event.type);
+  await session.send("Where is order A-1001?");
+  for await (const event of session.events()) console.log(event.sequence, event.type);
 
-await session.end();
-await session.delete();
+  await session.end();
+  await session.delete();
+} finally {
+  await brain.close();
+}
 ```
 
 ## Performance

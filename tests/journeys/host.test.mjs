@@ -23,7 +23,7 @@ test("cancelling a parent reaches an owned child turn through the host Tool sign
   const parent = await f.create(t, { tools: [delegate({ env: hostEnv({ name: "owner" }) })] });
   const running = parent.send("delegate work");
   await entered.promise;
-  await parent.cancel();
+  await parent.interrupt();
   await running;
   await finished.promise;
   assert.equal((await f.brain.sessions.get(child.id)).state.status, "idle");
@@ -154,14 +154,11 @@ test("saved host credentials reattach a tool after its connection is closed", { 
   const lookup = tool({ name: "lookup", description: "Lookup", input: z.object({}), run: () => "original" });
   const original = await f.create(t, { tools: [lookup({ env: app })] }, firstClient);
   const credentials = await firstClient.credentials();
-  const host = await firstClient.register();
-  host.pump.stop();
-  await host.pump.closed;
+  await firstClient.close();
+  assert.equal((await f.brain.sessions.get(original.id)).state.status, "idle");
   const restored = f.client({ credentials });
   const rebound = tool({ name: "lookup", description: "Lookup", input: z.object({}), run: () => "restored" });
   await assert.rejects(restored.sessions.get(original.id, { tools: [] }), /exactly those the session placed/u);
-  const restoredHost = await restored.register();
-  t.after(() => restoredHost.pump.stop());
   const session = await restored.sessions.get(original.id, { tools: [rebound({ env: app })] });
   assert.deepEqual(await restored.credentials(), credentials);
   f.model = dispatch("lookup", {});
@@ -169,6 +166,27 @@ test("saved host credentials reattach a tool after its connection is closed", { 
   assert.ok(JSON.stringify(f.modelRequests.at(-1).input).includes("restored"));
   await session.end();
 });
+
+for (const strict of [false, true]) {
+  test(`defaulted host input passes dispatch and ${strict ? "rejects" : "strips"} extra arguments`, { timeout: 30_000 }, async (t) => {
+    const seen = [];
+    const shape = { query: z.string(), limit: z.number().int().positive().default(10) };
+    const lookup = tool({ name: "lookup", description: "Look up results", input: strict ? z.strictObject(shape) : z.object(shape),
+      run: input => { seen.push(input); return input; },
+    });
+    const session = await f.create(t, { tools: [lookup({ env: app })] });
+    f.model = dispatch("lookup", { query: "cyan" });
+    await session.send("find cyan");
+    assert.deepEqual(seen, [{ query: "cyan", limit: 10 }]);
+    assert.deepEqual(f.modelRequests[0].tools[0].parameters.required, ["query"]);
+    f.model = dispatch("lookup", { query: "blue", extra: true });
+    await session.send("find blue");
+    if (strict) {
+      assert.equal(seen.length, 1);
+      assert.match(f.modelRequests.at(-1).input.at(-1).output, /invalid_input/u);
+    } else assert.deepEqual(seen[1], { query: "blue", limit: 10 });
+  });
+}
 
 test("cancellation reaches the tool's signal and does not execute the tool twice", { timeout: 30_000 }, async (t) => {
   const entered = deferred();
@@ -185,7 +203,7 @@ test("cancellation reaches the tool's signal and does not execute the tool twice
   const session = await f.create(t, { tools: [wait({ env: app })] });
   const pending = session.send("wait").catch((error) => error);
   await entered.promise;
-  await session.cancel();
+  await session.interrupt();
   await cancelled.promise;
   await pending;
   assert.equal(calls, 1);
@@ -250,7 +268,7 @@ test("replaying creation during a tool call preserves its cancellation handler",
   await entered.promise;
   const repeated = await f.brain.sessions.create(f.options(options), operation);
   assert.equal(repeated.id, first.id);
-  await repeated.cancel();
+  await repeated.interrupt();
   await cancelled.promise;
   await pending;
   assert.equal(calls, 1);

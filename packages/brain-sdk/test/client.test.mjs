@@ -181,7 +181,8 @@ test("long operations have no implicit client timeout", async () => {
     },
   });
   await client.sessions.list();
-  assert.equal(defaultSignal, undefined);
+  assert.ok(defaultSignal instanceof AbortSignal);
+  assert.equal(defaultSignal.aborted, false);
 
   let explicitSignal;
   const bounded = new Brain({

@@ -154,13 +154,23 @@ exposes the payload as `event.data` and provenance as `event.origin` on both pag
 
 ## Lifecycle
 
-`cancel` requests cancellation of work in flight. `end` refuses new messages and detaches the
+`session.interrupt()` requests cancellation of work in flight and keeps the session available
+for another turn. The HTTP operation remains `POST /v1/sessions/{id}/cancel`.
+`end` refuses new messages and detaches the
 session's Environments while preserving history. `delete` removes the session directory, tears
-down its Environments, and forgets its credentials.
+down its Environments, and forgets its credentials; the session must first be ended or failed.
+
+`await brain.close()` releases the client's connections and local handlers. It is idempotent,
+rejects subsequent client operations, and does not interrupt, end or delete stored sessions.
+The client retains its shared host connection until close, including after failed creation or
+ending its last session. Put creation inside `try` and close the client in `finally`, as in the
+[lifecycle example](https://github.com/aexhq/brain/blob/main/examples/session-lifecycle.mjs).
+Handlers should observe their cancellation signal; close does not wait for application code
+that ignores it. A client created by `withToken` has its own lifetime.
 
 `end` waits for active work. SIGTERM/server shutdown stops admitting work and drains admitted
 operations while their callbacks remain available, then closes subscriptions and workers. Deadlines,
-`cancel`, and forced process termination can still interrupt a turn and expose partial progress.
+`interrupt`, and forced process termination can still interrupt a turn and expose partial progress.
 
 An owning host Tool can pass its signal to `child.send(input, { signal: context.signal })`.
 Use a fresh handle for an exclusively owned child; do not concurrently send through other owners.

@@ -16,10 +16,10 @@ Linux worker job, then runs all journeys as a required part of `build-test`.
 | `component`, `agentloop`, `admit`, `admitAgentloop`, `admitTool`, inspection | File/bytes/HTTP artifacts, id reuse, parallel preparation, rejected artifacts, prepared session creation, native Tool execution |
 | `sessions.create/get/list`, initial transcript, system, response format, idle policy | Full conversation lifecycle, seeded context, reopen through another client, idempotent creation with and without host Tools, conflicting keys, parallel conversations |
 | `send`, `state`, `id`, `transcript` | String/structured input, multiple suspended turns, idempotent sends, invalid input, cold reads, committed input after interruption |
-| `cancel`, `end`, `delete` | Running and idle cancellation, model and host Tool cancellation, repeated keyed operations, ended-session reads, invalid deletion, independent sessions |
+| `interrupt`, `end`, `delete` | Running and idle cancellation, model and host Tool cancellation, repeated keyed operations, ended-session reads, invalid deletion, independent sessions |
 | `events`, `stream`, client `stream` | Durable cursors, a full page boundary, replay-to-live delivery, reconnect, abort, authentication, session isolation |
-| `tool` with `run` in `hostEnv`, options, schemas, context | Progress ordering, input/output errors, handler errors, deadlines/signals, the call's sequence, concurrent sessions, protected Event rejection |
-| `register`, `credentials`, reattachment | Save credentials, close the host connection, reject mismatched placements, restore matching handlers, preserve active-call cancellation on creation replay |
+| `tool` with `run` in `hostEnv`, options, schemas, context | Progress ordering, input defaults and extra-property policy, input/output errors, handler errors, deadlines/signals, the call's sequence, concurrent sessions, protected Event rejection |
+| `close`, `register`, `credentials`, reattachment | Save credentials, close the client while retaining sessions, reject mismatched placements, restore matching handlers, preserve active-call cancellation on creation replay |
 | `environment`, `brainEnv`, placed Tools | Independent authenticated Environments, lazy allocation, configuration validation, explicit native grants and denied access, workspace persistence/isolation |
 | An Agentloop placed in an Environment reached over HTTP | The turn's model call, emit, and dispatch through Brain's turn routes, a dispatched Tool running in the host env, and the routes closing with the turn |
 | `timeoutMs` | Explicit client timeout leaves the server's execution observable and does not retry the model call |

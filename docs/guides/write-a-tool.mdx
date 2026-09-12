@@ -34,11 +34,18 @@ The function stays in this process and may close over application state; the hos
 nothing around it, so the application owns its isolation and ambient authority. The factory parses
 and freezes options. With no options schema, place it as `lookup({ env: app })`.
 
+Tool input JSON Schema describes what Zod accepts before parsing (`io: "input"`): defaulted
+arguments are optional, and the handler receives their parsed defaults and transforms.
+An ordinary `z.object` accepts and strips extra properties; `z.strictObject` rejects them.
+Output schemas describe parsed output. Unrepresentable schemas fail when declaring the Tool.
+
 ### The host
 
 The first session with a Tool in `hostEnv` makes the SDK register this process as a host. It
 authenticates with a scoped host token and keeps `GET /v1/hosts/{host_id}/commands` open as SSE.
-Several sessions and Tools in the same `Brain` client share that connection.
+Several sessions and Tools in the same `Brain` client share that connection until
+`await brain.close()`. Ending or deleting a session releases its handlers. Put session creation
+inside `try` and close the client in `finally`, including when creation fails.
 
 Brain commits the Tool intent before publishing a command. The command names the session, the
 journal sequence of the call, the absolute deadline, the Tool, and the input. The SDK validates
@@ -92,7 +99,9 @@ stop promptly.
 
 ### Reattaching after restart
 
-Save `await brain.credentials()` in application credential storage. After restarting the
+Save `await brain.credentials()` in application credential storage. This registers the host if
+needed and returns `{ hostId, token }`, the identity for host commands rather than a provider or
+Aex API key. Close the old client before replacing its connection. After restarting the
 application, pass those credentials as `credentials` to `new Brain(...)`, then call
 `brain.sessions.get(sessionId, { tools: [lookup({ env: app })] })` with the session's `run` Tools.
 The supplied Tools must be exactly those the session placed in this host. Without `tools`, `get`

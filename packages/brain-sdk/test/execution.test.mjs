@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { HostToolRegistry } from "../dist/host.js";
 
 import { z } from "zod";
 import {
@@ -102,4 +103,36 @@ test("native grants are explicit, validated, and independent between bindings", 
   }
   assert.throws(() => brainEnv({ name: "bad", filesystem: { workspace: "root" } }), /read/u);
   assert.throws(() => brainEnv({ name: "bad", filesystem: { home: "read" } }), /Unrecognized/u);
+});
+
+for (const strict of [false, true]) {
+  test(`Tool input schemas describe accepted ${strict ? "strict" : "ordinary"} inputs before parsing`, async () => {
+    let called = 0;
+    const shape = { text: z.string().transform(value => value.toUpperCase()), limit: z.number().default(10) };
+    const input = strict ? z.strictObject(shape) : z.object(shape);
+    const lookup = tool({ name: "lookup", description: "Look up values.", input,
+      output: z.object({ text: z.string(), limit: z.number().default(10) }),
+      run: value => { called++; return value; },
+    })({ env: hostEnv({ name: "app" }) });
+    const source = inspectTool(lookup);
+    assert.deepEqual(source.definition.inputSchema.required, ["text"]);
+    assert.equal(source.definition.inputSchema.properties.text.type, "string");
+    assert.equal(source.definition.inputSchema.additionalProperties, strict ? false : undefined);
+    assert.deepEqual(source.definition.outputSchema.required, ["text", "limit"]);
+    const registry = new HostToolRegistry();
+    registry.register("app", source.contract, source.handler);
+    const invoke = arguments_ => registry.run({ sessionId: "session", environment: "app", sequence: 1,
+      name: "lookup", arguments: arguments_, deadline_ms: 1_000, emit: async () => 1,
+    });
+    assert.deepEqual(await invoke({ text: "cyan" }), { status: "ok", value: { text: "CYAN", limit: 10 } });
+    assert.equal((await invoke({})).error.code, "invalid_input");
+    assert.equal(called, 1);
+    const extra = await invoke({ text: "blue", extra: true });
+    if (strict) assert.equal(extra.error.code, "invalid_input");
+    else assert.deepEqual(extra, { status: "ok", value: { text: "BLUE", limit: 10 } });
+  });
+}
+
+test("unrepresentable Tool schemas fail during authoring", () => {
+  assert.throws(() => tool({ name: "date", description: "Date.", input: z.object({ date: z.date() }), run: () => null }), /Date/u);
 });

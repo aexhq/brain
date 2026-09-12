@@ -55,27 +55,30 @@ const brain = new Brain({
   baseUrl: "http://127.0.0.1:8080",
   token: "quickstart",
 });
-const session = await brain.sessions.create({
-  model: {
-    provider: "openai",
-    name: "gpt-5-mini",
-    apiKey: process.env.OPENAI_API_KEY,
-  },
-  agentloop: pi({ env: brainEnv({ name: "brain" }) }),
-  tools: [lookupOrder({ env: hostEnv({ name: "app" }) })],
-});
+try {
+  const session = await brain.sessions.create({
+    model: {
+      provider: "openai",
+      name: "gpt-5-mini",
+      apiKey: process.env.OPENAI_API_KEY,
+    },
+    agentloop: pi({ env: brainEnv({ name: "brain" }) }),
+    tools: [lookupOrder({ env: hostEnv({ name: "app" }) })],
+  });
 
-await session.send("Where is order A-1001?");
-for await (const event of session.events()) {
-  console.log(event.sequence, event.type, event.data);
+  await session.send("Where is order A-1001?");
+  for await (const event of session.events()) {
+    console.log(event.sequence, event.type, event.data);
+  }
+
+  await session.end();
+  await session.delete();
+} finally {
+  await brain.close();
 }
-
-await session.end();
-await session.delete();
-process.exit(0);
 ```
 
-The SDK registers this process as a host and keeps its command connection open. Brain commits
+The SDK registers this process as a host and keeps its command connection open until `brain.close()`. Brain commits
 `tool_call_started` before sending the command. `ctx.emit` appends an extension event to the same
 journal before its promise resolves, and the Tool result is committed before the Agentloop receives
 it. Brain sends each effect once; it does not retry a Tool when the outcome is uncertain.

@@ -25,12 +25,13 @@ export class HostPump {
   }
 
   register(sessionId: string, registry: HostToolRegistry): void {
+    this.controller.signal.throwIfAborted();
     // Replayed creation must retain the registry that owns any in-flight calls.
     if (this.sessions.has(sessionId)) return;
     this.sessions.set(sessionId, registry);
   }
 
-  unregister(sessionId: string): boolean {
+  unregister(sessionId: string): void {
     const registry = this.sessions.get(sessionId);
     if (registry !== undefined) {
       for (const [key, sequence] of this.inFlight) {
@@ -38,8 +39,6 @@ export class HostPump {
       }
       this.sessions.delete(sessionId);
     }
-    if (this.sessions.size === 0) this.stop();
-    return this.sessions.size === 0;
   }
 
   start(): Promise<void> {
@@ -61,6 +60,7 @@ export class HostPump {
   stop(): void {
     this.controller.abort();
     this.cancelInFlight();
+    this.sessions.clear();
   }
 
   private async run(onOpen: () => void): Promise<void> {

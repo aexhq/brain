@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { before, beforeEach, after } from "node:test";
 import { pathToFileURL } from "node:url";
-import { Brain, BrainError, agentloop, brainEnv, component, environment, inspectTool } from "@aexhq/brain";
+import { Brain, BrainError, agentloop, brainEnv, component, environment } from "@aexhq/brain";
 import { z } from "zod";
 
 export const collect = async (events) => { const result = []; for await (const event of events) result.push(event); return result; };
@@ -40,7 +40,7 @@ export function fixture({ providers = {} } = {}) {
   let upstream;
   let directory;
   let logs = "";
-  const pumps = new Set();
+  const clients = new Set();
   beforeEach(() => {
     f.modelRequests.length = 0;
     f.model = (_request, response) => reply(response);
@@ -100,7 +100,11 @@ export function fixture({ providers = {} } = {}) {
       ...extra,
     });
   }, { timeout: 60_000 });
-  f.client = (options = {}) => new Brain({ baseUrl: f.baseUrl, token: f.token, ...options });
+  f.client = (options = {}) => {
+    const client = new Brain({ baseUrl: f.baseUrl, token: f.token, ...options });
+    clients.add(client);
+    return client;
+  };
   f.start = async () => {
     child = spawn(process.env.BRAIN_TEST_SERVER, [], { env: {
       ...process.env,
@@ -128,15 +132,17 @@ export function fixture({ providers = {} } = {}) {
   };
   f.create = async (t, extra = {}, client = f.brain, operation) => {
     const session = await client.sessions.create(f.options(extra), operation);
-    if (extra.tools?.some((tool) => inspectTool(tool).handler !== undefined)) pumps.add((await client.register()).pump);
     t.after(async () => {
-      try { await session.end(); await session.delete(); } catch (error) { if (!failure(404)(error)) throw error; }
+      try {
+        const retained = await f.brain.sessions.get(session.id);
+        await retained.end();
+        await retained.delete();
+      } catch (error) { if (!failure(404)(error)) throw error; }
     }, { timeout: 10_000 });
     return session;
   };
   after(async () => {
-    for (const pump of pumps) pump.stop();
-    await Promise.all([...pumps].map((pump) => pump.closed));
+    await Promise.all([...clients].map((client) => client.close()));
     await f.stop();
     if (upstream) {
       upstream.closeAllConnections();
