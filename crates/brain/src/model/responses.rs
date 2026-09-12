@@ -32,13 +32,14 @@ pub fn body(model: &str, tools: &[ToolDefinition], request: &ModelRequest) -> Re
             input.push(match block {
                 ContentBlock::Text { text } => json!({"role": role, "content": text}),
                 ContentBlock::Image { url } => {
-                    super::validate_image(url)?;
-                    json!({"role": role, "content": [{"type": "input_image", "image_url": url}]})
+                    json!({"role": role, "content": [media("input_image", "image_url", url)?]})
                 }
+                ContentBlock::File { url, .. } => json!({"role": role, "content": [media("input_file", "file_url", url)?]}),
                 ContentBlock::Native { format, data } => {
                     if format != FORMAT || !matches!(data["type"].as_str(), Some("reasoning" | "compaction" | "message" | "function_call" | "function_call_output")) {
                         return Err(Error::InvalidState("unsupported Responses continuation item".into()));
                     }
+                    validate_native_media(data)?;
                     data.clone()
                 }
                 ContentBlock::ToolUse { id, name, input } if message.role == Role::Assistant => json!({"type": "function_call", "call_id": id, "name": name, "arguments": input.to_string()}),
@@ -47,9 +48,8 @@ pub fn body(model: &str, tools: &[ToolDefinition], request: &ModelRequest) -> Re
                     let text = if *is_error { format!("ERROR: {text}") } else { text };
                     let output = if media.is_empty() { json!(text) } else {
                         let mut parts = vec![json!({"type": "input_text", "text": text})];
-                        for brain_protocol::Media::Image { url } in media {
-                            super::validate_image(url)?;
-                            parts.push(json!({"type": "input_image", "image_url": url}));
+                        for item in media {
+                            parts.push(render_media(item)?);
                         }
                         json!(parts)
                     };
@@ -97,7 +97,57 @@ pub fn body(model: &str, tools: &[ToolDefinition], request: &ModelRequest) -> Re
     Ok(body)
 }
 
+fn media(kind: &str, field: &str, url: &str) -> Result<Value, Error> {
+    super::validate_media(url)?;
+    Ok(json!({"type": kind, field: url}))
+}
+
+fn render_media(item: &brain_protocol::Media) -> Result<Value, Error> {
+    match item {
+        brain_protocol::Media::Image { url } => media("input_image", "image_url", url),
+        brain_protocol::Media::File { url, .. } => media("input_file", "file_url", url),
+    }
+}
+
+fn validate_native_media(item: &Value) -> Result<(), Error> {
+    let parts = match item["type"].as_str() {
+        Some("message") => &item["content"],
+        Some("function_call_output") => &item["output"],
+        _ => return Ok(()),
+    };
+    if let Some(parts) = parts.as_array() {
+        for part in parts {
+            let field = match part["type"].as_str() {
+                Some("input_image") => "image_url",
+                Some("input_file") => "file_url",
+                Some("input_text" | "output_text" | "refusal") => continue,
+                _ => {
+                    return Err(Error::InvalidState(
+                        "unsupported Responses native content".into(),
+                    ));
+                }
+            };
+            if part.get("file_data").is_some() || part.get("file_id").is_some() {
+                return Err(Error::InvalidState(
+                    "native media requires an HTTPS URL".into(),
+                ));
+            }
+            super::validate_media(part[field].as_str().ok_or_else(|| {
+                Error::InvalidState("native media requires an HTTPS URL".into())
+            })?)?;
+        }
+    } else if !parts.is_string() {
+        return Err(Error::InvalidState(
+            "invalid Responses native content".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn decode(data: &str) -> Result<Vec<ModelStreamEvent>, Error> {
+    if data == "[DONE]" {
+        return Ok(Vec::new());
+    }
     let value: Value = serde_json::from_str(data).map_err(|e| Error::Ambiguous(e.to_string()))?;
     let index = value["output_index"].as_u64().unwrap_or(0) as usize;
     match value["type"].as_str() {

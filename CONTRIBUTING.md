@@ -36,6 +36,14 @@ recovery on pull requests affecting Rust, the SDK, examples, or integration fixt
 diff; ordinary prose changes skip builds, while the generated configuration reference still runs
 contract verification. Pushes to `main` run the full suite.
 
+Before promotion, run `media-integration.yml` on the exact candidate commit. Its protected
+`media-integration` environment needs `OPENAI_API_KEY`, `VERCEL_AI_GATEWAY_API_KEY` and
+`ANTHROPIC_API_KEY`. The probe uses the committed visual image/PDF fixtures to verify user media,
+Tool-result files, continuation and Responses compaction. Missing credentials fail the check;
+promotion requires a successful run for the same commit. For a local probe, run
+`cargo run --locked -p brain --example media-probe -- --help` for the required environment variables
+and supply accessible HTTPS URLs for the two fixtures. Keep secrets out of shell arguments and logs.
+
 ## The Rust types are the source of the contracts
 
 The wire is defined once, as the types in [`crates/brain-protocol`](crates/brain-protocol) and the

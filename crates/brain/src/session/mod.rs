@@ -115,6 +115,11 @@ impl Session {
     }
 
     pub fn validate_message(request: &MessageRequest) -> Result<(), Error> {
+        for media in &request.input.media {
+            media
+                .validate()
+                .map_err(|message| Error::InvalidState(message.into()))?;
+        }
         if request.input.message.is_empty() {
             return Err(Error::InvalidState("message cannot be empty".into()));
         }

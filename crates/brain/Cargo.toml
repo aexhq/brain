@@ -8,7 +8,6 @@ description = "Durable in-process session runtime for Brain"
 publish = false
 
 [dependencies]
-base64 = { workspace = true }
 jsonschema = { workspace = true }
 brain-protocol = { workspace = true }
 brain-telemetry = { workspace = true }

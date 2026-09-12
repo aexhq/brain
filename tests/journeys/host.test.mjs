@@ -17,7 +17,7 @@ test("cancelling a parent reaches an owned child turn through the host Tool sign
     finally { finished.resolve(); }
   } });
   f.model = (request, response) => {
-    if (JSON.stringify(request.messages).includes("child task")) { entered.resolve(); return; }
+    if (JSON.stringify(request.input).includes("child task")) { entered.resolve(); return; }
     callTools(response, [{ name: "delegate", input: {} }]);
   };
   const parent = await f.create(t, { tools: [delegate({ env: hostEnv({ name: "owner" }) })] });
@@ -33,7 +33,7 @@ test("cancelling a parent reaches an owned child turn through the host Tool sign
   assert.ok(events.some((event) => event.type === "model_call_failed" && event.data.ambiguous));
 });
 const app = hostEnv({ name: "app" });
-const dispatch = (name, input) => (request, response) => request.messages.at(-1).role === "tool"
+const dispatch = (name, input) => (request, response) => request.input.at(-1).type === "function_call_output"
   ? reply(response) : callTools(response, [{ name, input }]);
 
 test("the Tool outcome example returns structured failure despite its successful output schema", { timeout: 30_000 }, async t => {
@@ -44,10 +44,10 @@ test("the Tool outcome example returns structured failure despite its successful
   const result = events.find(event => event.type === "tool_call_ended").data.result;
   assert.equal(result.is_error, true);
   assert.deepEqual(result.output, { code: "not_found", message: "Record not found", retryable: false, details: { id: "missing" } });
-  assert.equal(f.modelRequests.at(-1).messages.at(-1).content, `ERROR: ${JSON.stringify(result.output)}`);
+  assert.equal(f.modelRequests.at(-1).input.at(-1).output, `ERROR: ${JSON.stringify(result.output)}`);
   f.model = dispatch("lookup_record", { id: "1" });
   await session.send("find Ada");
-  assert.match(f.modelRequests.at(-1).messages.at(-1).content, /Ada/u);
+  assert.match(f.modelRequests.at(-1).input.at(-1).output, /Ada/u);
 });
 
 for (const outcome of [{ status: "timeout" }, { status: "cancelled" }, { status: "unknown", message: "Remote result lost" }]) {
@@ -64,7 +64,7 @@ for (const outcome of [{ status: "timeout" }, { status: "cancelled" }, { status:
     assert.equal(ended[0].data.result.output.code, outcome.status);
     assert.equal(events.some(event => event.type === "environment_unreachable"), false);
     assert.equal(calls, 1);
-    assert.match(f.modelRequests.at(-1).messages.at(-1).content, new RegExp(outcome.status));
+    assert.match(f.modelRequests.at(-1).input.at(-1).output, new RegExp(outcome.status));
   });
 }
 
@@ -126,7 +126,7 @@ test("a tool this process holds receives validated options and commits progress 
   await replay.return();
   assert.equal(contexts[0].sequence, started.sequence, "the call is named by its started record");
   assert.ok(events.find(({ type }) => type === "lookup_progress").sequence < events.find(({ type }) => type === "tool_call_ended").sequence);
-  assert.ok(JSON.stringify(f.modelRequests.at(-1).messages).includes("item-42"));
+  assert.ok(JSON.stringify(f.modelRequests.at(-1).input).includes("item-42"));
 });
 
 for (const mode of ["input", "output", "throw"]) {
@@ -143,7 +143,7 @@ for (const mode of ["input", "output", "throw"]) {
     await session.send("lookup");
     assert.equal(calls, mode === "input" ? 0 : 1);
     const expected = mode === "throw" ? "tool_error" : `invalid_${mode}`;
-    assert.ok(JSON.stringify(f.modelRequests.at(-1).messages).includes(expected));
+    assert.ok(JSON.stringify(f.modelRequests.at(-1).input).includes(expected));
     assert.equal(f.modelRequests.length, 2);
   });
 }
@@ -165,7 +165,7 @@ test("saved host credentials reattach a tool after its connection is closed", { 
   assert.deepEqual(await restored.credentials(), credentials);
   f.model = dispatch("lookup", {});
   await session.send("after reconnect");
-  assert.ok(JSON.stringify(f.modelRequests.at(-1).messages).includes("restored"));
+  assert.ok(JSON.stringify(f.modelRequests.at(-1).input).includes("restored"));
   await session.end();
 });
 

@@ -116,7 +116,7 @@ rising.
 Every session-kernel subject that can accept them is wired to the same two, which is what
 makes those subjects comparable at all:
 
-- a **scripted provider**, an OpenAI-compatible `/chat/completions` that answers instantly
+- a **scripted provider**, with `/responses` for Brain and `/chat/completions` for other subjects, that answers instantly
   with a fixed-length reply, so no model latency reaches any number;
 - an **echo environment** speaking the remote environment contract, so a tool-dispatch
   number is the kernel's dispatch and journal cost and nothing else.

@@ -8,8 +8,8 @@
 //! - `generated/contract/providers/v1/providers.json`, the known-provider list the SDK
 //!   renders its `KnownProviderId` union from.
 //!
-//! Admission: a provider is included iff its `npm` package is one of the SDKs whose wire
-//! shape Brain already speaks, and its base URL satisfies the same rules the transport
+//! Admission: explicit Responses endpoints and Anthropic-compatible providers whose
+//! base URL satisfies the same rules the transport
 //! enforces at startup. Rows failing the URL rules (upstream placeholders, non-loopback
 //! plain HTTP) are excluded deterministically and listed in the generated header, so a
 //! refresh stays reviewable instead of a CI fight over third-party data.
@@ -20,23 +20,11 @@ use brain::model::validate_base_url;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 
-/// npm package -> (dialect, max_tokens_field). Only SDKs whose wire shape Brain already
-/// speaks; dedicated per-provider SDKs (xai, groq, google, bedrock...) need their own
-/// dialect work before they can be admitted.
-const ADMITTED_NPM: &[(&str, &str, &str)] = &[
-    ("@ai-sdk/openai", "OpenAiChat", "MaxCompletionTokens"),
-    ("@ai-sdk/openai-compatible", "OpenAiChat", "MaxTokens"),
-    (
-        "@ai-sdk/anthropic",
-        "AnthropicMessages",
-        "MaxCompletionTokens",
-    ),
-];
-
 /// The two first-party providers models.dev lists without an endpoint.
 const BASE_URL_DEFAULTS: &[(&str, &str)] = &[
     ("openai", "https://api.openai.com/v1"),
     ("anthropic", "https://api.anthropic.com/v1"),
+    ("vercel", "https://ai-gateway.vercel.sh/v1"),
 ];
 
 /// Curated in the registry rather than the snapshot (models.dev files the gateway under
@@ -67,11 +55,10 @@ fn main() {
     keys.sort();
     for key in keys {
         let entry = &snapshot[key];
-        let Some((_, dialect, max_tokens_field)) = entry["npm"]
-            .as_str()
-            .and_then(|npm| ADMITTED_NPM.iter().find(|(admitted, ..)| *admitted == npm))
-        else {
-            continue;
+        let dialect = match key.as_str() {
+            "openai" | "vercel" => "OpenAiResponses",
+            _ if entry["npm"] == "@ai-sdk/anthropic" => "AnthropicMessages",
+            _ => continue,
         };
         let default = BASE_URL_DEFAULTS
             .iter()
@@ -119,13 +106,16 @@ fn main() {
                     _ => "None".to_owned(),
                 };
                 models.push(format!(
-                    "        CatalogModel {{ id: {}, context_window_tokens: {}, max_output_tokens: {}, tool_call: {}, structured_output: {}, reasoning: {}, cost: {} }},",
+                    "        CatalogModel {{ id: {}, context_window_tokens: {}, max_output_tokens: {}, tool_call: {}, structured_output: {}, reasoning: {}, input_modalities: {}, output_modalities: {}, attachment: {}, cost: {} }},",
                     rust_str(id),
                     rust_opt_u64(&model["limit"]["context"]),
                     rust_opt_u64(&model["limit"]["output"]),
                     rust_opt_bool(&model["tool_call"]),
                     rust_opt_bool(&model["structured_output"]),
                     rust_opt_bool(&model["reasoning"]),
+                    rust_modalities(&model["modalities"]["input"]),
+                    rust_modalities(&model["modalities"]["output"]),
+                    rust_opt_bool(&model["attachment"]),
                     cost_rust,
                 ));
             }
@@ -133,20 +123,33 @@ fn main() {
         model_count += models.len();
         let mut block = vec![
             "    CatalogProvider {".to_owned(),
-            format!("        name: {},", rust_str(key)),
+            format!(
+                "        name: {},",
+                rust_str(if key == "vercel" {
+                    "vercel-ai-gateway"
+                } else {
+                    key
+                })
+            ),
             format!("        dialect: Dialect::{dialect},"),
             format!("        base_url: {},", rust_str(base_url)),
             format!(
                 "        supports_response_format: {},",
-                *dialect == "OpenAiChat"
+                dialect == "OpenAiResponses"
             ),
-            format!("        max_tokens_field: MaxTokensField::{max_tokens_field},"),
             "        models: &[".to_owned(),
         ];
         block.extend(models);
         block.push("        ],".to_owned());
         block.push("    },".to_owned());
-        providers.push((key.clone(), block));
+        providers.push((
+            if key == "vercel" {
+                "vercel-ai-gateway".into()
+            } else {
+                key.clone()
+            },
+            block,
+        ));
     }
 
     let mut lines = vec![
@@ -160,7 +163,7 @@ fn main() {
     lines.extend(excluded.iter().map(|reason| format!("//   {reason}")));
     lines.extend([
         String::new(),
-        "use crate::model::{Dialect, MaxTokensField};".to_owned(),
+        "use crate::model::Dialect;".to_owned(),
         String::new(),
         "use super::{CatalogModel, CatalogProvider};".to_owned(),
         String::new(),
@@ -175,6 +178,33 @@ fn main() {
     );
     lines.push("];".to_owned());
     lines.push(String::new());
+    write(
+        &crate_dir.join("src/model/generated/mod.rs"),
+        r#"// Generated by brain-contract; row declarations for the vendored catalogue.
+use crate::model::Dialect;
+mod catalog;
+pub use catalog::{CATALOG, SNAPSHOT_DIGEST};
+pub struct CatalogProvider {
+    pub name: &'static str,
+    pub dialect: Dialect,
+    pub base_url: &'static str,
+    pub supports_response_format: bool,
+    pub models: &'static [CatalogModel],
+}
+pub struct CatalogModel {
+    pub id: &'static str,
+    pub context_window_tokens: Option<u64>,
+    pub max_output_tokens: Option<u64>,
+    pub tool_call: Option<bool>,
+    pub structured_output: Option<bool>,
+    pub reasoning: Option<bool>,
+    pub input_modalities: Option<&'static [&'static str]>,
+    pub output_modalities: Option<&'static [&'static str]>,
+    pub attachment: Option<bool>,
+    pub cost: Option<(f64, f64, Option<f64>, Option<f64>)>,
+}
+"#,
+    );
     write(
         &crate_dir.join("src/model/generated/catalog.rs"),
         &lines.join("\n"),
@@ -271,5 +301,19 @@ fn rust_opt_bool(value: &Value) -> String {
     match value {
         Value::Bool(flag) => format!("Some({flag})"),
         _ => "None".to_owned(),
+    }
+}
+
+fn rust_modalities(value: &Value) -> String {
+    match value.as_array() {
+        None => "None".into(),
+        Some(values) => format!(
+            "Some(&[{}])",
+            values
+                .iter()
+                .map(|value| rust_str(value.as_str().expect("modality is a string")))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }

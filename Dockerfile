@@ -5,7 +5,7 @@ COPY . .
 # change to process readiness. It is set here rather than in `[profile.release]` so
 # CI, benchmarks and local release builds keep symbolicated panic backtraces.
 ENV RUSTFLAGS="-C strip=symbols"
-RUN cargo build --locked --release -p brain-server --bin brain -p brain-env-worker --bin brain-env-worker
+RUN cargo build --locked --release -p brain-server --bin brain --bin brain-check-media-upgrade -p brain-env-worker --bin brain-env-worker
 
 FROM debian:bookworm-slim
 RUN apt-get update \
@@ -14,6 +14,7 @@ RUN apt-get update \
     && useradd --system --uid 10001 --home /var/lib/brain brain \
     && install -d -o brain -g brain /var/lib/brain
 COPY --from=build /src/target/release/brain /usr/local/bin/brain
+COPY --from=build /src/target/release/brain-check-media-upgrade /usr/local/bin/brain-check-media-upgrade
 COPY --from=build /src/target/release/brain-env-worker /usr/local/bin/brain-env-worker
 USER 10001:10001
 ENV BRAIN_DATA_DIR=/var/lib/brain \

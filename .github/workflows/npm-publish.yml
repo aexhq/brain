@@ -68,6 +68,8 @@ jobs:
           test "$(git cat-file -t "$GITHUB_REF")" = tag
           git merge-base --is-ancestor "$EXPECTED_COMMIT" origin/main
           if [[ "$OPERATION" == promote ]]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/media-integration.yml/runs?head_sha=$EXPECTED_COMMIT&event=workflow_dispatch" \
+              --jq '.workflow_runs | any(.status == "completed" and .conclusion == "success")' | grep -x true
             [[ "$STAGE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
             test -z "$IMAGE_RUN_ID"
             stage_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$STAGE_RUN_ID")

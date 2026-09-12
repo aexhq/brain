@@ -38,7 +38,8 @@ fn render_one(message: &Message) -> Result<Value, Error> {
     for block in &message.content {
         blocks.push(match block {
             ContentBlock::Text { text } => json!({"type": "text", "text": text}),
-            ContentBlock::Image { url } => image(url)?,
+            ContentBlock::Image { url } => media("image", url)?,
+            ContentBlock::File { url, .. } => media("document", url)?,
             ContentBlock::Native { format, data } => {
                 if format != "anthropic.messages.v1" || message.role != Role::Assistant || !matches!(data["type"].as_str(), Some("thinking" | "redacted_thinking")) {
                     return Err(Error::InvalidState("unsupported Anthropic continuation item".into()));
@@ -65,7 +66,7 @@ fn render_one(message: &Message) -> Result<Value, Error> {
                     ));
                 }
                 let mut parts = vec![json!({"type": "text", "text": stringify(content)})];
-                for brain_protocol::Media::Image { url } in media { parts.push(image(url)?); }
+                for item in media { parts.push(render_media(item)?); }
                 json!({
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
@@ -86,17 +87,16 @@ fn stringify(content: &Value) -> String {
     }
 }
 
-fn image(url: &str) -> Result<Value, Error> {
-    super::validate_image(url)?;
-    let source = if let Some(data) = url.strip_prefix("data:") {
-        let (media_type, data) = data
-            .split_once(";base64,")
-            .ok_or_else(|| Error::InvalidState("image data URL must contain base64".into()))?;
-        json!({"type": "base64", "media_type": media_type, "data": data})
-    } else {
-        json!({"type": "url", "url": url})
-    };
-    Ok(json!({"type": "image", "source": source}))
+fn media(kind: &str, url: &str) -> Result<Value, Error> {
+    super::validate_media(url)?;
+    Ok(json!({"type": kind, "source": {"type": "url", "url": url}}))
+}
+
+fn render_media(item: &brain_protocol::Media) -> Result<Value, Error> {
+    match item {
+        brain_protocol::Media::Image { url } => media("image", url),
+        brain_protocol::Media::File { url, .. } => media("document", url),
+    }
 }
 
 pub fn body(model: &str, tools: &[ToolDefinition], request: &ModelRequest) -> Result<Value, Error> {

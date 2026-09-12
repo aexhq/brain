@@ -69,7 +69,7 @@ test("event iteration crosses a full page without omissions or duplicate progres
     for (let i = 0; i < 120; i++) await context.emit("journey_progress", { i: next++ });
     return "done";
   } });
-  f.model = (request, response) => request.messages.at(-1).role === "tool"
+  f.model = (request, response) => request.input.at(-1).type === "function_call_output"
     ? reply(response) : callTools(response, [{ name: "progress", input: {} }]);
   const session = await f.create(t, { tools: [progress({ env: hostEnv({ name: "app" }) })] });
   for (let turn = 0; turn < 9; turn++) await session.send(`progress batch ${turn}`);

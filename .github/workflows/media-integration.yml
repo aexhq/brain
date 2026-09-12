@@ -1,0 +1,39 @@
+name: native media integration
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  provider:
+    environment: media-integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - provider: openai
+            model: gpt-5-mini
+            key: OPENAI_API_KEY
+            compaction: true
+          - provider: vercel-ai-gateway
+            model: openai/gpt-5-mini
+            key: VERCEL_AI_GATEWAY_API_KEY
+            compaction: true
+          - provider: anthropic
+            model: claude-sonnet-4-5
+            key: ANTHROPIC_API_KEY
+            compaction: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Prove native image, PDF, Tool-result media and continuation
+        env:
+          BRAIN_MEDIA_PROVIDER: ${{ matrix.provider }}
+          BRAIN_MEDIA_MODEL: ${{ matrix.model }}
+          BRAIN_MEDIA_API_KEY: ${{ secrets[matrix.key] }}
+          BRAIN_MEDIA_COMPACTION: ${{ matrix.compaction }}
+          BRAIN_MEDIA_IMAGE_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/tests/fixtures/media/diagram.png
+          BRAIN_MEDIA_PDF_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/tests/fixtures/media/diagram.pdf
+        run: cargo run --locked -p brain --example media-probe

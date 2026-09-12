@@ -40,7 +40,7 @@ impl Guest for Reference {
         let tools: Vec<brain_protocol::ActivationTool> = decode(&input.tools_json)?;
         let input: brain_protocol::UserInput = decode(&input.input_json)?;
         let mut message = Message::user_text(input.message);
-        for brain_protocol::Media::Image { url } in input.media { message.content.push(ContentBlock::Image { url }); }
+        message.content.extend(input.media.into_iter().map(ContentBlock::from));
         transcript.push(message);
         loop {
             brain::agentloop::host::set_transcript(&encode(&transcript)?)?;

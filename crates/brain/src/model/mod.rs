@@ -6,10 +6,11 @@ use brain_protocol::{
 mod accumulator;
 mod anthropic;
 #[cfg(test)]
+mod catalog_tests;
+#[cfg(test)]
 mod continuation_tests;
 mod generated;
 mod http;
-mod openai;
 mod registry;
 mod responses;
 mod sse;
@@ -21,7 +22,7 @@ pub use accumulator::Accumulator;
 pub use generated::{CATALOG, SNAPSHOT_DIGEST};
 pub use http::{ModelTransport, RemoteModelClient, RemoteModelConfig, validate_base_url};
 pub use registry::{
-    Dialect, MaxTokensField, ModelCost, ModelDef, ProviderDef, ProviderRegistry, valid_model_name,
+    Dialect, ModelCost, ModelDef, ProviderDef, ProviderRegistry, valid_model_name,
     valid_provider_name,
 };
 
@@ -43,32 +44,28 @@ fn options(
     Ok(())
 }
 
-fn validate_image(url: &str) -> Result<(), Error> {
-    if let Some(data) = url.strip_prefix("data:image/") {
-        use base64::Engine as _;
-        let (kind, encoded) = data
-            .split_once(";base64,")
-            .ok_or_else(|| Error::InvalidState("image data URL must contain base64".into()))?;
-        if !matches!(kind, "png" | "jpeg" | "gif" | "webp")
-            || base64::engine::general_purpose::STANDARD
-                .decode(encoded)
-                .is_err()
-        {
-            return Err(Error::InvalidState("invalid image data URL".into()));
-        }
-    } else {
-        let parsed =
-            reqwest::Url::parse(url).map_err(|error| Error::InvalidState(error.to_string()))?;
-        if parsed.scheme() != "https"
-            || !parsed.username().is_empty()
-            || parsed.password().is_some()
-        {
-            return Err(Error::InvalidState(
-                "image URL must use HTTPS without credentials".into(),
-            ));
-        }
+fn validate_media(url: &str) -> Result<(), Error> {
+    brain_protocol::validate_media_url(url).map_err(|message| Error::InvalidState(message.into()))
+}
+
+/// Uses the actual adapter encoder to check retained context without dispatching a model call.
+pub fn validate_context(
+    dialect: Dialect,
+    messages: Vec<brain_protocol::Message>,
+) -> Result<(), Error> {
+    let request = ModelRequest {
+        messages,
+        system: None,
+        tools: None,
+        response_format: None,
+        max_output_tokens: None,
+        options: Default::default(),
+    };
+    match dialect {
+        Dialect::OpenAiResponses => responses::body("check", &[], &request),
+        Dialect::AnthropicMessages => anthropic::body("check", &[], &request),
     }
-    Ok(())
+    .map(|_| ())
 }
 
 #[async_trait]

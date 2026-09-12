@@ -37,8 +37,10 @@ Model calls record their actual request and result without changing the saved co
 auxiliary classification or summary request cannot replace it accidentally. Save the selected
 conversation explicitly. Neither guest memory nor an unsubmitted local mutation survives activation.
 
-Keep native model blocks unchanged when retaining their context. Common image blocks and
-Tool-result media carry actual model image input; arbitrary image-shaped Tool JSON does not.
+Keep native model blocks unchanged when retaining their context. Common image/PDF blocks and
+Tool-result media supply native model inputs through HTTPS URLs. The loop selects media from Tool
+output and preserves required media blocks in auxiliary summarization requests. URL text alone does
+not supply visual content. Brain does not host or refresh these files.
 See [Model](/brain/docs/concepts/model) for adapter compatibility and format reset.
 
 ## Place the Component

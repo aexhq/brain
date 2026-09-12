@@ -133,6 +133,17 @@ impl State {
 }
 
 impl LocalSessionStore {
+    /// Visits every retained record without checkpoints, repairs, or writes. The caller
+    /// must stop the writer and hold the data-directory lock for a consistent inspection.
+    pub fn inspect(
+        directory: &Path,
+        mut visit: impl FnMut(&str, serde_json::Value) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        SegmentLog::inspect(&directory.join(JOURNAL_DIR), |frame| {
+            visit(frame.kind, frame.payload()?)
+        })
+    }
+
     /// Creates the session directory. The caller's first append is its configuration.
     pub fn create(
         directory: &Path,

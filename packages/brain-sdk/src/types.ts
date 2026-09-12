@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import type { EventOrigin, Outcome as WireOutcome } from "./generated/session.js";
+import type { EventOrigin, Outcome as WireOutcome, Media as WireMedia } from "./generated/session.js";
 
 declare const componentBrand: unique symbol;
 declare const agentloopBrand: unique symbol;
@@ -78,7 +78,7 @@ export interface ModelResponse {
   readonly usage: ModelUsage;
 }
 
-export type Media = { readonly type: "image"; readonly url: string };
+export type Media = Readonly<WireMedia>;
 export interface UserInput { readonly message: string; readonly media?: readonly Media[] }
 
 export interface CreateSessionOptions {

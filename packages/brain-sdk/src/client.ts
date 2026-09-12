@@ -68,8 +68,13 @@ export class BrainClient {
     return new BrainClient({ baseUrl: this.baseUrl, token, timeoutMs: this.timeoutMs, fetch: this.transport });
   }
 
-  async request<T>(method: string, path: string, body?: unknown, idempotencyKey?: string, contentType = "application/json", signal?: AbortSignal): Promise<T> {
-    const headers = new Headers({ accept: "application/json" });
+  async models(provider?: string): Promise<import("./generated/session.js").ModelList> {
+    return this.request("GET", `/v1/models${provider === undefined ? "" : `?provider=${encodeURIComponent(provider)}`}`);
+  }
+
+  async request<T>(method: string, path: string, body?: unknown, idempotencyKey?: string, contentType = "application/json", signal?: AbortSignal, extraHeaders?: HeadersInit): Promise<T> {
+    const headers = new Headers(extraHeaders);
+    headers.set("accept", "application/json");
     if (body !== undefined) headers.set("content-type", contentType);
     if (this.token !== undefined) headers.set("authorization", `Bearer ${this.token}`);
     if (idempotencyKey !== undefined) headers.set("idempotency-key", idempotencyKey);

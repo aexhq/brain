@@ -71,10 +71,24 @@ components:
             const: image
             type: string
           url:
-            description: HTTPS URL or an image data URL, rendered by the fixed model adapter.
+            description: HTTPS URL fetched by the model provider.
             type: string
         required:
         - type
+        - url
+        type: object
+      - additionalProperties: false
+        properties:
+          media_type:
+            $ref: '#/components/schemas/FileMediaType'
+          type:
+            const: file
+            type: string
+          url:
+            type: string
+        required:
+        - type
+        - media_type
         - url
         type: object
       - additionalProperties: false
@@ -182,6 +196,11 @@ components:
       - tools
       - environments
       type: object
+    Dialect:
+      enum:
+      - openai_responses
+      - anthropic_messages
+      type: string
     Environment:
       description: |-
         One Environment a session declares: a name unique within the session, how Brain
@@ -355,6 +374,10 @@ components:
       - token
       - methods
       type: object
+    FileMediaType:
+      enum:
+      - application/pdf
+      type: string
     HostCommand:
       properties:
         deadline_at_ms:
@@ -491,6 +514,20 @@ components:
         - type
         - url
         type: object
+      - additionalProperties: false
+        properties:
+          media_type:
+            $ref: '#/components/schemas/FileMediaType'
+          type:
+            const: file
+            type: string
+          url:
+            type: string
+        required:
+        - type
+        - media_type
+        - url
+        type: object
     Message:
       additionalProperties: false
       properties:
@@ -511,6 +548,105 @@ components:
           $ref: '#/components/schemas/UserInput'
       required:
       - input
+      type: object
+    ModelCost:
+      additionalProperties: false
+      description: USD per million tokens.
+      properties:
+        cache_read:
+          default: null
+          format: double
+          type: number
+        cache_write:
+          default: null
+          format: double
+          type: number
+        input:
+          format: double
+          type: number
+        output:
+          format: double
+          type: number
+      required:
+      - input
+      - output
+      type: object
+    ModelDef:
+      additionalProperties: false
+      properties:
+        attachment:
+          default: null
+          type: boolean
+        context_window_tokens:
+          default: null
+          format: uint64
+          minimum: 0
+          type: integer
+        cost:
+          $ref: '#/components/schemas/ModelCost'
+          default: null
+        id:
+          type: string
+        input_modalities:
+          default: null
+          items:
+            type: string
+          type: array
+        max_output_tokens:
+          default: null
+          format: uint64
+          minimum: 0
+          type: integer
+        output_modalities:
+          default: null
+          items:
+            type: string
+          type: array
+        reasoning:
+          default: null
+          type: boolean
+        structured_output:
+          default: null
+          type: boolean
+        tool_call:
+          default: null
+          type: boolean
+      required:
+      - id
+      type: object
+    ModelList:
+      additionalProperties: false
+      properties:
+        providers:
+          items:
+            $ref: '#/components/schemas/ModelProvider'
+          type: array
+        snapshot_digest:
+          type: string
+      required:
+      - snapshot_digest
+      - providers
+      type: object
+    ModelProvider:
+      additionalProperties: false
+      properties:
+        dialect:
+          $ref: '#/components/schemas/Dialect'
+        id:
+          type: string
+        media_inputs:
+          items:
+            type: string
+          type: array
+        models:
+          items:
+            $ref: '#/components/schemas/ModelDef'
+          type: array
+      required:
+      - id
+      - dialect
+      - media_inputs
+      - models
       type: object
     ModelRequest:
       additionalProperties: false
@@ -1036,6 +1172,29 @@ paths:
       responses:
         '204':
           description: Host command result accepted
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/models:
+    get:
+      operationId: listModels
+      parameters:
+      - description: Provider identifier
+        in: query
+        name: provider
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelList'
+          description: Configured model metadata
         default:
           content:
             application/json:

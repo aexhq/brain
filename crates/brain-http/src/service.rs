@@ -70,6 +70,10 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
         &self,
         session_id: SessionId,
     ) -> Result<brain_protocol::SessionTranscript, ApiError>;
+    async fn list_models(
+        &self,
+        provider: Option<String>,
+    ) -> Result<brain_protocol::ModelList, ApiError>;
     async fn list_sessions(&self) -> Result<SessionList, ApiError>;
     async fn send_message(
         &self,

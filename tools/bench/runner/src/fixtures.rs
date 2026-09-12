@@ -117,11 +117,6 @@ struct ProviderState {
     inter_token_delay: Duration,
 }
 
-/// An OpenAI-compatible `/chat/completions` endpoint that answers instantly.
-///
-/// It streams the same shape a gateway does — content deltas, then a terminal frame with
-/// `finish_reason` and usage, then `[DONE]` — because the subject's SSE decoding is part
-/// of what is being measured and a shortcut here would flatter it.
 /// The prompt that makes the scripted provider answer with a tool call instead of text,
 /// so one fixture serves both the turn probes and the dispatch probe.
 pub const TOOL_PROMPT: &str = "bench-tool";
@@ -168,6 +163,7 @@ pub async fn scripted_provider_paced(
 
     let app = Router::new()
         .route("/v1/chat/completions", post(completions))
+        .route("/v1/responses", post(completions))
         // Part of being an OpenAI-compatible endpoint, and not optional: a subject that
         // discovers models rather than being told one asks here first. Letta called it,
         // got a 404, and refused every agent with "must be one of []" — which reads as a
@@ -239,6 +235,7 @@ async fn completions(
     request: axum::extract::Request,
 ) -> impl IntoResponse {
     let arrived = Instant::now();
+    let responses = request.uri().path() == "/v1/responses";
     let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
         .await
         .unwrap_or_default();
@@ -246,11 +243,11 @@ async fn completions(
     let request_bytes = bytes.len() as u64;
     let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     let messages = body
-        .get("messages")
+        .get(if responses { "input" } else { "messages" })
         .and_then(Value::as_array)
         .map(Vec::len)
         .unwrap_or(0);
-    let answer = answer(&state, body);
+    let answer = answer(&state, body, responses);
     if let Ok(mut timings) = state.timings.lock() {
         timings.push(CallTiming {
             service_ns: arrived.elapsed().as_nanos() as u64,
@@ -262,7 +259,7 @@ async fn completions(
     answer
 }
 
-fn answer(state: &ProviderState, body: Value) -> impl IntoResponse + use<> {
+fn answer(state: &ProviderState, body: Value, responses: bool) -> axum::response::Response {
     state.calls.fetch_add(1, Ordering::Relaxed);
     let model = body
         .get("model")
@@ -279,15 +276,15 @@ fn answer(state: &ProviderState, body: Value) -> impl IntoResponse + use<> {
     // blaming the environment.
     let wants_tool = body.to_string().contains(TOOL_PROMPT);
     let tool_calls: &[Value] = if wants_tool { &state.tool_calls } else { &[] };
+    if responses {
+        return responses_answer(state, &body, tool_calls);
+    }
 
     // Honoured, not assumed. The fixture answered every request with SSE whatever was
     // asked for, so a client that requested a plain completion — which is what
     // langchain-openai's `invoke` does — got event-stream frames and rejected them as an
     // unexpected response type. Brain streams and never noticed.
-    let streaming = body
-        .get("stream")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
     let id = format!("chatcmpl-bench-{}", state.calls.load(Ordering::Relaxed));
     let created = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -315,9 +312,16 @@ fn answer(state: &ProviderState, body: Value) -> impl IntoResponse + use<> {
                     .collect::<Vec<_>>(),
             })
         };
-        let finish = if tool_calls.is_empty() { "stop" } else { "tool_calls" };
+        let finish = if tool_calls.is_empty() {
+            "stop"
+        } else {
+            "tool_calls"
+        };
         return (
-            [("content-type", "application/json"), ("cache-control", "no-cache")],
+            [
+                ("content-type", "application/json"),
+                ("cache-control", "no-cache"),
+            ],
             json!({
                 "id": id,
                 "object": "chat.completion",
@@ -326,9 +330,9 @@ fn answer(state: &ProviderState, body: Value) -> impl IntoResponse + use<> {
                 "choices": [{ "index": 0, "message": message, "finish_reason": finish }],
                 "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             })
-            .to_string()
-            .into(),
-        );
+            .to_string(),
+        )
+            .into_response();
     }
 
     let mut frames = String::new();
@@ -379,7 +383,61 @@ fn answer(state: &ProviderState, body: Value) -> impl IntoResponse + use<> {
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }));
     frames.push_str("data: [DONE]\n\n");
+    stream(state, frames)
+}
 
+fn responses_answer(
+    state: &ProviderState,
+    body: &Value,
+    tool_calls: &[Value],
+) -> axum::response::Response {
+    let output: Vec<Value> = if tool_calls.is_empty() {
+        vec![
+            json!({"type":"message", "id":"msg_bench", "role":"assistant", "status":"completed",
+            "content":[{"type":"output_text", "text":state.text.as_str(), "annotations":[]}]}),
+        ]
+    } else {
+        tool_calls
+            .iter()
+            .enumerate()
+            .map(|(index, call)| {
+                json!({
+                    "type":"function_call", "id":format!("fc_{index}"),
+                    "call_id":call.get("id").cloned().unwrap_or(json!(format!("call_{index}"))),
+                    "name":call.get("name").cloned().unwrap_or(json!("echo")),
+                    "arguments":call.get("arguments").and_then(Value::as_str).unwrap_or("{}"),
+                    "status":"completed"
+                })
+            })
+            .collect()
+    };
+    let response = json!({
+        "id":format!("resp_bench_{}", state.calls.load(Ordering::Relaxed)),
+        "object":"response", "status":"completed", "model":body["model"], "output":output,
+        "usage":{"input_tokens":0, "output_tokens":0, "total_tokens":0}
+    });
+    if body["stream"] != true {
+        return Json(response).into_response();
+    }
+    let mut frames = String::new();
+    let mut push = |value: Value| {
+        frames.push_str("data: ");
+        frames.push_str(&value.to_string());
+        frames.push_str("\n\n");
+    };
+    if tool_calls.is_empty() {
+        push(
+            json!({"type":"response.output_text.delta", "output_index":0, "delta":state.text.as_str()}),
+        );
+    }
+    for (index, item) in output.iter().enumerate() {
+        push(json!({"type":"response.output_item.done", "output_index":index, "item":item}));
+    }
+    push(json!({"type":"response.completed", "response":response}));
+    stream(state, frames)
+}
+
+fn stream(state: &ProviderState, frames: String) -> axum::response::Response {
     // Paced, not dumped. Emitting every frame in one write is what a fixture does and no
     // provider does, and it makes first-token time unmeasurable for every subject at once:
     // the first token and the end of the turn leave within the same microsecond, so the gap
@@ -420,6 +478,7 @@ fn answer(state: &ProviderState, body: Value) -> impl IntoResponse + use<> {
         ],
         body,
     )
+        .into_response()
 }
 
 /// An environment that returns immediately, so a tool-dispatch number is the kernel's
@@ -504,4 +563,42 @@ async fn operations(
         "sequence": operation.get("sequence").cloned().unwrap_or(json!(0)),
         "receipt": receipt,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn both_provider_routes_stream_text_and_tools_and_record_input_lengths() {
+        let fixture = scripted_provider(
+            "answer",
+            vec![json!({"id":"call_echo", "name":"echo", "arguments":"{}"})],
+        )
+        .await
+        .unwrap();
+        let client = reqwest::Client::new();
+        for (route, field, terminal) in [
+            ("responses", "input", "response.completed"),
+            ("chat/completions", "messages", "[DONE]"),
+        ] {
+            for prompt in ["hello", TOOL_PROMPT] {
+                let response = client.post(format!("{}/{route}", fixture.base_url))
+                    .json(&json!({"model":"scripted", field:[{"role":"user", "content":prompt}], "stream":true}))
+                    .send().await.unwrap();
+                assert!(response.status().is_success());
+                assert_eq!(response.headers()["content-type"], "text/event-stream");
+                let body = response.text().await.unwrap();
+                assert!(body.contains(terminal));
+                assert!(body.contains(if prompt == TOOL_PROMPT {
+                    "call_echo"
+                } else {
+                    "answer"
+                }));
+            }
+        }
+        assert_eq!(fixture.calls(), 4);
+        assert!(fixture.timings().iter().all(|call| call.messages == 1));
+        fixture.shutdown();
+    }
 }

@@ -77,6 +77,34 @@ struct Tail {
 }
 
 impl SegmentLog {
+    pub(crate) fn inspect(
+        directory: &Path,
+        mut visit: impl FnMut(Frame<'_>) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let mut segments = fs::read_dir(directory)
+            .map_err(log_error)?
+            .map(|entry| entry.map(|entry| entry.path()).map_err(log_error))
+            .collect::<Result<Vec<_>, _>>()?;
+        segments.retain(|path| segment_id(path).is_some());
+        segments.sort_by_key(|path| segment_id(path));
+        let mut sequence = 0;
+        for path in segments {
+            let bytes = fs::read(path).map_err(log_error)?;
+            let mut offset = 0;
+            while offset < bytes.len() {
+                let (frame, length) = decode(&bytes[offset..])
+                    .ok_or_else(|| Error::Journal("unreadable retained journal".into()))?;
+                if frame.sequence != sequence + 1 {
+                    return Err(Error::Journal("retained journal has a sequence gap".into()));
+                }
+                sequence = frame.sequence;
+                visit(frame)?;
+                offset += length;
+            }
+        }
+        Ok(())
+    }
+
     /// Open or create the log at `directory`, handing every frame already on disk to
     /// `visit` in write order and stopping at a torn tail. `owner` is the queue the
     /// writer charges this log's bytes to.
@@ -467,6 +495,43 @@ mod tests {
         assert_eq!(frame.sequence, 7);
         assert_eq!(frame.kind, "model_call_ended");
         assert_eq!(frame.payload().unwrap(), body);
+    }
+
+    #[test]
+    fn inspection_reads_every_segment_and_refuses_damage_without_repair() {
+        let directory = temporary();
+        fs::create_dir_all(&directory).unwrap();
+        let first = encode(&append(1, "first", &payload("first"))).unwrap();
+        let second = encode(&append(2, "second", &payload("second"))).unwrap();
+        fs::write(segment_path(&directory, 0), &first).unwrap();
+        let path = segment_path(&directory, 1);
+        fs::write(&path, &second).unwrap();
+        let mut seen = Vec::new();
+        SegmentLog::inspect(&directory, |frame| {
+            seen.push((frame.sequence, frame.kind.to_owned(), frame.payload()?));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            seen,
+            vec![
+                (1, "first".into(), payload("first")),
+                (2, "second".into(), payload("second"))
+            ]
+        );
+        let mut corrupt = second.clone();
+        *corrupt.last_mut().unwrap() ^= 1;
+        for bytes in [
+            second[..second.len() - 1].to_vec(),
+            corrupt,
+            encode(&append(3, "gap", &payload("gap"))).unwrap(),
+        ] {
+            fs::write(&path, &bytes).unwrap();
+            assert!(SegmentLog::inspect(&directory, |_| Ok(())).is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert_eq!(fs::read(segment_path(&directory, 0)).unwrap(), first);
+        }
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

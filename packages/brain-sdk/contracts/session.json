@@ -96,12 +96,33 @@
               "type": "string"
             },
             "url": {
-              "description": "HTTPS URL or an image data URL, rendered by the fixed model adapter.",
+              "description": "HTTPS URL fetched by the model provider.",
               "type": "string"
             }
           },
           "required": [
             "type",
+            "url"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "media_type": {
+              "$ref": "#/$defs/FileMediaType"
+            },
+            "type": {
+              "const": "file",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "media_type",
             "url"
           ],
           "type": "object"
@@ -233,6 +254,13 @@
         "environments"
       ],
       "type": "object"
+    },
+    "Dialect": {
+      "enum": [
+        "openai_responses",
+        "anthropic_messages"
+      ],
+      "type": "string"
     },
     "Environment": {
       "description": "One Environment a session declares: a name unique within the session, how Brain\nreaches it, and its own configuration, which Brain carries and never reads.",
@@ -468,6 +496,12 @@
       ],
       "type": "object"
     },
+    "FileMediaType": {
+      "enum": [
+        "application/pdf"
+      ],
+      "type": "string"
+    },
     "HostCommand": {
       "properties": {
         "deadline_at_ms": {
@@ -655,6 +689,27 @@
             "url"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "media_type": {
+              "$ref": "#/$defs/FileMediaType"
+            },
+            "type": {
+              "const": "file",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "media_type",
+            "url"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -686,6 +741,142 @@
       },
       "required": [
         "input"
+      ],
+      "type": "object"
+    },
+    "ModelCost": {
+      "additionalProperties": false,
+      "description": "USD per million tokens.",
+      "properties": {
+        "cache_read": {
+          "default": null,
+          "format": "double",
+          "type": "number"
+        },
+        "cache_write": {
+          "default": null,
+          "format": "double",
+          "type": "number"
+        },
+        "input": {
+          "format": "double",
+          "type": "number"
+        },
+        "output": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "input",
+        "output"
+      ],
+      "type": "object"
+    },
+    "ModelDef": {
+      "additionalProperties": false,
+      "properties": {
+        "attachment": {
+          "default": null,
+          "type": "boolean"
+        },
+        "context_window_tokens": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cost": {
+          "$ref": "#/$defs/ModelCost",
+          "default": null
+        },
+        "id": {
+          "type": "string"
+        },
+        "input_modalities": {
+          "default": null,
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "max_output_tokens": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "output_modalities": {
+          "default": null,
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reasoning": {
+          "default": null,
+          "type": "boolean"
+        },
+        "structured_output": {
+          "default": null,
+          "type": "boolean"
+        },
+        "tool_call": {
+          "default": null,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "ModelList": {
+      "additionalProperties": false,
+      "properties": {
+        "providers": {
+          "items": {
+            "$ref": "#/$defs/ModelProvider"
+          },
+          "type": "array"
+        },
+        "snapshot_digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "snapshot_digest",
+        "providers"
+      ],
+      "type": "object"
+    },
+    "ModelProvider": {
+      "additionalProperties": false,
+      "properties": {
+        "dialect": {
+          "$ref": "#/$defs/Dialect"
+        },
+        "id": {
+          "type": "string"
+        },
+        "media_inputs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "models": {
+          "items": {
+            "$ref": "#/$defs/ModelDef"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "dialect",
+        "media_inputs",
+        "models"
       ],
       "type": "object"
     },

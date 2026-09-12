@@ -9,7 +9,7 @@ let allocations = 0;
 const east = lazyEnvironment({ allocate: async () => { allocations++; return new Map(); } });
 const west = lazyEnvironment({ allocate: async () => { allocations++; return new Map(); } });
 const f = fixture({ providers: { east: east.handle, west: west.handle } });
-const dispatch = (calls) => (request, response) => request.messages.at(-1).role === "tool" ? reply(response) : callTools(response, calls);
+const dispatch = (calls) => (request, response) => request.input.at(-1).type === "function_call_output" ? reply(response) : callTools(response, calls);
 const echo = (name) => tool({ name, description: "Echo in a provider", input: z.object({ value: z.string() }), implementation: { type: "reference_echo" } });
 
 test("compose separately configured environments and allocate only on first invocation", { timeout: 30_000 }, async (t) => {
@@ -32,8 +32,8 @@ test("compose separately configured environments and allocate only on first invo
   const setup = events.find(({ type, data }) => type === "environment_setup_started" && data.environment === "east");
   assert.deepEqual(setup.data.request.configuration, { label: "east workspace" });
   assert.equal("needs" in setup.data.request, false);
-  assert.ok(JSON.stringify(f.modelRequests.at(-1).messages).includes("east"));
-  assert.ok(JSON.stringify(f.modelRequests.at(-1).messages).includes("west"));
+  assert.ok(JSON.stringify(f.modelRequests.at(-1).input).includes("east"));
+  assert.ok(JSON.stringify(f.modelRequests.at(-1).input).includes("west"));
 });
 
 test("the environment validates its own configuration at setup", { timeout: 30_000 }, async () => {
@@ -57,7 +57,7 @@ test("caller teardown is visible without replacement allocation", { timeout: 30_
   const ended = (await collect(session.events())).filter((event) => event.type === "tool_call_ended").at(-1);
   assert.equal(ended.data.result.is_error, true);
   assert.equal(ended.data.result.output.code, "unavailable");
-  assert.ok(JSON.stringify(f.modelRequests.at(-1).messages.at(-1)).includes("unavailable"));
+  assert.ok(JSON.stringify(f.modelRequests.at(-1).input.at(-1)).includes("unavailable"));
 });
 
 test("admit a native tool and use it from a model-driven conversation", { timeout: 30_000 }, async (t) => {
@@ -67,7 +67,7 @@ test("admit a native tool and use it from a model-driven conversation", { timeou
   const session = await f.create(t, { tools: [native({ env: brainEnv({ name: "brain" }) })] });
   f.model = dispatch([{ name: "native", input: { value: "native value" } }]);
   await session.send("execute native tool");
-  assert.ok(JSON.stringify(f.modelRequests.at(-1).messages).includes("native value"));
+  assert.ok(JSON.stringify(f.modelRequests.at(-1).input).includes("native value"));
   assert.equal((await collect(session.events())).filter(({ type }) => type === "tool_progress").length, 1);
 });
 
@@ -81,9 +81,9 @@ test("native workspaces persist between turns but remain separate between sessio
   await first.send("write");
   f.model = dispatch([{ name: "workspace", input: { workspace: true } }]);
   await first.send("read again");
-  assert.ok(JSON.stringify(f.modelRequests.at(-1).messages.at(-1)).includes("private marker"));
+  assert.ok(JSON.stringify(f.modelRequests.at(-1).input.at(-1)).includes("private marker"));
   await second.send("read isolated workspace");
-  const output = JSON.stringify(f.modelRequests.at(-1).messages.at(-1));
+  const output = JSON.stringify(f.modelRequests.at(-1).input.at(-1));
   assert.ok(!output.includes("private marker"));
   assert.ok(output.includes("null"));
 });

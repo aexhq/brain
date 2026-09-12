@@ -39,9 +39,9 @@ test("initial transcript, system prompt, and response format reach the model", {
   assert.deepEqual((await session.transcript()).messages, transcript);
   await session.send({ message: "next question" });
   const request = f.modelRequests.at(-1);
-  assert.ok(JSON.stringify(request.messages).includes("Answer briefly"));
-  assert.ok(JSON.stringify(request.messages).includes("earlier context"));
-  assert.deepEqual(request.response_format, responseFormat);
+  assert.ok(request.instructions.includes("Answer briefly"));
+  assert.ok(JSON.stringify(request.input).includes("earlier context"));
+  assert.deepEqual(request.text.format, responseFormat);
   assert.equal(text((await session.transcript()).messages.at(-2)), "next question");
 });
 

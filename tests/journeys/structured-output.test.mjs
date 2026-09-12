@@ -23,14 +23,14 @@ const create = t => f.create(t, { agentloop: agentloop({ implementation: { type:
 test("prompt output corrects twice, replays keyed turns, and changes schemas on the same session", { timeout: 30_000 }, async t => {
   const answers = ["not JSON", '{"age":"wrong"}', '{"age":37}', '["Ada"]'];
   f.model = (request, response) => {
-    assert.equal(request.response_format, undefined);
+    assert.equal(request.text?.format, undefined);
     reply(response, answers.shift());
   };
   const session = await create(t);
   const options = { output: { type: z.object({ age: z.number() }) }, idempotencyKey: "structured-once" };
   assert.deepEqual(await session.send("Extract Ada's age", options), { age: 37 });
   assert.equal(f.modelRequests.length, 3);
-  assert.match(JSON.stringify(f.modelRequests[1].messages), /Validation feedback/);
+  assert.match(JSON.stringify(f.modelRequests[1].input), /Validation feedback/);
   assert.deepEqual(await session.send("Extract Ada's age", options), { age: 37 });
   assert.equal(f.modelRequests.length, 3, "idempotent correction turns do not rerun inference");
   assert.deepEqual(await session.send("List names", { output: { type: z.array(z.string()) } }), ["Ada"]);

@@ -8,7 +8,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     Error, ModelExecutor,
-    model::{Accumulator, Dialect, MaxTokensField, anthropic, openai, responses, sse::SseDecoder},
+    model::{Accumulator, Dialect, anthropic, responses, sse::SseDecoder},
 };
 
 pub struct RemoteModelConfig {
@@ -16,7 +16,6 @@ pub struct RemoteModelConfig {
     pub api_key: String,
     pub limits: crate::Limits,
     pub dialect: Dialect,
-    pub max_tokens_field: MaxTokensField,
 }
 
 /// The half of a model client that does not depend on who is calling: the validated
@@ -34,7 +33,6 @@ pub struct RemoteModelClient {
     transport: Arc<ModelTransport>,
     api_key: Zeroizing<String>,
     dialect: Dialect,
-    max_tokens_field: MaxTokensField,
 }
 
 /// The endpoint rules every provider base URL must satisfy, wherever it comes
@@ -92,12 +90,7 @@ impl RemoteModelClient {
     /// Builds a transport of its own. For a caller that makes one call, or a test.
     pub fn new(config: RemoteModelConfig) -> Result<Self, Error> {
         let transport = ModelTransport::new(&config.base_url, &config.limits)?;
-        Self::bound(
-            Arc::new(transport),
-            config.api_key,
-            config.dialect,
-            config.max_tokens_field,
-        )
+        Self::bound(Arc::new(transport), config.api_key, config.dialect)
     }
 
     /// Binds a credential to a transport the caller already holds. This is the shape a
@@ -106,7 +99,6 @@ impl RemoteModelClient {
         transport: Arc<ModelTransport>,
         api_key: String,
         dialect: Dialect,
-        max_tokens_field: MaxTokensField,
     ) -> Result<Self, Error> {
         if api_key.trim().is_empty() {
             return Err(Error::InvalidState("model API key is required".into()));
@@ -115,7 +107,6 @@ impl RemoteModelClient {
             transport,
             api_key: Zeroizing::new(api_key),
             dialect,
-            max_tokens_field,
         })
     }
 
@@ -127,9 +118,6 @@ impl RemoteModelClient {
     ) -> Result<Value, Error> {
         match self.dialect {
             Dialect::OpenAiResponses => responses::body(&binding.name, tools, request),
-            Dialect::OpenAiChat => {
-                openai::body(&binding.name, tools, request, self.max_tokens_field)
-            }
             Dialect::AnthropicMessages => anthropic::body(&binding.name, tools, request),
         }
     }
@@ -137,7 +125,6 @@ impl RemoteModelClient {
     fn decode(&self, data: &str) -> Result<Vec<ModelStreamEvent>, Error> {
         match self.dialect {
             Dialect::OpenAiResponses => responses::decode(data),
-            Dialect::OpenAiChat => openai::decode(data),
             Dialect::AnthropicMessages => anthropic::decode(data),
         }
     }
@@ -150,9 +137,11 @@ impl RemoteModelClient {
                 } else {
                     "/responses"
                 },
-                openai::headers(self.api_key.as_str()),
+                vec![(
+                    "authorization".into(),
+                    format!("Bearer {}", self.api_key.as_str()),
+                )],
             ),
-            Dialect::OpenAiChat => (openai::path(), openai::headers(self.api_key.as_str())),
             Dialect::AnthropicMessages => {
                 (anthropic::path(), anthropic::headers(self.api_key.as_str()))
             }
@@ -313,7 +302,7 @@ mod tests {
         let (observed_tx, observed_rx) = oneshot::channel();
         let observed_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(observed_tx)));
         let app = Router::new().route(
-            "/chat/completions",
+            "/responses",
             post(move |headers: HeaderMap, body: Bytes| {
                 let observed_tx = observed_tx.clone();
                 async move {
@@ -326,7 +315,7 @@ mod tests {
                         .unwrap();
                     (
                         [("content-type", "text/event-stream")],
-                        "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n",
+                        "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"hello\"}\n\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"output\":[],\"usage\":{\"input_tokens\":2,\"output_tokens\":1}}}\n\ndata: [DONE]\n\n",
                     )
                 }
             }),
@@ -339,8 +328,7 @@ mod tests {
                 max_model_secs: 2,
                 ..Default::default()
             },
-            dialect: Dialect::OpenAiChat,
-            max_tokens_field: MaxTokensField::default(),
+            dialect: Dialect::OpenAiResponses,
         })
         .unwrap();
         let mut events = Vec::new();
@@ -374,8 +362,8 @@ mod tests {
         let (headers, body) = observed_rx.await.unwrap();
         assert_eq!(headers["authorization"], "Bearer test-key");
         let body: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(body["messages"][0]["content"], "system");
-        assert_eq!(body["max_completion_tokens"], 12);
+        assert_eq!(body["instructions"], "system");
+        assert_eq!(body["max_output_tokens"], 12);
         assert!(matches!(
             &result.message.content[0],
             brain_protocol::ContentBlock::Text { text } if text == "hello"
@@ -392,8 +380,8 @@ mod tests {
                         | ModelStreamEvent::Usage { .. }
                 ))
                 .count(),
-            3,
-            "the journaled stream carries the delta, the terminal, and the trailing usage"
+            2,
+            "the journaled stream carries the text delta and terminal usage"
         );
     }
 
@@ -434,7 +422,6 @@ mod tests {
                 ..Default::default()
             },
             dialect: Dialect::AnthropicMessages,
-            max_tokens_field: MaxTokensField::default(),
         })
         .unwrap();
         let result = client
@@ -474,7 +461,7 @@ mod tests {
         let attempts = Arc::new(AtomicUsize::new(0));
         let counted = attempts.clone();
         let app = Router::new().route(
-            "/chat/completions",
+            "/responses",
             post(move || {
                 let attempts = counted.clone();
                 async move {
@@ -495,8 +482,7 @@ mod tests {
                 max_model_secs: 2,
                 ..Default::default()
             },
-            dialect: Dialect::OpenAiChat,
-            max_tokens_field: MaxTokensField::default(),
+            dialect: Dialect::OpenAiResponses,
         })
         .unwrap();
         let request = ModelRequest {
@@ -523,7 +509,7 @@ mod tests {
 
         let max_error_bytes = crate::Limits::default().max_model_error_bytes;
         let denied = Router::new().route(
-            "/chat/completions",
+            "/responses",
             post(move || async move {
                 let chunks = futures_util::stream::once(async move {
                     Ok::<_, std::io::Error>(Bytes::from(vec![b'x'; max_error_bytes + 1]))
@@ -543,8 +529,7 @@ mod tests {
                 max_model_secs: 2,
                 ..Default::default()
             },
-            dialect: Dialect::OpenAiChat,
-            max_tokens_field: MaxTokensField::default(),
+            dialect: Dialect::OpenAiResponses,
         })
         .unwrap();
         let error = client
@@ -560,11 +545,11 @@ mod tests {
     #[tokio::test]
     async fn a_stream_without_a_terminal_event_is_ambiguous() {
         let app = Router::new().route(
-            "/chat/completions",
+            "/responses",
             post(|| async {
                 (
                     [("content-type", "text/event-stream")],
-                    "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n",
+                    "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"partial\"}\n\ndata: [DONE]\n\n",
                 )
             }),
         );
@@ -576,8 +561,7 @@ mod tests {
                 max_model_secs: 2,
                 ..Default::default()
             },
-            dialect: Dialect::OpenAiChat,
-            max_tokens_field: MaxTokensField::default(),
+            dialect: Dialect::OpenAiResponses,
         })
         .unwrap();
         let error = client

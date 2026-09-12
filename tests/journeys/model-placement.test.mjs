@@ -53,5 +53,5 @@ test("model-visible selection dispatches one canonical Tool to the chosen author
   assert.equal(started.data.environment, "right");
   assert.deepEqual(started.data.invocation.input, {});
   assert.deepEqual(events.at(-1).data.result, { where: "right" });
-  assert.deepEqual(f.modelRequests[0].tools[0].function.parameters.properties.environment.enum, ["left", "right"]);
+  assert.deepEqual(f.modelRequests[0].tools[0].parameters.properties.environment.enum, ["left", "right"]);
 });
