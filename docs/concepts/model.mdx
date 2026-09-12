@@ -55,6 +55,9 @@ limits. Download/format failures become ordinary failed model effects, without a
 Tool execution still returns arbitrary JSON. The Agentloop explicitly maps selected output into
 Tool-result media. URL length is not an estimate of image or PDF model tokens.
 
+PDF processing varies by provider. If a diagram's visual content is not recognized, supply it as
+an image or a PDF containing embedded page images.
+
 ## Native continuation state
 
 `{ type: "native", format, data }` retains adapter-owned JSON in content order. Keep these blocks
