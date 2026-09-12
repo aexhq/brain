@@ -27,6 +27,13 @@ struct Api {
 
 #[async_trait]
 impl BrainApi for Api {
+    async fn list_models(&self, _: Option<String>) -> Result<brain_protocol::ModelList, ApiError> {
+        Ok(brain_protocol::ModelList {
+            snapshot_digest: "fixture".into(),
+            providers: vec![],
+        })
+    }
+
     async fn register_host(&self) -> Result<HostRegistration, ApiError> {
         Ok(HostRegistration {
             host_id: HostId::new("host_12345678901234567890"),

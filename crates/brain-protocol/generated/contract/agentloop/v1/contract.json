@@ -59,12 +59,33 @@
               "type": "string"
             },
             "url": {
-              "description": "HTTPS URL or an image data URL, rendered by the fixed model adapter.",
+              "description": "HTTPS URL fetched by the model provider.",
               "type": "string"
             }
           },
           "required": [
             "type",
+            "url"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "media_type": {
+              "$ref": "#/$defs/FileMediaType"
+            },
+            "type": {
+              "const": "file",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "media_type",
             "url"
           ],
           "type": "object"
@@ -222,6 +243,12 @@
         }
       ]
     },
+    "FileMediaType": {
+      "enum": [
+        "application/pdf"
+      ],
+      "type": "string"
+    },
     "Media": {
       "oneOf": [
         {
@@ -237,6 +264,27 @@
           },
           "required": [
             "type",
+            "url"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "media_type": {
+              "$ref": "#/$defs/FileMediaType"
+            },
+            "type": {
+              "const": "file",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "media_type",
             "url"
           ],
           "type": "object"

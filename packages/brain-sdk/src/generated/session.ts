@@ -28,8 +28,13 @@ export type ContentBlock =
   | {
       type: "image";
       /**
-       * HTTPS URL or an image data URL, rendered by the fixed model adapter.
+       * HTTPS URL fetched by the model provider.
        */
+      url: string;
+    }
+  | {
+      media_type: FileMediaType;
+      type: "file";
       url: string;
     }
   | {
@@ -62,12 +67,23 @@ export type ContentBlock =
     };
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "FileMediaType".
+ */
+export type FileMediaType = "application/pdf";
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "Media".
  */
-export type Media = {
-  type: "image";
-  url: string;
-};
+export type Media =
+  | {
+      type: "image";
+      url: string;
+    }
+  | {
+      media_type: FileMediaType;
+      type: "file";
+      url: string;
+    };
 /**
  * One Environment a session declares: a name unique within the session, how Brain
  * reaches it, and its own configuration, which Brain carries and never reads.
@@ -104,6 +120,11 @@ export type HostId = string;
  * via the `definition` "Role".
  */
 export type Role = "user" | "assistant" | "developer";
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "Dialect".
+ */
+export type Dialect = "openai_responses" | "anthropic_messages";
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "EventOrigin".
@@ -463,6 +484,61 @@ export interface MessageRequest {
 export interface UserInput {
   media?: Media[];
   message: string;
+}
+/**
+ * USD per million tokens.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ModelCost".
+ */
+export interface ModelCost {
+  cache_read?: number;
+  cache_write?: number;
+  input: number;
+  output: number;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ModelDef".
+ */
+export interface ModelDef {
+  attachment?: boolean;
+  context_window_tokens?: number;
+  cost?: ModelCost1;
+  id: string;
+  input_modalities?: string[];
+  max_output_tokens?: number;
+  output_modalities?: string[];
+  reasoning?: boolean;
+  structured_output?: boolean;
+  tool_call?: boolean;
+}
+/**
+ * USD per million tokens.
+ */
+export interface ModelCost1 {
+  cache_read?: number;
+  cache_write?: number;
+  input: number;
+  output: number;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ModelList".
+ */
+export interface ModelList {
+  providers: ModelProvider[];
+  snapshot_digest: string;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ModelProvider".
+ */
+export interface ModelProvider {
+  dialect: Dialect;
+  id: string;
+  media_inputs: string[];
+  models: ModelDef[];
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema

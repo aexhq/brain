@@ -17,26 +17,7 @@ use crate::Error;
 
 use super::generated::{CATALOG, CatalogModel, CatalogProvider};
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub enum Dialect {
-    #[serde(rename = "openai_chat")]
-    OpenAiChat,
-    #[serde(rename = "openai_responses")]
-    OpenAiResponses,
-    #[serde(rename = "anthropic_messages")]
-    AnthropicMessages,
-}
-
-/// Which wire field carries the output-token cap in the OpenAI dialect.
-/// OpenAI itself deprecated `max_tokens` for `max_completion_tokens`; most
-/// OpenAI-compatible servers only know the original field.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MaxTokensField {
-    #[default]
-    MaxCompletionTokens,
-    MaxTokens,
-}
+pub use brain_protocol::{Dialect, ModelCost, ModelDef};
 
 /// The normalized provider definition. Owned and built once at startup; the
 /// serde shape doubles as the operator's providers-file format.
@@ -54,42 +35,10 @@ pub struct ProviderDef {
     /// does not gets a typed rejection instead of a silently dropped field.
     #[serde(default = "default_true")]
     pub supports_response_format: bool,
-    #[serde(default)]
-    pub max_tokens_field: MaxTokensField,
     /// Advisory metadata for models this provider is known to serve. Admission
     /// is open: an id not listed here still passes syntactic validation.
     #[serde(default)]
     pub models: Vec<ModelDef>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModelDef {
-    pub id: String,
-    #[serde(default)]
-    pub context_window_tokens: Option<u64>,
-    #[serde(default)]
-    pub max_output_tokens: Option<u64>,
-    #[serde(default)]
-    pub tool_call: Option<bool>,
-    #[serde(default)]
-    pub structured_output: Option<bool>,
-    #[serde(default)]
-    pub reasoning: Option<bool>,
-    #[serde(default)]
-    pub cost: Option<ModelCost>,
-}
-
-/// USD per million tokens.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModelCost {
-    pub input: f64,
-    pub output: f64,
-    #[serde(default)]
-    pub cache_read: Option<f64>,
-    #[serde(default)]
-    pub cache_write: Option<f64>,
 }
 
 fn default_true() -> bool {
@@ -201,7 +150,7 @@ fn curated() -> Vec<ProviderDef> {
         base_url: base_url.into(),
         namespaced_model: false,
         supports_response_format: response_format,
-        max_tokens_field: MaxTokensField::MaxCompletionTokens,
+
         models: CATALOG
             .iter()
             .find(|row| row.name == name)
@@ -209,24 +158,22 @@ fn curated() -> Vec<ProviderDef> {
             .unwrap_or_default(),
     };
     vec![
-        plain(
-            "openai-responses",
-            Dialect::OpenAiResponses,
-            "https://api.openai.com/v1",
-            true,
-        ),
         ProviderDef {
             name: "vercel-ai-gateway".into(),
-            dialect: Dialect::OpenAiChat,
+            dialect: Dialect::OpenAiResponses,
             base_url: "https://ai-gateway.vercel.sh/v1".into(),
             namespaced_model: true,
             supports_response_format: true,
-            max_tokens_field: MaxTokensField::MaxCompletionTokens,
-            models: Vec::new(),
+
+            models: CATALOG
+                .iter()
+                .find(|row| row.name == "vercel-ai-gateway")
+                .map(|row| row.models.iter().map(ModelDef::from).collect())
+                .unwrap_or_default(),
         },
         plain(
             "openai",
-            Dialect::OpenAiChat,
+            Dialect::OpenAiResponses,
             "https://api.openai.com/v1",
             true,
         ),
@@ -247,7 +194,7 @@ impl From<&CatalogProvider> for ProviderDef {
             base_url: row.base_url.into(),
             namespaced_model: false,
             supports_response_format: row.supports_response_format,
-            max_tokens_field: row.max_tokens_field,
+
             models: row.models.iter().map(ModelDef::from).collect(),
         }
     }
@@ -262,6 +209,13 @@ impl From<&CatalogModel> for ModelDef {
             tool_call: row.tool_call,
             structured_output: row.structured_output,
             reasoning: row.reasoning,
+            input_modalities: row
+                .input_modalities
+                .map(|items| items.iter().map(|item| (*item).into()).collect()),
+            output_modalities: row
+                .output_modalities
+                .map(|items| items.iter().map(|item| (*item).into()).collect()),
+            attachment: row.attachment,
             cost: row
                 .cost
                 .map(|(input, output, cache_read, cache_write)| ModelCost {
@@ -326,11 +280,11 @@ mod tests {
     fn custom(name: &str, base_url: &str) -> ProviderDef {
         ProviderDef {
             name: name.into(),
-            dialect: Dialect::OpenAiChat,
+            dialect: Dialect::OpenAiResponses,
             base_url: base_url.into(),
             namespaced_model: false,
             supports_response_format: true,
-            max_tokens_field: MaxTokensField::MaxTokens,
+
             models: Vec::new(),
         }
     }
@@ -345,10 +299,6 @@ mod tests {
             &[],
         )
         .unwrap();
-        assert_eq!(
-            registry.get("ollama-local").unwrap().max_tokens_field,
-            MaxTokensField::MaxTokens
-        );
         assert_eq!(
             registry.get("anthropic").unwrap().base_url,
             "https://proxy.example.com/v1",
@@ -396,6 +346,9 @@ mod tests {
                 structured_output: Some(true),
                 reasoning: None,
                 cost: None,
+                input_modalities: None,
+                output_modalities: None,
+                attachment: None,
             },
             ModelDef {
                 id: "no-model".into(),
@@ -405,6 +358,9 @@ mod tests {
                 structured_output: Some(false),
                 reasoning: None,
                 cost: None,
+                input_modalities: None,
+                output_modalities: None,
+                attachment: None,
             },
         ];
         let registry = ProviderRegistry::compose(vec![def], &[]).unwrap();
@@ -424,15 +380,16 @@ mod tests {
     #[test]
     fn the_catalog_is_present_and_the_curated_pins_win() {
         let registry = ProviderRegistry::default_set();
+        assert_eq!(registry.len(), CATALOG.len());
         assert!(
-            registry.len() > 100,
-            "the generated models.dev catalog should register on the order of 150 providers, got {}",
-            registry.len()
+            registry.get("deepseek").is_none(),
+            "Chat-only endpoints are not admitted"
         );
+        assert!(registry.get("openai-responses").is_none());
+        assert!(!registry.get("vercel-ai-gateway").unwrap().models.is_empty());
         let openai = registry.get("openai").unwrap();
         assert_eq!(openai.base_url, "https://api.openai.com/v1");
-        assert_eq!(openai.max_tokens_field, MaxTokensField::MaxCompletionTokens);
-        assert_eq!(openai.dialect, Dialect::OpenAiChat);
+        assert_eq!(openai.dialect, Dialect::OpenAiResponses);
         assert!(
             !openai.models.is_empty(),
             "the curated pin should still carry the catalog's model metadata"

@@ -89,5 +89,5 @@ test("restart keeps history cold, and lost execution becomes an observation", { 
   assert.equal(f.modelRequests.length, 2);
   f.model = (_request, response) => reply(response);
   await reopened.send("continue explicitly");
-  assert.ok(JSON.stringify(f.modelRequests.at(-1).messages).includes("interrupted"));
+  assert.ok(JSON.stringify(f.modelRequests.at(-1).input).includes("interrupted"));
 });

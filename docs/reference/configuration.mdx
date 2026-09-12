@@ -20,7 +20,7 @@ its output token ceiling, is not here: Brain neither sets nor overrides it.
 | `BRAIN_ENV_SECRET_ALLOW` | `--env-secret-allow` | none | Process environment variable names the brain env may mount under `/secrets` |
 | `BRAIN_ENV_FILESYSTEM_ALLOW` | `--env-filesystem-allow` | none | Filesystem roots the brain env may grant: `scratch` or `workspace` |
 | `BRAIN_MODEL_BASE_URL` | `--model-base-url` | `https://ai-gateway.vercel.sh/v1` | Endpoint for the `vercel-ai-gateway` provider. Kept under its historic name because deploys and tests already set it |
-| `BRAIN_OPENAI_BASE_URL` | `--openai-base-url` | none | Endpoint override for the `openai` provider; also the hook for pointing that provider at any OpenAI-compatible server (Ollama, vLLM, a proxy) |
+| `BRAIN_OPENAI_BASE_URL` | `--openai-base-url` | none | Endpoint override for the `openai` Responses provider |
 | `BRAIN_ANTHROPIC_BASE_URL` | `--anthropic-base-url` | none | Endpoint override for the `anthropic` provider |
 | `BRAIN_PROVIDERS_FILE` | `--providers-file` | none | A JSON file of custom provider definitions merged over the built-in catalog: `{"providers": [{"name", "dialect", "base_url", ...}]}`, each entry in the same shape as a registry `ProviderDef`. A definition here supersedes a catalog provider of the same name |
 | `BRAIN_API_TOKEN` | `--api-token` | none | Bearer token callers must present. Required when listening beyond loopback |

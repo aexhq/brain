@@ -38,8 +38,7 @@ pub struct ServerConfig {
         default_value = "https://ai-gateway.vercel.sh/v1"
     )]
     pub model_base_url: String,
-    /// Endpoint override for the `openai` provider; also the hook for pointing
-    /// that provider at any OpenAI-compatible server (Ollama, vLLM, a proxy).
+    /// Endpoint override for the `openai` Responses provider.
     #[arg(long, env = "BRAIN_OPENAI_BASE_URL")]
     pub openai_base_url: Option<String>,
     /// Endpoint override for the `anthropic` provider.

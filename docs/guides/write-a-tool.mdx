@@ -63,6 +63,7 @@ does not inspect that value for another outcome. Other status values remain ordi
 The second `run` argument contains:
 
 - `options`: the factory options, parsed once and frozen;
+- `sessionId`: the owning session, for application operations such as attachment publication;
 - `sequence`: the journal sequence of the `tool_call_started` record, which with the session id
   names this call everywhere;
 - `deadline`: the caller-owned deadline;

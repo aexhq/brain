@@ -18,7 +18,11 @@ pub enum ContentBlock {
         text: String,
     },
     Image {
-        /// HTTPS URL or an image data URL, rendered by the fixed model adapter.
+        /// HTTPS URL fetched by the model provider.
+        url: String,
+    },
+    File {
+        media_type: FileMediaType,
         url: String,
     },
     Native {
@@ -46,7 +50,52 @@ pub enum ContentBlock {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Media {
-    Image { url: String },
+    Image {
+        url: String,
+    },
+    File {
+        media_type: FileMediaType,
+        url: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+pub enum FileMediaType {
+    #[serde(rename = "application/pdf")]
+    Pdf,
+}
+
+pub fn validate_media_url(value: &str) -> Result<(), &'static str> {
+    let url = url::Url::parse(value).map_err(|_| "invalid media URL")?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err("media URL must use HTTPS without credentials");
+    }
+    Ok(())
+}
+
+impl Media {
+    pub fn url(&self) -> &str {
+        match self {
+            Self::Image { url } | Self::File { url, .. } => url,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        validate_media_url(self.url())
+    }
+}
+
+impl From<Media> for ContentBlock {
+    fn from(media: Media) -> Self {
+        match media {
+            Media::Image { url } => Self::Image { url },
+            Media::File { media_type, url } => Self::File { media_type, url },
+        }
+    }
 }
 
 impl ContentBlock {

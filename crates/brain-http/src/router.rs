@@ -40,6 +40,7 @@ const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
         emit_host_event,
         create_session,
         list_sessions,
+        list_models,
         get_session,
         transcript,
         delete_session,
@@ -147,6 +148,7 @@ fn protected_routes<A: BrainApi>(
         documented::<__path_register_host, _, _, _>(routed, register_host::<A>),
         documented::<__path_create_session, _, _, _>(routed, create_session::<A>),
         documented::<__path_list_sessions, _, _, _>(routed, list_sessions::<A>),
+        documented::<__path_list_models, _, _, _>(routed, list_models::<A>),
         documented::<__path_get_session, _, _, _>(routed, get_session::<A>),
         documented::<__path_transcript, _, _, _>(routed, transcript::<A>),
         documented::<__path_delete_session, _, _, _>(routed, delete_session::<A>),
@@ -809,4 +811,27 @@ async fn ready<A: BrainApi>(State(api): State<A>) -> axum::http::StatusCode {
     } else {
         axum::http::StatusCode::SERVICE_UNAVAILABLE
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelQuery {
+    provider: Option<String>,
+}
+
+#[utoipa::path(
+    get, path = "/v1/models", operation_id = "listModels",
+    params(("provider" = Option<String>, Query, description = "Provider identifier")),
+    responses(
+        (status = 200, description = "Configured model metadata", body = contract::ModelList),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
+async fn list_models<A: BrainApi>(
+    State(api): State<A>,
+    Query(query): Query<ModelQuery>,
+) -> Result<Json<brain_protocol::ModelList>, HttpError> {
+    Ok(Json(
+        api.list_models(query.provider).await.map_err(HttpError)?,
+    ))
 }

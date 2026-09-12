@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use async_trait::async_trait;
 use brain::{
     ModelExecutor,
-    model::{Dialect, MaxTokensField, ModelTransport, ProviderRegistry, RemoteModelClient},
+    model::{Dialect, ModelTransport, ProviderRegistry, RemoteModelClient},
 };
 use brain_protocol::{
     EnvironmentName, ModelBinding, ModelRequest, ModelResult, ModelSelection, ModelStreamEvent,
@@ -98,7 +98,7 @@ pub struct ServerModelExecutor {
     /// part of a model call that varies by session, and a credential is a header,
     /// not a client. `reqwest` pools connect lazily, so building one per registered
     /// provider up front costs memory, not sockets.
-    transports: HashMap<String, (Dialect, MaxTokensField, Arc<ModelTransport>)>,
+    transports: HashMap<String, (Dialect, Arc<ModelTransport>)>,
 }
 
 impl ServerModelExecutor {
@@ -116,10 +116,7 @@ impl ServerModelExecutor {
         for def in providers.iter() {
             match ModelTransport::new(&def.base_url, limits) {
                 Ok(transport) => {
-                    transports.insert(
-                        def.name.clone(),
-                        (def.dialect, def.max_tokens_field, Arc::new(transport)),
-                    );
+                    transports.insert(def.name.clone(), (def.dialect, Arc::new(transport)));
                 }
                 Err(error) => {
                     tracing::warn!(provider = %def.name, %error, "skipping provider whose transport cannot be built");
@@ -157,19 +154,13 @@ impl ModelExecutor for ServerModelExecutor {
             .credentials
             .model(session)?
             .ok_or_else(|| brain::Error::Executor("model credential is unavailable".into()))?;
-        let Some((dialect, max_tokens_field, transport)) =
-            self.transports.get(credential.provider.as_str())
-        else {
+        let Some((dialect, transport)) = self.transports.get(credential.provider.as_str()) else {
             return Err(brain::Error::Executor(
                 "model provider is unsupported".into(),
             ));
         };
-        let client = RemoteModelClient::bound(
-            transport.clone(),
-            credential.api_key.to_string(),
-            *dialect,
-            *max_tokens_field,
-        )?;
+        let client =
+            RemoteModelClient::bound(transport.clone(), credential.api_key.to_string(), *dialect)?;
         client
             .execute(session, binding, request, tools, on_event)
             .await
@@ -220,7 +211,7 @@ mod tests {
             &brain::Limits::default(),
         )
         .unwrap();
-        for provider in ["vercel-ai-gateway", "openai", "anthropic", "deepseek"] {
+        for provider in ["vercel-ai-gateway", "openai", "anthropic", "minimax"] {
             assert!(
                 executor.has_transport(provider),
                 "{provider} should have a transport"
@@ -243,14 +234,14 @@ mod tests {
         let (observed_tx, observed_rx) = oneshot::channel();
         let observed_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(observed_tx)));
         let app = Router::new().route(
-            "/v1/chat/completions",
+            "/v1/responses",
             post(move |body: Bytes| {
                 let observed_tx = observed_tx.clone();
                 async move {
                     observed_tx.lock().unwrap().take().unwrap().send(body).unwrap();
                     (
                         [("content-type", "text/event-stream")],
-                        "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+                        "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"ok\"}\n\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n",
                     )
                 }
             }),
@@ -266,9 +257,8 @@ mod tests {
             format!(
                 r#"{{"providers": [{{
                     "name": "local-llm",
-                    "dialect": "openai_chat",
+                    "dialect": "openai_responses",
                     "base_url": "http://{address}/v1",
-                    "max_tokens_field": "max_tokens",
                     "models": [{{"id": "test-model", "context_window_tokens": 8192}}]
                 }}]}}"#
             ),
@@ -324,8 +314,8 @@ mod tests {
         ));
         let body: serde_json::Value = serde_json::from_slice(&observed_rx.await.unwrap()).unwrap();
         assert_eq!(
-            body["max_tokens"], 16,
-            "the file's max_tokens_field compat must reach the wire"
+            body["max_output_tokens"], 16,
+            "the selected dialect must carry the output token limit"
         );
         assert!(body.get("max_completion_tokens").is_none());
         let _ = std::fs::remove_dir_all(directory);

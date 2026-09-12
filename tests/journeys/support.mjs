@@ -17,15 +17,21 @@ export const failure = (status) => (error) => error instanceof BrainError && err
 export const text = (message) => message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
 
 export function reply(response, content = "answered") {
+  const frames = [
+    { type: "response.output_text.delta", output_index: 0, delta: content },
+    { type: "response.output_item.done", output_index: 0, item: { type: "message", content: [{ type: "output_text", text: content }] } },
+    { type: "response.completed", response: { output: [] } },
+  ];
   response.writeHead(200, { "content-type": "text/event-stream" });
-  response.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+  response.end(frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join(""));
 }
 
 export function callTools(response, calls) {
+  const output = calls.map(({ name, input }) => ({ type: "function_call", call_id: randomUUID(), name, arguments: JSON.stringify(input) }));
+  const frames = output.map((item, output_index) => ({ type: "response.output_item.done", output_index, item }));
+  frames.push({ type: "response.completed", response: { output } });
   response.writeHead(200, { "content-type": "text/event-stream" });
-  response.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: calls.map(({ name, input }, index) => ({
-    index, id: randomUUID(), type: "function", function: { name, arguments: JSON.stringify(input) },
-  })) }, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
+  response.end(frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join(""));
 }
 
 export function fixture({ providers = {} } = {}) {

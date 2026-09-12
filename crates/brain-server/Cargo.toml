@@ -16,6 +16,10 @@ path = "src/main.rs"
 name = "brain-server-contract"
 path = "src/bin/brain-server-contract.rs"
 
+[[bin]]
+name = "brain-check-media-upgrade"
+path = "src/bin/brain-check-media-upgrade.rs"
+
 [dependencies]
 brain-sessions = { workspace = true }
 brain = { workspace = true }

@@ -13,29 +13,47 @@ model: {
 }
 ```
 
-Around 185 providers ship built in, generated from the [models.dev](https://models.dev) catalog:
-providers speaking Chat Completions or Anthropic Messages. Brain also implements OpenAI Responses. The catalog is a
-snapshot vendored in the repo and refreshed manually with `tools/fetch-models-dev.mjs`, so the
-provider set is a reviewed, released artifact rather than a runtime fetch. These entries are worth
-naming:
+Brain implements OpenAI Responses and Anthropic Messages. Provider definitions and model metadata
+come from the reviewed [models.dev](https://models.dev) snapshot vendored in the repository.
+Refresh it with `tools/fetch-models-dev.mjs` and regenerate contracts with `npm run gen`.
+There is no runtime catalogue fetch.
 
 | Provider | Wire dialect | Model names | Default endpoint |
 | --- | --- | --- | --- |
-| `vercel-ai-gateway` | OpenAI Chat Completions | namespaced, `openai/gpt-5-mini` | `https://ai-gateway.vercel.sh/v1` |
-| `openai` | OpenAI Chat Completions | bare, `gpt-5-mini` | `https://api.openai.com/v1` |
-| `openai-responses` | OpenAI Responses | bare, `gpt-5-mini` | `https://api.openai.com/v1` |
+| `vercel-ai-gateway` | OpenAI Responses | namespaced, `openai/gpt-5-mini` | `https://ai-gateway.vercel.sh/v1` |
+| `openai` | OpenAI Responses | bare, `gpt-5-mini` | `https://api.openai.com/v1` |
 | `anthropic` | Anthropic Messages | bare, `claude-sonnet-4-5` | `https://api.anthropic.com/v1` |
 
-The rest -- `deepseek`, `openrouter`, `fireworks-ai`, and so on -- take bare model ids over the
-OpenAI dialect. Admission is open: a model id the catalog has not heard of still passes, so a
-day-zero model works without waiting for a snapshot refresh; the catalog's metadata (context
-windows, capabilities, cost) applies when the model is known.
+Chat Completions-only providers and the `openai-responses` alias are unsupported. Unknown model
+IDs still pass admission for an existing provider; the provider validates actual model support.
 
-Messages share text, Tool calls/results, image blocks, and user/assistant/developer roles.
+Authenticated `GET /v1/models`, or `brain.models(provider?)`, returns the composed deployment
+catalogue, its snapshot digest, input/output modalities and each adapter's supported media forms.
+Optional metadata stays unknown when absent. `attachment: true` alone does not establish PDF
+support. Catalogue metadata helps select models; it is not a guarantee that a gateway implements
+every feature. Credentials and internal endpoints are excluded.
+
+## Image and PDF inputs
+
+`UserInput.media` and model Tool-result `media` share two forms:
+`{ type: "image", url }` and `{ type: "file", media_type: "application/pdf", url }`.
+Ordered model messages may contain the same blocks alongside text and Tool calls/results.
 Anthropic rejects developer messages; supply its instructions through `system`.
-Adapters render this content at request time. User input accepts `media`, and a model Tool-result
-block may include `media`; supported images use HTTPS URLs or base64 PNG/JPEG/GIF/WebP data URLs.
-Tool execution still returns arbitrary JSON: the loop explicitly maps selected output into media.
+
+URLs must use HTTPS without embedded username/password and be reachable by the model provider.
+Brain passes the URL to Responses `input_image.image_url` / `input_file.file_url`, or an Anthropic
+URL image / document source. Brain does not fetch, host, upload, convert or refresh attachments.
+Inline data, local paths and provider file IDs are unsupported, including in known native input
+positions. Opaque signed thinking and encrypted continuation state remain unchanged.
+
+The caller owns file storage, access and lifetime. Keep the same bytes available at the same URL
+for every later turn that needs them. Expiry can cause a later model call to fail, and cannot
+retract bytes a provider has already fetched. Brain journals references and preserves them across
+restart. Request limits bound encoded JSON; providers enforce file size, page and model context
+limits. Download/format failures become ordinary failed model effects, without automatic retry.
+
+Tool execution still returns arbitrary JSON. The Agentloop explicitly maps selected output into
+Tool-result media. URL length is not an estimate of image or PDF model tokens.
 
 ## Native continuation state
 
@@ -45,7 +63,6 @@ unchanged with the messages and Tool turns they accompany. The formats currently
 | Format | Retained state |
 | --- | --- |
 | `anthropic.messages.v1` | Signed and redacted thinking blocks |
-| `openai.chat.v1` | Assistant `reasoning_content` |
 | `openai.responses.v1` | Reasoning and compaction items, including retained items returned by compaction |
 
 An incompatible adapter rejects the state. A format identifies its representation, not universal
@@ -69,7 +86,6 @@ resets it. Other provider options are per request and pass only through the sele
 
 | Dialect | Allowed option keys |
 | --- | --- |
-| Chat | `reasoning_effort`, `thinking`, `temperature`, `top_p`, `stop` |
 | Anthropic | `thinking`, `output_config`, `temperature`, `top_p`, `top_k`, `stop_sequences` |
 | Responses | `operation`, `reasoning`, `temperature`, `top_p` |
 
@@ -86,20 +102,26 @@ shape, merged over the catalog -- a definition with a catalog provider's name su
 {
   "providers": [
     {
-      "name": "ollama-local",
-      "dialect": "openai_chat",
-      "base_url": "http://127.0.0.1:11434/v1",
-      "max_tokens_field": "max_tokens",
-      "models": [{ "id": "llama3.3", "context_window_tokens": 131072 }]
+      "name": "local-responses",
+      "dialect": "openai_responses",
+      "base_url": "http://127.0.0.1:8088/v1",
+      "models": [{ "id": "local-model", "context_window_tokens": 131072 }]
     }
   ]
 }
 ```
 
-`dialect` is `openai_chat`, `openai_responses`, or `anthropic_messages`; `max_tokens_field` says whether a Chat endpoint
-takes `max_completion_tokens` (OpenAI itself) or the original `max_tokens` (most compatible
-servers). Endpoints can also be overridden per provider without a file: `BRAIN_MODEL_BASE_URL`
-(the gateway), `BRAIN_OPENAI_BASE_URL`, and `BRAIN_ANTHROPIC_BASE_URL`.
+`dialect` is `openai_responses` or `anthropic_messages`. Endpoints can also be overridden per
+provider without a file: `BRAIN_MODEL_BASE_URL` (the gateway), `BRAIN_OPENAI_BASE_URL`, and
+`BRAIN_ANTHROPIC_BASE_URL`. Overrides must implement the selected dialect.
+
+For an upgrade from the Chat/inline-media contract, stop the writer and run the candidate image's
+`brain-check-media-upgrade --data-dir PATH --from-chat`, adding `--providers-file` when used.
+It checks every retained journal, including ended and suspended sessions, without repairing or
+rewriting records. Incompatible bindings, inline media, old native Chat state and unreadable
+history stop the upgrade. Resume the previous runtime and arrange explicit migration; never
+delete retained sessions to make the check pass. Omit `--from-chat` for subsequent URL-media
+contract checks.
 
 ## Pinned for the session
 

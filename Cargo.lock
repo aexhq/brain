@@ -327,7 +327,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
- "base64 0.23.1",
  "brain-protocol",
  "brain-telemetry",
  "clap",
@@ -422,6 +421,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.20",
+ "url",
 ]
 
 [[package]]

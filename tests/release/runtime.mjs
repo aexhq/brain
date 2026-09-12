@@ -70,13 +70,15 @@ try {
   }
   modelUrl = await listen(async (_req, res, request) => {
     modelCalls++;
-    const last = request.messages.at(-1);
-    const done = last.role === "tool";
-    if (done && request.messages.slice(-2).some((m) => JSON.stringify(m).includes("unavailable"))) sawUnavailable = true;
-    const delta = done ? { content: "done" } : { tool_calls: ["first", "second"].map((name, index) => ({
-      index, id: `${name}-${modelCalls}`, type: "function", function: { name, arguments: JSON.stringify({ value: "hello" }) },
-    })) };
-    res.writeHead(200, { "content-type": "text/event-stream" }).end(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: done ? "stop" : "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
+    const done = request.input.at(-1).type === "function_call_output";
+    if (done && request.input.slice(-2).some(m => JSON.stringify(m).includes("unavailable"))) sawUnavailable = true;
+    const output = done ? [] : ["first", "second"].map(name => ({ type: "function_call", call_id: `${name}-${modelCalls}`, name, arguments: JSON.stringify({ value: "hello" }) }));
+    const frames = done ? [
+      { type: "response.output_text.delta", output_index: 0, delta: "done" },
+      { type: "response.output_item.done", output_index: 0, item: { type: "message", content: [{ type: "output_text", text: "done" }] } },
+    ] : output.map((item, output_index) => ({ type: "response.output_item.done", output_index, item }));
+    frames.push({ type: "response.completed", response: { output } });
+    res.writeHead(200, { "content-type": "text/event-stream" }).end(frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join(""));
   });
   const reservation = createServer();
   reservation.listen(0, "127.0.0.1"); await once(reservation, "listening");

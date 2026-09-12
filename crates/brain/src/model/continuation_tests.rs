@@ -41,31 +41,7 @@ fn signed_and_redacted_thinking_round_trip_in_order() {
         json!({"type":"redacted_thinking", "data":"redacted"})
     );
     assert_eq!(body["messages"][0]["content"][2]["id"], "call");
-    assert!(openai::body("test", &[], &call, MaxTokensField::default()).is_err());
-}
-
-#[test]
-fn chat_reasoning_survives_with_tool_calls() {
-    let mut accumulated = Accumulator::new(&crate::Limits::default());
-    for delta in [
-        json!({"reasoning_content":"think"}),
-        json!({"reasoning_content":" more"}),
-        json!({"tool_calls":[{"index":0,"id":"call","function":{"name":"read","arguments":"{}"}}]}),
-    ] {
-        for event in openai::decode(&json!({"choices":[{"delta":delta}]}).to_string()).unwrap() {
-            accumulated.push(event).unwrap();
-        }
-    }
-    let (message, _, _) = accumulated.finish().unwrap();
-    assert_eq!(message.tool_uses().count(), 1);
-    let body = openai::body(
-        "test",
-        &[],
-        &request(vec![message]),
-        MaxTokensField::default(),
-    )
-    .unwrap();
-    assert_eq!(body["messages"][0]["reasoning_content"], "think more");
+    assert!(responses::body("test", &[], &call).is_err());
 }
 
 #[test]
@@ -101,13 +77,10 @@ fn responses_reasoning_and_compaction_preserve_native_items() {
 
 #[test]
 fn media_reset_options_and_native_limits_are_explicit() {
-    let image = "data:image/png;base64,aGVsbG8=";
+    let image = "https://example.com/view.png";
     let messages: Vec<Message> = serde_json::from_value(json!([{"role":"user", "content":[{"type":"image","url":image},{"type":"tool_result","tool_use_id":"call","content":"image","is_error":false,"media":[{"type":"image","url":image}]}]}])).unwrap();
     let body = anthropic::body("test", &[], &request(messages.clone())).unwrap();
-    assert_eq!(
-        body["messages"][0]["content"][0]["source"]["type"],
-        "base64"
-    );
+    assert_eq!(body["messages"][0]["content"][0]["source"]["type"], "url");
     assert_eq!(
         body["messages"][0]["content"][1]["content"][1]["type"],
         "image"
@@ -133,7 +106,6 @@ fn media_reset_options_and_native_limits_are_explicit() {
         let mut call = request(vec![Message::user_text("hello")]);
         call.options.insert(field.into(), json!("forged"));
         assert!(anthropic::body("test", &[], &call).is_err());
-        assert!(openai::body("test", &[], &call, MaxTokensField::default()).is_err());
         assert!(responses::body("test", &[], &call).is_err());
     }
     let limits = crate::Limits {
@@ -159,13 +131,80 @@ fn media_reset_options_and_native_limits_are_explicit() {
 }
 
 #[test]
-fn chat_preserves_interleaved_media_and_text() {
+fn responses_preserves_interleaved_media_and_text() {
     let messages = serde_json::from_value(json!([{"role":"user","content":[
         {"type":"text","text":"before"}, {"type":"image","url":"https://example.com/view.png"}, {"type":"text","text":"after"}
     ]}])).unwrap();
-    let body = openai::body("test", &[], &request(messages), MaxTokensField::default()).unwrap();
-    let parts = &body["messages"][0]["content"];
-    assert_eq!(parts[0]["text"], "before");
-    assert_eq!(parts[1]["type"], "image_url");
-    assert_eq!(parts[2]["text"], "after");
+    let body = responses::body("test", &[], &request(messages)).unwrap();
+    let parts = &body["input"];
+    assert_eq!(parts[0]["content"], "before");
+    assert_eq!(parts[1]["content"][0]["type"], "input_image");
+    assert_eq!(parts[2]["content"], "after");
+}
+
+#[test]
+fn pdf_urls_render_in_user_and_tool_content() {
+    let media = json!({"type":"file", "media_type":"application/pdf", "url":"https://example.com/report.pdf"});
+    let messages = serde_json::from_value(json!([{"role":"user", "content":[media.clone(), {"type":"tool_result","tool_use_id":"call","content":"report","is_error":true,"media":[media]}]}])).unwrap();
+    let call = request(messages);
+    let responses = responses::body("test", &[], &call).unwrap();
+    assert_eq!(
+        responses["input"][0]["content"][0],
+        json!({"type":"input_file","file_url":"https://example.com/report.pdf"})
+    );
+    assert_eq!(responses["input"][1]["output"][0]["text"], "ERROR: report");
+    assert_eq!(
+        responses["input"][1]["output"][1],
+        responses["input"][0]["content"][0]
+    );
+    let anthropic = anthropic::body("test", &[], &call).unwrap();
+    assert_eq!(
+        anthropic["messages"][0]["content"][0],
+        json!({"type":"document","source":{"type":"url","url":"https://example.com/report.pdf"}})
+    );
+    assert_eq!(anthropic["messages"][0]["content"][1]["is_error"], true);
+    assert_eq!(
+        anthropic["messages"][0]["content"][1]["content"][1],
+        anthropic["messages"][0]["content"][0]
+    );
+}
+
+#[test]
+fn media_is_url_only_in_common_and_retained_inputs() {
+    for url in [
+        "data:image/png;base64,aGVsbG8=",
+        "http://example.com/a",
+        "file:///a",
+        "s3://bucket/a",
+        "https://user:secret@example.com/a",
+    ] {
+        let call = request(vec![Message {
+            role: brain_protocol::Role::User,
+            content: vec![ContentBlock::Image { url: url.into() }],
+        }]);
+        assert!(responses::body("test", &[], &call).is_err());
+        assert!(anthropic::body("test", &[], &call).is_err());
+    }
+    for part in [
+        json!({"type":"input_file","file_data":"bytes"}),
+        json!({"type":"input_image","image_url":"data:image/png;base64,aGVsbG8="}),
+        json!({"type":"input_file","file_url":"https://example.com/a","file_id":"file_1"}),
+    ] {
+        for data in [
+            json!({"type":"message","role":"user","content":[part.clone()]}),
+            json!({"type":"function_call_output","call_id":"call","output":[part.clone()]}),
+        ] {
+            let call = request(vec![Message::assistant(vec![ContentBlock::Native {
+                format: "openai.responses.v1".into(),
+                data,
+            }])]);
+            assert!(responses::body("test", &[], &call).is_err());
+        }
+    }
+    assert!(
+        serde_json::from_value::<brain_protocol::Media>(
+            json!({"type":"file","media_type":"text/plain","url":"https://example.com/a"})
+        )
+        .is_err()
+    );
 }

@@ -23,7 +23,7 @@ export type {
 export type { HostToolCall } from "./host.js";
 export { BrainError } from "./errors.js";
 export { StructuredOutputError } from "./structured-output.js";
-export type { EventPage, ModelRequest, ModelResult, SessionTranscript, ToolResult } from "./generated/session.js";
+export type { EventPage, ModelList, ModelProvider, ModelDef, ModelRequest, ModelResult, SessionTranscript, ToolResult } from "./generated/session.js";
 export type {
   AgentloopAdmission,
   Component,

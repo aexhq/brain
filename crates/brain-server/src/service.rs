@@ -311,6 +311,33 @@ impl BrainApi for ServerApi {
         self.sessions.get_session(session_id).await
     }
 
+    async fn list_models(
+        &self,
+        provider: Option<String>,
+    ) -> Result<brain_protocol::ModelList, ApiError> {
+        if provider
+            .as_ref()
+            .is_some_and(|name| self.resources.providers.get(name).is_none())
+        {
+            return Err(ApiError::invalid_request("unknown model provider"));
+        }
+        Ok(brain_protocol::ModelList {
+            snapshot_digest: brain::model::SNAPSHOT_DIGEST.into(),
+            providers: self
+                .resources
+                .providers
+                .iter()
+                .filter(|def| provider.as_ref().is_none_or(|name| name == &def.name))
+                .map(|def| brain_protocol::ModelProvider {
+                    id: def.name.clone(),
+                    dialect: def.dialect,
+                    media_inputs: vec!["image".into(), "application/pdf".into()],
+                    models: def.models.clone(),
+                })
+                .collect(),
+        })
+    }
+
     async fn list_sessions(&self) -> Result<SessionList, ApiError> {
         self.sessions.list_sessions().await
     }
@@ -599,7 +626,7 @@ mod tests {
             "the gateway requires a provider namespace in the model name"
         );
         assert!(
-            validate("deepseek", "brand-new-model", false).is_ok(),
+            validate("minimax", "brand-new-model", false).is_ok(),
             "open admission: an unknown model on a catalog provider passes"
         );
         assert!(validate("bedrock", "some-model", false).is_err());
