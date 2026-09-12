@@ -675,6 +675,12 @@ async fn invoke_outcomes_map_onto_tool_results() {
         (Outcome::Timeout, Some("timeout")),
         (Outcome::Cancelled, Some("cancelled")),
         (
+            Outcome::Unknown {
+                message: "result lost".into(),
+            },
+            Some("unknown"),
+        ),
+        (
             Outcome::Ok {
                 value: serde_json::json!({"content": "done"}),
             },
@@ -726,7 +732,7 @@ async fn invoke_outcomes_map_onto_tool_results() {
 }
 
 #[tokio::test]
-async fn an_overdue_invoke_is_cancelled_and_recorded_as_unknown() {
+async fn an_overdue_invoke_is_cancelled_and_recorded_as_timeout() {
     let data_dir = temporary_directory("tool-timeout");
     let tools = Arc::new(OutcomeTools {
         outcome: Outcome::Ok {
@@ -759,7 +765,8 @@ async fn an_overdue_invoke_is_cancelled_and_recorded_as_unknown() {
         .unwrap();
     assert!(started.elapsed() < Duration::from_secs(10));
     let results = seen.lock().unwrap().clone();
-    assert_eq!(results[0].output["code"], "unknown");
+    assert!(results[0].is_error);
+    assert_eq!(results[0].output["code"], "timeout");
     assert_eq!(
         tools.cancelled.lock().unwrap().len(),
         1,
@@ -813,7 +820,7 @@ async fn a_tool_in_a_host_env_uses_the_configured_executor() {
 }
 
 #[tokio::test]
-async fn an_unanswered_host_call_becomes_unknown_and_journals_the_cancellation() {
+async fn an_unanswered_host_call_times_out_and_journals_the_cancellation() {
     let data_dir = temporary_directory("host-timeout");
     let seen = Arc::new(Mutex::new(Vec::new()));
     let loop_executor = {
@@ -847,7 +854,8 @@ async fn an_unanswered_host_call_becomes_unknown_and_journals_the_cancellation()
         .await
         .unwrap();
     let results = seen.lock().unwrap().clone();
-    assert_eq!(results[0].output["code"], "unknown");
+    assert!(results[0].is_error);
+    assert_eq!(results[0].output["code"], "timeout");
     let kinds = runtime.kinds(handle.id());
     assert!(kinds.iter().any(|kind| kind == "tool_cancel_started"));
     assert_eq!(kinds.last().unwrap(), "turn_ended");

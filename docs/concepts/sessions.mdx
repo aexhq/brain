@@ -77,8 +77,11 @@ bound; see [Configuration](/docs/reference/configuration) for the rest:
 The wall deadline initiates cancellation. Brain records outstanding effect outcomes and waits for
 bounded executor cancellation before closing the turn; this cleanup can extend the response time.
 
-Cancellation requests stop local waiting and are forwarded to active executors. A remote effect
-that may have continued is reported as unknown, not as a successful cancellation.
+Cancellation requests stop local waiting and are forwarded to active executors. Outstanding Tool
+calls return `cancelled`; their own invocation deadlines return `timeout`. Neither promises that
+external effects were rolled back. `unknown` means dispatch may have happened but no reliable
+terminal result is available, such as a lost connection or an unfinished effect recovered after
+restart. These Tool results all have `is_error: true` and are never replayed automatically.
 
 ## Suspension and recovery
 

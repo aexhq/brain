@@ -77,6 +77,16 @@ terminal outcome. `ctx.emit(kind, data)` appends an extension event to the sessi
 journal before its promise resolves. Save `await brain.credentials()` and pass it back as
 `credentials` to resume the host after a restart.
 
+Host functions may return ordinary successful output or an `Outcome` directly. The top-level
+statuses `ok`, `error`, `timeout`, `cancelled` and `unknown` declare outcomes; malformed envelopes
+fail as `invalid_output`. Only successful values pass through the output schema. Structured errors
+retain code, message, retryable and details. Use an explicit `ok.value` for business data that uses a
+reserved status. See [the tested example](../../examples/tool-outcomes.mjs).
+
+Tool deadlines produce `timeout`, explicit cancellation produces `cancelled`, and known failures
+produce `error`. `unknown` means an operation may have been dispatched but its result is unavailable.
+All non-success outcomes become failed Tool results. Cancellation and timeout do not promise rollback.
+
 The SDK admits Component bytes by content, preserves explicit placement, and supplies deterministic
 idempotency keys for admission. A caller may supply an `idempotencyKey` for other mutating
 requests. Repeating session creation with the same key keeps the existing host handlers, including

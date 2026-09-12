@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import type { HostToolCall, HostToolContract } from "./host.js";
 import type {
-  Component, Environment, PlacedAgentloop, PlacedTool, Schema, SchemaInput, SchemaOutput,
+  Component, Environment, Outcome, PlacedAgentloop, PlacedTool, Schema, SchemaInput, SchemaOutput,
   ToolDefinition,
 } from "./types.js";
 
@@ -169,6 +169,10 @@ export interface ToolRunContext<Options> extends HostToolCall {
   emit(kind: string, data: unknown): Promise<number>;
 }
 
+type ToolReturn<OutputSchema extends Schema | undefined> =
+  | (OutputSchema extends Schema ? SchemaInput<OutputSchema> : unknown)
+  | Outcome<OutputSchema extends Schema ? SchemaInput<OutputSchema> : unknown>;
+
 /** One Tool: what the model is told and either a
  * function this process runs or an implementation its Environment interprets. Where it
  * runs is decided at placement, `{ env }`. */
@@ -181,7 +185,7 @@ export interface ToolContract<OptionsSchema extends Schema | undefined, InputSch
   readonly run?: (
     input: SchemaOutput<InputSchema>,
     context: ToolRunContext<Options<OptionsSchema>>,
-  ) => (OutputSchema extends Schema ? SchemaInput<OutputSchema> : unknown) | Promise<OutputSchema extends Schema ? SchemaInput<OutputSchema> : unknown>;
+  ) => ToolReturn<OutputSchema> | Promise<ToolReturn<OutputSchema>>;
   readonly implementation?: Component | Readonly<Record<string, unknown>> | ((options: Options<OptionsSchema>) => unknown);
 }
 

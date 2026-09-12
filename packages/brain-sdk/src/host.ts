@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { Outcome, Schema } from "./types.js";
 
 /** The contract of one Tool this process holds: what the model sees, declared where
@@ -21,7 +22,7 @@ export interface HostToolCall {
   emit(kind: string, data: unknown): Promise<number>;
 }
 
-export type HostToolHandler<Input, Output> = (input: Input, call: HostToolCall) => Output | Promise<Output>;
+export type HostToolHandler<Input, Output> = (input: Input, call: HostToolCall) => Output | Outcome<Output> | Promise<Output | Outcome<Output>>;
 
 /** One invocation as the pump hands it to the registry. `deadline_ms` is the
  * remaining budget, not an epoch. */
@@ -47,12 +48,14 @@ interface RegisteredHostTool {
   readonly handler: HostToolHandler<unknown, unknown>;
 }
 
+type Interruption = Extract<Outcome, { status: "timeout" | "cancelled" | "unknown" }>;
+
 /** Shared execution semantics for the Tools this process holds, whoever answers the
  * session's feed: schema-checked input and output, a clamped deadline race, best-effort
  * cancellation, exactly one Outcome. Internal to the SDK's pump. */
 export class HostToolRegistry {
   private readonly tools = new Map<string, RegisteredHostTool>();
-  private readonly active = new Map<number, { readonly controller: AbortController; cancelled: boolean }>();
+  private readonly active = new Map<number, { readonly controller: AbortController; outcome?: Interruption }>();
 
   register(environment: string, contract: HostToolContract, handler: HostToolHandler<unknown, unknown>): void {
     if (typeof contract?.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(contract.name)) throw new TypeError("host tool name must be an identifier");
@@ -64,10 +67,18 @@ export class HostToolRegistry {
   }
 
   cancel(sequence: number): void {
+    this.interrupt(sequence, { status: "cancelled" });
+  }
+
+  disconnect(sequence: number): void {
+    this.interrupt(sequence, { status: "unknown", message: "host connection was lost after dispatch" });
+  }
+
+  private interrupt(sequence: number, outcome: Interruption): void {
     const call = this.active.get(sequence);
-    if (call === undefined) return;
-    call.cancelled = true;
-    call.controller.abort(new Error("call cancelled"));
+    if (call === undefined || call.outcome !== undefined) return;
+    call.outcome = outcome;
+    call.controller.abort(new Error(outcome.status === "unknown" ? outcome.message : "host Tool " + outcome.status));
   }
 
   async run(frame: InvokeFrame): Promise<Outcome> {
@@ -79,10 +90,10 @@ export class HostToolRegistry {
     } catch (error) {
       return errorOutcome("invalid_input", String(error instanceof Error ? error.message : error));
     }
-    const call = { controller: new AbortController(), cancelled: false };
+    const call: { controller: AbortController; outcome?: Interruption } = { controller: new AbortController() };
     this.active.set(frame.sequence, call);
     const deadlineMs = frame.deadline_ms > MAX_DEADLINE_MS ? MAX_DEADLINE_MS : frame.deadline_ms;
-    const timer = setTimeout(() => call.controller.abort(new Error("call deadline passed")), deadlineMs);
+    const timer = setTimeout(() => this.interrupt(frame.sequence, { status: "timeout" }), deadlineMs);
     const interrupted = new Promise<typeof interruption>((resolve) => call.controller.signal.addEventListener("abort", () => resolve(interruption), { once: true }));
     try {
       const value = await Promise.race([
@@ -94,15 +105,19 @@ export class HostToolRegistry {
         })),
         interrupted,
       ]);
-      if (value === interruption) return { status: "unknown", message: call.cancelled ? "host Tool was cancelled after dispatch" : "host Tool exceeded its deadline after dispatch" };
-      if (registered.contract.output === undefined) return { status: "ok", value: value ?? null };
+      if (call.outcome !== undefined) return call.outcome;
       try {
-        return { status: "ok", value: registered.contract.output.parse(value) ?? null };
+        const status = typeof value === "object" && value !== null && "status" in value ? value.status : undefined;
+        const outcome: Outcome = typeof status === "string" && ["ok", "error", "timeout", "cancelled", "unknown"].includes(status)
+          ? outcomeSchema.parse(value)
+          : { status: "ok", value: value ?? null };
+        if (outcome.status !== "ok" || registered.contract.output === undefined) return outcome;
+        return { status: "ok", value: registered.contract.output.parse(outcome.value) ?? null };
       } catch (error) {
         return errorOutcome("invalid_output", String(error instanceof Error ? error.message : error));
       }
     } catch (error) {
-      if (call.controller.signal.aborted) return { status: "unknown", message: call.cancelled ? "host Tool was cancelled after dispatch" : "host Tool exceeded its deadline after dispatch" };
+      if (call.outcome !== undefined) return call.outcome;
       return errorOutcome("tool_error", String(error instanceof Error ? error.message : error));
     } finally {
       clearTimeout(timer);
@@ -112,3 +127,16 @@ export class HostToolRegistry {
 }
 
 const interruption = Symbol("call interrupted");
+
+const outcomeSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("ok"), value: z.json() }),
+  z.object({ status: z.literal("error"), error: z.strictObject({
+    code: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u),
+    message: z.string().max(4096),
+    retryable: z.boolean().optional(),
+    details: z.json().optional(),
+  }) }),
+  z.object({ status: z.literal("timeout") }),
+  z.object({ status: z.literal("cancelled") }),
+  z.object({ status: z.literal("unknown"), message: z.string() }),
+]);

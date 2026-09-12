@@ -182,6 +182,34 @@ test("a host reconnects without replaying old commands", async () => {
   await pump.closed;
 });
 
+test("losing the command stream reports an in-flight call as unknown without replay", async () => {
+  let calls = 0;
+  let finish;
+  const finished = new Promise(resolve => { finish = resolve; });
+  const pump = new HostPump({
+    stream: async function* (_signal, onOpen) {
+      onOpen();
+      yield { type: "command", data: {
+        session_id: sessionId, environment: "app", sequence: 9,
+        deadline_at_ms: Date.now() + 5_000,
+        operation: { type: "invoke_tool", name: "lookup", input: {} },
+      } };
+    },
+    result: async result => { finish(result); pump.stop(); },
+    emit: async () => ({ sequence: 10 }),
+  });
+  const registry = new HostToolRegistry();
+  registry.register("app", { name: "lookup", description: "Lookup.", input: z.object({}) }, () => {
+    calls += 1;
+    return new Promise(() => {});
+  });
+  pump.register(sessionId, registry);
+  await pump.start();
+  assert.equal((await finished).outcome.status, "unknown");
+  await pump.closed;
+  assert.equal(calls, 1);
+});
+
 test("a new session reconnects the durable host after its previous stream stopped", async () => {
   let hosts = 0;
   let sessions = 0;

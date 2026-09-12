@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import type { EventOrigin } from "./generated/session.js";
+import type { EventOrigin, Outcome as WireOutcome } from "./generated/session.js";
 
 declare const componentBrand: unique symbol;
 declare const agentloopBrand: unique symbol;
@@ -31,10 +31,7 @@ export interface ToolDefinition {
 
 export type Outcome<Value = unknown> =
   | { readonly status: "ok"; readonly value: Value }
-  | { readonly status: "error"; readonly error: { readonly code: string; readonly message: string; readonly details?: unknown } }
-  | { readonly status: "timeout" }
-  | { readonly status: "cancelled" }
-  | { readonly status: "unknown"; readonly message: string };
+  | Exclude<WireOutcome, { status: "ok" }>;
 
 export type { KnownProviderId } from "./generated/providers.js";
 import type { KnownProviderId } from "./generated/providers.js";

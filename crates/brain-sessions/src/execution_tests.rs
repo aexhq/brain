@@ -51,6 +51,21 @@ async fn environment_errors_reach_tools_without_losing_information() {
 }
 
 #[tokio::test]
+async fn an_explicit_unknown_receipt_is_a_tool_outcome_not_a_transport_failure() {
+    let executor = SessionToolExecutor::new(Arc::new(EnvironmentRegistry::new(Arc::new(Adapter(
+        EnvironmentReceipt::Unknown {
+            message: "result lost after dispatch".into(),
+        },
+    )))));
+    assert_eq!(
+        executor.execute(dispatch(), Arc::new(Leaf)).await.unwrap(),
+        Outcome::Unknown {
+            message: "result lost after dispatch".into()
+        }
+    );
+}
+
+#[tokio::test]
 async fn nonterminal_execute_receipts_leave_the_effect_unknown() {
     for receipt in [
         EnvironmentReceipt::Accepted,

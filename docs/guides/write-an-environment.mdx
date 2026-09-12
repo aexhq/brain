@@ -52,6 +52,12 @@ Execute requires a terminal `result`, `failure`, or `unknown` receipt. Returning
 and optional JSON `details` reach Tool results unchanged. Retryability is advisory; Brain does
 not retry or restore failed resources automatically.
 
+For Tool invocations, return a failure with code `timeout` when its deadline expires, or `cancelled`
+for explicit cancellation. Keep the first stop cause if cleanup also fails, including cleanup
+evidence in `details`. These codes do not promise rollback. Use `unknown` only when dispatch may
+have happened but no reliable result is available. An explicit unknown receipt does not itself
+mark the Environment unreachable; a transport failure still does.
+
 ## Invocation services
 
 An execution may receive `callback: { url, token, methods }`. POST `{ method, input }` to that

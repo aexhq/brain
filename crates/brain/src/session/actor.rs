@@ -686,10 +686,17 @@ impl TurnServices for TurnHost {
                     // same way.
                     let output_schema = dispatch.tool.output_schema.clone();
                     let call = async {
-                        let validator = jsonschema::validator_for(&dispatch.tool.input_schema).map_err(|e| Error::InvalidState(e.to_string()))?;
+                        let validator = jsonschema::validator_for(&dispatch.tool.input_schema)
+                            .map_err(|e| Error::InvalidState(e.to_string()))?;
                         if let Err(error) = validator.validate(&dispatch.invocation.input) {
-                            return Ok(Outcome::Error { error: brain_protocol::OutcomeError { retryable: false,
-code: "invalid_input".into(), message: error.to_string(), details: None } });
+                            return Ok(Outcome::Error {
+                                error: brain_protocol::OutcomeError {
+                                    retryable: false,
+                                    code: "invalid_input".into(),
+                                    message: error.to_string(),
+                                    details: None,
+                                },
+                            });
                         }
                         let mut services = self.clone();
                         services.origin = brain_protocol::EventOrigin::Tool { sequence };
@@ -703,41 +710,57 @@ code: "invalid_input".into(), message: error.to_string(), details: None } });
                     let result = tokio::select! {
                         outcome = tokio::time::timeout(deadline, call) => match outcome {
                             Ok(result) => result.map(|outcome| (outcome, false)),
-                            Err(_) => Ok((Outcome::Unknown {
-                                message: "Tool deadline elapsed after the call was sent".into(),
-                            }, true)),
+                            Err(_) => Ok((Outcome::Timeout, true)),
                         },
-                        () = cancelled => Ok((Outcome::Unknown {
-                            message: "Tool cancellation was requested after the call was sent".into(),
-                        }, true)),
+                        () = cancelled => Ok((Outcome::Cancelled, true)),
                     };
                     let dropped = matches!(&result, Ok((_, true)));
                     let unreachable = matches!(&result, Err(Error::Ambiguous(_)));
                     let result = result.and_then(|(outcome, dropped)| {
                         if let (Outcome::Ok { value }, Some(schema)) = (&outcome, &output_schema) {
-                            let validator = jsonschema::validator_for(schema).map_err(|e| Error::Executor(e.to_string()))?;
+                            let validator = jsonschema::validator_for(schema)
+                                .map_err(|e| Error::Executor(e.to_string()))?;
                             if let Err(error) = validator.validate(value) {
-                                return Ok((Outcome::Error { error: brain_protocol::OutcomeError { retryable: false,
-code: "invalid_output".into(), message: error.to_string(), details: None } }, dropped));
+                                return Ok((
+                                    Outcome::Error {
+                                        error: brain_protocol::OutcomeError {
+                                            retryable: false,
+                                            code: "invalid_output".into(),
+                                            message: error.to_string(),
+                                            details: None,
+                                        },
+                                    },
+                                    dropped,
+                                ));
                             }
                         }
                         Ok((outcome, dropped))
                     });
                     let result = match result {
                         Ok((outcome, _)) => ToolResult::from_outcome(call_id, outcome),
-                        Err(Error::Ambiguous(message)) => ToolResult::from_outcome(call_id, Outcome::Unknown { message }),
+                        Err(Error::Ambiguous(message)) => {
+                            ToolResult::from_outcome(call_id, Outcome::Unknown { message })
+                        }
                         Err(error) => ToolResult {
                             call_id,
-                            output: serde_json::to_value(Failure::new(codes::failure::TOOL_ERROR, error.to_string())).map_err(json_error)?,
+                            output: serde_json::to_value(Failure::new(
+                                codes::failure::TOOL_ERROR,
+                                error.to_string(),
+                            ))
+                            .map_err(json_error)?,
                             is_error: true,
                         },
                     };
                     let mut cursor = self.cursor.lock().await;
-                    let mut records = vec![AppendRecord::new(codes::event::TOOL_CALL_ENDED,
-                        serde_json::json!({"sequence": sequence, "result": result}))];
+                    let mut records = vec![AppendRecord::new(
+                        codes::event::TOOL_CALL_ENDED,
+                        serde_json::json!({"sequence": sequence, "result": result}),
+                    )];
                     if unreachable {
-                        records.push(AppendRecord::new(codes::event::ENVIRONMENT_UNREACHABLE,
-                            serde_json::json!({"environment": environment, "sequence": sequence})));
+                        records.push(AppendRecord::new(
+                            codes::event::ENVIRONMENT_UNREACHABLE,
+                            serde_json::json!({"environment": environment, "sequence": sequence}),
+                        ));
                     }
                     self.append(&mut cursor, records).await?;
                     Ok::<_, Error>((index, result, dropped))

@@ -77,7 +77,7 @@ export class HostPump {
         } catch (error) {
           if (!opened) throw error;
         }
-        this.cancelInFlight();
+        this.cancelInFlight("disconnect");
         if (!opened) throw new Error("host command stream closed before opening");
         if (!this.controller.signal.aborted) await new Promise((resolve) => setTimeout(resolve, 100));
       }
@@ -87,10 +87,12 @@ export class HostPump {
     }
   }
 
-  private cancelInFlight(): void {
+  private cancelInFlight(reason: "cancel" | "disconnect" = "cancel"): void {
     for (const [key, sequence] of this.inFlight) {
       const separator = key.lastIndexOf(":");
-      this.sessions.get(key.slice(0, separator))?.cancel(sequence);
+      const registry = this.sessions.get(key.slice(0, separator));
+      if (reason === "disconnect") registry?.disconnect(sequence);
+      else registry?.cancel(sequence);
     }
     this.inFlight.clear();
   }
