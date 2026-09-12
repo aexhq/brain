@@ -96,6 +96,9 @@ test("graceful shutdown lets a host Tool finish and saves the completed turn", {
   assert.ok(events.some((event) => event.type === "finished_during_drain"));
   assert.equal(events.at(-1).type, "turn_ended");
   assert.equal((await session.transcript()).messages.at(-1).content[0].text, "answered");
+  // Server readiness does not wait for the previous client's host stream to reconnect.
+  await f.brain.close();
+  f.brain = f.client();
 });
 
 test("a tool this process holds receives validated options and commits progress before its result", { timeout: 30_000 }, async (t) => {
