@@ -257,6 +257,27 @@ impl Accumulator {
     /// being coerced to `{}` -- coercing would let the model's call silently
     /// become a different call.
     pub fn finish(self) -> Result<(Message, StopReason, Usage), Error> {
+        let stop_reason = if self.saw_refusal {
+            StopReason::Refusal
+        } else {
+            self.stop_reason
+        };
+        // A terminal length/refusal status takes precedence over malformed parameters.
+        // No Tool from an incomplete response may become executable, even valid JSON.
+        if !matches!(
+            stop_reason,
+            StopReason::EndTurn | StopReason::StopSequence | StopReason::ToolUse
+        ) && self
+            .blocks
+            .iter()
+            .any(|block| matches!(block, PartialBlock::Tool { .. }))
+        {
+            return Err(Error::ModelOutput {
+                message: "provider did not complete its tool calls".into(),
+                stop_reason,
+                usage: Box::new(self.usage),
+            });
+        }
         let mut content = Vec::with_capacity(self.blocks.len());
         for (index, block) in self.blocks.into_iter().enumerate() {
             match block {
@@ -277,21 +298,20 @@ impl Accumulator {
                         serde_json::Value::Object(Default::default())
                     } else {
                         serde_json::from_str(&json).map_err(|error| {
-                            protocol(format!(
-                                "tool_use {name} ({id}) input is not valid JSON after {} bytes of deltas: {error}",
-                                json.len()
-                            ))
+                            Error::ModelOutput {
+                                message: format!(
+                                    "tool_use {name} ({id}) input is not valid JSON after {} bytes of deltas: {error}",
+                                    json.len()
+                                ),
+                                stop_reason,
+                                usage: Box::new(self.usage.clone()),
+                            }
                         })?
                     };
                     content.push(ContentBlock::ToolUse { id, name, input });
                 }
             }
         }
-        let stop_reason = if self.saw_refusal {
-            StopReason::Refusal
-        } else {
-            self.stop_reason
-        };
         Ok((Message::assistant(content), stop_reason, self.usage))
     }
 }
@@ -334,7 +354,13 @@ mod tests {
         .unwrap();
         let error = a.finish().unwrap_err();
         assert!(
-            matches!(error, Error::Ambiguous(_)),
+            matches!(
+                error,
+                Error::ModelOutput {
+                    stop_reason: StopReason::ToolUse,
+                    ..
+                }
+            ),
             "a truncated tool input must be a typed error, got {error:?}"
         );
     }

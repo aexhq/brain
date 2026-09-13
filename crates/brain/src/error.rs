@@ -1,4 +1,4 @@
-use brain_protocol::{TurnError, codes::api};
+use brain_protocol::{StopReason, TurnError, Usage, codes::api};
 
 /// What a session, its journal, or one of its executors can fail with.
 ///
@@ -20,6 +20,13 @@ pub enum Error {
     Journal(String),
     #[error("operation outcome is ambiguous: {0}")]
     Ambiguous(String),
+    /// The provider finished, but its output cannot become an executable message.
+    #[error("model output rejected ({stop_reason:?}): {message}")]
+    ModelOutput {
+        message: String,
+        stop_reason: StopReason,
+        usage: Box<Usage>,
+    },
     /// The turn was cancelled, or timed out, while this was in flight.
     #[error("cancelled: {0}")]
     Cancelled(String),
@@ -54,6 +61,12 @@ impl Error {
             Error::Executor(_) => api::EXECUTOR_FAILED,
             Error::Journal(_) => api::INTERNAL,
             Error::Ambiguous(_) => api::AMBIGUOUS,
+            Error::ModelOutput { stop_reason, .. } => match stop_reason {
+                StopReason::EndTurn | StopReason::StopSequence | StopReason::ToolUse => {
+                    api::MODEL_OUTPUT_INVALID
+                }
+                _ => api::MODEL_OUTPUT_INCOMPLETE,
+            },
             Error::Cancelled(_) => brain_protocol::codes::failure::CANCELLED,
             Error::Budget(_) => brain_protocol::codes::failure::MODEL_CALL_LIMIT,
             Error::EmitLimit(_) => brain_protocol::codes::failure::EMIT_LIMIT,

@@ -90,6 +90,16 @@ continued successfully. Brain preserves the provider error and never silently st
 
 ## Per-call options
 
+After a provider stream terminates, Brain checks its stop reason before parsing Tool parameters.
+Tool calls from a length-limited, refused, or unknown response fail as `model_output_incomplete`,
+even if their JSON happens to parse. Invalid Tool JSON from an otherwise completed response fails
+as `model_output_invalid`. Neither becomes an executable Tool call.
+
+The durable `model_call_failed` Event retains the initiating `sequence` and a `response` object
+with `stop_reason` and provider-reported `usage`, including reasoning tokens when supplied.
+Absent counters remain absent. These known unusable responses are distinct from an interrupted
+stream with an unknown outcome. Brain does not retry either; the Agentloop owns any new attempt.
+
 An omitted `response_format` inherits the session format; a value replaces it; explicit `null`
 resets it. Other provider options are per request and pass only through the selected adapter:
 
