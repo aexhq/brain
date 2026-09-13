@@ -443,11 +443,7 @@ fn poisoned() -> Error {
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{
-            Arc, Mutex,
-            atomic::{AtomicBool, Ordering},
-        },
-        thread,
+        sync::{Arc, Mutex},
         time::Duration,
     };
 
@@ -470,20 +466,30 @@ mod tests {
 
     #[test]
     fn synchronous_work_passes_queued_background_work() {
-        let release = Arc::new(AtomicBool::new(false));
-        let writer = Writer::spawn_held(release.clone());
+        let writer = Writer::spawn();
+        let (started, first_started) = mpsc::channel();
+        let (release, released) = mpsc::channel();
         let order = Arc::new(Mutex::new(Vec::new()));
+        let prepare = job(order.clone(), "first");
         let first = writer
-            .submit_async(Arc::from("first"), 1, job(order.clone(), "first"))
+            .submit_async(
+                Arc::from("first"),
+                1,
+                Box::new(move || {
+                    started.send(()).unwrap();
+                    released.recv_timeout(Duration::from_secs(30)).unwrap();
+                    prepare()
+                }),
+            )
             .unwrap();
-        thread::sleep(Duration::from_millis(20));
+        first_started.recv_timeout(Duration::from_secs(30)).unwrap();
         let background = writer
             .submit_async(Arc::from("background"), 1, job(order.clone(), "background"))
             .unwrap();
         let synchronous = writer
             .submit_sync(Arc::from("sync"), 1, job(order.clone(), "sync"))
             .unwrap();
-        release.store(true, Ordering::Release);
+        release.send(()).unwrap();
         first.wait().unwrap();
         synchronous.wait().unwrap();
         background.wait().unwrap();
