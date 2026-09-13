@@ -582,12 +582,17 @@ impl TurnServices for TurnHost {
                 Ok(result)
             }
             Err(error) => {
+                let mut payload = failure_payload(Some(sequence), &failure_of(&error))?;
+                if let Error::ModelOutput {
+                    stop_reason, usage, ..
+                } = &error
+                {
+                    payload["response"] =
+                        serde_json::json!({ "stop_reason": stop_reason, "usage": usage });
+                }
                 self.append(
                     &mut cursor,
-                    vec![AppendRecord::new(
-                        codes::event::MODEL_CALL_FAILED,
-                        failure_payload(Some(sequence), &failure_of(&error))?,
-                    )],
+                    vec![AppendRecord::new(codes::event::MODEL_CALL_FAILED, payload)],
                 )
                 .await?;
                 Err(error)

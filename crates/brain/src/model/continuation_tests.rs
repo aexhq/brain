@@ -62,6 +62,14 @@ fn responses_reasoning_and_compaction_preserve_native_items() {
             accumulated.push(event).unwrap();
         }
     }
+    for event in responses::decode(
+        &json!({"type":"response.completed", "response":{"output":[reasoning.clone(), call]}})
+            .to_string(),
+    )
+    .unwrap()
+    {
+        accumulated.push(event).unwrap();
+    }
     let (message, _, _) = accumulated.finish().unwrap();
     let body = responses::body("test", &[], &request(vec![message])).unwrap();
     assert_eq!(body["input"][0], reasoning);

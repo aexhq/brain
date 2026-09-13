@@ -16,9 +16,12 @@ pub fn status_for(code: &str) -> StatusCode {
         api::NOT_FOUND => StatusCode::NOT_FOUND,
         api::CONFLICT => StatusCode::CONFLICT,
         api::OVERLOADED => StatusCode::SERVICE_UNAVAILABLE,
-        api::AMBIGUOUS | api::EXECUTOR_FAILED | api::MODEL_PROVIDER_FAILED | api::INTERNAL => {
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
+        api::AMBIGUOUS
+        | api::EXECUTOR_FAILED
+        | api::MODEL_PROVIDER_FAILED
+        | api::MODEL_OUTPUT_INVALID
+        | api::MODEL_OUTPUT_INCOMPLETE
+        | api::INTERNAL => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
@@ -39,6 +42,8 @@ mod tests {
             api::AMBIGUOUS,
             api::EXECUTOR_FAILED,
             api::MODEL_PROVIDER_FAILED,
+            api::MODEL_OUTPUT_INVALID,
+            api::MODEL_OUTPUT_INCOMPLETE,
             api::INTERNAL,
         ];
         for code in api::ALL {

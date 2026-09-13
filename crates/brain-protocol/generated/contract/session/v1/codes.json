@@ -8,6 +8,8 @@
     "ambiguous",
     "executor_failed",
     "model_provider_failed",
+    "model_output_invalid",
+    "model_output_incomplete",
     "internal"
   ],
   "events": [

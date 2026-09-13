@@ -144,6 +144,8 @@ pub mod api {
     pub const AMBIGUOUS: &str = "ambiguous";
     pub const EXECUTOR_FAILED: &str = "executor_failed";
     pub const MODEL_PROVIDER_FAILED: &str = "model_provider_failed";
+    pub const MODEL_OUTPUT_INVALID: &str = "model_output_invalid";
+    pub const MODEL_OUTPUT_INCOMPLETE: &str = "model_output_incomplete";
     pub const INTERNAL: &str = "internal";
 
     pub const ALL: &[&str] = &[
@@ -155,6 +157,8 @@ pub mod api {
         AMBIGUOUS,
         EXECUTOR_FAILED,
         MODEL_PROVIDER_FAILED,
+        MODEL_OUTPUT_INVALID,
+        MODEL_OUTPUT_INCOMPLETE,
         INTERNAL,
     ];
 }
