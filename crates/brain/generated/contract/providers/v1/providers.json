@@ -1,6 +1,7 @@
 {
   "providers": [
     "anthropic",
+    "deepseek",
     "freemodel",
     "kimi-for-coding",
     "minimax",
@@ -12,5 +13,5 @@
     "thinkingmachines",
     "vercel-ai-gateway"
   ],
-  "snapshot_digest": "fd3f8f8d448ce5738e54361269d5ed26068dec96e2050afb8805c6e280e61eaa"
+  "snapshot_digest": "97c4388372e9f7f949eec628832853a72fea2054e672800b9b5edb862bf1d01c"
 }

@@ -53,5 +53,14 @@ mod tests {
         let find = |name: &str| CATALOG.iter().find(|row| row.name == name).unwrap();
         assert_eq!(find("openai").dialect, Dialect::OpenAiResponses);
         assert_eq!(find("anthropic").dialect, Dialect::AnthropicMessages);
+        let deepseek = find("deepseek");
+        assert_eq!(deepseek.dialect, Dialect::OpenAiResponses);
+        let flash = deepseek
+            .models
+            .iter()
+            .find(|model| model.id == "deepseek-flash")
+            .unwrap();
+        assert_eq!(flash.tool_call, Some(true));
+        assert!(flash.input_modalities.unwrap().contains(&"image"));
     }
 }

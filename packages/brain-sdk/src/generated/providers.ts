@@ -3,6 +3,7 @@
 
 export type KnownProviderId =
   | "anthropic"
+  | "deepseek"
   | "freemodel"
   | "kimi-for-coding"
   | "minimax"
@@ -17,6 +18,7 @@ export type KnownProviderId =
 
 export const knownProviders: readonly KnownProviderId[] = [
   "anthropic",
+  "deepseek",
   "freemodel",
   "kimi-for-coding",
   "minimax",

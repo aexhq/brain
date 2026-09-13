@@ -381,10 +381,10 @@ mod tests {
     fn the_catalog_is_present_and_the_curated_pins_win() {
         let registry = ProviderRegistry::default_set();
         assert_eq!(registry.len(), CATALOG.len());
-        assert!(
-            registry.get("deepseek").is_none(),
-            "Chat-only endpoints are not admitted"
-        );
+        let deepseek = registry.get("deepseek").unwrap();
+        assert_eq!(deepseek.dialect, Dialect::OpenAiResponses);
+        assert_eq!(deepseek.base_url, "https://api.deepseek.com");
+        assert!(valid_model_name(deepseek, "deepseek-flash"));
         assert!(registry.get("openai-responses").is_none());
         assert!(!registry.get("vercel-ai-gateway").unwrap().models.is_empty());
         let openai = registry.get("openai").unwrap();

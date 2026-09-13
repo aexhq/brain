@@ -23,9 +23,13 @@ There is no runtime catalogue fetch.
 | `vercel-ai-gateway` | OpenAI Responses | namespaced, `openai/gpt-5-mini` | `https://ai-gateway.vercel.sh/v1` |
 | `openai` | OpenAI Responses | bare, `gpt-5-mini` | `https://api.openai.com/v1` |
 | `anthropic` | Anthropic Messages | bare, `claude-sonnet-4-5` | `https://api.anthropic.com/v1` |
+| `deepseek` | OpenAI Responses | bare, `deepseek-flash` | `https://api.deepseek.com` |
 
 Chat Completions-only providers and the `openai-responses` alias are unsupported. Unknown model
 IDs still pass admission for an existing provider; the provider validates actual model support.
+DeepSeek uses its Responses endpoint with the customer's DeepSeek key. A models.dev npm package
+name alone does not establish which protocols an endpoint supports; the generator maps verified
+Responses providers explicitly and imports their model metadata from the snapshot.
 
 Authenticated `GET /v1/models`, or `brain.models(provider?)`, returns the composed deployment
 catalogue, its snapshot digest, input/output modalities and each adapter's supported media forms.

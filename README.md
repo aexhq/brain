@@ -99,7 +99,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 ```
 
 ```sh
-npm install @aexhq/brain@0.24.2 @aexhq/agentloop-pi@6.1.1 zod
+npm install @aexhq/brain@0.24.3 @aexhq/agentloop-pi@6.1.2 zod
 ```
 
 Keep the Brain SDK version aligned with the version required by your extensions.
