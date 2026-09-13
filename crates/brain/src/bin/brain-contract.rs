@@ -56,7 +56,7 @@ fn main() {
     for key in keys {
         let entry = &snapshot[key];
         let dialect = match key.as_str() {
-            "openai" | "vercel" => "OpenAiResponses",
+            "openai" | "vercel" | "deepseek" => "OpenAiResponses",
             _ if entry["npm"] == "@ai-sdk/anthropic" => "AnthropicMessages",
             _ => continue,
         };
