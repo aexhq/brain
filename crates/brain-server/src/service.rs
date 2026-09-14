@@ -383,6 +383,40 @@ impl BrainApi for ServerApi {
         Ok(session)
     }
 
+    async fn submit_message(
+        &self,
+        session_id: SessionId,
+        idempotency_key: String,
+        request: MessageRequest,
+    ) -> Result<brain_protocol::TurnReceipt, ApiError> {
+        Session::validate_message(&request).map_err(api_error)?;
+        let scope = format!("session:{session_id}:submit");
+        let lock = self.idempotency_lock(&scope, &idempotency_key)?;
+        let _guard = lock.lock().await;
+        if let Some(saved) = self
+            .resources
+            .idempotency
+            .replay_or_claim(&scope, &idempotency_key, &request)
+            .map_err(api_error)?
+        {
+            return Self::replay(saved);
+        }
+        let receipt = self
+            .sessions
+            .submit_message(session_id, request.clone())
+            .await?;
+        self.resources
+            .idempotency
+            .put(
+                &scope,
+                &idempotency_key,
+                &request,
+                &serde_json::to_value(&receipt).map_err(|error| internal(error.to_string()))?,
+            )
+            .map_err(api_error)?;
+        Ok(receipt)
+    }
+
     async fn call_environment(
         &self,
         session_id: SessionId,

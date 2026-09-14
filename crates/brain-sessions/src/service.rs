@@ -83,11 +83,11 @@ impl Sessions {
         let _finished = self.active.write().await;
     }
 
-    async fn admit_work(&self) -> Result<tokio::sync::RwLockReadGuard<'_, ()>, ApiError> {
+    async fn admit_work(&self) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, ApiError> {
         if self.draining.load(Ordering::Acquire) {
             return Err(ApiError::overloaded("Brain is draining active work"));
         }
-        let guard = self.active.read().await;
+        let guard = self.active.clone().read_owned().await;
         if self.draining.load(Ordering::Acquire) {
             return Err(ApiError::overloaded("Brain is draining active work"));
         }
@@ -370,16 +370,56 @@ impl Sessions {
         };
         self.remember(store, session)?;
         let session = self.summary(&session_id).await?;
+        self.passivate_unretained(&session_id).await?;
+        Ok(session)
+    }
+
+    /// Own the running turn independently of the request waiting for its receipt.
+    pub async fn submit_message(
+        &self,
+        session_id: SessionId,
+        request: MessageRequest,
+    ) -> Result<brain_protocol::TurnReceipt, ApiError> {
+        Session::validate_message(&request).map_err(api_error)?;
+        let active = self.admit_work().await?;
+        let guard = self
+            .session_lock(&session_id)?
+            .try_lock_owned()
+            .map_err(|_| ApiError::overloaded("session already has active work"))?;
+        let session = self.session(&session_id).await?;
+        let api = self.clone();
+        let (reply, accepted) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _active = active;
+            let _guard = guard;
+            match session.submit(request).await {
+                Ok(turn) => {
+                    let _ = reply.send(Ok(turn.receipt.clone()));
+                    let _ = turn.wait().await;
+                    api.passivate_unretained(&session_id).await
+                }
+                Err(error) => {
+                    let _ = reply.send(Err(api_error(error)));
+                    api.passivate_unretained(&session_id).await
+                }
+            }
+        });
+        accepted
+            .await
+            .map_err(|_| internal("turn admission stopped"))?
+    }
+
+    async fn passivate_unretained(&self, session_id: &SessionId) -> Result<(), ApiError> {
         let release = self
             .sessions
             .lock()
             .map_err(|_| internal("session table is poisoned"))?
-            .get(&session_id)
+            .get(session_id)
             .is_some_and(|entry| entry.idle_ttl.is_none());
         if release {
-            self.passivate(&session_id).await?;
+            self.passivate(session_id).await?;
         }
-        Ok(session)
+        Ok(())
     }
 
     pub async fn get_session(&self, session_id: SessionId) -> Result<SessionSummary, ApiError> {
@@ -468,17 +508,8 @@ impl Sessions {
             .await?
             .message(request.clone())
             .await;
-        let release = self
-            .sessions
-            .lock()
-            .map_err(|_| internal("session table is poisoned"))?
-            .get(&session_id)
-            .is_some_and(|entry| entry.idle_ttl.is_none());
-        if release {
-            self.passivate(&session_id).await?;
-        }
-        let session = result.map_err(api_error)?;
-        Ok(session)
+        self.passivate_unretained(&session_id).await?;
+        result.map_err(api_error)
     }
 
     pub async fn call_environment(

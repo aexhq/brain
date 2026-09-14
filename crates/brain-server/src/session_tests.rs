@@ -9,6 +9,70 @@ use brain_protocol::{
 
 struct Echo;
 
+#[tokio::test]
+async fn submission_receipt_replays_after_restart_without_another_turn() {
+    let root = root("submission-replay");
+    let server = api(&root);
+    let create: CreateSessionRequest = serde_json::from_value(serde_json::json!({
+        "agentloop": {"implementation": {"type":"brain_component","entrypoint":"turn","id":"a".repeat(64)}, "configuration":{}, "environment":"brain"},
+        "model": {"provider":"openai","name":"gpt-5-mini","api_key":"model-key"},
+        "tools": [],
+        "environments": [{"name":"brain","driver":"brain"}]
+    })).unwrap();
+    let session = server
+        .create_session("create".into(), create)
+        .await
+        .unwrap();
+    let request = MessageRequest {
+        input: "only once".into(),
+    };
+    let receipt = server
+        .submit_message(session.session_id.clone(), "submit".into(), request.clone())
+        .await
+        .unwrap();
+    server.sessions.drain().await;
+    assert_eq!(
+        server
+            .transcript(session.session_id.clone())
+            .await
+            .unwrap()
+            .messages
+            .len(),
+        1
+    );
+    drop(server);
+    let restored = api(&root);
+    let replay = restored
+        .submit_message(session.session_id.clone(), "submit".into(), request)
+        .await
+        .unwrap();
+    assert_eq!(receipt.session_id, replay.session_id);
+    assert_eq!(receipt.sequence, replay.sequence);
+    assert_eq!(
+        restored
+            .events(session.session_id.clone(), None)
+            .await
+            .unwrap()
+            .events
+            .iter()
+            .filter(|event| event.event_type == "turn_started")
+            .count(),
+        1
+    );
+    assert!(
+        restored
+            .submit_message(
+                session.session_id,
+                "submit".into(),
+                MessageRequest {
+                    input: "different".into()
+                }
+            )
+            .await
+            .is_err()
+    );
+}
+
 #[async_trait]
 impl LoopExecutor for Echo {
     async fn turn(

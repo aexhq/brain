@@ -108,6 +108,15 @@ pub struct MessageRequest {
     pub input: UserInput,
 }
 
+/// The durable turn-start record. Acceptance does not promise successful completion.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TurnReceipt {
+    pub session_id: SessionId,
+    #[schemars(range(min = 1))]
+    pub sequence: u64,
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
