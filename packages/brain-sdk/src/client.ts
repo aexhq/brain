@@ -5,7 +5,7 @@ import { HostToolRegistry } from "./host.js";
 import { structuredOutput } from "./structured-output.js";
 import type {
   AgentloopAdmission, CreateSessionRequest, Environment as WireEnvironment, EventPage, HostRegistration,
-  SessionList, SessionSummary as WireSession, SessionTranscript, Tool as WireTool, ToolAdmission,
+  SessionList, SessionSummary as WireSession, SessionTranscript, Tool as WireTool, ToolAdmission, TurnReceipt,
 } from "./generated/session.js";
 import type {
   Component, CreateSessionOptions, Environment, OperationOptions, PlacedAgentloop, PlacedTool,
@@ -368,6 +368,16 @@ export class SessionHandle {
     private readonly unregisterHost?: () => void,
   ) {}
   get id(): string { return this.state.id; }
+
+  /** Return a durable receipt without waiting for the turn. Closing this client does not cancel hosted execution. */
+  async submit(input: UserInput | string, operation: OperationOptions = {}): Promise<TurnReceipt> {
+    const normalized = typeof input === "string" ? { message: input } : input;
+    if (typeof normalized?.message !== "string" || normalized.message === "") throw new TypeError("submit needs a non-empty message");
+    if ("output" in operation) throw new TypeError("submit requires structured output to run in the hosted Agentloop");
+    if (this.structuredSend) throw new Error("structured output requires exclusive sends on this session handle");
+    return this.client.request("POST", `/v1/sessions/${encodeURIComponent(this.id)}/messages`,
+      { input: normalized }, keyOf(operation), "application/json", undefined, { prefer: "respond-async" });
+  }
 
   send<S extends Schema>(input: UserInput | string, operation: StructuredSendOptions<S>): Promise<SchemaOutput<S>>;
   send(input: UserInput | string, operation?: SendOptions): Promise<SessionState>;

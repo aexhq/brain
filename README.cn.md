@@ -51,6 +51,10 @@ Brain 在发送外部副作用之前先把意图持久化提交，只发送一�
 放在 host env 里的工具通过一条 host SSE 连接接收命令。`ctx.emit(kind, data)` 把扩展事件提交到同一份日志，
 Promise 在提交完成后才返回。
 
+`session.submit()` 在 turn-start 写入日志后返回回执，托管执行由服务端继续持有。
+网页或 Server Action 随后结束不会取消任务；调用方可按回执中的序号读取事件、查看对话或显式取消。
+host env 仍需要其宿主进程在线，结构化输出校正应放在托管 Agentloop 中。
+
 ## 架构
 
 Agentloop 控制上下文，决定何时调用模型或工具；Brain 协调执行并记录结果。

@@ -2,6 +2,11 @@
 
 The typed client and extension composition contract for a Brain server.
 
+Short-lived callers can use `session.submit(input, { idempotencyKey })` to receive a
+durable turn-start receipt, then observe Events through another client. Hosted execution
+continues after `close()`; host Tools still require their host process. Use `send()` for
+client-side structured-output correction. See [session semantics](https://aex.dev/brain/docs/concepts/sessions).
+
 ```ts
 import { Brain, brainEnv, hostEnv, tool } from "@aexhq/brain";
 import { pi } from "@aexhq/agentloop-pi";

@@ -13,6 +13,37 @@ use brain_protocol::{
 };
 use tower::ServiceExt;
 
+#[tokio::test]
+async fn async_message_returns_a_receipt_and_rejects_unknown_preferences() {
+    for (prefer, status) in [
+        ("respond-async", StatusCode::ACCEPTED),
+        ("wait=10", StatusCode::BAD_REQUEST),
+    ] {
+        let response = router(Api::default(), &HttpLimits::default())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/sessions/ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/messages")
+                    .header("content-type", "application/json")
+                    .header("idempotency-key", "submit")
+                    .header("prefer", prefer)
+                    .body(Body::from(r#"{"input":{"message":"hello"}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+        if status == StatusCode::ACCEPTED {
+            assert_eq!(response.headers()["preference-applied"], "respond-async");
+            let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let receipt: brain_protocol::TurnReceipt = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(receipt.sequence, 8);
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 struct Api {
     /// Held so a test can push a record after the page has been served, which is what a
@@ -160,6 +191,17 @@ impl BrainApi for Api {
         _: MessageRequest,
     ) -> Result<SessionSummary, ApiError> {
         Ok(session())
+    }
+    async fn submit_message(
+        &self,
+        session_id: SessionId,
+        _: String,
+        _: MessageRequest,
+    ) -> Result<brain_protocol::TurnReceipt, ApiError> {
+        Ok(brain_protocol::TurnReceipt {
+            session_id,
+            sequence: 8,
+        })
     }
     async fn call_environment(
         &self,

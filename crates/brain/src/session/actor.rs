@@ -44,6 +44,7 @@ const EVENTS_PER_TURN: usize = 1_000;
 pub enum SessionCommand {
     Message {
         request: MessageRequest,
+        started: oneshot::Sender<brain_protocol::TurnReceipt>,
         reply: oneshot::Sender<Result<SessionSummary, Error>>,
     },
     Cancel,
@@ -94,8 +95,12 @@ impl SessionActor {
     pub async fn run(mut self) {
         while let Some(command) = self.receiver.recv().await {
             match command {
-                SessionCommand::Message { request, reply } => {
-                    let result = self.turn(request).await;
+                SessionCommand::Message {
+                    request,
+                    started,
+                    reply,
+                } => {
+                    let result = self.turn(request, started).await;
                     let _ = reply.send(result);
                 }
                 SessionCommand::Cancel => {
@@ -111,19 +116,29 @@ impl SessionActor {
         }
     }
 
-    async fn turn(&mut self, request: MessageRequest) -> Result<SessionSummary, Error> {
+    async fn turn(
+        &mut self,
+        request: MessageRequest,
+        started: oneshot::Sender<brain_protocol::TurnReceipt>,
+    ) -> Result<SessionSummary, Error> {
         if !matches!(self.row.status, SessionStatus::Idle) {
             return Err(Error::InvalidState("session is not idle".into()));
         }
         self.cancel_requested.store(false, Ordering::Release);
-        self.commit(
-            vec![AppendRecord::new(
-                codes::event::TURN_STARTED,
-                serde_json::to_value(&request).map_err(json_error)?,
-            )],
-            Some(SessionStatus::Running),
-        )
-        .await?;
+        let sequence = self
+            .commit(
+                vec![AppendRecord::new(
+                    codes::event::TURN_STARTED,
+                    serde_json::to_value(&request).map_err(json_error)?,
+                )],
+                Some(SessionStatus::Running),
+            )
+            .await?[0]
+            .sequence;
+        let _ = started.send(brain_protocol::TurnReceipt {
+            session_id: self.row.session_id.clone(),
+            sequence,
+        });
         let since = self
             .folded
             .kv

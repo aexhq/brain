@@ -10,6 +10,97 @@ use brain_protocol::{
 struct Echo;
 
 #[tokio::test]
+async fn submission_commits_before_returning_and_drain_waits_for_completion() {
+    struct Held {
+        finish: tokio::sync::Notify,
+    }
+    #[async_trait]
+    impl LoopExecutor for Held {
+        async fn turn(
+            &self,
+            _: &SessionId,
+            _: u64,
+            _: &AgentloopRef,
+            _: &Environment,
+            input: TurnInput,
+            services: Arc<dyn brain::TurnServices>,
+        ) -> Result<TurnOutput, brain::Error> {
+            self.finish.notified().await;
+            services
+                .set_transcript(vec![Message::user_text(input.input.message)])
+                .await?;
+            Ok(TurnOutput::default())
+        }
+    }
+    let root = root("submit");
+    let mut api = api(&root);
+    let held = Arc::new(Held {
+        finish: tokio::sync::Notify::new(),
+    });
+    Arc::get_mut(&mut Arc::get_mut(&mut api.resources).unwrap().session_runtime)
+        .unwrap()
+        .loop_executor = held.clone();
+    let store = seed(&api, "ses_submit");
+    let id = SessionId::new("ses_submit");
+    let receipt = tokio::time::timeout(
+        Duration::from_secs(2),
+        api.submit_message(
+            id.clone(),
+            MessageRequest {
+                input: "accepted".into(),
+            },
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(receipt.session_id, id);
+    let start = &store.records_after(receipt.sequence - 1, 1).unwrap()[0];
+    assert_eq!(start.sequence, receipt.sequence);
+    assert_eq!(start.kind, codes::event::TURN_STARTED);
+    assert!(matches!(
+        store.session_summary().unwrap().status,
+        SessionStatus::Running
+    ));
+    assert_eq!(
+        api.submit_message(
+            id,
+            MessageRequest {
+                input: "second".into()
+            }
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "overloaded"
+    );
+    let draining_api = api.clone();
+    let draining = tokio::spawn(async move { draining_api.drain().await });
+    while !api.draining.load(Ordering::Acquire) {
+        tokio::task::yield_now().await;
+    }
+    assert!(!draining.is_finished());
+    held.finish.notify_one();
+    tokio::time::timeout(Duration::from_secs(2), draining)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        store.fold().unwrap().transcript,
+        vec![Message::user_text("accepted")]
+    );
+    assert_eq!(
+        store
+            .records_after(0, 100)
+            .unwrap()
+            .iter()
+            .filter(|record| record.kind == codes::event::TURN_STARTED)
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn graceful_drain_keeps_turn_services_alive_and_refuses_new_work() {
     struct Held {
         entered: tokio::sync::Notify,

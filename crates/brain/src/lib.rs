@@ -19,7 +19,7 @@ pub use journal::{
 pub use limits::Limits;
 pub use model::ModelExecutor;
 pub use session::{
-    CreatingSession, LAST_ACTIVATION_KEY, Session, SessionRuntime, TurnServices, random_id,
-    session_config,
+    CreatingSession, LAST_ACTIVATION_KEY, Session, SessionRuntime, SubmittedTurn, TurnServices,
+    random_id, session_config,
 };
 pub use tool::{ToolExecutor, ToolServices};

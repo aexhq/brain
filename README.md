@@ -76,6 +76,8 @@ are plain functions. Any other Environment is reached over HTTP.
   a host, and any Environment over HTTP. Callers own lifecycle policy; Environments implement setup, execution, detach and teardown.
 - **Everything is observable.** Model calls, Tool results and lifecycle changes are committed Events.
   The live feed adds token deltas; reconnecting resumes at a committed sequence.
+- **Short-lived callers can submit work.** `session.submit()` returns a durable turn receipt while
+  hosted execution continues. Read Events and the transcript later, or cancel the session explicitly.
 
 Brain is a native Rust server on [Tokio](https://tokio.rs/) and [Axum](https://github.com/tokio-rs/axum)
 with HTTP and SSE. A local deployment needs no external store. The

@@ -36,6 +36,18 @@ pub struct Session {
     cancelled: Arc<AtomicBool>,
 }
 
+/// A committed turn and its eventual result. Dropping this handle does not cancel it.
+pub struct SubmittedTurn {
+    pub receipt: brain_protocol::TurnReceipt,
+    response: oneshot::Receiver<Result<SessionSummary, Error>>,
+}
+
+impl SubmittedTurn {
+    pub async fn wait(self) -> Result<SessionSummary, Error> {
+        self.response.await.map_err(|_| stopped())?
+    }
+}
+
 /// A session between its first record and its admission. The host sets up the
 /// Environments the request named, journalling each step here, and then admits the
 /// session with [`CreatingSession::complete`].
@@ -128,13 +140,32 @@ impl Session {
 
     /// Runs one turn and returns when it is finished.
     pub async fn message(&self, request: MessageRequest) -> Result<SessionSummary, Error> {
+        self.submit(request).await?.wait().await
+    }
+
+    /// Returns only after the turn-start record has been durably committed.
+    pub async fn submit(&self, request: MessageRequest) -> Result<SubmittedTurn, Error> {
         Self::validate_message(&request)?;
         let (reply, response) = oneshot::channel();
+        let (started, accepted) = oneshot::channel();
         self.sender
-            .send(SessionCommand::Message { request, reply })
+            .send(SessionCommand::Message {
+                request,
+                started,
+                reply,
+            })
             .await
             .map_err(|_| stopped())?;
-        response.await.map_err(|_| stopped())?
+        let receipt = match accepted.await {
+            Ok(receipt) => receipt,
+            Err(_) => {
+                return Err(match response.await {
+                    Ok(Err(error)) => error,
+                    _ => stopped(),
+                });
+            }
+        };
+        Ok(SubmittedTurn { receipt, response })
     }
 
     pub async fn cancel(&self) -> Result<(), Error> {

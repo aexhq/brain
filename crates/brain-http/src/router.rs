@@ -497,10 +497,11 @@ async fn list_sessions<A: BrainApi>(State(api): State<A>) -> Result<Json<Session
     post,
     path = "/v1/sessions/{session_id}/messages",
     operation_id = "sendMessage",
-    params(("session_id" = contract::SessionId, Path), ("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
+    params(("session_id" = contract::SessionId, Path), ("Idempotency-Key" = String, Header, min_length = 1, max_length = 256), ("Prefer" = Option<String>, Header, description = "respond-async returns a durable turn receipt; its idempotency scope is separate from synchronous sends")),
     request_body = contract::MessageRequest,
     responses(
         (status = 200, description = "Updated session", body = contract::SessionSummary),
+        (status = 202, description = "Durably accepted turn", body = contract::TurnReceipt),
         (status = "default", description = "Structured error", body = contract::ApiError)
     )
 )]
@@ -509,12 +510,30 @@ async fn send_message<A: BrainApi>(
     Path(session_id): Path<SessionId>,
     headers: HeaderMap,
     Json(request): Json<MessageRequest>,
-) -> Result<Json<SessionSummary>, HttpError> {
+) -> Result<Response, HttpError> {
+    if let Some(prefer) = headers.get("prefer") {
+        if prefer != "respond-async" {
+            return Err(HttpError(brain_protocol::ApiError::invalid_request(
+                "unsupported Prefer header",
+            )));
+        }
+        let receipt = api
+            .submit_message(session_id, idempotency_key(&headers)?, request)
+            .await
+            .map_err(HttpError)?;
+        return Ok((
+            StatusCode::ACCEPTED,
+            [("preference-applied", "respond-async")],
+            Json(receipt),
+        )
+            .into_response());
+    }
     Ok(Json(
         api.send_message(session_id, idempotency_key(&headers)?, request)
             .await
             .map_err(HttpError)?,
-    ))
+    )
+    .into_response())
 }
 
 #[utoipa::path(
