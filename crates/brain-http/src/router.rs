@@ -497,11 +497,11 @@ async fn list_sessions<A: BrainApi>(State(api): State<A>) -> Result<Json<Session
     post,
     path = "/v1/sessions/{session_id}/messages",
     operation_id = "sendMessage",
-    params(("session_id" = contract::SessionId, Path), ("Idempotency-Key" = String, Header, min_length = 1, max_length = 256), ("Prefer" = Option<String>, Header, description = "respond-async returns a durable turn receipt; its idempotency scope is separate from synchronous sends")),
+    params(("session_id" = contract::SessionId, Path), ("Idempotency-Key" = String, Header, min_length = 1, max_length = 256), ("Prefer" = Option<String>, Header, description = "respond-async returns the committed turn_started event sequence; its idempotency scope is separate from synchronous sends")),
     request_body = contract::MessageRequest,
     responses(
         (status = 200, description = "Updated session", body = contract::SessionSummary),
-        (status = 202, description = "Durably accepted turn", body = contract::TurnReceipt),
+        (status = 202, description = "Sequence of the committed turn_started event", body = u64),
         (status = "default", description = "Structured error", body = contract::ApiError)
     )
 )]

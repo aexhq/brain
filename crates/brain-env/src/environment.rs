@@ -244,7 +244,7 @@ impl EnvironmentAdapter for BrainEnvironment {
                     &Self::configuration(environment)?,
                 )
                 .await?;
-                Ok(EnvironmentReceipt::Accepted)
+                Ok(EnvironmentReceipt::Accepted { on_turn_end: None })
             }
             (EnvironmentRequest::Execute { .. }, Some(services)) => {
                 self.run(environment, operation, services).await
@@ -253,7 +253,7 @@ impl EnvironmentAdapter for BrainEnvironment {
                 "the brain env needs invocation services".into(),
             )),
             (EnvironmentRequest::Cancel { .. } | EnvironmentRequest::Detach, _) => {
-                Ok(EnvironmentReceipt::Accepted)
+                Ok(EnvironmentReceipt::Accepted { on_turn_end: None })
             }
             (EnvironmentRequest::Teardown, _) => {
                 let workspace = self
@@ -261,9 +261,9 @@ impl EnvironmentAdapter for BrainEnvironment {
                     .join(operation.session_id.as_str())
                     .join(operation.environment.as_str());
                 match tokio::fs::remove_dir_all(workspace).await {
-                    Ok(()) => Ok(EnvironmentReceipt::Accepted),
+                    Ok(()) => Ok(EnvironmentReceipt::Accepted { on_turn_end: None }),
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        Ok(EnvironmentReceipt::Accepted)
+                        Ok(EnvironmentReceipt::Accepted { on_turn_end: None })
                     }
                     Err(e) => Err(brain::Error::Executor(e.to_string())),
                 }

@@ -69,14 +69,14 @@ entire conversation on every model call. Outcomes retain the complete model resu
 ## Turns
 
 For a short-lived caller, `session.submit(input, { idempotencyKey })` returns the
-`{ session_id, sequence }` receipt of a durably committed `turn_started` record without
+sequence number of the durably committed `turn_started` event without
 waiting for completion. The HTTP operation is `POST /v1/sessions/{id}/messages` with
 `Prefer: respond-async`; it returns `202` and `Preference-Applied: respond-async`.
 Omitting that header preserves the synchronous response.
 
 Submission and synchronous send have separate idempotency scopes. Retry an uncertain
 submission with the same key and mode; do not switch to `send` as a retry. Another async
-submission while the session is occupied is rejected. Read Events from the receipt's
+submission while the session is occupied is rejected. Read Events after that
 sequence and retrieve the session to observe its eventual status; the handle's cached
 state is not updated by background work.
 
@@ -84,6 +84,10 @@ Closing a client after acceptance does not cancel hosted execution. Host Environ
 still require their host process, and client-side structured-output correction requires
 `send`; put independent execution and output policy in hosted extensions. Drain waits
 for accepted turns. Restart records interrupted work without replay, as described below.
+
+Environments may register a turn-end method during setup. The answer is available before
+these calls finish; their results appear in the same event stream. Resource cleanup belongs
+to the Environment's configuration. It does not end the session or discard its transcript.
 
 A turn starts when a client sends a message and ends when the Agentloop returns or fails. During
 the activation the loop may call Brain's model, Tool dispatch, event emission, and telemetry

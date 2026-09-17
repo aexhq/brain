@@ -68,7 +68,7 @@ async fn an_explicit_unknown_receipt_is_a_tool_outcome_not_a_transport_failure()
 #[tokio::test]
 async fn nonterminal_execute_receipts_leave_the_effect_unknown() {
     for receipt in [
-        EnvironmentReceipt::Accepted,
+        EnvironmentReceipt::Accepted { on_turn_end: None },
         EnvironmentReceipt::Progress { data: json!({}) },
     ] {
         let executor = SessionToolExecutor::new(Arc::new(EnvironmentRegistry::new(Arc::new(

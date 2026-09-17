@@ -86,7 +86,7 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
         session_id: SessionId,
         idempotency_key: String,
         request: MessageRequest,
-    ) -> Result<brain_protocol::TurnReceipt, ApiError>;
+    ) -> Result<u64, ApiError>;
     async fn call_environment(
         &self,
         session_id: SessionId,

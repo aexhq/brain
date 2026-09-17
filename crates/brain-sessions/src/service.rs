@@ -374,28 +374,57 @@ impl Sessions {
         Ok(session)
     }
 
-    /// Own the running turn independently of the request waiting for its receipt.
+    /// Own the running turn independently of the request waiting for its start sequence.
     pub async fn submit_message(
         &self,
         session_id: SessionId,
         request: MessageRequest,
-    ) -> Result<brain_protocol::TurnReceipt, ApiError> {
+    ) -> Result<u64, ApiError> {
+        Ok(self.start_message(session_id, request, false).await?.0)
+    }
+
+    async fn start_message(
+        &self,
+        session_id: SessionId,
+        request: MessageRequest,
+        wait_for_session: bool,
+    ) -> Result<
+        (
+            u64,
+            tokio::sync::oneshot::Receiver<Result<SessionSummary, brain::Error>>,
+        ),
+        ApiError,
+    > {
         Session::validate_message(&request).map_err(api_error)?;
         let active = self.admit_work().await?;
-        let guard = self
-            .session_lock(&session_id)?
-            .try_lock_owned()
-            .map_err(|_| ApiError::overloaded("session already has active work"))?;
+        let lock = self.session_lock(&session_id)?;
+        let guard = if wait_for_session {
+            lock.lock_owned().await
+        } else {
+            lock.try_lock_owned()
+                .map_err(|_| ApiError::overloaded("session already has active work"))?
+        };
         let session = self.session(&session_id).await?;
+        let store = self.store(&session_id).await?;
         let api = self.clone();
         let (reply, accepted) = tokio::sync::oneshot::channel();
+        let (finished, result) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             let _active = active;
             let _guard = guard;
             match session.submit(request).await {
                 Ok(turn) => {
-                    let _ = reply.send(Ok(turn.receipt.clone()));
-                    let _ = turn.wait().await;
+                    let sequence = turn.sequence;
+                    let _ = reply.send(Ok(sequence));
+                    let _ = finished.send(turn.wait().await);
+                    if let Err(error) = api
+                        .resources
+                        .environments
+                        .turn_ended(&session, &*store, sequence)
+                        .await
+                    {
+                        tracing::warn!(%session_id, %error, "Environment turn-end callbacks could not be read");
+                    }
                     api.passivate_unretained(&session_id).await
                 }
                 Err(error) => {
@@ -404,9 +433,10 @@ impl Sessions {
                 }
             }
         });
-        accepted
+        let sequence = accepted
             .await
-            .map_err(|_| internal("turn admission stopped"))?
+            .map_err(|_| internal("turn admission stopped"))??;
+        Ok((sequence, result))
     }
 
     async fn passivate_unretained(&self, session_id: &SessionId) -> Result<(), ApiError> {
@@ -499,17 +529,11 @@ impl Sessions {
         session_id: SessionId,
         request: MessageRequest,
     ) -> Result<SessionSummary, ApiError> {
-        let _active = self.admit_work().await?;
-        Session::validate_message(&request).map_err(api_error)?;
-        let lock = self.session_lock(&session_id)?;
-        let _guard = lock.lock().await;
-        let result = self
-            .session(&session_id)
-            .await?
-            .message(request.clone())
-            .await;
-        self.passivate_unretained(&session_id).await?;
-        result.map_err(api_error)
+        let (_, result) = self.start_message(session_id, request, true).await?;
+        result
+            .await
+            .map_err(|_| internal("turn stopped"))?
+            .map_err(api_error)
     }
 
     pub async fn call_environment(
@@ -599,7 +623,7 @@ impl Sessions {
     }
 }
 
-fn valid_identifier(value: &str) -> bool {
+pub(crate) fn valid_identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && value.bytes().enumerate().all(|(index, byte)| {

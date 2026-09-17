@@ -152,7 +152,7 @@ impl ToolExecutor for SessionToolExecutor {
             .execute(&cancellation.environment, &operation, None)
             .await?
         {
-            EnvironmentReceipt::Accepted | EnvironmentReceipt::Result { .. } => Ok(()),
+            EnvironmentReceipt::Accepted { .. } | EnvironmentReceipt::Result { .. } => Ok(()),
             EnvironmentReceipt::Failure { message, .. } => Err(brain::Error::Executor(message)),
             EnvironmentReceipt::Unknown { message } => Err(brain::Error::Ambiguous(message)),
             _ => Err(brain::Error::Executor(

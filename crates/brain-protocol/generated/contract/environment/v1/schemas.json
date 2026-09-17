@@ -50,6 +50,11 @@
       "oneOf": [
         {
           "properties": {
+            "on_turn_end": {
+              "description": "Setup may register a method Brain calls after each turn, with its start sequence.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
             "type": {
               "const": "accepted",
               "type": "string"

@@ -10,6 +10,181 @@ use brain_protocol::{
 struct Echo;
 
 #[tokio::test]
+async fn turn_end_callbacks_are_journaled_and_do_not_delay_answers() {
+    use brain_protocol::{EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest};
+
+    struct Hooks {
+        entered: tokio::sync::Notify,
+        finish: tokio::sync::Notify,
+    }
+    #[async_trait]
+    impl brain::environment::EnvironmentAdapter for Hooks {
+        async fn execute(
+            &self,
+            _: &Environment,
+            operation: &EnvironmentOperation,
+            _: brain::environment::Services,
+        ) -> Result<EnvironmentReceipt, brain::Error> {
+            match &operation.request {
+                EnvironmentRequest::Setup { .. } => Ok(EnvironmentReceipt::Accepted {
+                    on_turn_end: Some("release".into()),
+                }),
+                EnvironmentRequest::Call { name, input } => {
+                    assert_eq!(name, "release");
+                    assert!(input["sequence"].as_u64().unwrap() < operation.sequence);
+                    self.entered.notify_one();
+                    self.finish.notified().await;
+                    Err(brain::Error::Ambiguous("cleanup response lost".into()))
+                }
+                _ => panic!("unexpected operation"),
+            }
+        }
+    }
+    struct Turn;
+    #[async_trait]
+    impl LoopExecutor for Turn {
+        async fn turn(
+            &self,
+            _: &SessionId,
+            _: u64,
+            _: &AgentloopRef,
+            _: &Environment,
+            input: TurnInput,
+            services: Arc<dyn brain::TurnServices>,
+        ) -> Result<TurnOutput, brain::Error> {
+            services
+                .set_transcript(vec![Message::user_text("saved")])
+                .await?;
+            match input.input.message.as_str() {
+                "fail" => Err(brain::Error::Executor("turn failed".into())),
+                "cancel" => {
+                    while !services.cancelled() {
+                        tokio::task::yield_now().await;
+                    }
+                    Ok(TurnOutput::default())
+                }
+                _ => Ok(TurnOutput::default()),
+            }
+        }
+    }
+    for outcome in ["success", "fail", "cancel"] {
+        let root = root(outcome);
+        let mut api = api(&root);
+        let hooks = Arc::new(Hooks {
+            entered: tokio::sync::Notify::new(),
+            finish: tokio::sync::Notify::new(),
+        });
+        let resources = Arc::get_mut(&mut api.resources).unwrap();
+        resources.environments = Arc::new(EnvironmentRegistry::new(hooks.clone()));
+        Arc::get_mut(&mut resources.session_runtime)
+            .unwrap()
+            .loop_executor = Arc::new(Turn);
+        let config = session_config();
+        let id = SessionId::new("ses_hooks");
+        api.create_session(id.clone(), config, vec![])
+            .await
+            .unwrap();
+        let sending_api = api.clone();
+        let sending_id = id.clone();
+        let sending = tokio::spawn(async move {
+            sending_api
+                .send_message(
+                    sending_id,
+                    MessageRequest {
+                        input: outcome.into(),
+                    },
+                )
+                .await
+        });
+        if outcome == "cancel" {
+            while api
+                .transcript(id.clone())
+                .await
+                .unwrap()
+                .messages
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+            api.cancel_session(id.clone()).await.unwrap();
+        }
+        let answer = tokio::time::timeout(Duration::from_secs(2), sending)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(answer.unwrap().status, SessionStatus::Idle));
+        tokio::time::timeout(Duration::from_secs(2), hooks.entered.notified())
+            .await
+            .unwrap();
+        assert_eq!(
+            api.transcript(id.clone()).await.unwrap().messages,
+            vec![Message::user_text("saved")]
+        );
+        let events = api.events(id.clone(), None).await.unwrap().events;
+        let callback = events
+            .iter()
+            .position(|e| e.event_type == "environment_call_started")
+            .unwrap();
+        let terminal = events
+            .iter()
+            .position(|e| {
+                e.event_type
+                    == if outcome == "success" {
+                        "turn_ended"
+                    } else {
+                        "turn_failed"
+                    }
+            })
+            .unwrap();
+        assert!(terminal < callback);
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.event_type == "environment_call_failed")
+        );
+        assert_eq!(
+            api.submit_message(
+                id.clone(),
+                MessageRequest {
+                    input: "later".into()
+                }
+            )
+            .await
+            .unwrap_err()
+            .code,
+            "overloaded"
+        );
+        let draining_api = api.clone();
+        let draining = tokio::spawn(async move { draining_api.drain().await });
+        while !api.draining.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+        assert!(!draining.is_finished());
+        hooks.finish.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), draining)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            api.events(id.clone(), None)
+                .await
+                .unwrap()
+                .events
+                .iter()
+                .any(|e| e.event_type == "environment_call_failed")
+        );
+        drop(api);
+        let restored = self::api(&root);
+        assert_eq!(
+            restored.transcript(id).await.unwrap().messages,
+            vec![Message::user_text("saved")]
+        );
+        drop(restored);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[tokio::test]
 async fn submission_commits_before_returning_and_drain_waits_for_completion() {
     struct Held {
         finish: tokio::sync::Notify,
@@ -42,7 +217,7 @@ async fn submission_commits_before_returning_and_drain_waits_for_completion() {
         .loop_executor = held.clone();
     let store = seed(&api, "ses_submit");
     let id = SessionId::new("ses_submit");
-    let receipt = tokio::time::timeout(
+    let sequence = tokio::time::timeout(
         Duration::from_secs(2),
         api.submit_message(
             id.clone(),
@@ -54,9 +229,8 @@ async fn submission_commits_before_returning_and_drain_waits_for_completion() {
     .await
     .unwrap()
     .unwrap();
-    assert_eq!(receipt.session_id, id);
-    let start = &store.records_after(receipt.sequence - 1, 1).unwrap()[0];
-    assert_eq!(start.sequence, receipt.sequence);
+    let start = &store.records_after(sequence - 1, 1).unwrap()[0];
+    assert_eq!(start.sequence, sequence);
     assert_eq!(start.kind, codes::event::TURN_STARTED);
     assert!(matches!(
         store.session_summary().unwrap().status,
@@ -262,13 +436,17 @@ impl brain::environment::EnvironmentAdapter for UnusedEnvironment {
         panic!("seeded sessions do not call an Environment")
     }
 }
-fn seed(api: &Sessions, id: &str) -> Arc<LocalSessionStore> {
-    let config: SessionConfig = serde_json::from_value(serde_json::json!({
+fn session_config() -> SessionConfig {
+    serde_json::from_value(serde_json::json!({
         "agentloop": {"implementation": {"type": "brain_component", "entrypoint": "turn", "id": "a".repeat(64)}, "configuration": {}, "environment": "brain"},
         "model": {"provider": "openai", "name": "test"}, "system": "test", "tools": [],
         "environments": [{"name": "brain", "driver": "brain"}]
     }))
-    .unwrap();
+    .unwrap()
+}
+
+fn seed(api: &Sessions, id: &str) -> Arc<LocalSessionStore> {
+    let config = session_config();
     let store = LocalSessionStore::create(
         &api.resources.sessions_dir.join(id),
         SessionId::new(id),
@@ -331,7 +509,6 @@ async fn startup_does_not_open_histories_and_reads_do_not_start_execution() {
     )
     .await
     .unwrap();
-    assert!(api.sessions.lock().unwrap().is_empty());
     tokio::time::timeout(Duration::from_secs(5), async {
         while weak.strong_count() > 0 {
             tokio::task::yield_now().await;
@@ -370,6 +547,7 @@ async fn startup_does_not_open_histories_and_reads_do_not_start_execution() {
             .len(),
         2
     );
+    drop(api.active.write().await);
     assert!(api.sessions.lock().unwrap().is_empty());
     drop(subscription);
     drop(api);

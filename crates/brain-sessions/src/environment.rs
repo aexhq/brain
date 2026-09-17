@@ -41,7 +41,18 @@ impl EnvironmentRegistry {
             request,
         };
         let sent = self.adapter.execute(environment, &operation, None).await;
-        match sent.and_then(|receipt| terminal(receipt, "setup")) {
+        match sent.and_then(|receipt| {
+            if let EnvironmentReceipt::Accepted {
+                on_turn_end: Some(name),
+            } = &receipt
+                && !crate::service::valid_identifier(name)
+            {
+                return Err(brain::Error::Executor(
+                    "Environment turn-end method name is invalid".into(),
+                ));
+            }
+            terminal(receipt, "setup")
+        }) {
             Ok(receipt) => creation.record_call_ended(kind, sequence, &receipt),
             Err(error) => {
                 creation.record_call_failed(kind, sequence, &error)?;
@@ -122,6 +133,60 @@ impl EnvironmentRegistry {
                 Err(error)
             }
         }
+    }
+
+    /// Read only admission records; conversation history is not needed to find registrations.
+    pub async fn turn_ended(
+        &self,
+        session: &Session,
+        store: &dyn SessionStore,
+        sequence: u64,
+    ) -> Result<(), brain::Error> {
+        let mut setups = std::collections::HashMap::new();
+        let mut callbacks = Vec::new();
+        let mut after = 0;
+        'admission: loop {
+            let records = store.records_after(after, 32)?;
+            if records.is_empty() {
+                break;
+            }
+            for record in records {
+                after = record.sequence;
+                match record.kind.as_str() {
+                    codes::event::SESSION_CREATION_ENDED
+                    | codes::event::SESSION_CREATION_FAILED => break 'admission,
+                    codes::event::ENVIRONMENT_SETUP_STARTED => {
+                        if let Some(name) = record.payload["environment"].as_str() {
+                            setups.insert(record.sequence, EnvironmentName::new(name));
+                        }
+                    }
+                    codes::event::ENVIRONMENT_SETUP_ENDED => {
+                        if let Some(name) = record.payload["result"]["on_turn_end"].as_str()
+                            && let Some(started) = record.payload["sequence"].as_u64()
+                            && let Some(environment) = setups.remove(&started)
+                        {
+                            callbacks.push((environment, name.to_owned()));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for (environment, name) in callbacks {
+            if let Err(error) = self
+                .call(
+                    session,
+                    store,
+                    &environment,
+                    name,
+                    serde_json::json!({"sequence": sequence}),
+                )
+                .await
+            {
+                tracing::warn!(%environment, %error, "Environment turn-end callback failed");
+            }
+        }
+        Ok(())
     }
 
     /// Detaches the session from every Environment it was set up in, last first. The

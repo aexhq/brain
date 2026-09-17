@@ -44,7 +44,7 @@ const EVENTS_PER_TURN: usize = 1_000;
 pub enum SessionCommand {
     Message {
         request: MessageRequest,
-        started: oneshot::Sender<brain_protocol::TurnReceipt>,
+        started: oneshot::Sender<u64>,
         reply: oneshot::Sender<Result<SessionSummary, Error>>,
     },
     Cancel,
@@ -119,7 +119,7 @@ impl SessionActor {
     async fn turn(
         &mut self,
         request: MessageRequest,
-        started: oneshot::Sender<brain_protocol::TurnReceipt>,
+        started: oneshot::Sender<u64>,
     ) -> Result<SessionSummary, Error> {
         if !matches!(self.row.status, SessionStatus::Idle) {
             return Err(Error::InvalidState("session is not idle".into()));
@@ -135,10 +135,7 @@ impl SessionActor {
             )
             .await?[0]
             .sequence;
-        let _ = started.send(brain_protocol::TurnReceipt {
-            session_id: self.row.session_id.clone(),
-            sequence,
-        });
+        let _ = started.send(sequence);
         let since = self
             .folded
             .kv

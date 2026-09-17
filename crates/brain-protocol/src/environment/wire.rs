@@ -103,7 +103,12 @@ pub enum EnvironmentRequest {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EnvironmentReceipt {
-    Accepted,
+    Accepted {
+        /// Setup may register a method Brain calls after each turn, with its start sequence.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(schema_with = "crate::schema::identifier")]
+        on_turn_end: Option<String>,
+    },
     Progress {
         data: serde_json::Value,
     },

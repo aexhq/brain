@@ -10,7 +10,7 @@ use brain_protocol::{
 struct Echo;
 
 #[tokio::test]
-async fn submission_receipt_replays_after_restart_without_another_turn() {
+async fn submission_sequence_replays_after_restart_without_another_turn() {
     let root = root("submission-replay");
     let server = api(&root);
     let create: CreateSessionRequest = serde_json::from_value(serde_json::json!({
@@ -46,8 +46,7 @@ async fn submission_receipt_replays_after_restart_without_another_turn() {
         .submit_message(session.session_id.clone(), "submit".into(), request)
         .await
         .unwrap();
-    assert_eq!(receipt.session_id, replay.session_id);
-    assert_eq!(receipt.sequence, replay.sequence);
+    assert_eq!(receipt, replay);
     assert_eq!(
         restored
             .events(session.session_id.clone(), None)

@@ -6,17 +6,17 @@ import { Brain, BrainError, agentloop, brainEnv, component, environment, hostEnv
 
 const sessionResponse = { session_id: "ses_12345678901234567890", status: "idle", last_sequence: 1 };
 
-test("submit returns the durable receipt and closing sends no cancellation", async () => {
+test("submit returns the start sequence and closing sends no cancellation", async () => {
   const requests = [];
-  const receipt = { session_id: sessionResponse.session_id, sequence: 8 };
+  const sequence = 8;
   const brain = new Brain({ baseUrl: "https://brain.example", fetch: async (url, init) => {
     const request = new Request(url, init);
     requests.push(request);
-    return Response.json(request.method === "POST" ? receipt : sessionResponse,
+    return Response.json(request.method === "POST" ? sequence : sessionResponse,
       { status: request.method === "POST" ? 202 : 200 });
   } });
   const session = await brain.sessions.get(sessionResponse.session_id);
-  assert.deepEqual(await session.submit("work", { idempotencyKey: "stable" }), receipt);
+  assert.deepEqual(await session.submit("work", { idempotencyKey: "stable" }), sequence);
   assert.equal(requests[1].headers.get("prefer"), "respond-async");
   assert.equal(requests[1].headers.get("idempotency-key"), "stable");
   assert.deepEqual(await requests[1].json(), { input: { message: "work" } });

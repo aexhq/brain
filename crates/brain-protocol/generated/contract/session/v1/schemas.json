@@ -1317,25 +1317,6 @@
       ],
       "type": "object"
     },
-    "TurnReceipt": {
-      "additionalProperties": false,
-      "description": "The durable turn-start record. Acceptance does not promise successful completion.",
-      "properties": {
-        "sequence": {
-          "format": "uint64",
-          "minimum": 1,
-          "type": "integer"
-        },
-        "session_id": {
-          "$ref": "#/$defs/SessionId"
-        }
-      },
-      "required": [
-        "session_id",
-        "sequence"
-      ],
-      "type": "object"
-    },
     "Usage": {
       "description": "Provider-reported usage. Every field is `Option` because **absent is never\nzero** -- a provider that does not report cache reads is not a provider that\nread zero cache tokens.",
       "properties": {

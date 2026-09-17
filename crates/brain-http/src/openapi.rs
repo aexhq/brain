@@ -64,7 +64,6 @@ pub(crate) mod contract {
         HostRegistration,
         HostResult,
         MessageRequest,
-        TurnReceipt,
         ModelList,
         SessionId,
         SessionList,
