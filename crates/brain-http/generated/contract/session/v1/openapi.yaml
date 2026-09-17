@@ -969,20 +969,6 @@ components:
       - code
       - message
       type: object
-    TurnReceipt:
-      additionalProperties: false
-      description: The durable turn-start record. Acceptance does not promise successful completion.
-      properties:
-        sequence:
-          format: uint64
-          minimum: 1
-          type: integer
-        session_id:
-          $ref: '#/components/schemas/SessionId'
-      required:
-      - session_id
-      - sequence
-      type: object
     Usage:
       description: |-
         Provider-reported usage. Every field is `Option` because **absent is never
@@ -1492,7 +1478,7 @@ paths:
           maxLength: 256
           minLength: 1
           type: string
-      - description: respond-async returns a durable turn receipt; its idempotency scope is separate from synchronous sends
+      - description: respond-async returns the committed turn_started event sequence; its idempotency scope is separate from synchronous sends
         in: header
         name: Prefer
         required: false
@@ -1515,10 +1501,12 @@ paths:
           description: Updated session
         '202':
           content:
-            application/json:
+            text/plain:
               schema:
-                $ref: '#/components/schemas/TurnReceipt'
-          description: Durably accepted turn
+                format: int64
+                minimum: 0
+                type: integer
+          description: Sequence of the committed turn_started event
         default:
           content:
             application/json:

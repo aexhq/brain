@@ -30,7 +30,7 @@ mod tests {
                         Ok(Json(brain_protocol::EnvironmentResponse {
                             contract: brain_protocol::ENVIRONMENT_CONTRACT.into(),
                             sequence: command.operation.sequence,
-                            receipt: EnvironmentReceipt::Accepted,
+                            receipt: EnvironmentReceipt::Accepted { on_turn_end: None },
                         }))
                     }
                 }

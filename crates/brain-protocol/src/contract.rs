@@ -45,7 +45,6 @@ pub fn session() -> Value {
             define::<HostResult>(generator);
             define::<Message>(generator);
             define::<MessageRequest>(generator);
-            define::<crate::TurnReceipt>(generator);
             define::<crate::ModelList>(generator);
             define::<crate::ModelRequest>(generator);
             define::<crate::ModelResult>(generator);

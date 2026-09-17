@@ -38,7 +38,7 @@ pub struct Session {
 
 /// A committed turn and its eventual result. Dropping this handle does not cancel it.
 pub struct SubmittedTurn {
-    pub receipt: brain_protocol::TurnReceipt,
+    pub sequence: u64,
     response: oneshot::Receiver<Result<SessionSummary, Error>>,
 }
 
@@ -156,8 +156,8 @@ impl Session {
             })
             .await
             .map_err(|_| stopped())?;
-        let receipt = match accepted.await {
-            Ok(receipt) => receipt,
+        let sequence = match accepted.await {
+            Ok(sequence) => sequence,
             Err(_) => {
                 return Err(match response.await {
                     Ok(Err(error)) => error,
@@ -165,7 +165,7 @@ impl Session {
                 });
             }
         };
-        Ok(SubmittedTurn { receipt, response })
+        Ok(SubmittedTurn { sequence, response })
     }
 
     pub async fn cancel(&self) -> Result<(), Error> {

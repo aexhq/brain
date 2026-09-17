@@ -5,7 +5,7 @@ import { HostToolRegistry } from "./host.js";
 import { structuredOutput } from "./structured-output.js";
 import type {
   AgentloopAdmission, CreateSessionRequest, Environment as WireEnvironment, EventPage, HostRegistration,
-  SessionList, SessionSummary as WireSession, SessionTranscript, Tool as WireTool, ToolAdmission, TurnReceipt,
+  SessionList, SessionSummary as WireSession, SessionTranscript, Tool as WireTool, ToolAdmission,
 } from "./generated/session.js";
 import type {
   Component, CreateSessionOptions, Environment, OperationOptions, PlacedAgentloop, PlacedTool,
@@ -369,8 +369,8 @@ export class SessionHandle {
   ) {}
   get id(): string { return this.state.id; }
 
-  /** Return a durable receipt without waiting for the turn. Closing this client does not cancel hosted execution. */
-  async submit(input: UserInput | string, operation: OperationOptions = {}): Promise<TurnReceipt> {
+  /** Return the committed turn_started event's sequence. Closing this client does not cancel the turn. */
+  async submit(input: UserInput | string, operation: OperationOptions = {}): Promise<number> {
     const normalized = typeof input === "string" ? { message: input } : input;
     if (typeof normalized?.message !== "string" || normalized.message === "") throw new TypeError("submit needs a non-empty message");
     if ("output" in operation) throw new TypeError("submit requires structured output to run in the hosted Agentloop");

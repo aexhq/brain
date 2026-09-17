@@ -498,7 +498,7 @@ impl EnvironmentAdapter for HostEnvironment {
                     return Err(brain::Error::Executor("the host is not connected".into()));
                 }
                 self.bind_session(&operation.session_id, &operation.environment, host_id)?;
-                Ok(EnvironmentReceipt::Accepted)
+                Ok(EnvironmentReceipt::Accepted { on_turn_end: None })
             }
             (
                 EnvironmentRequest::Execute {
@@ -551,11 +551,11 @@ impl EnvironmentAdapter for HostEnvironment {
             )),
             (EnvironmentRequest::Cancel { target_sequence }, _) => {
                 self.cancel(host_id, operation, *target_sequence)?;
-                Ok(EnvironmentReceipt::Accepted)
+                Ok(EnvironmentReceipt::Accepted { on_turn_end: None })
             }
             (EnvironmentRequest::Detach | EnvironmentRequest::Teardown, _) => {
                 self.release_session(&operation.session_id, &operation.environment)?;
-                Ok(EnvironmentReceipt::Accepted)
+                Ok(EnvironmentReceipt::Accepted { on_turn_end: None })
             }
             (EnvironmentRequest::Call { .. }, _) => Ok(unsupported("answer calls")),
         }

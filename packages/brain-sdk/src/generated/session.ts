@@ -676,13 +676,3 @@ export interface TurnEmitRequest {
   data: unknown;
   event_type: string;
 }
-/**
- * The durable turn-start record. Acceptance does not promise successful completion.
- *
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "TurnReceipt".
- */
-export interface TurnReceipt {
-  sequence: number;
-  session_id: SessionId;
-}

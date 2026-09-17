@@ -14,7 +14,7 @@ use brain_protocol::{
 use tower::ServiceExt;
 
 #[tokio::test]
-async fn async_message_returns_a_receipt_and_rejects_unknown_preferences() {
+async fn async_message_returns_a_sequence_and_rejects_unknown_preferences() {
     for (prefer, status) in [
         ("respond-async", StatusCode::ACCEPTED),
         ("wait=10", StatusCode::BAD_REQUEST),
@@ -38,8 +38,8 @@ async fn async_message_returns_a_receipt_and_rejects_unknown_preferences() {
             let bytes = axum::body::to_bytes(response.into_body(), 4096)
                 .await
                 .unwrap();
-            let receipt: brain_protocol::TurnReceipt = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(receipt.sequence, 8);
+            let sequence: u64 = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(sequence, 8);
         }
     }
 }
@@ -194,14 +194,11 @@ impl BrainApi for Api {
     }
     async fn submit_message(
         &self,
-        session_id: SessionId,
+        _: SessionId,
         _: String,
         _: MessageRequest,
-    ) -> Result<brain_protocol::TurnReceipt, ApiError> {
-        Ok(brain_protocol::TurnReceipt {
-            session_id,
-            sequence: 8,
-        })
+    ) -> Result<u64, ApiError> {
+        Ok(8)
     }
     async fn call_environment(
         &self,

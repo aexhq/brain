@@ -388,7 +388,7 @@ impl BrainApi for ServerApi {
         session_id: SessionId,
         idempotency_key: String,
         request: MessageRequest,
-    ) -> Result<brain_protocol::TurnReceipt, ApiError> {
+    ) -> Result<u64, ApiError> {
         Session::validate_message(&request).map_err(api_error)?;
         let scope = format!("session:{session_id}:submit");
         let lock = self.idempotency_lock(&scope, &idempotency_key)?;
@@ -401,7 +401,7 @@ impl BrainApi for ServerApi {
         {
             return Self::replay(saved);
         }
-        let receipt = self
+        let sequence = self
             .sessions
             .submit_message(session_id, request.clone())
             .await?;
@@ -411,10 +411,10 @@ impl BrainApi for ServerApi {
                 &scope,
                 &idempotency_key,
                 &request,
-                &serde_json::to_value(&receipt).map_err(|error| internal(error.to_string()))?,
+                &serde_json::to_value(sequence).map_err(|error| internal(error.to_string()))?,
             )
             .map_err(api_error)?;
-        Ok(receipt)
+        Ok(sequence)
     }
 
     async fn call_environment(

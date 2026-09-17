@@ -81,10 +81,21 @@ subsequent calls fail. Never preserve a callback for the next execution.
 
 ## Lifecycle and delivery
 
-The caller decides how long the Environment remains available. Implement setup, detach and
-teardown; do not implement an idle-expiry policy in the Environment. Session creation calls
-setup, ending calls detach, and deletion calls teardown. A physical provider ceiling can still
-terminate resources; report that loss explicitly, without silently allocating replacements.
+Resource lifetime belongs to the Environment's configuration. Session creation calls setup,
+ending calls detach, and deletion calls teardown. Brain passivating between turns does not end
+the session or release its resources.
+
+Setup can return `{ type: "accepted", on_turn_end: "release" }` to register a method for
+turn completion. After a successful, failed, or cancelled turn, Brain sends
+`call { name: "release", input: { sequence } }`, where `sequence` names `turn_started`.
+The Environment decides what this method does and whether its configuration enables it.
+For example, a disposable sandbox can terminate; a workspace can remain available.
+
+The answer is saved and returned before this call finishes. Brain journals the call and its
+outcome and waits for it before starting another turn or completing a graceful drain. A failed
+cleanup does not replace the answer. Like other effects, callbacks are not retried or replayed
+after a restart; a provider deadline still bounds resources if Brain stops before delivery.
+Report resource loss explicitly, without silently allocating replacements.
 
 Brain commits each operation before delivery and sends it once. Identify it by session and
 sequence, retain uncertainty when an effect may have occurred, and never automatically retry
