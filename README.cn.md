@@ -45,8 +45,9 @@
 
 每个会话只有一份规范日志。会话状态、公共事件、对话记录和 Agentloop kv 都是它的投影。
 Brain 在发送外部副作用之前先把意图持久化提交，只发送一次，绝不自动重试。已知结果、已知失败或
-未知结果都会在返回 Agentloop 之前提交。替换现有对话尾部的规范记录同时投影为
-`transcript_replaced` 事件；纯追加不产生重复事件。
+未知结果都会在返回 Agentloop 之前提交。对话追加与替换的规范记录同时投影为
+`transcript_delta` 事件；KV 写入与删除分别投影为 `kv_set`、`kv_delete`。
+监听者可按序重建完整 transcript 和 KV，断线后用 `after` 接续。
 
 放在 host env 里的工具通过一条 host SSE 连接接收命令。`ctx.emit(kind, data)` 把扩展事件提交到同一份日志，
 Promise 在提交完成后才返回。

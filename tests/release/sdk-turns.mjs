@@ -27,13 +27,13 @@ try {
   const events = [];
   for await (const event of session.events()) events.push(event);
   assert.deepEqual(
-    events.slice(-5).map(({ type }) => type),
-    ["turn_started", "activation_started", "note", "activation_ended", "turn_ended"],
+    events.slice(-7).map(({ type }) => type),
+    ["turn_started", "activation_started", "kv_set", "note", "activation_ended", "kv_set", "turn_ended"],
   );
   assert.deepEqual(events.at(-1)?.data.result, { turns: 1, message: "finish without external capabilities" });
   assert.ok(events.every(({ recordedAt }) => recordedAt instanceof Date && !Number.isNaN(recordedAt.valueOf())));
-  // One sequence counter numbers both logs, so the feed is strictly increasing, not contiguous.
-  assert.ok(events.every(({ sequence }, index) => index === 0 || sequence > events[index - 1].sequence));
+  assert.deepEqual(events.map(({ sequence }) => sequence), events.map((_, index) => index + 1));
+  assert.deepEqual(events.find(({ type, data }) => type === "kv_set" && data.key === "memory").data.value, { turns: 1 });
 
   assert.deepEqual((await session.transcript()).messages, []);
 

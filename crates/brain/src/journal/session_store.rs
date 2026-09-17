@@ -98,12 +98,10 @@ struct State {
     last_recorded_at_ms: u64,
     next_sequence: u64,
     next_recorded_at_ms: u64,
-    /// `events[i]` holds the public Event at sequence `i + 1`; pure transcript appends
-    /// and private state mutations leave `None` at their sequence.
-    events: Vec<Option<Location>>,
+    /// `events[i]` holds the committed Event at sequence `i + 1`.
+    events: Vec<Location>,
     folded: Folded,
     pending: BTreeMap<u64, String>,
-    transcript_len: usize,
 }
 
 impl State {
@@ -185,7 +183,6 @@ impl LocalSessionStore {
                 events: Vec::new(),
                 folded: Folded::default(),
                 pending: BTreeMap::new(),
-                transcript_len: 0,
             })),
         }))
     }
@@ -242,7 +239,6 @@ impl LocalSessionStore {
             events: Vec::new(),
             folded: Folded::default(),
             pending: BTreeMap::new(),
-            transcript_len: 0,
         };
         let journal = SegmentLog::open(
             &directory.join(JOURNAL_DIR),
@@ -259,11 +255,10 @@ impl LocalSessionStore {
                 state.last_recorded_at_ms = frame.recorded_at_ms;
                 if JournalEntry::is_kind(frame.kind) {
                     let entry = frame.decode::<JournalEntry>()?;
-                    let visible = transcript_replaced(&mut state.transcript_len, &entry);
-                    state.events.push(visible.then_some(location));
+                    state.events.push(location);
                     state.folded.apply(entry);
                 } else {
-                    state.events.push(Some(location));
+                    state.events.push(location);
                     if frame.kind.ends_with("_started")
                         || frame.kind.ends_with("_ended")
                         || frame.kind.ends_with("_failed")
@@ -515,7 +510,7 @@ impl LocalSessionStore {
                         ));
                     }
                     for (location, record) in locations.into_iter().zip(&saved) {
-                        state.events.push(Some(location));
+                        state.events.push(location);
                         state.observe_effect(record.sequence, &record.kind, &record.payload);
                     }
                     state.row.through_sequence += saved.len() as u64;
@@ -616,17 +611,14 @@ impl LocalSessionStore {
                         locations.into_iter().zip(entries).enumerate()
                     {
                         let sequence = first_sequence + offset as u64;
-                        let visible = transcript_replaced(&mut state.transcript_len, &entry);
-                        state.events.push(visible.then_some(location));
+                        state.events.push(location);
                         state.folded.apply(entry.clone());
-                        if visible {
-                            projected.push(project_transcript_replacement(
-                                session_id.clone(),
-                                sequence,
-                                recorded_at_ms,
-                                entry,
-                            ));
-                        }
+                        projected.push(project_state_change(
+                            session_id.clone(),
+                            sequence,
+                            recorded_at_ms,
+                            entry,
+                        ));
                     }
                     state.row.through_sequence += count;
                     state.last_recorded_at_ms = recorded_at_ms;
@@ -767,17 +759,15 @@ impl SessionStore for LocalSessionStore {
                 return Ok(Vec::new());
             };
             while wanted.len() < limit {
-                let Some(kv) = state.events.get(sequence as usize - 1) else {
+                let Some(location) = state.events.get(sequence as usize - 1) else {
                     break;
                 };
-                if let Some(location) = kv {
-                    let next = bytes.saturating_add(u64::from(location.length));
-                    if !wanted.is_empty() && next > MAX_EVENT_PAGE_BYTES {
-                        break;
-                    }
-                    bytes = next;
-                    wanted.push((sequence, *location));
+                let next = bytes.saturating_add(u64::from(location.length));
+                if !wanted.is_empty() && next > MAX_EVENT_PAGE_BYTES {
+                    break;
                 }
+                bytes = next;
+                wanted.push((sequence, *location));
                 sequence += 1;
             }
             (state.row.session_id.clone(), wanted)
@@ -796,26 +786,20 @@ impl SessionStore for LocalSessionStore {
                     origin: record.origin,
                 });
             }
-            let (kind, payload) = if frame.kind == "transcript_delta" {
-                let entry = frame.decode::<JournalEntry>()?;
-                let JournalEntry::TranscriptDelta { keep, append } = entry else {
-                    return Err(Error::Journal(
-                        "transcript_delta frame has the wrong payload".into(),
-                    ));
-                };
-                (
-                    codes::event::TRANSCRIPT_REPLACED.to_owned(),
-                    serde_json::json!({"keep": keep, "append": append}),
-                )
-            } else {
-                (frame.kind.to_owned(), frame.payload()?)
-            };
+            if JournalEntry::is_kind(frame.kind) {
+                return Ok(project_state_change(
+                    session_id.clone(),
+                    sequences.next().unwrap_or(frame.sequence),
+                    frame.recorded_at_ms,
+                    frame.decode()?,
+                ));
+            }
             Ok(SessionRecord {
                 session_id: session_id.clone(),
                 sequence: sequences.next().unwrap_or(frame.sequence),
                 recorded_at_ms: frame.recorded_at_ms,
-                kind,
-                payload,
+                kind: frame.kind.to_owned(),
+                payload: frame.payload()?,
                 origin: None,
             })
         })
@@ -826,33 +810,31 @@ impl SessionStore for LocalSessionStore {
     }
 }
 
-fn transcript_replaced(transcript_len: &mut usize, entry: &JournalEntry) -> bool {
-    let JournalEntry::TranscriptDelta { keep, append } = entry else {
-        return false;
-    };
-    let keep = usize::try_from(*keep)
-        .unwrap_or(usize::MAX)
-        .min(*transcript_len);
-    let replaced = keep < *transcript_len;
-    *transcript_len = keep.saturating_add(append.len());
-    replaced
-}
-
-fn project_transcript_replacement(
+fn project_state_change(
     session_id: SessionId,
     sequence: u64,
     recorded_at_ms: u64,
     entry: JournalEntry,
 ) -> SessionRecord {
-    let JournalEntry::TranscriptDelta { keep, append } = entry else {
-        unreachable!("only transcript replacements are projected")
+    let (kind, payload) = match entry {
+        JournalEntry::TranscriptDelta { keep, append } => (
+            codes::event::TRANSCRIPT_DELTA,
+            serde_json::json!({"keep": keep, "append": append}),
+        ),
+        JournalEntry::KvSet { key, value } => (
+            codes::event::KV_SET,
+            serde_json::json!({"key": key, "value": value}),
+        ),
+        JournalEntry::KvDelete { key } => {
+            (codes::event::KV_DELETE, serde_json::json!({"key": key}))
+        }
     };
     SessionRecord {
         session_id,
         sequence,
         recorded_at_ms,
-        kind: codes::event::TRANSCRIPT_REPLACED.into(),
-        payload: serde_json::json!({"keep": keep, "append": append}),
+        kind: kind.into(),
+        payload,
         origin: None,
     }
 }

@@ -24,7 +24,9 @@ pub mod event {
     pub const ACTIVATION_STARTED: &str = "activation_started";
     pub const ACTIVATION_ENDED: &str = "activation_ended";
     pub const ACTIVATION_FAILED: &str = "activation_failed";
-    pub const TRANSCRIPT_REPLACED: &str = "transcript_replaced";
+    pub const TRANSCRIPT_DELTA: &str = "transcript_delta";
+    pub const KV_SET: &str = "kv_set";
+    pub const KV_DELETE: &str = "kv_delete";
     pub const MODEL_CALL_STARTED: &str = "model_call_started";
     pub const MODEL_CALL_ENDED: &str = "model_call_ended";
     pub const MODEL_CALL_FAILED: &str = "model_call_failed";
@@ -77,7 +79,9 @@ pub mod event {
         ACTIVATION_STARTED,
         ACTIVATION_ENDED,
         ACTIVATION_FAILED,
-        TRANSCRIPT_REPLACED,
+        TRANSCRIPT_DELTA,
+        KV_SET,
+        KV_DELETE,
         MODEL_CALL_STARTED,
         MODEL_CALL_ENDED,
         MODEL_CALL_FAILED,
