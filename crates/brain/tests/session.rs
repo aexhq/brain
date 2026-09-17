@@ -1134,8 +1134,7 @@ async fn transcript_replacement_reaches_the_live_feed_and_next_activation() {
         .unwrap();
     let mut replacement_was_live = false;
     while let Ok((_, event)) = live.try_recv() {
-        if matches!(event, LiveEvent::Recorded(event) if event.event_type == "transcript_replaced")
-        {
+        if matches!(event, LiveEvent::Recorded(event) if event.event_type == "transcript_delta") {
             replacement_was_live = true;
         }
     }
@@ -1150,7 +1149,7 @@ async fn transcript_replacement_reaches_the_live_feed_and_next_activation() {
     assert!(
         seen.lock().unwrap()[1]
             .iter()
-            .any(|kind| kind == "transcript_replaced")
+            .any(|kind| kind == "transcript_delta")
     );
     drop(handle);
     settle(runtime, data_dir).await;

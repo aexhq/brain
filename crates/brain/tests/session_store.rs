@@ -104,7 +104,7 @@ fn checkpoints_resume_and_rebuild_when_stale_or_damaged() {
     fs::write(path.join("checkpoint"), b"damaged").unwrap();
     let store = LocalSessionStore::open(&path, writer, feed()).unwrap();
     assert_eq!(store.fold().unwrap(), expected);
-    assert_eq!(store.records_after(0, 100).unwrap().len(), 1);
+    assert_eq!(store.records_after(0, 100).unwrap().len(), 3);
     drop(store);
     fs::remove_dir_all(directory).unwrap();
 }
@@ -211,7 +211,7 @@ fn transcript_replacement_is_an_event_projection_after_reopen() {
         .records_after(0, 100)
         .unwrap()
         .into_iter()
-        .find(|record| record.kind == "transcript_replaced")
+        .find(|record| record.kind == "transcript_delta" && record.sequence == 3)
         .expect("the canonical transcript mutation is projected as an Event");
     assert_eq!(replacement.sequence, 3);
     assert_eq!(replacement.payload["keep"], 1);
@@ -286,10 +286,10 @@ fn one_journal_keeps_sequence_and_survives_reopening() {
             },
         )
         .unwrap();
-    // The events page skips the journal's sequence but keeps every event's own number.
+    // Every committed mutation retains its journal sequence in the event projection.
     let events = store.records_after(0, 100).unwrap();
     let sequences: Vec<u64> = events.iter().map(|record| record.sequence).collect();
-    assert_eq!(sequences, vec![1, 2, 4]);
+    assert_eq!(sequences, vec![1, 2, 3, 4]);
     writer.sync().unwrap();
     drop(store);
 
@@ -518,6 +518,123 @@ fn kv_deletion_replays_from_the_unchanged_journal_without_a_checkpoint() {
     let store = LocalSessionStore::open(&path, writer.clone(), feed()).unwrap();
     assert_eq!(store.fold().unwrap(), expected);
     drop(store);
+    drop(writer);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn state_events_reconstruct_transcript_and_kv_live_and_after_reopen() {
+    let directory = temporary("state-events");
+    let writer = Writer::spawn();
+    let feed = feed();
+    let id = SessionId::new("ses_1");
+    let store = LocalSessionStore::create(
+        &directory.join("ses_1"),
+        id.clone(),
+        &serde_json::json!({}),
+        writer.clone(),
+        feed.clone(),
+    )
+    .unwrap();
+    store
+        .append_sync(
+            &[AppendRecord::new(
+                "session_creation_ended",
+                serde_json::json!({"configuration": {}}),
+            )],
+            SessionUpdate {
+                status: Some(SessionStatus::Idle),
+                configuration: None,
+            },
+        )
+        .unwrap();
+    let mut live = feed.subscribe(&id);
+    store
+        .append_journal_sync(&[
+            JournalEntry::TranscriptDelta {
+                keep: 0,
+                append: vec![user("question")],
+            },
+            JournalEntry::KvSet {
+                key: "phase".into(),
+                value: serde_json::json!("working"),
+            },
+            JournalEntry::TranscriptDelta {
+                keep: 1,
+                append: vec![user("detail")],
+            },
+            JournalEntry::KvSet {
+                key: "temporary".into(),
+                value: serde_json::Value::Null,
+            },
+            JournalEntry::TranscriptDelta {
+                keep: 0,
+                append: vec![user("summary")],
+            },
+            JournalEntry::KvSet {
+                key: "phase".into(),
+                value: serde_json::json!("done"),
+            },
+            JournalEntry::KvDelete {
+                key: "temporary".into(),
+            },
+        ])
+        .unwrap();
+    let mut transcript: Vec<Message> = Vec::new();
+    let mut kv = std::collections::BTreeMap::new();
+    let mut observed = Vec::new();
+    while let Ok((_, brain_protocol::LiveEvent::Recorded(event))) = live.try_recv() {
+        assert!(event.origin.is_none());
+        match event.event_type.as_str() {
+            "transcript_delta" => {
+                transcript.truncate(event.data["keep"].as_u64().unwrap() as usize);
+                transcript.extend(
+                    serde_json::from_value::<Vec<Message>>(event.data["append"].clone()).unwrap(),
+                );
+            }
+            "kv_set" => {
+                kv.insert(
+                    event.data["key"].as_str().unwrap().to_owned(),
+                    event.data["value"].clone(),
+                );
+            }
+            "kv_delete" => {
+                kv.remove(event.data["key"].as_str().unwrap());
+            }
+            other => panic!("unexpected state event {other}"),
+        }
+        observed.push(event);
+    }
+    assert_eq!(observed.len(), 7);
+    assert_eq!(
+        observed
+            .iter()
+            .map(|event| event.sequence)
+            .collect::<Vec<_>>(),
+        (2..=8).collect::<Vec<_>>()
+    );
+    assert_eq!(transcript, vec![user("summary")]);
+    assert_eq!(
+        kv,
+        std::collections::BTreeMap::from([("phase".into(), serde_json::json!("done"))])
+    );
+    let folded = store.fold().unwrap();
+    assert_eq!(transcript, folded.transcript);
+    assert_eq!(kv, folded.kv);
+    store.checkpoint().unwrap();
+    drop(store);
+    let reopened = LocalSessionStore::open(&directory.join("ses_1"), writer.clone(), feed).unwrap();
+    let replay = reopened
+        .records_after(3, 100)
+        .unwrap()
+        .into_iter()
+        .map(|record| record.into_event())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        serde_json::to_value(replay).unwrap(),
+        serde_json::to_value(&observed[2..]).unwrap()
+    );
+    drop(reopened);
     drop(writer);
     fs::remove_dir_all(directory).unwrap();
 }
