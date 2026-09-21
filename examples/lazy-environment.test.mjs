@@ -4,13 +4,14 @@ import { lazyEnvironment } from "./lazy-environment.mjs";
 
 test("setup allocates nothing; concurrent calls share allocation and teardown is caller controlled", async () => {
   let allocations = 0;
-  const env = lazyEnvironment({ allocate: async () => { allocations += 1; return new Map(); } });
+  const env = lazyEnvironment({ allocate: async () => { allocations += 1; return new Map(); }, fetch: async () => Response.json(10) });
   let sequence = 0;
   const send = (request, session = "ses_one") => env.handle({ contract: "environment/v1",
     operation: { environment: "east", session_id: session, sequence: ++sequence, request } });
   assert.equal((await send({ type: "setup", configuration: {} })).receipt.type, "accepted");
   assert.equal(allocations, 0);
-  const invoke = (input) => send({ type: "execute", implementation: { type: "reference_echo" }, input, deadline_ms: 1000 });
+  const invoke = (input) => send({ type: "execute", implementation: { type: "reference_echo" }, input, deadline_ms: 1000,
+    callback: { url: "https://brain.example/call", token: "fixture", methods: ["finish"] } });
   const outcomes = await Promise.all([invoke("one"), invoke("two")]);
   assert(outcomes.every(({ receipt }) => receipt.type === "result"));
   assert.equal(allocations, 1);

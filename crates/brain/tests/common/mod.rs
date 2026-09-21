@@ -52,6 +52,7 @@ impl Runtime {
                 .map(|store| (store.session_id().clone(), store))
                 .collect();
         let config = Arc::new(SessionRuntime {
+            tool_executions: Arc::default(),
             limits: brain::Limits {
                 max_model_calls,
                 max_turn_secs: 0,
@@ -240,7 +241,9 @@ impl LoopExecutor for ScriptedLoop {
 pub fn echo_loop() -> Arc<ScriptedLoop> {
     scripted(|input, services| async move {
         let mut transcript = input.transcript;
-        transcript.push(Message::user_text(&input.input.message));
+        transcript.push(Message::user_text(
+            &input.input.as_ref().expect("user activation").message,
+        ));
         services.set_transcript(transcript).await?;
         Ok(TurnOutput {
             result: Some(serde_json::json!({"ok": true})),
@@ -321,7 +324,7 @@ impl ToolExecutor for NoTools {
         &self,
         _: brain_protocol::ToolDispatch,
         _: std::sync::Arc<dyn brain::ToolServices>,
-    ) -> Result<brain_protocol::Outcome, Error> {
+    ) -> Result<Option<brain_protocol::Outcome>, Error> {
         Err(Error::Executor("no tools in this test".into()))
     }
     async fn cancel(&self, _: brain_protocol::ToolCancellation) -> Result<(), Error> {

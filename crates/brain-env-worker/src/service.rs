@@ -397,7 +397,7 @@ mod tests {
 
     fn input() -> TurnInput {
         TurnInput {
-            input: "hello".into(),
+            input: Some("hello".into()),
             transcript: Vec::new(),
             kv: Default::default(),
             events: Vec::new(),

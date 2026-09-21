@@ -78,6 +78,10 @@ impl TurnBridge for RecordingBridge {
                     .push(format!("emit {kind} {payload_json}"));
                 Ok("7".into())
             }
+            HostCall::Acknowledge { .. }
+            | HostCall::ToolResult { .. }
+            | HostCall::ToolReturned { .. }
+            | HostCall::ToolFinish { .. } => Ok("7".into()),
             HostCall::Telemetry { record_json } => {
                 self.calls
                     .lock()
@@ -95,7 +99,7 @@ impl TurnBridge for RecordingBridge {
 
 fn input(message: &str) -> TurnInput {
     TurnInput {
-        input: message.into(),
+        input: Some(message.into()),
         transcript: Vec::new(),
         kv: Default::default(),
         events: Vec::new(),
@@ -155,6 +159,10 @@ async fn reference_loop_reads_interruptions_and_hands_tool_failures_to_the_model
                 HostCall::Events { after } => {
                     serde_json::json!({"events": [], "next_cursor": after})
                 }
+                HostCall::Acknowledge { through } => {
+                    self.kv.lock().unwrap()["brain.last_activation"] = through.into();
+                    serde_json::json!(7)
+                }
                 HostCall::Model { request_json } => {
                     let request: brain_protocol::ModelRequest =
                         serde_json::from_str(&request_json).unwrap();
@@ -174,7 +182,11 @@ async fn reference_loop_reads_interruptions_and_hands_tool_failures_to_the_model
                     serde_json::json!({"message": {"role": "assistant", "content": if first { serde_json::json!([{"type": "tool_use", "id": "call_one", "name": "echo", "input": {}}]) } else { serde_json::json!([{"type": "text", "text": "Environment is unavailable"}]) }}, "stop_reason": if first { "tool_use" } else { "end_turn" }, "usage": {}})
                 }
                 HostCall::Dispatch { .. } => {
-                    serde_json::json!([{"call_id": "call_one", "output": {"code": "expired", "message": "Environment expired"}, "is_error": true}])
+                    serde_json::json!([{"call_id": "call_one", "sequence": 4, "finished": true, "events": [
+                        {"sequence": 5, "recorded_at_ms": 1, "event_type": "tool_call_ended", "data": {
+                            "sequence": 4, "outcome": {"status": "error", "error": {"code": "expired", "message": "Environment expired", "retryable": false}}
+                        }}
+                    ]}])
                 }
                 _ => {
                     return Err(TurnError::new(
@@ -229,7 +241,7 @@ async fn reference_loop_reads_interruptions_and_hands_tool_failures_to_the_model
         .await
         .unwrap();
     assert_eq!(model.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(model.kv.lock().unwrap()["observed_sequence"], 3);
+    assert_eq!(model.kv.lock().unwrap()["brain.last_activation"], 3);
     assert_eq!(model.transcript.lock().unwrap().len(), 5);
 }
 
@@ -248,7 +260,7 @@ async fn a_worker_crash_does_not_replay_or_stop_its_sibling_and_shutdown_reaps_b
     impl TurnBridge for Held {
         async fn call(&self, call: HostCall) -> Result<String, TurnError> {
             match call {
-                HostCall::KvPut { .. } => Ok("7".into()),
+                HostCall::KvPut { .. } | HostCall::Acknowledge { .. } => Ok("7".into()),
                 HostCall::KvRead { .. } => Ok("{}".into()),
                 HostCall::Events { after } => {
                     Ok(serde_json::json!({"events": [], "next_cursor": after}).to_string())
@@ -361,7 +373,7 @@ async fn saturated_parent_turns_can_all_invoke_native_tools() {
         }
         async fn call(&self, call: HostCall) -> Result<String, TurnError> {
             match call {
-                HostCall::KvPut { .. } => Ok("7".into()),
+                HostCall::KvPut { .. } | HostCall::Acknowledge { .. } => Ok("7".into()),
                 HostCall::KvRead { .. } => Ok("{}".into()),
                 HostCall::Events { after } => {
                     Ok(serde_json::json!({"events": [], "next_cursor": after}).to_string())

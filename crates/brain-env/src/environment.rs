@@ -204,7 +204,9 @@ impl BrainEnvironment {
                         NativeToolInput {
                             input: input.clone(),
                             configuration: component.configuration,
-                            deadline_at_ms: wall_clock_ms().saturating_add(*deadline_ms),
+                            deadline_at_ms: deadline_ms
+                                .map(|ms| wall_clock_ms().saturating_add(ms))
+                                .unwrap_or(0),
                         },
                         &bridge,
                     )
@@ -323,6 +325,24 @@ impl TurnBridge for ServicesBridge {
             HostCall::KvRead { key } => ("kv_read", serde_json::json!(key)),
             HostCall::KvDelete { key } => ("kv_delete", serde_json::json!(key)),
             HostCall::Events { after } => ("events", serde_json::json!(after)),
+            HostCall::Acknowledge { through } => ("acknowledge", serde_json::json!(through)),
+            HostCall::ToolResult { outcome_json } => ("result", parse(&outcome_json)?),
+            HostCall::ToolReturned { outcome_json } => (
+                "returned",
+                outcome_json
+                    .as_deref()
+                    .map(parse)
+                    .transpose()?
+                    .unwrap_or_default(),
+            ),
+            HostCall::ToolFinish { outcome_json } => (
+                "finish",
+                outcome_json
+                    .as_deref()
+                    .map(parse)
+                    .transpose()?
+                    .unwrap_or_default(),
+            ),
             HostCall::Model { request_json } => ("model", parse(&request_json)?),
             HostCall::Dispatch { calls_json } => ("dispatch", parse(&calls_json)?),
             HostCall::Emit { kind, payload_json } => (

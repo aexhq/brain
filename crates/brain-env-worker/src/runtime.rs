@@ -319,6 +319,13 @@ fn bounded_http_options(options: Option<RequestOptions>, limits: &EnvLimits) -> 
 }
 
 impl bindings::brain::agentloop::host::Host for HostState {
+    async fn acknowledge(&mut self, through: u64) -> Result<u64, wit::TurnError> {
+        let output = self
+            .call(HostCall::Acknowledge { through })
+            .await
+            .map_err(wit_error)?;
+        serde_json::from_str(&output).map_err(|error| wit_error(host_failure(error)))
+    }
     async fn set_transcript(&mut self, messages_json: String) -> Result<u64, wit::TurnError> {
         let answer = self
             .call(HostCall::SetTranscript { messages_json })
@@ -389,25 +396,36 @@ impl bindings::brain::agentloop::host::Host for HostState {
 }
 
 impl tool_bindings::brain::tool::host::Host for HostState {
+    async fn emit_result(
+        &mut self,
+        outcome_json: String,
+    ) -> Result<u64, tool_bindings::brain::tool::types::ToolError> {
+        self.tool_sequence(HostCall::ToolResult { outcome_json })
+            .await
+    }
+
+    async fn returned(
+        &mut self,
+        outcome_json: Option<String>,
+    ) -> Result<u64, tool_bindings::brain::tool::types::ToolError> {
+        self.tool_sequence(HostCall::ToolReturned { outcome_json })
+            .await
+    }
+
+    async fn finish(
+        &mut self,
+        outcome_json: Option<String>,
+    ) -> Result<u64, tool_bindings::brain::tool::types::ToolError> {
+        self.tool_sequence(HostCall::ToolFinish { outcome_json })
+            .await
+    }
     async fn emit(
         &mut self,
         kind: String,
         payload_json: String,
     ) -> Result<u64, tool_bindings::brain::tool::types::ToolError> {
-        let answer = self
-            .call(HostCall::Emit { kind, payload_json })
+        self.tool_sequence(HostCall::Emit { kind, payload_json })
             .await
-            .map_err(|error| tool_bindings::brain::tool::types::ToolError {
-                code: error.code,
-                message: error.message,
-            })?;
-        answer
-            .trim()
-            .parse()
-            .map_err(|_| tool_bindings::brain::tool::types::ToolError {
-                code: "internal".into(),
-                message: "emit answered without a sequence".into(),
-            })
     }
 
     async fn telemetry(&mut self, record_json: String) {
@@ -420,6 +438,26 @@ fn wit_error(error: TurnError) -> wit::TurnError {
         code: error.code,
         message: error.message,
         retryable: error.retryable,
+    }
+}
+
+impl HostState {
+    async fn tool_sequence(
+        &mut self,
+        call: HostCall,
+    ) -> Result<u64, tool_bindings::brain::tool::types::ToolError> {
+        let answer = self.call(call).await.map_err(|error| {
+            tool_bindings::brain::tool::types::ToolError {
+                code: error.code,
+                message: error.message,
+            }
+        })?;
+        serde_json::from_str(&answer).map_err(|error| {
+            tool_bindings::brain::tool::types::ToolError {
+                code: "internal".into(),
+                message: format!("execution service answered without a sequence: {error}"),
+            }
+        })
     }
 }
 

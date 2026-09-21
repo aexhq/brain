@@ -15,6 +15,7 @@ pub struct SessionRuntime {
     pub loop_executor: Arc<dyn LoopExecutor>,
     pub model_executor: Arc<dyn ModelExecutor>,
     pub tool_executor: Arc<dyn ToolExecutor>,
+    pub tool_executions: Arc<crate::ToolExecutions>,
     /// Live observations use session-scoped backlogs and never retain an actor.
     pub live: Arc<crate::Feed>,
     /// Where the loop's telemetry goes.

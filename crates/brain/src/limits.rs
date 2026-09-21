@@ -89,13 +89,10 @@ impl Limits {
         secs(self.max_turn_secs)
     }
 
-    /// The deadline handed to every Tool call, in milliseconds. No bound is a deadline
-    /// far enough away that no dispatch reaches it.
-    pub fn tool_deadline_ms(&self) -> u64 {
-        match secs(self.max_tool_secs) {
-            Some(deadline) => deadline.as_millis() as u64,
-            None => u64::MAX / 4,
-        }
+    /// The deadline handed to every Tool call, in milliseconds; absent means unlimited.
+    pub fn tool_deadline_ms(&self) -> Option<u64> {
+        secs(self.max_tool_secs)
+            .map(|deadline| deadline.as_millis().min(u128::from(u64::MAX)) as u64)
     }
 
     pub fn max_model(&self) -> Option<Duration> {

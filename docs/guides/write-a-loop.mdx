@@ -14,8 +14,9 @@ The source of truth is
 The Component exports `turn` and imports these Brain services:
 
 - `events(after)` reads a finite `EventPage`; continue from `next_cursor` for more history;
+- `acknowledge(through)` durably advances the processed-through sequence;
 - `model` performs a model call;
-- `dispatch` invokes one or more Tools;
+- `dispatch` invokes Tools and returns their synchronous observations as `ToolReturn[]`;
 - `emit` appends an extension Event and returns its committed sequence;
 - `set-transcript` durably replaces the saved conversation with the supplied messages;
 - `kv-read(key)` returns an optional JSON string, distinguishing absence from stored null;
@@ -24,10 +25,26 @@ The Component exports `turn` and imports these Brain services:
 - `telemetry` publishes best-effort operational telemetry.
 
 JSON strings on the WIT boundary use the generated session contract, also packaged as
-`@aexhq/brain/contracts/session.json`. It includes `ModelRequest`, `ModelResult`, `ToolResult`, and `EventPage`. A turn receives
-the current transcript, Agentloop kv, committed Events since its previous activation,
+`@aexhq/brain/contracts/session.json`. It includes `ModelRequest`, `ModelResult`, `ToolReturn`, `ToolResult`, and `EventPage`. An activation receives
+optional user input, the current transcript, Agentloop kv, committed Events after its processed marker,
 configuration, system prompt, Tool definitions with authorized Environment names, and a deterministic logical-time/seed envelope.
 It returns only an optional result. Old transcript/kv fields in turn output are rejected.
+
+Use `brain:agentloop@0.2.0`. Event-triggered activations omit user input (`input-json` is `null`
+on WIT); do not synthesize a user message. There is one activation at a time per session.
+Read `kv["brain.last_activation"]` as the processed marker and advance it through `acknowledge`,
+not ordinary KV writes. Reading or returning does not acknowledge anything. Save selected
+transcript/state changes first, then acknowledge every considered event, including dismissed ones.
+The marker cannot move backwards or beyond committed history. Each acknowledgement returns
+the sequence of its durable marker write.
+
+Each `ToolReturn` contains `call_id`, the original call `sequence`, ordered `events`, and `finished`.
+It can contain zero or multiple results. `tool_result_emitted.data.result` is a `ToolResult`;
+`tool_call_ended.data.outcome` describes completion. A successful empty finish is a boundary,
+not a null result. Present running status when needed and suppress already-presented events when
+draining history. A later observation is ordinary context, not another provider reply to the same
+Tool call. The official loops call the model for later results/completion and dismiss progress;
+custom loops can instead retain history until another user message.
 
 Await state services at the point the change should become durable. Each write returns its
 committed sequence; later failure preserves completed writes. Separate writes are not a transaction.
@@ -82,7 +99,9 @@ its arguments before dispatch. The reference loop requires a single placement pe
 ## Effect semantics
 
 The loop can request effects but does not perform Brain's model or Tool I/O itself. Brain durably
-commits the intent, sends it once, and commits its known or unknown outcome before returning.
+commits the intent, sends it once, and commits observations before returning them. A Tool's return
+ends its synchronous phase; explicit finish ends its whole execution. Background results wake the
+loop without changing the stored model transcript automatically.
 Propagate host-service errors unless the loop has an explicit policy for presenting them to the
 model or user. Let the model or caller explicitly choose another attempt after seeing the failure or unknown
 outcome. Brain never makes that choice automatically.
@@ -100,10 +119,11 @@ builds a usable model-driving Component using only Brain's public types and WIT.
 observations into the transcript, dispatches requested Tools, and returns errors to the model.
 It has no Aex dependency. Build with `cargo build --manifest-path examples/reference-agentloop/Cargo.toml --target wasm32-wasip2 --release`.
 
-Read imports are available during an activation. They do not advance Brain's initial-page cursor;
-keep an observation cursor in your own kv when consuming additional pages. Collect observations
-before producing new effects so a loop does not chase its own Events indefinitely. Suspension
-leaves external history reads available; it does not run guest callbacks.
+Read imports are available during an activation. Collect observations before producing new effects
+so the loop does not chase its own Events indefinitely, then save state and acknowledge the processed
+prefix. Suspension leaves history readable; pending Tool observations can open a fresh activation.
+Brain coalesces wakeups for five milliseconds from the first pending commit. Commits and live
+acknowledgements remain immediate. Old activation services are fenced before final state capture.
 
 Admission is explicit when desired: call `await brain.admit(placedLoop)` and
 `await brain.admitTool(toolComponent)` before creation. Reuse those Component objects when placing

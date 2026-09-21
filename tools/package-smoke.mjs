@@ -48,9 +48,11 @@ try {
   writeFileSync(
     join(directory, "smoke.mjs"),
     `import assert from "node:assert/strict";\n` +
+      `import { readFileSync } from "node:fs";\n` +
       `import * as brainSdk from "@aexhq/brain";\n` +
       `import { runtime, simple } from "./extension.mjs";\n` +
       `const { Brain } = brainSdk;\n` +
+      `for (const name of ["tool", "agentloop"]) assert.match(readFileSync(new URL(import.meta.resolve("@aexhq/brain/contracts/" + name + ".wit")), "utf8"), /package brain:/u);\n` +
       `globalThis.fetch = async () => { throw new Error("validated Brain reached fetch"); };\n` +
       `const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });\n` +
       `assert.equal(typeof brain.sessions.create, "function");\n` +

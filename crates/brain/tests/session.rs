@@ -117,11 +117,12 @@ impl ToolExecutor for OutcomeTools {
     async fn execute(
         &self,
         _: ToolDispatch,
-        _: std::sync::Arc<dyn brain::ToolServices>,
-    ) -> Result<Outcome, Error> {
+        services: std::sync::Arc<dyn brain::ToolServices>,
+    ) -> Result<Option<Outcome>, Error> {
         self.entered.notify_one();
         tokio::time::sleep(self.delay).await;
-        Ok(self.outcome.clone())
+        services.finish(Some(self.outcome.clone())).await?;
+        Ok(None)
     }
     async fn cancel(&self, cancellation: ToolCancellation) -> Result<(), Error> {
         self.cancelled
@@ -218,7 +219,9 @@ async fn the_started_record_precedes_the_model_effect() {
     });
     let loop_executor = scripted(|input, services| async move {
         let mut transcript = input.transcript;
-        transcript.push(user(&input.input.message));
+        transcript.push(user(
+            &input.input.as_ref().expect("user activation").message,
+        ));
         let result = services.model(request(transcript.clone())).await?;
         transcript.push(result.message);
         done(&*services, transcript).await
@@ -257,7 +260,9 @@ async fn cancel_interrupts_an_inflight_model_request() {
     let data_dir = temporary_directory("cancel-model");
     let loop_executor = scripted(|input, services| async move {
         let mut transcript = input.transcript;
-        transcript.push(user(&input.input.message));
+        transcript.push(user(
+            &input.input.as_ref().expect("user activation").message,
+        ));
         let result = services.model(request(transcript.clone())).await?;
         transcript.push(result.message);
         done(&*services, transcript).await
@@ -366,14 +371,17 @@ async fn wall_deadline_keeps_completed_tool_results_and_records_unknown_cancella
         async fn execute(
             &self,
             call: ToolDispatch,
-            _: std::sync::Arc<dyn brain::ToolServices>,
-        ) -> Result<Outcome, Error> {
+            services: std::sync::Arc<dyn brain::ToolServices>,
+        ) -> Result<Option<Outcome>, Error> {
             if call.invocation.call_id == "slow" {
                 std::future::pending::<()>().await;
             }
-            Ok(Outcome::Ok {
-                value: serde_json::json!("known answer"),
-            })
+            services
+                .finish(Some(Outcome::Ok {
+                    value: serde_json::json!("known answer"),
+                }))
+                .await?;
+            Ok(None)
         }
         async fn cancel(&self, _: ToolCancellation) -> Result<(), Error> {
             Err(Error::Ambiguous("cancel response lost".into()))
@@ -403,7 +411,8 @@ async fn wall_deadline_keeps_completed_tool_results_and_records_unknown_cancella
         loop {
             let records = runtime.store(session.id()).records_after(0, 100).unwrap();
             if records.iter().any(|record| {
-                record.kind == "tool_call_ended" && record.payload["result"]["call_id"] == "fast"
+                record.kind == "tool_result_emitted"
+                    && record.payload["result"]["call_id"] == "fast"
             }) {
                 break;
             }
@@ -440,7 +449,9 @@ async fn a_subscriber_sees_model_output_while_the_turn_is_running() {
     let data_dir = temporary_directory("streaming");
     let loop_executor = scripted(|input, services| async move {
         let mut transcript = input.transcript;
-        transcript.push(user(&input.input.message));
+        transcript.push(user(
+            &input.input.as_ref().expect("user activation").message,
+        ));
         let result = services.model(request(transcript.clone())).await?;
         transcript.push(result.message);
         done(&*services, transcript).await
@@ -489,7 +500,9 @@ async fn a_session_can_be_created_with_a_transcript() {
             async move {
                 *seen.lock().unwrap() = input.transcript.clone();
                 let mut transcript = input.transcript;
-                transcript.push(user(&input.input.message));
+                transcript.push(user(
+                    &input.input.as_ref().expect("user activation").message,
+                ));
                 done(&*services, transcript).await
             }
         })
@@ -568,7 +581,9 @@ async fn the_journal_is_the_only_thing_written() {
     let data_dir = temporary_directory("files");
     let loop_executor = scripted(|input, services| async move {
         let mut transcript = input.transcript;
-        transcript.push(user(&input.input.message));
+        transcript.push(user(
+            &input.input.as_ref().expect("user activation").message,
+        ));
         let result = services.model(request(transcript.clone())).await?;
         transcript.push(result.message);
         done(&*services, transcript).await
@@ -729,12 +744,12 @@ async fn invoke_outcomes_map_onto_tool_results() {
         assert_eq!(results.len(), 1);
         match code {
             Some(code) => {
-                assert!(results[0].is_error);
-                assert_eq!(results[0].output["code"], code);
+                assert!(completed_result(&results[0]).is_error);
+                assert_eq!(completed_result(&results[0]).output["code"], code);
             }
             None => {
-                assert!(!results[0].is_error);
-                assert_eq!(results[0].output["content"], "done");
+                assert!(!completed_result(&results[0]).is_error);
+                assert_eq!(completed_result(&results[0]).output["content"], "done");
             }
         }
         drop(handle);
@@ -776,8 +791,8 @@ async fn an_overdue_invoke_is_cancelled_and_recorded_as_timeout() {
         .unwrap();
     assert!(started.elapsed() < Duration::from_secs(10));
     let results = seen.lock().unwrap().clone();
-    assert!(results[0].is_error);
-    assert_eq!(results[0].output["code"], "timeout");
+    assert!(completed_result(&results[0]).is_error);
+    assert_eq!(completed_result(&results[0]).output["code"], "timeout");
     assert_eq!(
         tools.cancelled.lock().unwrap().len(),
         1,
@@ -825,7 +840,7 @@ async fn a_tool_in_a_host_env_uses_the_configured_executor() {
         .await
         .unwrap();
     let results = seen.lock().unwrap().clone();
-    assert_eq!(results[0].output["path"], "README.md");
+    assert_eq!(completed_result(&results[0]).output["path"], "README.md");
     drop(handle);
     settle(runtime, data_dir).await;
 }
@@ -865,8 +880,8 @@ async fn an_unanswered_host_call_times_out_and_journals_the_cancellation() {
         .await
         .unwrap();
     let results = seen.lock().unwrap().clone();
-    assert!(results[0].is_error);
-    assert_eq!(results[0].output["code"], "timeout");
+    assert!(completed_result(&results[0]).is_error);
+    assert_eq!(completed_result(&results[0]).output["code"], "timeout");
     let kinds = runtime.kinds(handle.id());
     assert!(kinds.iter().any(|kind| kind == "tool_cancel_started"));
     assert_eq!(kinds.last().unwrap(), "turn_ended");
@@ -881,7 +896,9 @@ async fn the_transcript_folds_back_from_its_deltas() {
     let data_dir = temporary_directory("deltas");
     let loop_executor = scripted(|input, services| async move {
         let mut transcript = input.transcript;
-        transcript.push(user(&input.input.message));
+        transcript.push(user(
+            &input.input.as_ref().expect("user activation").message,
+        ));
         let first = services.model(request(transcript.clone())).await?;
         transcript.push(first.message);
         transcript.push(user("and then"));
@@ -912,7 +929,7 @@ async fn the_transcript_folds_back_from_its_deltas() {
     let folded = runtime.store(handle.id()).fold().unwrap();
     assert_eq!(folded.transcript.len(), 4);
     assert_eq!(folded.kv["memory"], serde_json::json!({"turns": 1}));
-    assert!(folded.kv.contains_key(brain::LAST_ACTIVATION_KEY));
+    assert!(!folded.kv.contains_key(brain::LAST_ACTIVATION_KEY));
     drop(handle);
     settle(runtime, data_dir).await;
 }
@@ -930,7 +947,9 @@ async fn a_session_resumes_from_its_store_after_its_task_is_dropped() {
             async move {
                 *seen.lock().unwrap() = input.transcript.clone();
                 let mut transcript = input.transcript;
-                transcript.push(user(&input.input.message));
+                transcript.push(user(
+                    &input.input.as_ref().expect("user activation").message,
+                ));
                 let result = services.model(request(transcript.clone())).await?;
                 transcript.push(result.message);
                 done(&*services, transcript).await
@@ -997,6 +1016,9 @@ async fn events_since_the_last_activation_reach_the_loop() {
                     .iter()
                     .map(|event| event.event_type.clone())
                     .collect();
+                if let Some(last) = input.events.last() {
+                    services.acknowledge(last.sequence).await?;
+                }
                 done(&*services, input.transcript).await
             }
         })
@@ -1171,6 +1193,9 @@ async fn a_bounded_event_page_does_not_skip_the_rest() {
                         .filter(|event| event.event_type == "queued")
                         .filter_map(|event| event.data["index"].as_u64()),
                 );
+                if let Some(last) = input.events.last() {
+                    services.acknowledge(last.sequence).await?;
+                }
                 done(&*services, input.transcript).await
             }
         })
@@ -1217,7 +1242,9 @@ async fn a_turn_that_exceeds_its_model_call_budget_fails_with_model_call_limit()
     let data_dir = temporary_directory("budget");
     let loop_executor = scripted(|input, services| async move {
         let mut transcript = input.transcript;
-        transcript.push(user(&input.input.message));
+        transcript.push(user(
+            &input.input.as_ref().expect("user activation").message,
+        ));
         loop {
             let result = services.model(request(transcript.clone())).await?;
             transcript.push(result.message);
@@ -1249,4 +1276,25 @@ async fn a_turn_that_exceeds_its_model_call_budget_fails_with_model_call_limit()
     );
     drop(handle);
     settle(runtime, data_dir).await;
+}
+
+fn completed_result(returned: &brain_protocol::ToolReturn) -> brain_protocol::ToolResult {
+    assert!(returned.finished);
+    if let Some(event) = returned
+        .events
+        .iter()
+        .rev()
+        .find(|event| event.event_type == "tool_result_emitted")
+    {
+        return serde_json::from_value(event.data["result"].clone()).unwrap();
+    }
+    let finish = returned
+        .events
+        .iter()
+        .find(|event| event.event_type == "tool_call_ended")
+        .unwrap();
+    brain_protocol::ToolResult::from_outcome(
+        returned.call_id.clone(),
+        serde_json::from_value(finish.data["outcome"].clone()).unwrap(),
+    )
 }

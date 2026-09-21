@@ -34,6 +34,7 @@ pub struct Sessions {
     stores: Arc<StdMutex<HashMap<SessionId, Weak<LocalSessionStore>>>>,
     store_locks: Arc<KeyedLocks<SessionId>>,
     session_locks: Arc<KeyedLocks<SessionId>>,
+    background_turns: Arc<StdMutex<HashMap<SessionId, Vec<u64>>>>,
 }
 struct Entry {
     store: Arc<LocalSessionStore>,
@@ -56,6 +57,7 @@ impl Sessions {
             stores: Arc::default(),
             store_locks: Arc::new(KeyedLocks::default()),
             session_locks: Arc::new(KeyedLocks::default()),
+            background_turns: Arc::default(),
         })
     }
 
@@ -410,22 +412,32 @@ impl Sessions {
         let (reply, accepted) = tokio::sync::oneshot::channel();
         let (finished, result) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
-            let _active = active;
-            let _guard = guard;
             match session.submit(request).await {
                 Ok(turn) => {
                     let sequence = turn.sequence;
                     let _ = reply.send(Ok(sequence));
                     let _ = finished.send(turn.wait().await);
-                    if let Err(error) = api
-                        .resources
-                        .environments
-                        .turn_ended(&session, &*store, sequence)
-                        .await
+                    let tools = session.tools();
+                    let following = api
+                        .background_turns
+                        .lock()
+                        .expect("background turn table poisoned")
+                        .contains_key(&session_id);
+                    if !following
+                        && !tools.has_work_after(store.processed_through().map_err(api_error)?)
                     {
-                        tracing::warn!(%session_id, %error, "Environment turn-end callbacks could not be read");
+                        api.resources
+                            .environments
+                            .turn_ended(&session, &*store, sequence)
+                            .await
+                            .map_err(api_error)?;
+                        return api.passivate_unretained(&session_id).await;
                     }
-                    api.passivate_unretained(&session_id).await
+                    let passivated = api.passivate_unretained(&session_id).await;
+                    drop(session);
+                    api.follow_tools(session_id, store, tools, sequence, active);
+                    drop(guard);
+                    passivated
                 }
                 Err(error) => {
                     let _ = reply.send(Err(api_error(error)));
@@ -437,6 +449,105 @@ impl Sessions {
             .await
             .map_err(|_| internal("turn admission stopped"))??;
         Ok((sequence, result))
+    }
+
+    fn follow_tools(
+        &self,
+        session_id: SessionId,
+        store: Arc<LocalSessionStore>,
+        tools: Arc<brain::ToolGroup>,
+        sequence: u64,
+        active: tokio::sync::OwnedRwLockReadGuard<()>,
+    ) {
+        let mut background = self
+            .background_turns
+            .lock()
+            .expect("background turn table poisoned");
+        if let Some(turns) = background.get_mut(&session_id) {
+            turns.push(sequence);
+            return;
+        }
+        background.insert(session_id.clone(), vec![sequence]);
+        drop(background);
+        let api = self.clone();
+        tokio::spawn(async move {
+            let _active = active;
+            if let Err(error) = api.run_tool_events(&session_id, &store, &tools).await {
+                tracing::error!(%session_id, error = %error.message, "background Tool observations could not be processed");
+                api.background_turns
+                    .lock()
+                    .expect("background turn table poisoned")
+                    .remove(&session_id);
+            }
+        });
+    }
+
+    async fn run_tool_events(
+        &self,
+        session_id: &SessionId,
+        store: &LocalSessionStore,
+        tools: &brain::ToolGroup,
+    ) -> Result<(), ApiError> {
+        loop {
+            while let Some(wakeup) = tools.next_wakeup().await {
+                let lock = self.session_lock(session_id)?;
+                let _guard = lock.lock().await;
+                if matches!(
+                    store.session_summary().map_err(api_error)?.status,
+                    SessionStatus::Ended | SessionStatus::Failed
+                ) {
+                    self.background_turns
+                        .lock()
+                        .expect("background turn table poisoned")
+                        .remove(session_id);
+                    return Ok(());
+                }
+                if !tools.accepts(&wakeup)
+                    || store.processed_through().map_err(api_error)? >= wakeup.through
+                {
+                    continue;
+                }
+                let session = self.session(session_id).await?;
+                let turn = session.submit_events().await.map_err(api_error)?;
+                self.background_turns
+                    .lock()
+                    .expect("background turn table poisoned")
+                    .get_mut(session_id)
+                    .expect("background turn is registered")
+                    .push(turn.sequence);
+                if let Err(error) = turn.wait().await {
+                    tracing::warn!(%session_id, %error, "Agentloop failed while processing Tool observations");
+                }
+                self.passivate_unretained(session_id).await?;
+            }
+            let lock = self.session_lock(session_id)?;
+            let _guard = lock.lock().await;
+            if tools.has_work_after(store.processed_through().map_err(api_error)?) {
+                continue;
+            }
+            let turns = self
+                .background_turns
+                .lock()
+                .expect("background turn table poisoned")
+                .remove(session_id)
+                .unwrap_or_default();
+            if matches!(
+                store.session_summary().map_err(api_error)?.status,
+                SessionStatus::Ended | SessionStatus::Failed
+            ) {
+                return Ok(());
+            }
+            let session = self.session(session_id).await?;
+            for sequence in turns {
+                self.resources
+                    .environments
+                    .turn_ended(&session, store, sequence)
+                    .await
+                    .map_err(api_error)?;
+            }
+            self.passivate_unretained(session_id).await?;
+            return Ok(());
+        }
     }
 
     async fn passivate_unretained(&self, session_id: &SessionId) -> Result<(), ApiError> {
@@ -573,6 +684,12 @@ impl Sessions {
             session.cancel().await.map_err(api_error)?;
         } else {
             self.summary(&session_id).await?;
+            self.resources
+                .session_runtime
+                .tool_executions
+                .group(&session_id)
+                .interrupt()
+                .await;
         }
         Ok(())
     }
@@ -581,6 +698,13 @@ impl Sessions {
         let lock = self.session_lock(&session_id)?;
         let _guard = lock.lock().await;
         let store = self.store(&session_id).await?;
+        let tools = self
+            .resources
+            .session_runtime
+            .tool_executions
+            .group(&session_id);
+        tools.interrupt().await;
+        tools.wait().await;
         let summary = store.session_summary().map_err(api_error)?;
         if matches!(summary.status, brain_protocol::SessionStatus::Ended) {
             return Ok(summary);
@@ -606,6 +730,13 @@ impl Sessions {
         let _guard = lock.lock().await;
         let store = self.store(&session_id).await?;
         store.ensure_deletable().map_err(api_error)?;
+        let tools = self
+            .resources
+            .session_runtime
+            .tool_executions
+            .group(&session_id);
+        tools.interrupt().await;
+        tools.wait().await;
         let config = brain::session_config(&*store).map_err(api_error)?;
         for environment in config.environments.iter().rev() {
             self.resources

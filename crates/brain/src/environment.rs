@@ -14,6 +14,10 @@ pub trait ExecutionServices: Send + Sync {
         input: serde_json::Value,
     ) -> Result<serde_json::Value, crate::Error>;
     fn cancelled(&self) -> bool;
+    /// Explicit completion for executions that grant a finish service.
+    async fn closed(&self) {
+        std::future::pending::<()>().await;
+    }
 }
 
 pub type Services = Option<Arc<dyn ExecutionServices>>;

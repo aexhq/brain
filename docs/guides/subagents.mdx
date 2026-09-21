@@ -20,14 +20,14 @@ const delegate = tool({
   name: "delegate",
   description: "Hand a subtask to a fresh agent and return its answer.",
   input: z.object({ task: z.string() }),
-  run: async ({ task }) => {
+  run: async ({ task }, ctx) => {
     const childEnv = sandbox({ name: "sandbox", image: "node:22" });
     const child = await brain.sessions.create({
       model,
       agentloop: coder({ env: childEnv }),
       tools: [test({ env: childEnv })],
     });
-    await child.send(task);
+    await child.send(task, { signal: ctx.signal });
     let answer;
     for await (const event of child.events()) {
       if (event.type === "output_emitted" && event.data.type === "assistant_message") {
@@ -36,7 +36,7 @@ const delegate = tool({
       }
     }
     await child.end();
-    return { answer };
+    return ctx.finish({ answer });
   },
 });
 ```

@@ -16,25 +16,23 @@ use std::{
 };
 
 use brain_protocol::{
-    LiveEvent, Message, MessageRequest, ModelRequest, ModelResult, ModelStreamEvent, Outcome,
-    RuntimeEnvelope, SessionConfig, SessionStatus, SessionSummary, StreamingEvent,
-    ToolCancellation, ToolDefinition, ToolDispatch, ToolInvocation, ToolResult, TurnInput,
-    TurnOutput,
+    LiveEvent, Message, MessageRequest, ModelRequest, ModelResult, ModelStreamEvent,
+    RuntimeEnvelope, SessionConfig, SessionStatus, SessionSummary, StreamingEvent, ToolDefinition,
+    ToolDispatch, ToolInvocation, ToolReturn, TurnInput, TurnOutput,
     codes::{self, Failure},
 };
 use futures_util::future::join_all;
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{Mutex, RwLock, RwLockReadGuard, mpsc, oneshot};
 
 use super::{SessionRuntime, TurnServices};
 use crate::{
-    Error, ToolServices,
+    Error,
     journal::{
         AppendRecord, Folded, JournalEntry, SessionRecord, SessionRow, SessionStore, SessionUpdate,
     },
 };
 
-/// The kv key Brain keeps for itself: the sequence of the loop's last activation, so the
-/// next turn can hand it every record since.
+/// The durable sequence through which the Agentloop explicitly acknowledged observations.
 pub const LAST_ACTIVATION_KEY: &str = "brain.last_activation";
 
 /// Records handed to a loop as "what happened since you last ran". More than this and
@@ -44,6 +42,10 @@ const EVENTS_PER_TURN: usize = 1_000;
 pub enum SessionCommand {
     Message {
         request: MessageRequest,
+        started: oneshot::Sender<u64>,
+        reply: oneshot::Sender<Result<SessionSummary, Error>>,
+    },
+    Events {
         started: oneshot::Sender<u64>,
         reply: oneshot::Sender<Result<SessionSummary, Error>>,
     },
@@ -68,6 +70,7 @@ pub struct SessionActor {
     cancel_requested: Arc<AtomicBool>,
     /// The transcript and kv as the journal holds them.
     folded: Folded,
+    tools: Arc<crate::ToolGroup>,
 }
 
 impl SessionActor {
@@ -77,6 +80,7 @@ impl SessionActor {
         runtime: Arc<SessionRuntime>,
         receiver: mpsc::Receiver<SessionCommand>,
         cancel_requested: Arc<AtomicBool>,
+        tools: Arc<crate::ToolGroup>,
     ) -> Result<Self, Error> {
         let config: SessionConfig = serde_json::from_value(std::mem::take(&mut row.configuration))
             .map_err(|error| Error::Journal(error.to_string()))?;
@@ -89,6 +93,7 @@ impl SessionActor {
             receiver,
             cancel_requested,
             folded,
+            tools,
         })
     }
 
@@ -100,13 +105,18 @@ impl SessionActor {
                     started,
                     reply,
                 } => {
-                    let result = self.turn(request, started).await;
+                    let result = self.turn(Some(request), started).await;
                     let _ = reply.send(result);
+                }
+                SessionCommand::Events { started, reply } => {
+                    let _ = reply.send(self.turn(None, started).await);
                 }
                 SessionCommand::Cancel => {
                     self.cancel_requested.store(true, Ordering::Release);
                 }
                 SessionCommand::End { reply } => {
+                    self.tools.interrupt().await;
+                    self.tools.wait().await;
                     let _ = reply.send(self.end().await);
                 }
                 SessionCommand::Append { record, reply } => {
@@ -118,19 +128,20 @@ impl SessionActor {
 
     async fn turn(
         &mut self,
-        request: MessageRequest,
+        request: Option<MessageRequest>,
         started: oneshot::Sender<u64>,
     ) -> Result<SessionSummary, Error> {
         if !matches!(self.row.status, SessionStatus::Idle) {
             return Err(Error::InvalidState("session is not idle".into()));
         }
         self.cancel_requested.store(false, Ordering::Release);
+        let payload = match &request {
+            Some(request) => serde_json::to_value(request).map_err(json_error)?,
+            None => serde_json::json!({"trigger": "events"}),
+        };
         let sequence = self
             .commit(
-                vec![AppendRecord::new(
-                    codes::event::TURN_STARTED,
-                    serde_json::to_value(&request).map_err(json_error)?,
-                )],
+                vec![AppendRecord::new(codes::event::TURN_STARTED, payload)],
                 Some(SessionStatus::Running),
             )
             .await?[0]
@@ -143,13 +154,12 @@ impl SessionActor {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
         let event_records = self.store.records_after(since, EVENTS_PER_TURN)?;
-        let events_through = event_records.last().map_or(since, |record| record.sequence);
         let events = event_records
             .into_iter()
             .map(SessionRecord::into_event)
             .collect();
         let input = TurnInput {
-            input: request.input,
+            input: request.map(|request| request.input),
             transcript: self.folded.transcript.clone(),
             kv: self.folded.kv.clone(),
             events,
@@ -177,6 +187,11 @@ impl SessionActor {
             .await?[0]
             .sequence;
         let host = Arc::new(TurnHost {
+            active: Arc::new(RwLock::new(true)),
+            tools: self.tools.clone(),
+            emissions: Arc::new(crate::tool::EmissionBudget::new(
+                self.runtime.limits.max_emitted_bytes,
+            )),
             origin: brain_protocol::EventOrigin::Agentloop {
                 sequence: activation,
             },
@@ -190,8 +205,6 @@ impl SessionActor {
                 through_sequence: self.row.through_sequence,
                 transcript: std::mem::take(&mut self.folded.transcript),
                 kv: std::mem::take(&mut self.folded.kv),
-                emitted_bytes: 0,
-                max_emitted_bytes: self.runtime.limits.max_emitted_bytes,
             })),
         });
         let agentloop_environment = self
@@ -215,6 +228,7 @@ impl SessionActor {
                     Ok(outcome) => outcome,
                     Err(_) => {
                         self.cancel_requested.store(true, Ordering::Release);
+                        self.tools.interrupt().await;
                         // Keep mediated calls alive through their terminal commit and bounded
                         // cancellation. Dropping the executor here would abandon those records.
                         let _ = running.await;
@@ -228,13 +242,13 @@ impl SessionActor {
         // Whatever the loop did, the host's cursor is the truth about what reached the
         // journal.
         let cursor = {
+            let mut active = host.active.write().await;
+            *active = false;
             let mut cursor = host.cursor.lock().await;
             Cursor {
                 through_sequence: cursor.through_sequence,
                 transcript: std::mem::take(&mut cursor.transcript),
                 kv: std::mem::take(&mut cursor.kv),
-                emitted_bytes: cursor.emitted_bytes,
-                max_emitted_bytes: cursor.max_emitted_bytes,
             }
         };
         self.row.through_sequence = cursor.through_sequence;
@@ -249,8 +263,9 @@ impl SessionActor {
             outcome => outcome,
         };
         match outcome {
-            Ok(output) => self.finish_turn(output, events_through).await,
+            Ok(output) => self.finish_turn(output).await,
             Err(error) => {
+                self.tools.interrupt().await;
                 let failure = failure_of(&error);
                 let failure = if self.cancel_requested.load(Ordering::Acquire)
                     && !matches!(error, Error::Cancelled(_))
@@ -274,11 +289,7 @@ impl SessionActor {
     }
 
     /// Close the turn without overwriting state saved by its services.
-    async fn finish_turn(
-        &mut self,
-        output: TurnOutput,
-        events_through: u64,
-    ) -> Result<SessionSummary, Error> {
+    async fn finish_turn(&mut self, output: TurnOutput) -> Result<SessionSummary, Error> {
         self.commit(
             vec![AppendRecord::new(
                 codes::event::ACTIVATION_ENDED,
@@ -287,15 +298,6 @@ impl SessionActor {
             None,
         )
         .await?;
-        self.folded.kv.insert(
-            LAST_ACTIVATION_KEY.into(),
-            serde_json::json!(events_through),
-        );
-        let entries = vec![JournalEntry::KvSet {
-            key: LAST_ACTIVATION_KEY.into(),
-            value: serde_json::json!(events_through),
-        }];
-        self.row.through_sequence = append_journal(self.store.clone(), entries).await?;
         self.close_turn(vec![AppendRecord::new(
             codes::event::TURN_ENDED,
             serde_json::json!({"result": output.result}),
@@ -369,27 +371,13 @@ struct Cursor {
     /// The transcript as last recorded, so the next delta is against it.
     transcript: Vec<Message>,
     kv: BTreeMap<String, serde_json::Value>,
-    emitted_bytes: usize,
-    max_emitted_bytes: usize,
 }
 
-impl Cursor {
-    fn reserve_emit(&mut self, bytes: usize) -> Result<(), Error> {
-        if self.emitted_bytes.saturating_add(bytes) > crate::limits::ceiling(self.max_emitted_bytes)
-        {
-            return Err(Error::EmitLimit(format!(
-                "turn exceeded its limit of {} emitted Event bytes",
-                self.max_emitted_bytes
-            )));
-        }
-        self.emitted_bytes += bytes;
-        Ok(())
-    }
-}
-
-/// Brain's side of a running turn.
 #[derive(Clone)]
 pub struct TurnHost {
+    active: Arc<RwLock<bool>>,
+    tools: Arc<crate::ToolGroup>,
+    emissions: Arc<crate::tool::EmissionBudget>,
     origin: brain_protocol::EventOrigin,
     session_id: brain_protocol::SessionId,
     store: Arc<dyn SessionStore>,
@@ -401,6 +389,15 @@ pub struct TurnHost {
 }
 
 impl TurnHost {
+    async fn admit(&self) -> Result<RwLockReadGuard<'_, bool>, Error> {
+        let active = self.active.read().await;
+        if !*active {
+            return Err(Error::InvalidState("Agentloop activation is closed".into()));
+        }
+        self.check_cancelled()?;
+        Ok(active)
+    }
+
     fn check_cancelled(&self) -> Result<(), Error> {
         if self.cancel_requested.load(Ordering::Acquire) {
             return Err(Error::Cancelled("turn cancelled".into()));
@@ -441,7 +438,37 @@ impl TurnHost {
 
 #[async_trait::async_trait]
 impl TurnServices for TurnHost {
+    async fn acknowledge(&self, sequence: u64) -> Result<u64, Error> {
+        let _active = self.admit().await?;
+        let mut cursor = self.cursor.lock().await;
+        let processed = cursor
+            .kv
+            .get(LAST_ACTIVATION_KEY)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        if sequence < processed || sequence > self.store.session_row()?.through_sequence {
+            return Err(Error::InvalidState(
+                "processed sequence must advance within committed history".into(),
+            ));
+        }
+        if sequence > processed {
+            cursor.through_sequence = append_journal(
+                self.store.clone(),
+                vec![JournalEntry::KvSet {
+                    key: LAST_ACTIVATION_KEY.into(),
+                    value: serde_json::json!(sequence),
+                }],
+            )
+            .await?;
+            cursor
+                .kv
+                .insert(LAST_ACTIVATION_KEY.into(), serde_json::json!(sequence));
+        }
+        Ok(cursor.through_sequence)
+    }
+
     async fn set_transcript(&self, messages: Vec<Message>) -> Result<u64, Error> {
+        let _active = self.admit().await?;
         let mut cursor = self.cursor.lock().await;
         self.check_cancelled()?;
         if let Some(entry) = delta(&cursor.transcript, &messages) {
@@ -452,6 +479,7 @@ impl TurnServices for TurnHost {
     }
 
     async fn kv_put(&self, request: brain_protocol::KvPutRequest) -> Result<u64, Error> {
+        let _active = self.admit().await?;
         validate_kv_key(&request.key)?;
         let mut cursor = self.cursor.lock().await;
         self.check_cancelled()?;
@@ -467,6 +495,7 @@ impl TurnServices for TurnHost {
     }
 
     async fn kv_read(&self, key: String) -> Result<Option<serde_json::Value>, Error> {
+        let _active = self.admit().await?;
         validate_kv_key(&key)?;
         let cursor = self.cursor.lock().await;
         self.check_cancelled()?;
@@ -474,6 +503,7 @@ impl TurnServices for TurnHost {
     }
 
     async fn kv_delete(&self, key: String) -> Result<u64, Error> {
+        let _active = self.admit().await?;
         validate_kv_key(&key)?;
         let mut cursor = self.cursor.lock().await;
         self.check_cancelled()?;
@@ -489,6 +519,7 @@ impl TurnServices for TurnHost {
     }
 
     async fn events(&self, after: u64) -> Result<brain_protocol::EventPage, Error> {
+        let _active = self.admit().await?;
         self.check_cancelled()?;
         let store = self.store.clone();
         let records =
@@ -499,6 +530,7 @@ impl TurnServices for TurnHost {
     }
 
     async fn model(&self, mut request: ModelRequest) -> Result<ModelResult, Error> {
+        let _active = self.admit().await?;
         self.check_cancelled()?;
         let calls = self.model_calls.fetch_add(1, Ordering::AcqRel) + 1;
         if calls > crate::limits::ceiling(self.runtime.limits.max_model_calls) {
@@ -612,7 +644,8 @@ impl TurnServices for TurnHost {
         }
     }
 
-    async fn dispatch(&self, calls: Vec<ToolInvocation>) -> Result<Vec<ToolResult>, Error> {
+    async fn dispatch(&self, calls: Vec<ToolInvocation>) -> Result<Vec<ToolReturn>, Error> {
+        let _active = self.admit().await?;
         self.check_cancelled()?;
         if calls.is_empty() {
             return Ok(Vec::new());
@@ -685,126 +718,32 @@ impl TurnServices for TurnHost {
             }
             dispatches
         };
-        let futures = dispatches
-            .iter()
-            .cloned()
-            .enumerate()
-            .map(|(index, dispatch)| {
-                let executor = self.runtime.tool_executor.clone();
-                let cancel = self.cancel_requested.clone();
-                async move {
-                    let sequence = dispatch.sequence;
-                    let environment = dispatch.environment.name.clone();
-                    let call_id = dispatch.invocation.call_id.clone();
-                    let deadline = Duration::from_millis(dispatch.deadline_ms);
-                    // The deadline is enforced here, on the calling side: the remote
-                    // cannot be trusted to, so an overdue call is dropped and recorded
-                    // as its own distinguished outcome. A cancellation ends the wait the
-                    // same way.
-                    let output_schema = dispatch.tool.output_schema.clone();
-                    let call = async {
-                        let validator = jsonschema::validator_for(&dispatch.tool.input_schema)
-                            .map_err(|e| Error::InvalidState(e.to_string()))?;
-                        if let Err(error) = validator.validate(&dispatch.invocation.input) {
-                            return Ok(Outcome::Error {
-                                error: brain_protocol::OutcomeError {
-                                    retryable: false,
-                                    code: "invalid_input".into(),
-                                    message: error.to_string(),
-                                    details: None,
-                                },
-                            });
-                        }
-                        let mut services = self.clone();
-                        services.origin = brain_protocol::EventOrigin::Tool { sequence };
-                        executor.execute(dispatch, Arc::new(services)).await
-                    };
-                    let cancelled = async {
-                        while !cancel.load(Ordering::Acquire) {
-                            tokio::time::sleep(Duration::from_millis(25)).await;
-                        }
-                    };
-                    let result = tokio::select! {
-                        outcome = tokio::time::timeout(deadline, call) => match outcome {
-                            Ok(result) => result.map(|outcome| (outcome, false)),
-                            Err(_) => Ok((Outcome::Timeout, true)),
-                        },
-                        () = cancelled => Ok((Outcome::Cancelled, true)),
-                    };
-                    let dropped = matches!(&result, Ok((_, true)));
-                    let unreachable = matches!(&result, Err(Error::Ambiguous(_)));
-                    let result = result.and_then(|(outcome, dropped)| {
-                        if let (Outcome::Ok { value }, Some(schema)) = (&outcome, &output_schema) {
-                            let validator = jsonschema::validator_for(schema)
-                                .map_err(|e| Error::Executor(e.to_string()))?;
-                            if let Err(error) = validator.validate(value) {
-                                return Ok((
-                                    Outcome::Error {
-                                        error: brain_protocol::OutcomeError {
-                                            retryable: false,
-                                            code: "invalid_output".into(),
-                                            message: error.to_string(),
-                                            details: None,
-                                        },
-                                    },
-                                    dropped,
-                                ));
-                            }
-                        }
-                        Ok((outcome, dropped))
-                    });
-                    let result = match result {
-                        Ok((outcome, _)) => ToolResult::from_outcome(call_id, outcome),
-                        Err(Error::Ambiguous(message)) => {
-                            ToolResult::from_outcome(call_id, Outcome::Unknown { message })
-                        }
-                        Err(error) => ToolResult {
-                            call_id,
-                            output: serde_json::to_value(Failure::new(
-                                codes::failure::TOOL_ERROR,
-                                error.to_string(),
-                            ))
-                            .map_err(json_error)?,
-                            is_error: true,
-                        },
-                    };
-                    let mut cursor = self.cursor.lock().await;
-                    let mut records = vec![AppendRecord::new(
-                        codes::event::TOOL_CALL_ENDED,
-                        serde_json::json!({"sequence": sequence, "result": result}),
-                    )];
-                    if unreachable {
-                        records.push(AppendRecord::new(
-                            codes::event::ENVIRONMENT_UNREACHABLE,
-                            serde_json::json!({"environment": environment, "sequence": sequence}),
-                        ));
-                    }
-                    self.append(&mut cursor, records).await?;
-                    Ok::<_, Error>((index, result, dropped))
-                }
-            });
-        let completed = join_all(futures).await;
-        let mut results = Vec::with_capacity(completed.len());
-        let mut abandoned = Vec::new();
-        for completed in completed {
-            let (index, result, dropped) = completed?;
-            if dropped {
-                abandoned.push(dispatches[index].clone());
-            }
-            results.push(result);
-        }
-        // A call abandoned locally is told to stop where it runs, best effort like every
-        // cancellation.
-        if !abandoned.is_empty() {
-            self.cancel_tools(&abandoned).await?;
-        }
-        // The results are recorded either way; a cancelled turn hears it here rather
-        // than on its next call.
+        let waits = dispatches
+            .into_iter()
+            .map(|dispatch| {
+                self.tools.start(
+                    dispatch,
+                    self.store.clone(),
+                    self.runtime.tool_executor.clone(),
+                    self.emissions.clone(),
+                    self.runtime.telemetry.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let results = join_all(waits)
+            .await
+            .into_iter()
+            .map(|result| {
+                result
+                    .map_err(|_| Error::Executor("Tool execution stopped before returning".into()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         self.check_cancelled()?;
         Ok(results)
     }
 
     async fn emit(&self, kind: String, payload: serde_json::Value) -> Result<u64, Error> {
+        let _active = self.admit().await?;
         self.check_cancelled()?;
         if kind == "_extension_event"
             || !valid_kind(&kind)
@@ -820,7 +759,7 @@ impl TurnServices for TurnHost {
             .checked_add(serde_json::to_vec(&payload).map_err(json_error)?.len())
             .ok_or_else(|| Error::EmitLimit("emitted Event size overflowed".into()))?;
         let mut cursor = self.cursor.lock().await;
-        cursor.reserve_emit(bytes)?;
+        self.emissions.reserve(bytes)?;
         let mut record = AppendRecord::new(kind, payload);
         record.origin = Some(self.origin.clone());
         let saved = TurnHost::append(self, &mut cursor, vec![record]).await?;
@@ -835,24 +774,6 @@ impl TurnServices for TurnHost {
         self.publish_telemetry(
             brain_telemetry::TelemetryKind::Event,
             "agentloop_telemetry",
-            record,
-        );
-    }
-}
-
-#[async_trait::async_trait]
-impl ToolServices for TurnHost {
-    fn cancelled(&self) -> bool {
-        self.cancel_requested.load(Ordering::Acquire)
-    }
-    async fn emit(&self, kind: String, payload: serde_json::Value) -> Result<u64, Error> {
-        TurnServices::emit(self, kind, payload).await
-    }
-
-    fn telemetry(&self, record: serde_json::Value) {
-        self.publish_telemetry(
-            brain_telemetry::TelemetryKind::Log,
-            "tool_telemetry",
             record,
         );
     }
@@ -876,66 +797,6 @@ impl TurnHost {
                 session_id: Some(self.session_id.clone()),
                 sequence: None,
             });
-    }
-
-    async fn cancel_tools(&self, dispatches: &[ToolDispatch]) -> Result<(), Error> {
-        let cancellations = {
-            let mut cursor = self.cursor.lock().await;
-            let mut cancellations = Vec::with_capacity(dispatches.len());
-            let mut started = Vec::with_capacity(dispatches.len());
-            for dispatch in dispatches {
-                let cancellation = ToolCancellation {
-                    sequence: 0,
-                    target_sequence: dispatch.sequence,
-                    session_id: dispatch.session_id.clone(),
-                    environment: dispatch.environment.clone(),
-                };
-                started.push(AppendRecord::new(
-                    codes::event::TOOL_CANCEL_STARTED,
-                    serde_json::json!({
-                        "target_sequence": cancellation.target_sequence,
-                        "tool": &dispatch.tool.name,
-                        "environment": &dispatch.environment.name,
-                    }),
-                ));
-                cancellations.push(cancellation);
-            }
-            let saved = self.append(&mut cursor, started).await?;
-            for (cancellation, record) in cancellations.iter_mut().zip(saved) {
-                cancellation.sequence = record.sequence;
-            }
-            cancellations
-        };
-        let futures = cancellations.into_iter().map(|cancellation| async move {
-            let sequence = cancellation.sequence;
-            let result = tokio::time::timeout(
-                Duration::from_secs(5),
-                self.runtime.tool_executor.cancel(cancellation),
-            )
-            .await
-            .unwrap_or_else(|_| {
-                Err(Error::Ambiguous(
-                    "Environment cancellation deadline exceeded".into(),
-                ))
-            });
-            let record = match result {
-                Ok(()) => AppendRecord::new(
-                    codes::event::TOOL_CANCEL_ENDED,
-                    serde_json::json!({"sequence": sequence}),
-                ),
-                Err(error) => AppendRecord::new(
-                    codes::event::TOOL_CANCEL_FAILED,
-                    failure_payload(Some(sequence), &failure_of(&error))?,
-                ),
-            };
-            let mut cursor = self.cursor.lock().await;
-            self.append(&mut cursor, vec![record]).await?;
-            Ok::<_, Error>(())
-        });
-        for result in join_all(futures).await {
-            result?;
-        }
-        Ok(())
     }
 }
 
@@ -993,7 +854,7 @@ fn validate_kv_key(key: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn valid_kind(kind: &str) -> bool {
+pub(crate) fn valid_kind(kind: &str) -> bool {
     let bytes = kind.as_bytes();
     !bytes.is_empty()
         && bytes.len() <= 128
@@ -1095,16 +956,11 @@ mod tests {
 
     #[test]
     fn emitted_events_have_an_aggregate_byte_limit() {
-        let mut cursor = Cursor {
-            kv: Default::default(),
-            through_sequence: 0,
-            transcript: Vec::new(),
-            emitted_bytes: 1023,
-            max_emitted_bytes: 1024,
-        };
-        cursor.reserve_emit(1).unwrap();
+        let budget = crate::tool::EmissionBudget::new(1024);
+        budget.reserve(1023).unwrap();
+        budget.reserve(1).unwrap();
         assert_eq!(
-            cursor.reserve_emit(1).unwrap_err().code(),
+            budget.reserve(1).unwrap_err().code(),
             codes::failure::EMIT_LIMIT
         );
     }

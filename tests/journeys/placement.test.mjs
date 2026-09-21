@@ -55,8 +55,8 @@ test("caller teardown is visible without replacement allocation", { timeout: 30_
   await session.send("use the workspace again");
   assert.equal(allocations, before);
   const ended = (await collect(session.events())).filter((event) => event.type === "tool_call_ended").at(-1);
-  assert.equal(ended.data.result.is_error, true);
-  assert.equal(ended.data.result.output.code, "unavailable");
+  assert.equal(ended.data.outcome.status, "error");
+  assert.equal(ended.data.outcome.error.code, "unavailable");
   assert.ok(JSON.stringify(f.modelRequests.at(-1).input.at(-1)).includes("unavailable"));
 });
 

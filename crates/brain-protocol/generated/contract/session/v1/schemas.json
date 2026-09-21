@@ -528,7 +528,6 @@
         "environment",
         "session_id",
         "sequence",
-        "deadline_at_ms",
         "operation"
       ],
       "type": "object"
@@ -637,9 +636,6 @@
     "HostResult": {
       "additionalProperties": false,
       "properties": {
-        "outcome": {
-          "$ref": "#/$defs/Outcome"
-        },
         "sequence": {
           "format": "uint64",
           "minimum": 1,
@@ -647,12 +643,15 @@
         },
         "session_id": {
           "$ref": "#/$defs/SessionId"
+        },
+        "update": {
+          "$ref": "#/$defs/ToolExecutionUpdate"
         }
       },
       "required": [
         "session_id",
         "sequence",
-        "outcome"
+        "update"
       ],
       "type": "object"
     },
@@ -749,12 +748,10 @@
       "description": "USD per million tokens.",
       "properties": {
         "cache_read": {
-          "default": null,
           "format": "double",
           "type": "number"
         },
         "cache_write": {
-          "default": null,
           "format": "double",
           "type": "number"
         },
@@ -777,52 +774,43 @@
       "additionalProperties": false,
       "properties": {
         "attachment": {
-          "default": null,
           "type": "boolean"
         },
         "context_window_tokens": {
-          "default": null,
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "cost": {
-          "$ref": "#/$defs/ModelCost",
-          "default": null
+          "$ref": "#/$defs/ModelCost"
         },
         "id": {
           "type": "string"
         },
         "input_modalities": {
-          "default": null,
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "max_output_tokens": {
-          "default": null,
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "output_modalities": {
-          "default": null,
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "reasoning": {
-          "default": null,
           "type": "boolean"
         },
         "structured_output": {
-          "default": null,
           "type": "boolean"
         },
         "tool_call": {
-          "default": null,
           "type": "boolean"
         }
       },
@@ -1247,6 +1235,59 @@
       ],
       "type": "object"
     },
+    "ToolExecutionUpdate": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "outcome": {
+              "$ref": "#/$defs/Outcome"
+            },
+            "type": {
+              "const": "result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "outcome": {
+              "$ref": "#/$defs/Outcome"
+            },
+            "type": {
+              "const": "returned",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "outcome": {
+              "$ref": "#/$defs/Outcome"
+            },
+            "type": {
+              "const": "finish",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "ToolId": {
       "pattern": "^[0-9a-f]{64}$",
       "type": "string"
@@ -1275,6 +1316,36 @@
         "call_id",
         "output",
         "is_error"
+      ],
+      "type": "object"
+    },
+    "ToolReturn": {
+      "description": "Observations available when the synchronous phase returns. Execution can remain open.",
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "events": {
+          "items": {
+            "$ref": "#/$defs/Event"
+          },
+          "type": "array"
+        },
+        "finished": {
+          "type": "boolean"
+        },
+        "sequence": {
+          "description": "The original tool_call_started sequence.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "call_id",
+        "sequence",
+        "events",
+        "finished"
       ],
       "type": "object"
     },

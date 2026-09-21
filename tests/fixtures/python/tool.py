@@ -7,4 +7,6 @@ class WitWorld(WitWorld):
     def run(self, input):
         value = json.loads(input.input_json)
         sequence = host.emit("python_tool_ran", json.dumps(value))
-        return json.dumps({"echo": value, "sequence": sequence})
+        result = {"echo": value, "sequence": sequence}
+        host.finish(json.dumps({"status": "ok", "value": result}))
+        return json.dumps(result)

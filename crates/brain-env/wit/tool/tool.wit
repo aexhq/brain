@@ -1,4 +1,4 @@
-package brain:tool@0.1.0;
+package brain:tool@0.2.0;
 
 interface types {
   // One call. The call is named by the session id and sequence Brain records for
@@ -6,6 +6,7 @@ interface types {
   record invocation {
     input-json: string,
     configuration-json: string,
+    // Zero means no deadline.
     deadline-at-ms: u64,
   }
 
@@ -19,6 +20,12 @@ interface host {
   use types.{tool-error};
 
   emit: func(kind: string, payload-json: string) -> result<u64, tool-error>;
+  // Outcomes use the session contract. Each call commits before returning.
+  emit-result: func(outcome-json: string) -> result<u64, tool-error>;
+  // Release dispatch while the invocation keeps running its asynchronous work.
+  returned: func(outcome-json: option<string>) -> result<u64, tool-error>;
+  // Close the execution after all its results. Further emissions are refused.
+  finish: func(outcome-json: option<string>) -> result<u64, tool-error>;
   // Best-effort operational diagnostics. Never enters the session journal or model input.
   telemetry: func(record-json: string);
 }

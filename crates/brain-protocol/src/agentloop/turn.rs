@@ -34,7 +34,9 @@ impl RuntimeEnvelope {
 /// What Brain hands the loop for one turn.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct TurnInput {
-    pub input: UserInput,
+    /// Absent when committed Tool observations activate the loop without a user message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<UserInput>,
     /// The transcript as it stands: what the next model call would see.
     pub transcript: Vec<Message>,
     /// The loop's kv (a key-value map it keeps between turns), as it last returned it.

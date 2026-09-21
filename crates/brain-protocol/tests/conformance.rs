@@ -35,6 +35,35 @@ fn definition_is_valid(schema_path: &str, definition: &str, value: &Value) -> bo
 }
 
 #[test]
+fn serialized_model_metadata_matches_the_public_contract() {
+    for cost in [
+        None,
+        Some(brain_protocol::ModelCost {
+            input: 1.0,
+            output: 2.0,
+            cache_read: None,
+            cache_write: None,
+        }),
+    ] {
+        let model = brain_protocol::ModelDef {
+            id: "minimal".into(),
+            cost,
+            ..Default::default()
+        };
+        let serialized = serde_json::to_value(model).unwrap();
+        validate_definition(
+            "generated/contract/session/v1/schemas.json",
+            "ModelDef",
+            &serialized,
+        );
+        assert!(!serialized.as_object().unwrap().values().any(Value::is_null));
+        if let Some(cost) = serialized.get("cost") {
+            assert_eq!(cost, &serde_json::json!({"input": 1.0, "output": 2.0}));
+        }
+    }
+}
+
+#[test]
 fn contract_schemas_are_valid_draft_2020_12() {
     for path in [
         "generated/contract/agentloop/v1/contract.json",

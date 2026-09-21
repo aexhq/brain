@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
+import { finish } from "./environment-callback.mjs";
 
 function command(executable, args, cwd, input) {
   return new Promise((accept, reject) => {
@@ -17,7 +18,7 @@ function command(executable, args, cwd, input) {
 
 // Projects are provisioned by this Environment's operator, not paths supplied by a
 // Tool or a session. Run this example inside an appropriately isolated OS environment.
-export function pythonEnvironment({ projects, uv = "uv" }) {
+export function pythonEnvironment({ projects, uv = "uv", fetch = globalThis.fetch }) {
   const programs = new Map(Object.entries(projects).map(([name, project]) => [name, {
     ...project, directory: resolve(project.directory),
   }]));
@@ -53,6 +54,7 @@ export function pythonEnvironment({ projects, uv = "uv" }) {
         const descriptor = request.implementation;
         const project = descriptor?.type === "python_project" && programs.get(descriptor.name);
         if (!project) receipt = failure("unsupported", "unknown Python project implementation");
+        else if (!request.callback?.methods.includes("finish")) receipt = failure("no_callback", "Tool completion service is required");
         else {
           try {
             // A failed preparation stays failed until the operator replaces this
@@ -65,7 +67,7 @@ export function pythonEnvironment({ projects, uv = "uv" }) {
           if (!receipt) {
             try {
               const output = JSON.parse(await invoke(project, project.module, request.input));
-              receipt = { type: "result", output };
+              receipt = await finish(request.callback, output, fetch);
             } catch (error) {
               receipt = failure("execution_failed", error.message);
             }

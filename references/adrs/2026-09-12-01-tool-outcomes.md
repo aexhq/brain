@@ -3,6 +3,10 @@
 - Decision date: 2026-09-12
 - Status: Accepted
 
+Refined by [ADR-048](2026-09-21-01-tool-completion-and-event-activation.md), accepted
+and implemented in 0.28: return no longer implies execution completion;
+Tools explicitly finish. Known terminal causes and structured result validation remain.
+
 ## Context
 
 Host functions could only return successful values or throw an unstructured exception. Returning

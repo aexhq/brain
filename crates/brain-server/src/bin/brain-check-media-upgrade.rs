@@ -15,6 +15,9 @@ struct Args {
     /// The previous runtime used Chat for the openai and vercel-ai-gateway bindings.
     #[arg(long)]
     from_chat: bool,
+    /// Old executable contracts cannot resume under explicit Tool completion semantics.
+    #[arg(long)]
+    from_tool_return: bool,
     #[arg(long)]
     providers_file: Option<PathBuf>,
 }
@@ -55,6 +58,9 @@ fn inspect_record(
             );
         }
         "turn_started" => {
+            if value == serde_json::json!({"trigger": "events"}) {
+                return Ok(());
+            }
             let request: MessageRequest = serde_json::from_value(value).map_err(|_| invalid())?;
             for media in request.input.media {
                 media.validate().map_err(|_| invalid())?;
@@ -99,7 +105,9 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
         let mut dialect = None;
+        let mut closed = false;
         let result = LocalSessionStore::inspect(&path, |kind, value| {
+            closed |= matches!(kind, "session_ended" | "session_creation_failed");
             inspect_record(&registry, args.from_chat, &mut dialect, kind, value)
         });
         anyhow::ensure!(
@@ -107,9 +115,14 @@ fn main() -> anyhow::Result<()> {
             "incompatible or unreadable retained session: {}",
             path.file_name().unwrap().to_string_lossy()
         );
+        anyhow::ensure!(
+            !args.from_tool_return || closed,
+            "retained session {} still uses the previous execution contract; keep its matching runtime and migrate explicitly",
+            path.file_name().unwrap().to_string_lossy()
+        );
         count += 1;
     }
-    println!("checked {count} retained sessions; media/model contract is compatible");
+    println!("checked {count} retained sessions; requested contract upgrade checks passed");
     Ok(())
 }
 
@@ -153,6 +166,16 @@ mod tests {
     fn inline_and_chat_state_are_rejected_without_inspecting_arbitrary_tool_json() {
         let registry = ProviderRegistry::compose(vec![], &[]).unwrap();
         let mut dialect = Some(Dialect::OpenAiResponses);
+        assert!(
+            inspect_record(
+                &registry,
+                false,
+                &mut dialect,
+                "turn_started",
+                json!({"trigger":"events"})
+            )
+            .is_ok()
+        );
         for block in [
             json!({"type":"image","url":"data:image/png;base64,AAAA"}),
             json!({"type":"native","format":"openai.chat.v1","data":{}}),

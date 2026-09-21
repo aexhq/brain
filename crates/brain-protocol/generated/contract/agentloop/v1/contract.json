@@ -356,7 +356,8 @@
           "type": "array"
         },
         "input": {
-          "$ref": "#/$defs/UserInput"
+          "$ref": "#/$defs/UserInput",
+          "description": "Absent when committed Tool observations activate the loop without a user message."
         },
         "kv": {
           "additionalProperties": true,
@@ -386,7 +387,6 @@
         }
       },
       "required": [
-        "input",
         "transcript",
         "kv",
         "events",

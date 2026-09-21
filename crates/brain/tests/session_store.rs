@@ -395,6 +395,27 @@ fn only_an_ended_session_can_be_deleted() {
     store.delete().unwrap();
     assert!(!directory.join("ses_1").exists());
     drop(store);
+    let replacement = created(&directory, &writer);
+    replacement
+        .append_sync(
+            &[AppendRecord::new(
+                "replacement",
+                serde_json::json!({"fresh": true}),
+            )],
+            SessionUpdate::default(),
+        )
+        .unwrap();
+    drop(replacement);
+    let reopened =
+        LocalSessionStore::open(&directory.join("ses_1"), writer.clone(), feed()).unwrap();
+    assert!(
+        reopened
+            .records_after(0, 100)
+            .unwrap()
+            .iter()
+            .any(|record| record.kind == "replacement")
+    );
+    drop(reopened);
     drop(writer);
     let _ = fs::remove_dir_all(directory);
 }

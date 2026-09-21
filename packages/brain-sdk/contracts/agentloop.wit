@@ -1,4 +1,4 @@
-package brain:agentloop@0.1.0;
+package brain:agentloop@0.2.0;
 
 // An agentloop runs one whole turn. Brain calls `turn` once per user message with the
 // transcript as it stands, the loop's kv, and every event recorded since the loop
@@ -53,6 +53,8 @@ interface host {
 
   // A finite EventPage after this sequence. Continue with next_cursor until empty.
   events: func(after: u64) -> result<string, turn-error>;
+  // Mark all journal events through this sequence as processed by this loop.
+  acknowledge: func(through: u64) -> result<u64, turn-error>;
   set-transcript: func(messages-json: string) -> result<u64, turn-error>;
   kv-put: func(key: string, value-json: string) -> result<u64, turn-error>;
   kv-read: func(key: string) -> result<option<string>, turn-error>;

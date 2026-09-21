@@ -7,7 +7,11 @@ struct Diagnostic;
 
 impl Guest for Diagnostic {
     fn turn(input: TurnInput) -> Result<TurnOutput, TurnError> {
-        brain::agentloop::host::events(0)?;
+        let page: serde_json::Value =
+            serde_json::from_str(&brain::agentloop::host::events(0)?).map_err(error)?;
+        if let Some(sequence) = page["next_cursor"].as_u64() {
+            brain::agentloop::host::acknowledge(sequence)?;
+        }
         let mut kv = serde_json::json!({
             "memory": brain::agentloop::host::kv_read("memory")?
                 .map(|value| serde_json::from_str::<serde_json::Value>(&value)).transpose().map_err(error)?
@@ -28,12 +32,15 @@ impl Guest for Diagnostic {
             .unwrap_or_default()
             .to_owned();
         if message == "kv" {
-        assert!(brain::agentloop::host::kv_read("deleted")?.is_none());
-        brain::agentloop::host::kv_put("deleted", "null")?;
-        assert_eq!(brain::agentloop::host::kv_read("deleted")?.as_deref(), Some("null"));
-        brain::agentloop::host::kv_delete("deleted")?;
-        assert!(brain::agentloop::host::kv_read("deleted")?.is_none());
-        brain::agentloop::host::kv_delete("deleted")?;
+            assert!(brain::agentloop::host::kv_read("deleted")?.is_none());
+            brain::agentloop::host::kv_put("deleted", "null")?;
+            assert_eq!(
+                brain::agentloop::host::kv_read("deleted")?.as_deref(),
+                Some("null")
+            );
+            brain::agentloop::host::kv_delete("deleted")?;
+            assert!(brain::agentloop::host::kv_read("deleted")?.is_none());
+            brain::agentloop::host::kv_delete("deleted")?;
         }
         Ok(TurnOutput {
             result_json: Some(serde_json::json!({"turns": turns, "message": message}).to_string()),

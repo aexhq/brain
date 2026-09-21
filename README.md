@@ -88,7 +88,8 @@ with HTTP and SSE. A local deployment needs no external store. The
 The tool below is a plain function in your own process. The SDK registers your process as a host
 over SSE, so your app needs no open port.
 
-Host functions can return ordinary output or an `Outcome` directly, preserving structured errors.
+Use `return ctx.finish(value)` to publish ordinary output or an `Outcome` and finish a Tool.
+A plain return ends only its synchronous phase; background results remain valid and wake the loop.
 Tool deadlines yield `timeout`, explicit cancellation yields `cancelled`, and missing results after
 dispatch yield `unknown`. Each is a failed Tool result; see [Tool outcomes](docs/guides/write-a-tool.mdx#return-values-and-outcomes).
 
@@ -101,7 +102,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 ```
 
 ```sh
-npm install @aexhq/brain@0.24.3 @aexhq/agentloop-pi@6.1.2 zod
+npm install @aexhq/brain@0.28.0 @aexhq/agentloop-pi@7.0.0 zod
 ```
 
 Keep the Brain SDK version aligned with the version required by your extensions.
@@ -118,7 +119,7 @@ const lookupOrder = tool({
   name: "lookup_order",
   description: "Look up an order's status by id.",
   input: z.object({ id: z.string() }),
-  run: ({ id }) => orders[id] ?? { status: "unknown order" },
+  run: ({ id }, ctx) => ctx.finish(orders[id] ?? { status: "unknown order" }),
 });
 
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080", token: "quickstart" });

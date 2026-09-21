@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{Environment, EnvironmentName, Outcome, SessionId, ToolId, TurnError};
+use crate::{Environment, EnvironmentName, Event, Outcome, SessionId, ToolId, TurnError};
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -98,7 +98,7 @@ pub struct ToolDispatch {
     pub invocation: ToolInvocation,
     /// Caller-owned: Brain kills the call when this expires, because the remote cannot
     /// be trusted to.
-    pub deadline_ms: u64,
+    pub deadline_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -116,6 +116,16 @@ pub struct ToolResult {
     pub call_id: String,
     pub output: serde_json::Value,
     pub is_error: bool,
+}
+
+/// Observations available when the synchronous phase returns. Execution can remain open.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub struct ToolReturn {
+    pub call_id: String,
+    /// The original tool_call_started sequence.
+    pub sequence: u64,
+    pub events: Vec<Event>,
+    pub finished: bool,
 }
 
 impl ToolResult {

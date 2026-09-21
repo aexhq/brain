@@ -30,8 +30,10 @@ Before Brain calls a model, invokes a Tool, or starts an Environment operation, 
 the corresponding `*_started` record. It then sends the effect once. Brain never automatically
 retries it.
 
-Before the Agentloop observes the answer, Brain commits `*_ended` or `*_failed` referencing the
-started sequence. If a remote result is uncertain, the failure or Tool outcome says `unknown`; an
+Before the Agentloop observes an answer, Brain commits its record referencing the
+started sequence. Tools separately commit `tool_result_emitted`, `tool_call_returned`, and
+`tool_call_ended`; completion need not include another result. If a remote result is uncertain,
+the failure or Tool outcome says `unknown`; an
 unknown effect is not replayed onto another target.
 
 Extension Events use the same commit path. A turn may emit at most `BRAIN_MAX_EMITTED_BYTES`
@@ -55,6 +57,11 @@ Environment and carry the request.
 The Agentloop owns transcript contents while Brain owns persistence. `set-transcript` commits the
 difference from the saved transcript. Appends store only the tail; summaries, edits, and reorders
 restart at the first changed item. Recovery folds those deltas in journal order.
+
+Tool observations always enter history. The loop chooses which affect model messages, then
+calls `acknowledge(through)` after saving its decision. This advances the reserved
+`brain.last_activation` sequence through a considered prefix; dismissing an observation counts
+as processing it. Reading history or returning from an activation does not acknowledge it.
 
 `kv-put` commits one key/value change; `kv-delete` commits removal from current state without
 erasing history. `kv-read` distinguishes a missing key from stored JSON null. Each operation is durable before it returns, independently
@@ -89,9 +96,16 @@ Environments may register a turn-end method during setup. The answer is availabl
 these calls finish; their results appear in the same event stream. Resource cleanup belongs
 to the Environment's configuration. It does not end the session or discard its transcript.
 
-A turn starts when a client sends a message and ends when the Agentloop returns or fails. During
+A turn starts for a user message or pending Tool observations and ends when the Agentloop returns or fails. During
 the activation the loop may call Brain's model, Tool dispatch, event emission, and telemetry
 services in any order.
+
+Tool return releases the synchronous caller. Explicit finish completes the whole execution.
+Background Tools survive normal turn completion and actor passivation, with their original
+deadline and emission budget. Later emissions wake one Agentloop activation at a time; event-only
+activations have no user input. Brain combines wake notifications for five milliseconds from the
+first pending commit, without delaying journal acknowledgements or extending the window as
+more events arrive. The loop may call the model, dismiss an observation, or wait for a user.
 
 Three deployment limits bound a turn, each with a default the server ships and zero meaning no
 bound; see [Configuration](/docs/reference/configuration) for the rest:
@@ -112,7 +126,7 @@ restart. These Tool results all have `is_error: true` and are never replayed aut
 ## Suspension and recovery
 
 By default, create and turn completion release the actor and its history indexes. Transcript and
-Event reads do not activate it. A message explicitly opens a new activation; the session's
+Event reads do not activate it. A message or pending Tool observations open a new activation; the session's
 Environments stay set up. `idleTtlMs` can retain execution for a chosen interval; explicit zero retains it
 indefinitely. The server-wide TTL is optional and has the same zero convention.
 
@@ -180,7 +194,8 @@ exposes the payload as `event.data` and provenance as `event.origin` on both pag
 
 ## Lifecycle
 
-`session.interrupt()` requests cancellation of work in flight and keeps the session available
+`session.interrupt()` requests cancellation of work in flight, including unfinished Tools while
+the loop is idle, and keeps the session available
 for another turn. The HTTP operation remains `POST /v1/sessions/{id}/cancel`.
 `end` refuses new messages and detaches the
 session's Environments while preserving history. `delete` removes the session directory, tears
@@ -194,7 +209,9 @@ ending its last session. Put creation inside `try` and close the client in `fina
 Handlers should observe their cancellation signal; close does not wait for application code
 that ignores it. A client created by `withToken` has its own lifetime.
 
-`end` waits for active work. SIGTERM/server shutdown stops admitting work and drains admitted
+`end` cancels unfinished Tools and waits for their cleanup before detaching Environments.
+Deletion closes execution authority before teardown and journal removal.
+SIGTERM/server shutdown stops admitting work and drains admitted
 operations while their callbacks remain available, then closes subscriptions and workers. Deadlines,
 `interrupt`, and forced process termination can still interrupt a turn and expose partial progress.
 

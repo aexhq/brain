@@ -86,8 +86,8 @@ pub enum EnvironmentRequest {
         /// Interpreted only by the Environment; fixes the runtime entrypoint and configuration.
         implementation: serde_json::Value,
         input: serde_json::Value,
-        #[schemars(range(min = 1))]
-        deadline_ms: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deadline_ms: Option<u64>,
         /// Sent only during execution, never journaled.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         callback: Option<ExecutionCallback>,
@@ -114,6 +114,11 @@ pub enum EnvironmentReceipt {
     },
     Result {
         output: serde_json::Value,
+    },
+    /// The entrypoint returned; only an explicit finish closes a Tool execution.
+    Returned {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<serde_json::Value>,
     },
     Failure {
         #[schemars(schema_with = "crate::schema::identifier")]

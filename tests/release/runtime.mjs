@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Brain, agentloop, brainEnv, component, environment, tool } from "@aexhq/brain";
 import { z } from "zod";
@@ -119,6 +119,18 @@ try {
     histories.push(retained);
   }
   for (const retained of histories) assert.equal((await retained.transcript()).messages.length, 8);
+  await stop();
+  const upgrade = () => spawnSync(join(dirname(process.env.BRAIN_TEST_SERVER), "brain-check-media-upgrade"),
+    ["--data-dir", join(root, "data"), "--from-tool-return"], { encoding: "utf8" });
+  const incompatible = upgrade();
+  assert.equal(incompatible.status, 1);
+  assert.match(incompatible.stderr, /previous execution contract/u);
+  await start(baseUrl);
+  for (const retained of [session, ...histories]) await retained.end();
+  await stop();
+  const compatible = upgrade();
+  assert.equal(compatible.status, 0, compatible.stderr);
+  assert.match(compatible.stdout, /checked 3 retained sessions/u);
   console.log("lazy providers, caller teardown, restart, and suspended transcripts passed");
 } finally {
   await stop();

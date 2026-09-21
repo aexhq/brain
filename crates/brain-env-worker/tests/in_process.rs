@@ -45,6 +45,10 @@ impl GuestHost for Answering {
             .to_string()),
             HostCall::Dispatch { .. } => Ok("[]".into()),
             HostCall::Emit { .. } => Ok("7".into()),
+            HostCall::Acknowledge { .. }
+            | HostCall::ToolResult { .. }
+            | HostCall::ToolReturned { .. }
+            | HostCall::ToolFinish { .. } => Ok("7".into()),
             HostCall::Telemetry { .. } => Ok(String::new()),
         }
     }
@@ -52,7 +56,7 @@ impl GuestHost for Answering {
 
 fn input(message: &str, kv: std::collections::BTreeMap<String, serde_json::Value>) -> TurnInput {
     TurnInput {
-        input: message.into(),
+        input: Some(message.into()),
         transcript: Vec::new(),
         kv,
         events: Vec::new(),

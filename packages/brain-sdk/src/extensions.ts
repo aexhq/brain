@@ -164,12 +164,13 @@ export function agentloop<OptionsSchema extends Schema | undefined = undefined>(
   }) as (placement: Placement<OptionsSchema>) => PlacedAgentloop;
 }
 
-export interface ToolRunContext<Options> extends HostToolCall {
+export interface ToolRunContext<Options, Output = unknown> extends HostToolCall<Output> {
   readonly options: Readonly<Options>;
   emit(kind: string, data: unknown): Promise<number>;
 }
 
 type ToolReturn<OutputSchema extends Schema | undefined> =
+  | void
   | (OutputSchema extends Schema ? SchemaInput<OutputSchema> : unknown)
   | Outcome<OutputSchema extends Schema ? SchemaInput<OutputSchema> : unknown>;
 
@@ -184,7 +185,7 @@ export interface ToolContract<OptionsSchema extends Schema | undefined, InputSch
   readonly options?: OptionsSchema;
   readonly run?: (
     input: SchemaOutput<InputSchema>,
-    context: ToolRunContext<Options<OptionsSchema>>,
+    context: ToolRunContext<Options<OptionsSchema>, OutputSchema extends Schema ? SchemaInput<OutputSchema> : unknown>,
   ) => ToolReturn<OutputSchema> | Promise<ToolReturn<OutputSchema>>;
   readonly implementation?: Component | Readonly<Record<string, unknown>> | ((options: Options<OptionsSchema>) => unknown);
 }

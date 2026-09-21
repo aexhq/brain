@@ -10,4 +10,5 @@ class WitWorld(WitWorld):
         kv["calls"] = kv.get("calls", 0) + 1
         host.kv_put("calls", json.dumps(kv["calls"]))
         sequence = host.emit("python_ran", json.dumps({"calls": kv["calls"]}))
+        host.acknowledge(sequence)
         return TurnOutput(json.dumps({"sequence": sequence, "calls": kv["calls"]}))

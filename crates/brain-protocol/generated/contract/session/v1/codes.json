@@ -34,6 +34,8 @@
     "model_call_ended",
     "model_call_failed",
     "tool_call_started",
+    "tool_call_returned",
+    "tool_result_emitted",
     "tool_call_ended",
     "tool_call_failed",
     "tool_cancel_started",

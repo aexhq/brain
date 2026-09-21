@@ -21,6 +21,7 @@ use crate::{
 use actor::{SessionActor, SessionCommand, failure_of, failure_payload};
 
 pub use actor::LAST_ACTIVATION_KEY;
+pub(crate) use actor::valid_kind;
 pub use config::SessionRuntime;
 pub use services::TurnServices;
 
@@ -34,6 +35,7 @@ pub struct Session {
     session_id: SessionId,
     sender: mpsc::Sender<SessionCommand>,
     cancelled: Arc<AtomicBool>,
+    tools: Arc<crate::ToolGroup>,
 }
 
 /// A committed turn and its eventual result. Dropping this handle does not cancel it.
@@ -113,17 +115,49 @@ impl Session {
         let session_id = row.session_id.clone();
         let (sender, receiver) = mpsc::channel(8);
         let cancelled = Arc::new(AtomicBool::new(false));
-        let actor = SessionActor::new(row, store, config, receiver, cancelled.clone())?;
+        let tools = config.tool_executions.group(&session_id);
+        let actor = SessionActor::new(
+            row,
+            store,
+            config,
+            receiver,
+            cancelled.clone(),
+            tools.clone(),
+        )?;
         tokio::spawn(actor.run());
         Ok(Self {
             session_id,
             sender,
             cancelled,
+            tools,
         })
     }
 
     pub fn id(&self) -> &SessionId {
         &self.session_id
+    }
+
+    pub fn tools(&self) -> Arc<crate::ToolGroup> {
+        self.tools.clone()
+    }
+
+    pub async fn submit_events(&self) -> Result<SubmittedTurn, Error> {
+        let (reply, response) = oneshot::channel();
+        let (started, accepted) = oneshot::channel();
+        self.sender
+            .send(SessionCommand::Events { started, reply })
+            .await
+            .map_err(|_| stopped())?;
+        let sequence = match accepted.await {
+            Ok(sequence) => sequence,
+            Err(_) => {
+                return Err(match response.await {
+                    Ok(Err(error)) => error,
+                    _ => stopped(),
+                });
+            }
+        };
+        Ok(SubmittedTurn { sequence, response })
     }
 
     pub fn validate_message(request: &MessageRequest) -> Result<(), Error> {
@@ -170,6 +204,7 @@ impl Session {
 
     pub async fn cancel(&self) -> Result<(), Error> {
         self.cancelled.store(true, Ordering::Release);
+        self.tools.interrupt().await;
         match self.sender.try_send(SessionCommand::Cancel) {
             Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => Ok(()),
             Err(mpsc::error::TrySendError::Closed(_)) => Err(stopped()),

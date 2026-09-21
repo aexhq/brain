@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use brain_protocol::{ModelRequest, ModelResult, ToolInvocation, ToolResult};
+use brain_protocol::{ModelRequest, ModelResult, ToolInvocation, ToolReturn};
 
 use crate::Error;
 
@@ -13,6 +13,8 @@ use crate::Error;
 pub trait TurnServices: Send + Sync {
     /// One finite page after a journal sequence. Reading does not advance the activation cursor.
     async fn events(&self, after: u64) -> Result<brain_protocol::EventPage, Error>;
+    /// Durably acknowledge the observations processed through this journal sequence.
+    async fn acknowledge(&self, sequence: u64) -> Result<u64, Error>;
     /// Replaces conversation state and returns its durable journal sequence.
     async fn set_transcript(&self, messages: Vec<brain_protocol::Message>) -> Result<u64, Error>;
     /// Saves one value and returns its durable journal sequence.
@@ -26,7 +28,7 @@ pub trait TurnServices: Send + Sync {
     async fn model(&self, request: ModelRequest) -> Result<ModelResult, Error>;
     /// One or many tool calls, run together. Calling this once per call is sequential
     /// dispatch. The results come back in the calls' order.
-    async fn dispatch(&self, calls: Vec<ToolInvocation>) -> Result<Vec<ToolResult>, Error>;
+    async fn dispatch(&self, calls: Vec<ToolInvocation>) -> Result<Vec<ToolReturn>, Error>;
     /// The loop's own record on the session's feed. Brain's lifecycle and effect kinds
     /// are refused. Returns the record's sequence.
     async fn emit(&self, kind: String, payload: serde_json::Value) -> Result<u64, Error>;

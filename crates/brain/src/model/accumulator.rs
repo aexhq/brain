@@ -6,6 +6,7 @@
 //! but never become the message the agentloop observes.
 
 use brain_protocol::{ContentBlock, Message, ModelStreamEvent, StopReason, Usage};
+use std::collections::BTreeMap;
 
 use crate::Error;
 
@@ -13,7 +14,7 @@ use crate::Error;
 pub struct Accumulator {
     max_output_bytes: usize,
     max_delta_bytes: usize,
-    blocks: Vec<PartialBlock>,
+    blocks: BTreeMap<usize, PartialBlock>,
     stop_reason: StopReason,
     usage: Usage,
     saw_terminal: bool,
@@ -46,7 +47,7 @@ impl Accumulator {
         Self {
             max_output_bytes: crate::limits::ceiling(limits.max_model_output_bytes),
             max_delta_bytes: crate::limits::ceiling(limits.max_model_delta_bytes),
-            blocks: Vec::new(),
+            blocks: BTreeMap::new(),
             stop_reason: StopReason::default(),
             usage: Usage::default(),
             saw_terminal: false,
@@ -98,11 +99,11 @@ impl Accumulator {
                 format,
                 data,
             } => {
-                self.ensure(index);
-                if !matches!(self.blocks[index], PartialBlock::Empty) {
+                let block = self.block(index);
+                if !matches!(block, PartialBlock::Empty) {
                     return Err(block_type_conflict(index));
                 }
-                self.blocks[index] = PartialBlock::Native {
+                *block = PartialBlock::Native {
                     format,
                     data,
                     done: false,
@@ -114,15 +115,15 @@ impl Accumulator {
                 field,
                 text,
             } => {
-                self.ensure(index);
-                if matches!(self.blocks[index], PartialBlock::Empty) {
-                    self.blocks[index] = PartialBlock::Native {
+                let block = self.block(index);
+                if matches!(block, PartialBlock::Empty) {
+                    *block = PartialBlock::Native {
                         format: format.clone(),
                         data: serde_json::json!({}),
                         done: false,
                     };
                 }
-                match &mut self.blocks[index] {
+                match block {
                     PartialBlock::Native {
                         format: existing,
                         data,
@@ -148,13 +149,13 @@ impl Accumulator {
                 self.push_text(index, text)?;
             }
             ModelStreamEvent::ToolUseStart { index, id, name } => {
-                self.ensure(index);
-                if !matches!(self.blocks[index], PartialBlock::Empty) {
+                let block = self.block(index);
+                if !matches!(block, PartialBlock::Empty) {
                     return Err(protocol(format!(
                         "provider started content block {index} more than once"
                     )));
                 }
-                self.blocks[index] = PartialBlock::Tool {
+                *block = PartialBlock::Tool {
                     id,
                     name,
                     json: String::new(),
@@ -164,47 +165,41 @@ impl Accumulator {
             ModelStreamEvent::ToolInputDelta {
                 index,
                 partial_json,
-            } => {
-                self.ensure(index);
-                match &mut self.blocks[index] {
-                    PartialBlock::Tool {
-                        json, done: false, ..
-                    } => json.push_str(&partial_json),
-                    PartialBlock::Tool { done: true, .. } => {
-                        return Err(protocol(format!(
-                            "provider emitted tool JSON for completed block {index}"
-                        )));
-                    }
-                    PartialBlock::Empty => {
-                        return Err(protocol(format!(
-                            "provider emitted tool JSON before starting block {index}"
-                        )));
-                    }
-                    _ => return Err(block_type_conflict(index)),
+            } => match self.block(index) {
+                PartialBlock::Tool {
+                    json, done: false, ..
+                } => json.push_str(&partial_json),
+                PartialBlock::Tool { done: true, .. } => {
+                    return Err(protocol(format!(
+                        "provider emitted tool JSON for completed block {index}"
+                    )));
                 }
-            }
-            ModelStreamEvent::BlockDone { index } => {
-                self.ensure(index);
-                match &mut self.blocks[index] {
-                    PartialBlock::Text { done, .. }
-                    | PartialBlock::Tool { done, .. }
-                    | PartialBlock::Native { done, .. }
-                        if !*done =>
-                    {
-                        *done = true
-                    }
-                    PartialBlock::Empty => {
-                        return Err(protocol(format!(
-                            "provider completed absent content block {index}"
-                        )));
-                    }
-                    _ => {
-                        return Err(protocol(format!(
-                            "provider completed content block {index} more than once"
-                        )));
-                    }
+                PartialBlock::Empty => {
+                    return Err(protocol(format!(
+                        "provider emitted tool JSON before starting block {index}"
+                    )));
                 }
-            }
+                _ => return Err(block_type_conflict(index)),
+            },
+            ModelStreamEvent::BlockDone { index } => match self.block(index) {
+                PartialBlock::Text { done, .. }
+                | PartialBlock::Tool { done, .. }
+                | PartialBlock::Native { done, .. }
+                    if !*done =>
+                {
+                    *done = true
+                }
+                PartialBlock::Empty => {
+                    return Err(protocol(format!(
+                        "provider completed absent content block {index}"
+                    )));
+                }
+                _ => {
+                    return Err(protocol(format!(
+                        "provider completed content block {index} more than once"
+                    )));
+                }
+            },
             ModelStreamEvent::Usage { usage } => self.merge_usage(&usage)?,
             ModelStreamEvent::MessageDone { stop_reason, usage } => {
                 // OpenAI emits usage in a final choices=[] chunk. Its unknown stop
@@ -221,10 +216,10 @@ impl Accumulator {
     }
 
     fn push_text(&mut self, index: usize, text: String) -> Result<(), Error> {
-        self.ensure(index);
-        match &mut self.blocks[index] {
+        let block = self.block(index);
+        match block {
             PartialBlock::Empty => {
-                self.blocks[index] = PartialBlock::Text { text, done: false };
+                *block = PartialBlock::Text { text, done: false };
             }
             PartialBlock::Text {
                 text: value,
@@ -246,10 +241,8 @@ impl Accumulator {
             .map_err(|message| protocol(message.into()))
     }
 
-    fn ensure(&mut self, index: usize) {
-        while self.blocks.len() <= index {
-            self.blocks.push(PartialBlock::Empty);
-        }
+    fn block(&mut self, index: usize) -> &mut PartialBlock {
+        self.blocks.entry(index).or_insert(PartialBlock::Empty)
     }
 
     /// Finish into a message. Empty text blocks are dropped; a tool block whose
@@ -269,7 +262,7 @@ impl Accumulator {
             StopReason::EndTurn | StopReason::StopSequence | StopReason::ToolUse
         ) && self
             .blocks
-            .iter()
+            .values()
             .any(|block| matches!(block, PartialBlock::Tool { .. }))
         {
             return Err(Error::ModelOutput {
@@ -279,14 +272,10 @@ impl Accumulator {
             });
         }
         let mut content = Vec::with_capacity(self.blocks.len());
-        for (index, block) in self.blocks.into_iter().enumerate() {
+        for block in self.blocks.into_values() {
             match block {
-                // Chat reserves reasoning and text before its indexed tool calls.
-                PartialBlock::Empty if index < 2 => {}
                 PartialBlock::Empty => {
-                    return Err(protocol(
-                        "provider left a gap in its content block indexes".into(),
-                    ));
+                    return Err(protocol("provider left an absent content block".into()));
                 }
                 PartialBlock::Text { text, .. } if text.is_empty() => {}
                 PartialBlock::Text { text, .. } => content.push(ContentBlock::Text { text }),
@@ -332,6 +321,32 @@ fn protocol(message: String) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sparse_indexes_store_only_received_blocks_in_source_order() {
+        let mut accumulator = Accumulator::new(&crate::Limits {
+            max_model_output_bytes: 3,
+            max_model_delta_bytes: 1,
+            ..crate::Limits::default()
+        });
+        for (index, text) in [(usize::MAX, "b"), (7, "a"), (usize::MAX, "c")] {
+            accumulator
+                .push(ModelStreamEvent::TextDelta {
+                    index,
+                    text: text.into(),
+                })
+                .unwrap();
+        }
+        assert_eq!(accumulator.blocks.len(), 2);
+        let (message, _, _) = accumulator.finish().unwrap();
+        assert_eq!(
+            message,
+            Message::assistant(vec![
+                ContentBlock::Text { text: "a".into() },
+                ContentBlock::Text { text: "bc".into() }
+            ])
+        );
+    }
 
     #[test]
     fn rejects_broken_tool_json_instead_of_coercing() {

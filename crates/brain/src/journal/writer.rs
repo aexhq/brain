@@ -33,6 +33,10 @@ enum Request {
         done: mpsc::Sender<Result<(), String>>,
     },
     Barrier(mpsc::Sender<Result<(), String>>),
+    Delete {
+        directory: PathBuf,
+        done: mpsc::Sender<Result<(), String>>,
+    },
 }
 
 #[derive(Default)]
@@ -146,6 +150,12 @@ impl Writer {
         Ticket { wait }.wait()
     }
 
+    pub(crate) fn delete(&self, directory: PathBuf) -> Result<(), Error> {
+        let (done, wait) = mpsc::channel();
+        self.enqueue(Request::Delete { directory, done }, false)?;
+        Ticket { wait }.wait()
+    }
+
     pub fn queued_bytes(&self) -> u64 {
         self.shared.0.lock().map(|queue| queue.total).unwrap_or(0)
     }
@@ -233,6 +243,16 @@ fn run(
                     thread::sleep(std::time::Duration::from_millis(1));
                 }
             }
+            if let [Request::Delete { directory, done }] = requests.as_slice() {
+                // Earlier batches are durable; closing their cached handles also
+                // prevents a recreated session from writing into the deleted files.
+                open.retain(|path, _| !path.starts_with(directory));
+                let result = std::fs::remove_dir_all(directory)
+                    .map_err(|error| format!("cannot delete session storage: {error}"))
+                    .and_then(|()| directory.parent().map_or(Ok(()), sync_directory));
+                let _ = done.send(result);
+                continue;
+            }
             batch_number += 1;
             let result = write_batch(&mut requests, &mut open, open_files, batch_number);
             finish_batch(&shared, requests, result.as_ref().err().cloned());
@@ -260,10 +280,16 @@ fn take_batch(shared: &Shared) -> Result<Option<Vec<Request>>, ()> {
     };
     let mut requests = Vec::with_capacity(source.len().min(MAX_BATCH_REQUESTS));
     while requests.len() < MAX_BATCH_REQUESTS {
+        if !requests.is_empty() && matches!(source.front(), Some(Request::Delete { .. })) {
+            break;
+        }
         let Some(request) = source.pop_front() else {
             break;
         };
         requests.push(request);
+        if matches!(requests.last(), Some(Request::Delete { .. })) {
+            break;
+        }
     }
     Ok(Some(requests))
 }
@@ -289,8 +315,10 @@ fn write_batch(
     for item in &prepared {
         for frame in &item.frames {
             if !open.contains_key(&frame.path) {
-                if open.len() >= open_files {
-                    evict_oldest(open)?;
+                if open.len() >= open_files
+                    && let Some(path) = evict_oldest(open)?
+                {
+                    touched.remove(&path);
                 }
                 let created = !frame.path.exists();
                 let file = OpenOptions::new()
@@ -350,7 +378,7 @@ fn finish_batch(shared: &Shared, requests: Vec<Request>, failure: Option<String>
                 drained.push((owner, bytes));
                 completed.push(done);
             }
-            Request::Barrier(done) => completed.push(done),
+            Request::Barrier(done) | Request::Delete { done, .. } => completed.push(done),
         }
     }
     release(shared, drained, failure.clone());
@@ -400,13 +428,13 @@ fn release(shared: &Shared, drained: Vec<(Arc<str>, u64)>, failure: Option<Strin
     room.notify_all();
 }
 
-fn evict_oldest(open: &mut HashMap<PathBuf, Open>) -> Result<(), String> {
+fn evict_oldest(open: &mut HashMap<PathBuf, Open>) -> Result<Option<PathBuf>, String> {
     let Some(path) = open
         .iter()
         .min_by_key(|(_, entry)| entry.last_batch)
         .map(|(path, _)| path.clone())
     else {
-        return Ok(());
+        return Ok(None);
     };
     if let Some(mut entry) = open.remove(&path) {
         entry
@@ -415,7 +443,7 @@ fn evict_oldest(open: &mut HashMap<PathBuf, Open>) -> Result<(), String> {
             .and_then(|()| entry.file.get_ref().sync_data())
             .map_err(|error| format!("cannot close a journal segment durably: {error}"))?;
     }
-    Ok(())
+    Ok(Some(path))
 }
 
 #[cfg(unix)]
@@ -462,6 +490,38 @@ mod tests {
                 }),
             })
         })
+    }
+
+    #[test]
+    fn a_batch_can_flush_more_files_than_the_handle_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first");
+        let second = directory.path().join("second");
+        let frames = [
+            (first.clone(), b"one".to_vec()),
+            (second.clone(), b"two".to_vec()),
+            (first.clone(), b"three".to_vec()),
+        ];
+        let (done, _) = mpsc::channel();
+        let mut requests = [Request::Write {
+            owner: Arc::from("test"),
+            bytes: 11,
+            prepare: Some(Box::new(move || {
+                Ok(Prepared {
+                    frames: frames
+                        .into_iter()
+                        .map(|(path, bytes)| Frame { path, bytes })
+                        .collect(),
+                    complete: Box::new(|| Ok(())),
+                })
+            })),
+            done,
+        }];
+        let mut open = HashMap::new();
+        write_batch(&mut requests, &mut open, 1, 1).unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(std::fs::read(first).unwrap(), b"onethree");
+        assert_eq!(std::fs::read(second).unwrap(), b"two");
     }
 
     #[test]

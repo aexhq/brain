@@ -34,12 +34,27 @@ pub struct SessionRecord {
 impl SessionRecord {
     /// The record as a client reads it.
     pub fn into_event(self) -> Event {
+        let origin = self.origin.or_else(|| {
+            matches!(
+                self.kind.as_str(),
+                brain_protocol::codes::event::TOOL_RESULT_EMITTED
+                    | brain_protocol::codes::event::TOOL_CALL_RETURNED
+                    | brain_protocol::codes::event::TOOL_CALL_ENDED
+            )
+            .then(|| {
+                self.payload
+                    .get("sequence")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|sequence| EventOrigin::Tool { sequence })
+            })
+            .flatten()
+        });
         Event {
             sequence: self.sequence,
             recorded_at_ms: self.recorded_at_ms,
             event_type: self.kind,
             data: self.payload,
-            origin: self.origin,
+            origin,
         }
     }
 }

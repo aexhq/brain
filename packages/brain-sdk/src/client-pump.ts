@@ -4,7 +4,7 @@ import type { SessionStreamEvent } from "./types.js";
 
 export interface HostTransport {
   stream(signal?: AbortSignal, onOpen?: () => void): AsyncGenerator<SessionStreamEvent>;
-  result(value: HostResult): Promise<void>;
+  result(value: HostResult): Promise<HostEventAck>;
   emit(value: HostEvent): Promise<HostEventAck>;
 }
 
@@ -104,12 +104,14 @@ export class HostPump {
         await this.transport.result({
           session_id: command.session_id,
           sequence: command.sequence,
+          update: { type: "finish",
           outcome: {
             status: "error",
             error: {
               code: "unknown_session",
               message: `session ${command.session_id} is not placed in this host`,
             },
+          },
           },
         });
       }
@@ -123,13 +125,19 @@ export class HostPump {
     }
     const key = `${command.session_id}:${command.sequence}`;
     this.inFlight.set(key, command.sequence);
-    const outcome = await registry.run({
+    try {
+      await registry.run({
       sessionId: command.session_id,
       environment: command.environment,
       sequence: command.sequence,
       name: command.operation.name,
       arguments: command.operation.input,
-      deadline_ms: Math.max(0, command.deadline_at_ms - Date.now()),
+      ...(command.deadline_at_ms === undefined ? {} : { deadline_at_ms: command.deadline_at_ms }),
+      update: async (value) => (await this.transport.result({
+        session_id: command.session_id,
+        sequence: command.sequence,
+        update: value,
+      })).sequence,
       emit: async (kind, data) => (await this.transport.emit({
         session_id: command.session_id,
         sequence: command.sequence,
@@ -137,12 +145,8 @@ export class HostPump {
         data,
       })).sequence,
     });
-    this.inFlight.delete(key);
-    if (this.controller.signal.aborted) return;
-    await this.transport.result({
-      session_id: command.session_id,
-      sequence: command.sequence,
-      outcome,
-    });
+    } finally {
+      this.inFlight.delete(key);
+    }
   }
 }

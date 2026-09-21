@@ -9,12 +9,13 @@ async function fixture(t, setup = "prepare", module = "run") {
   const directory = await mkdtemp(join(tmpdir(), "brain-python-project-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   await cp(new URL("../tests/fixtures/python-project/", import.meta.url), directory, { recursive: true });
-  const env = pythonEnvironment({ uv: process.env.BRAIN_TEST_UV ?? "uv", projects: { example: { directory, setup, module } } });
+  const env = pythonEnvironment({ uv: process.env.BRAIN_TEST_UV ?? "uv", projects: { example: { directory, setup, module } }, fetch: async () => Response.json(10) });
   let sequence = 0;
   const send = async (request, session_id = "ses_one") => (await env.handle({ contract: "environment/v1",
     operation: { sequence: ++sequence, session_id, environment: "python", request } })).receipt;
   const attach = (session) => send({ type: "setup", configuration: {} }, session);
-  const execute = (input, session) => send({ type: "execute", implementation: { type: "python_project", name: "example" }, input, deadline_ms: 30_000 }, session);
+  const execute = (input, session) => send({ type: "execute", implementation: { type: "python_project", name: "example" }, input, deadline_ms: 30_000,
+    callback: { url: "https://brain.example/call", token: "fixture", methods: ["finish"] } }, session);
   await attach();
   return { directory, send, attach, execute };
 }

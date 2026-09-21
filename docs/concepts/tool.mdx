@@ -24,7 +24,7 @@ const lookup = tool({
   options: z.object({ prefix: z.string() }),
   run: async ({ id }, ctx) => {
     await ctx.emit("lookup_started", { id });
-    return { value: `${ctx.options.prefix}${id}` };
+    return ctx.finish({ value: `${ctx.options.prefix}${id}` });
   },
 });
 
@@ -33,9 +33,16 @@ const placed = lookup({ env: hostEnv({ name: "app" }), prefix: "item:" });
 
 The SDK registers this process as a host with Brain and consumes its command stream over SSE. A
 command names the session and the committed journal sequence of the call, its deadline, the Tool,
-and the input. The host validates input and output, runs the function, and posts one outcome.
-`ctx` contains `options`, `sequence`, `deadline`, `signal`, and `emit`. Awaiting `ctx.emit(kind, data)`
+and the input. The host validates input and each output and posts ordered updates.
+`ctx` contains `options`, `sequence`, optional `deadline`, `signal`, `emit`, `emitResult`, and `finish`. Awaiting `ctx.emit(kind, data)`
 waits until Brain has committed the extension event.
+
+Return ends only the synchronous phase. The Tool may keep emitting after return; `finish(value?)`
+commits completion and rejects further emissions. Use `return ctx.finish(value)` for an ordinary
+Tool. A missing finish leaves it open under its original deadline and cancellation signal.
+Background results survive normal turn completion, enter journal/history, and wake the Agentloop.
+The loop decides whether to use them in model messages. No result is invented for an empty return
+or finish. See [Tool lifecycle](/brain/docs/guides/write-a-tool#return-values-and-outcomes).
 
 The function keeps the ambient authority of your process; the host env inserts nothing around it.
 
@@ -81,8 +88,8 @@ fails explicitly. Setup failures reach the ordinary Tool error path, without aut
 
 Brain durably commits `tool_call_started` before dispatch and sends the operation once. The record
 names the Tool and selected Environment. The invocation explicitly names that authorized pair.
-Brain validates canonical input and output schemas for every placement. Brain records
-`ok`, `error`, `timeout`, `cancelled`, or `unknown` before the Agentloop sees the result, and never
+Brain validates canonical input and output schemas for every placement. Brain commits
+results, return, and completion before the Agentloop sees them, and never
 automatically retries a Tool call.
 
 The invocation deadline produces `timeout`, explicit cancellation produces `cancelled`, and a known

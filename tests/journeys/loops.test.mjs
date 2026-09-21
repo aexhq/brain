@@ -69,14 +69,16 @@ test("an Agentloop placed in an Environment reached over HTTP runs its turn thro
 });
 
 test("a Tool the remote loop dispatches runs where it was placed, and the invocation's callbacks close with the turn", { timeout: 30_000 }, async (t) => {
-  const lookup = tool({ name: "lookup", description: "Lookup", input: z.object({ id: z.string() }), run: ({ id }) => ({ found: id }) });
+  const lookup = tool({ name: "lookup", description: "Lookup", input: z.object({ id: z.string() }), run: ({ id }, context) => context.finish({ found: id }) });
   const session = await f.create(t, {
     agentloop: agentloop({ implementation: { type: "reference_agentloop" } })({ env: f.provider("dispatcher") }),
     tools: [lookup({ env: hostEnv({ name: "app" }) })],
   });
   await session.send("dispatch something");
   assert.equal(dispatched.length, 1);
-  assert.deepEqual(dispatched[0][0], { call_id: "remote_call", output: { found: "7" }, is_error: false });
+  assert.equal(dispatched[0][0].finished, true);
+  assert.deepEqual(dispatched[0][0].events.find(event => event.event_type === "tool_result_emitted").data.result,
+    { call_id: "remote_call", output: { found: "7" }, is_error: false });
   const events = await collect(session.events());
   const started = events.find(({ type }) => type === "tool_call_started");
   assert.equal(started.data.tool, "lookup");

@@ -13,7 +13,7 @@ test("cancelling a parent reaches an owned child turn through the host Tool sign
   const child = await f.create(t);
   const unrelated = await f.create(t);
   const delegate = tool({ name: "delegate", description: "Run child", input: z.object({}), run: async (_, context) => {
-    try { return await child.send("child task", { signal: context.signal }); }
+    try { return context.finish(await child.send("child task", { signal: context.signal })); }
     finally { finished.resolve(); }
   } });
   f.model = (request, response) => {
@@ -41,10 +41,10 @@ test("the Tool outcome example returns structured failure despite its successful
   f.model = dispatch("lookup_record", { id: "missing" });
   await session.send("find the missing record");
   const events = await collect(session.events());
-  const result = events.find(event => event.type === "tool_call_ended").data.result;
-  assert.equal(result.is_error, true);
-  assert.deepEqual(result.output, { code: "not_found", message: "Record not found", retryable: false, details: { id: "missing" } });
-  assert.equal(f.modelRequests.at(-1).input.at(-1).output, `ERROR: ${JSON.stringify(result.output)}`);
+  const outcome = events.find(event => event.type === "tool_call_ended").data.outcome;
+  assert.equal(outcome.status, "error");
+  assert.deepEqual(outcome.error, { code: "not_found", message: "Record not found", retryable: false, details: { id: "missing" } });
+  assert.equal(f.modelRequests.at(-1).input.at(-1).output, `ERROR: ${JSON.stringify(outcome.error)}`);
   f.model = dispatch("lookup_record", { id: "1" });
   await session.send("find Ada");
   assert.match(f.modelRequests.at(-1).input.at(-1).output, /Ada/u);
@@ -53,15 +53,14 @@ test("the Tool outcome example returns structured failure despite its successful
 for (const outcome of [{ status: "timeout" }, { status: "cancelled" }, { status: "unknown", message: "Remote result lost" }]) {
   test(`a direct host ${outcome.status} reaches the journal and model as one failed result`, { timeout: 30_000 }, async t => {
     let calls = 0;
-    const remote = tool({ name: "remote", description: "Read a remote result", input: z.object({}), output: z.string(), run: () => { calls++; return outcome; } });
+    const remote = tool({ name: "remote", description: "Read a remote result", input: z.object({}), output: z.string(), run: (_, context) => { calls++; return context.finish(outcome); } });
     const session = await f.create(t, { tools: [remote({ env: app })] });
     f.model = dispatch("remote", {});
     await session.send("read once");
     const events = await collect(session.events());
     const ended = events.filter(event => event.type === "tool_call_ended");
     assert.equal(ended.length, 1);
-    assert.equal(ended[0].data.result.is_error, true);
-    assert.equal(ended[0].data.result.output.code, outcome.status);
+    assert.deepEqual(ended[0].data.outcome, outcome);
     assert.equal(events.some(event => event.type === "environment_unreachable"), false);
     assert.equal(calls, 1);
     assert.match(f.modelRequests.at(-1).input.at(-1).output, new RegExp(outcome.status));
@@ -75,7 +74,7 @@ test("graceful shutdown lets a host Tool finish and saves the completed turn", {
     entered.resolve();
     await finish.promise;
     await context.emit("finished_during_drain", {});
-    return "completed";
+    return context.finish("completed");
   } });
   const session = await f.create(t, { tools: [wait({ env: app })] });
   f.model = dispatch("wait", {});
@@ -108,7 +107,7 @@ test("a tool this process holds receives validated options and commits progress 
     run: async ({ id }, context) => {
       contexts.push(context);
       await context.emit("lookup_progress", { id });
-      return { value: context.options.prefix + id };
+      return context.finish({ value: context.options.prefix + id });
     } });
   const placed = lookup({ env: app, prefix: "item-" });
   assert.equal(inspectTool(placed).definition.name, "lookup");
@@ -154,13 +153,13 @@ for (const mode of ["input", "output", "throw"]) {
 
 test("saved host credentials reattach a tool after its connection is closed", { timeout: 30_000 }, async (t) => {
   const firstClient = f.client();
-  const lookup = tool({ name: "lookup", description: "Lookup", input: z.object({}), run: () => "original" });
+  const lookup = tool({ name: "lookup", description: "Lookup", input: z.object({}), run: (_, context) => context.finish("original") });
   const original = await f.create(t, { tools: [lookup({ env: app })] }, firstClient);
   const credentials = await firstClient.credentials();
   await firstClient.close();
   assert.equal((await f.brain.sessions.get(original.id)).state.status, "idle");
   const restored = f.client({ credentials });
-  const rebound = tool({ name: "lookup", description: "Lookup", input: z.object({}), run: () => "restored" });
+  const rebound = tool({ name: "lookup", description: "Lookup", input: z.object({}), run: (_, context) => context.finish("restored") });
   await assert.rejects(restored.sessions.get(original.id, { tools: [] }), /exactly those the session placed/u);
   const session = await restored.sessions.get(original.id, { tools: [rebound({ env: app })] });
   assert.deepEqual(await restored.credentials(), credentials);
@@ -175,7 +174,7 @@ for (const strict of [false, true]) {
     const seen = [];
     const shape = { query: z.string(), limit: z.number().int().positive().default(10) };
     const lookup = tool({ name: "lookup", description: "Look up results", input: strict ? z.strictObject(shape) : z.object(shape),
-      run: input => { seen.push(input); return input; },
+      run: (input, context) => { seen.push(input); return context.finish(input); },
     });
     const session = await f.create(t, { tools: [lookup({ env: app })] });
     f.model = dispatch("lookup", { query: "cyan" });
@@ -212,9 +211,8 @@ test("cancellation reaches the tool's signal and does not execute the tool twice
   assert.equal(calls, 1);
   const events = await collect(session.events());
   assert.ok(events.some(({ type }) => type === "turn_failed"));
-  const result = events.find(event => event.type === "tool_call_ended").data.result;
-  assert.equal(result.is_error, true);
-  assert.equal(result.output.code, "cancelled");
+  const outcome = events.find(event => event.type === "tool_call_ended").data.outcome;
+  assert.equal(outcome.status, "cancelled");
 });
 
 test("one host serves tools for two sessions concurrently", { timeout: 30_000 }, async (t) => {
@@ -224,7 +222,7 @@ test("one host serves tools for two sessions concurrently", { timeout: 30_000 },
     entered.push(context.sequence);
     if (entered.length === 2) bothEntered.resolve();
     await bothEntered.promise;
-    return "met";
+    return context.finish("met");
   } });
   const placed = rendezvous({ env: app });
   const first = await f.create(t, { tools: [placed] });
@@ -240,7 +238,7 @@ test("one host serves tools for two sessions concurrently", { timeout: 30_000 },
 
 test("retrying session creation keeps one working registration", { timeout: 30_000 }, async (t) => {
   let calls = 0;
-  const lookup = tool({ name: "lookup", description: "Lookup", input: z.object({}), run: () => { calls++; return "found"; } });
+  const lookup = tool({ name: "lookup", description: "Lookup", input: z.object({}), run: (_, context) => { calls++; return context.finish("found"); } });
   const options = { tools: [lookup({ env: app })] };
   const operation = { idempotencyKey: "host-create-once" };
   const first = await f.create(t, options, f.brain, operation);
@@ -283,7 +281,7 @@ test("a tool may emit observations but cannot forge protected runtime events", {
     await assert.rejects(context.emit("turn_ended", {}), failure(400));
     denied = true;
     await context.emit("application_observation", { ready: true });
-    return "observed";
+    return context.finish("observed");
   } });
   const session = await f.create(t, { tools: [observer({ env: app })] });
   f.model = dispatch("observer", {});

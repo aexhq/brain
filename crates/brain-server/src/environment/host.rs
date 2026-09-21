@@ -7,7 +7,7 @@ use std::{
     fs::File,
     path::Path,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use async_trait::async_trait;
@@ -15,7 +15,7 @@ use brain::environment::ExecutionServices;
 use brain_protocol::{
     ApiError, Driver, Environment, EnvironmentName, EnvironmentOperation, EnvironmentReceipt,
     EnvironmentRequest, HostCommand, HostEvent, HostEventAck, HostId, HostOperation,
-    HostRegistration, HostResult, Outcome, SessionId,
+    HostRegistration, HostResult, SessionId, ToolExecutionUpdate,
 };
 use sha2::{Digest as _, Sha256};
 use tokio::sync::{mpsc, oneshot};
@@ -79,13 +79,12 @@ fn registered(token: [u8; 32]) -> Host {
 }
 
 struct PendingCall {
-    outcome: oneshot::Sender<Outcome>,
     events: mpsc::Sender<PendingEvent>,
 }
 
 struct PendingEvent {
-    kind: String,
-    data: serde_json::Value,
+    method: &'static str,
+    args: serde_json::Value,
     reply: oneshot::Sender<Result<u64, String>>,
 }
 
@@ -274,21 +273,27 @@ impl HostEnvironment {
         })
     }
 
-    pub fn resolve(
+    pub async fn resolve(
         &self,
         host_id: &HostId,
         token: &str,
         result: HostResult,
-    ) -> Result<(), ApiError> {
-        let mut state = self.lock()?;
-        let host = authorized(&mut state, host_id, token)?;
-        let Some(pending) = host.pending.remove(&(result.session_id, result.sequence)) else {
-            return Err(ApiError::conflict("the host command is no longer pending"));
+    ) -> Result<HostEventAck, ApiError> {
+        let (method, outcome) = match result.update {
+            ToolExecutionUpdate::Result { outcome } => ("result", Some(outcome)),
+            ToolExecutionUpdate::Returned { outcome } => ("returned", outcome),
+            ToolExecutionUpdate::Finish { outcome } => ("finish", outcome),
         };
-        pending
-            .outcome
-            .send(result.outcome)
-            .map_err(|_| ApiError::conflict("the host command is no longer pending"))
+        self.call(
+            host_id,
+            token,
+            result.session_id,
+            result.sequence,
+            method,
+            serde_json::to_value(outcome)
+                .map_err(|error| ApiError::invalid_request(error.to_string()))?,
+        )
+        .await
     }
 
     pub async fn emit(
@@ -297,19 +302,39 @@ impl HostEnvironment {
         token: &str,
         event: HostEvent,
     ) -> Result<HostEventAck, ApiError> {
+        self.call(
+            host_id,
+            token,
+            event.session_id,
+            event.sequence,
+            "emit",
+            serde_json::json!({"event_type": event.event_type, "data": event.data}),
+        )
+        .await
+    }
+
+    async fn call(
+        &self,
+        host_id: &HostId,
+        token: &str,
+        session_id: SessionId,
+        sequence: u64,
+        method: &'static str,
+        args: serde_json::Value,
+    ) -> Result<HostEventAck, ApiError> {
         let events = {
             let mut state = self.lock()?;
             let host = authorized(&mut state, host_id, token)?;
             host.pending
-                .get(&(event.session_id, event.sequence))
+                .get(&(session_id, sequence))
                 .map(|pending| pending.events.clone())
                 .ok_or_else(|| ApiError::conflict("the host command is no longer pending"))?
         };
         let (reply, answer) = oneshot::channel();
         events
             .try_send(PendingEvent {
-                kind: event.event_type,
-                data: event.data,
+                method,
+                args,
                 reply,
             })
             .map_err(|error| match error {
@@ -333,17 +358,16 @@ impl HostEnvironment {
         operation: &EnvironmentOperation,
         name: &str,
         input: &serde_json::Value,
-        deadline_ms: u64,
+        deadline_ms: Option<u64>,
         services: &dyn ExecutionServices,
-    ) -> Result<Outcome, brain::Error> {
+    ) -> Result<(), brain::Error> {
         let key = (operation.session_id.clone(), operation.sequence);
-        let (result_sender, mut result_receiver) = oneshot::channel();
         let (event_sender, mut event_receiver) = mpsc::channel(8);
         let command = HostCommand {
             environment: operation.environment.clone(),
             session_id: operation.session_id.clone(),
             sequence: operation.sequence,
-            deadline_at_ms: wall_clock_ms().saturating_add(deadline_ms),
+            deadline_at_ms: deadline_ms.map(|ms| wall_clock_ms().saturating_add(ms)),
             operation: HostOperation::InvokeTool {
                 name: name.to_owned(),
                 input: input.clone(),
@@ -365,7 +389,6 @@ impl HostEnvironment {
             host.pending.insert(
                 key.clone(),
                 PendingCall {
-                    outcome: result_sender,
                     events: event_sender,
                 },
             );
@@ -386,20 +409,17 @@ impl HostEnvironment {
                     brain::Error::Executor("the host is not connected".into())
                 }
             })?;
-        let deadline = tokio::time::sleep(Duration::from_millis(deadline_ms));
-        tokio::pin!(deadline);
         let result = loop {
             tokio::select! {
                 biased;
-                result = &mut result_receiver => break result.map_err(|_| {
-                    brain::Error::Ambiguous("the host's result was lost after dispatch".into())
-                }),
+                () = services.closed() => break Ok(()),
                 () = command_sender.closed() => break Err(brain::Error::Ambiguous(
                     "the host disconnected after dispatch".into(),
                 )),
-                () = &mut deadline => break Ok(Outcome::Timeout),
                 Some(event) = event_receiver.recv() => {
-                    let answer = services.call("emit", serde_json::json!({"event_type": event.kind, "data": event.data})).await.and_then(|value| serde_json::from_value(value).map_err(|error| brain::Error::Executor(error.to_string()))).map_err(|error| error.to_string());
+                    let answer = services.call(event.method, event.args).await
+                        .and_then(|value| serde_json::from_value(value).map_err(|error| brain::Error::Executor(error.to_string())))
+                        .map_err(|error| error.to_string());
                     let _ = event.reply.send(answer);
                 }
             }
@@ -429,7 +449,7 @@ impl HostEnvironment {
             environment: operation.environment.clone(),
             session_id: operation.session_id.clone(),
             sequence: operation.sequence,
-            deadline_at_ms: wall_clock_ms().saturating_add(5_000),
+            deadline_at_ms: Some(wall_clock_ms().saturating_add(5_000)),
             operation: HostOperation::CancelTool { target_sequence },
         };
         sender.try_send(command).map_err(|error| match error {
@@ -520,31 +540,9 @@ impl EnvironmentAdapter for HostEnvironment {
                         Err(_) => return Ok(unsupported("run this implementation")),
                     };
                 let Implementation::HostFunction { name } = implementation;
-                let outcome = self
-                    .invoke(host_id, operation, &name, input, *deadline_ms, &*services)
+                self.invoke(host_id, operation, &name, input, *deadline_ms, &*services)
                     .await?;
-                Ok(match outcome {
-                    Outcome::Ok { value } => EnvironmentReceipt::Result { output: value },
-                    Outcome::Error { error } => EnvironmentReceipt::Failure {
-                        code: error.code,
-                        message: error.message,
-                        retryable: error.retryable,
-                        details: error.details,
-                    },
-                    Outcome::Unknown { message } => EnvironmentReceipt::Unknown { message },
-                    Outcome::Timeout => EnvironmentReceipt::Failure {
-                        code: "timeout".into(),
-                        message: "host invocation timed out".into(),
-                        retryable: false,
-                        details: None,
-                    },
-                    Outcome::Cancelled => EnvironmentReceipt::Failure {
-                        code: "cancelled".into(),
-                        message: "host invocation cancelled".into(),
-                        retryable: false,
-                        details: None,
-                    },
-                })
+                Ok(EnvironmentReceipt::Returned { output: None })
             }
             (EnvironmentRequest::Execute { .. }, None) => Err(brain::Error::InvalidState(
                 "the host env needs invocation services".into(),
@@ -616,7 +614,8 @@ fn wall_clock_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use brain_protocol::EnvironmentName;
+    use brain_protocol::{EnvironmentName, Outcome};
+    use std::time::Duration;
 
     fn test_hosts() -> HostEnvironment {
         HostEnvironment::open(
@@ -650,14 +649,33 @@ mod tests {
             implementation: serde_json::json!({"type": "host_function", "name": "read_dom"}),
             callback: None,
             input: serde_json::json!({}),
-            deadline_ms: 5_000,
+            deadline_ms: Some(5_000),
         })
     }
 
-    struct NoEvents;
+    struct NoEvents(tokio::sync::watch::Sender<bool>);
+
+    impl Default for NoEvents {
+        fn default() -> Self {
+            Self(tokio::sync::watch::channel(false).0)
+        }
+    }
 
     #[async_trait::async_trait]
     impl brain::ToolServices for NoEvents {
+        async fn result(&self, _: Outcome) -> Result<u64, brain::Error> {
+            Ok(8)
+        }
+        async fn returned(&self, _: Option<Outcome>) -> Result<u64, brain::Error> {
+            Ok(9)
+        }
+        async fn finish(&self, _: Option<Outcome>) -> Result<u64, brain::Error> {
+            self.0.send_replace(true);
+            Ok(10)
+        }
+        async fn closed(&self) {
+            let _ = self.0.subscribe().wait_for(|closed| *closed).await;
+        }
         async fn emit(&self, _: String, _: serde_json::Value) -> Result<u64, brain::Error> {
             Ok(8)
         }
@@ -766,7 +784,7 @@ mod tests {
                         &entry,
                         &invoke(),
                         Some(Arc::new(brain_sessions::SessionServices::Tool(Arc::new(
-                            NoEvents,
+                            NoEvents::default(),
                         )))),
                     )
                     .await
@@ -786,47 +804,108 @@ mod tests {
                 HostResult {
                     session_id: command.session_id,
                     sequence: command.sequence,
-                    outcome: Outcome::Ok {
-                        value: serde_json::json!({"ok": true}),
+                    update: ToolExecutionUpdate::Finish {
+                        outcome: Some(Outcome::Ok {
+                            value: serde_json::json!({"ok": true}),
+                        }),
                     },
                 },
             )
+            .await
             .unwrap();
         assert!(matches!(
             executing.await.unwrap().unwrap(),
-            EnvironmentReceipt::Result { output: value } if value == serde_json::json!({"ok": true})
+            EnvironmentReceipt::Returned { output: None }
         ));
     }
 
     #[tokio::test]
-    async fn an_unanswered_host_command_returns_a_timeout_receipt() {
+    async fn return_keeps_the_host_channel_open_until_explicit_finish() {
         let hosts = test_hosts();
         let registration = hosts.register().unwrap();
         let mut connection = hosts
             .connect(&registration.host_id, &registration.token)
             .unwrap();
-        let executing = tokio::spawn({
+        let mut executing = tokio::spawn({
             let hosts = hosts.clone();
-            let entry = entry(registration.host_id);
+            let entry = entry(registration.host_id.clone());
             async move {
-                let mut invocation = invoke();
-                if let EnvironmentRequest::Execute { deadline_ms, .. } = &mut invocation.request {
-                    *deadline_ms = 20;
-                }
                 hosts
                     .execute(
                         &entry,
-                        &invocation,
+                        &invoke(),
                         Some(Arc::new(brain_sessions::SessionServices::Tool(Arc::new(
-                            NoEvents,
+                            NoEvents::default(),
                         )))),
                     )
                     .await
             }
         });
-        connection.commands.recv().await.unwrap();
-        assert!(matches!(executing.await.unwrap().unwrap(),
-            EnvironmentReceipt::Failure { code, .. } if code == "timeout"));
+        let command = connection.commands.recv().await.unwrap();
+        let update = |update| HostResult {
+            session_id: command.session_id.clone(),
+            sequence: command.sequence,
+            update,
+        };
+        assert_eq!(
+            hosts
+                .resolve(
+                    &registration.host_id,
+                    &registration.token,
+                    update(ToolExecutionUpdate::Returned { outcome: None })
+                )
+                .await
+                .unwrap()
+                .sequence,
+            9
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut executing)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            hosts
+                .resolve(
+                    &registration.host_id,
+                    &registration.token,
+                    update(ToolExecutionUpdate::Result {
+                        outcome: Outcome::Ok {
+                            value: serde_json::json!("later")
+                        }
+                    })
+                )
+                .await
+                .unwrap()
+                .sequence,
+            8
+        );
+        assert_eq!(
+            hosts
+                .resolve(
+                    &registration.host_id,
+                    &registration.token,
+                    update(ToolExecutionUpdate::Finish { outcome: None })
+                )
+                .await
+                .unwrap()
+                .sequence,
+            10
+        );
+        assert!(matches!(
+            executing.await.unwrap().unwrap(),
+            EnvironmentReceipt::Returned { output: None }
+        ));
+        assert!(
+            hosts
+                .resolve(
+                    &registration.host_id,
+                    &registration.token,
+                    update(ToolExecutionUpdate::Finish { outcome: None })
+                )
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -838,7 +917,7 @@ mod tests {
                 &entry(registration.host_id),
                 &invoke(),
                 Some(Arc::new(brain_sessions::SessionServices::Tool(Arc::new(
-                    NoEvents,
+                    NoEvents::default(),
                 )))),
             )
             .await
@@ -899,7 +978,7 @@ mod tests {
                         &entry,
                         &invoke(),
                         Some(Arc::new(brain_sessions::SessionServices::Tool(Arc::new(
-                            NoEvents,
+                            NoEvents::default(),
                         )))),
                     )
                     .await

@@ -161,6 +161,23 @@ export type HostOperation =
  */
 export type SessionId = string;
 /**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ToolExecutionUpdate".
+ */
+export type ToolExecutionUpdate =
+  | {
+      outcome: Outcome;
+      type: "result";
+    }
+  | {
+      outcome?: Outcome;
+      type: "returned";
+    }
+  | {
+      outcome?: Outcome;
+      type: "finish";
+    };
+/**
  * The one envelope every tool invocation resolves to.
  *
  * `timeout` is distinguished from `error` because the deadline is caller-owned: no
@@ -404,7 +421,7 @@ export interface ExecutionCallback {
  * via the `definition` "HostCommand".
  */
 export interface HostCommand {
-  deadline_at_ms: number;
+  deadline_at_ms?: number;
   environment: EnvironmentName;
   operation: HostOperation;
   sequence: number;
@@ -446,9 +463,9 @@ export interface HostRegistration {
  * via the `definition` "HostResult".
  */
 export interface HostResult {
-  outcome: Outcome;
   sequence: number;
   session_id: SessionId;
+  update: ToolExecutionUpdate;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
@@ -504,7 +521,7 @@ export interface ModelCost {
 export interface ModelDef {
   attachment?: boolean;
   context_window_tokens?: number;
-  cost?: ModelCost1;
+  cost?: ModelCost;
   id: string;
   input_modalities?: string[];
   max_output_tokens?: number;
@@ -512,15 +529,6 @@ export interface ModelDef {
   reasoning?: boolean;
   structured_output?: boolean;
   tool_call?: boolean;
-}
-/**
- * USD per million tokens.
- */
-export interface ModelCost1 {
-  cache_read?: number;
-  cache_write?: number;
-  input: number;
-  output: number;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
@@ -667,6 +675,21 @@ export interface ToolResult {
   call_id: string;
   is_error: boolean;
   output: unknown;
+}
+/**
+ * Observations available when the synchronous phase returns. Execution can remain open.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ToolReturn".
+ */
+export interface ToolReturn {
+  call_id: string;
+  events: Event[];
+  finished: boolean;
+  /**
+   * The original tool_call_started sequence.
+   */
+  sequence: number;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema

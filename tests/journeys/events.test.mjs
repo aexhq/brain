@@ -67,7 +67,7 @@ test("event iteration crosses a full page without omissions or duplicate progres
   let next = 0;
   const progress = tool({ name: "progress", description: "Report progress", input: z.object({}), run: async (_input, context) => {
     for (let i = 0; i < 120; i++) await context.emit("journey_progress", { i: next++ });
-    return "done";
+    return context.finish("done");
   } });
   f.model = (request, response) => request.input.at(-1).type === "function_call_output"
     ? reply(response) : callTools(response, [{ name: "progress", input: {} }]);

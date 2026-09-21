@@ -115,8 +115,8 @@ impl BrainApi for ServerApi {
         host_id: HostId,
         token: String,
         result: HostResult,
-    ) -> Result<(), ApiError> {
-        self.resources.hosts.resolve(&host_id, &token, result)
+    ) -> Result<HostEventAck, ApiError> {
+        self.resources.hosts.resolve(&host_id, &token, result).await
     }
 
     async fn emit_host_event(

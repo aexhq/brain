@@ -84,7 +84,9 @@ impl LoopExecutor for Echo {
         services: Arc<dyn brain::TurnServices>,
     ) -> Result<TurnOutput, brain::Error> {
         let mut transcript = input.transcript;
-        transcript.push(Message::user_text(input.input.message));
+        transcript.push(Message::user_text(
+            &input.input.as_ref().expect("user activation").message,
+        ));
         services.set_transcript(transcript).await?;
         Ok(TurnOutput { result: None })
     }
@@ -110,7 +112,7 @@ impl brain::ToolExecutor for Echo {
         &self,
         _: ToolDispatch,
         _: std::sync::Arc<dyn brain::ToolServices>,
-    ) -> Result<Outcome, brain::Error> {
+    ) -> Result<Option<Outcome>, brain::Error> {
         panic!("echo does not call tools")
     }
     async fn cancel(&self, _: ToolCancellation) -> Result<(), brain::Error> {
@@ -137,6 +139,7 @@ fn api(root: &std::path::Path) -> ServerApi {
         writer: Writer::spawn(),
         feed: feed.clone(),
         session_runtime: Arc::new(SessionRuntime {
+            tool_executions: Arc::default(),
             limits: brain::Limits {
                 max_model_calls: 4,
                 max_turn_secs: 1,
