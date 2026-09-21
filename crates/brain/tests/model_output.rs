@@ -70,7 +70,9 @@ async fn completed_provider_status_survives_invalid_json_in_the_durable_failure(
             .unwrap(),
         );
         let loop_executor = scripted(|input, services| async move {
-            let messages = vec![Message::user_text(input.input.message)];
+            let messages = vec![Message::user_text(
+                &input.input.as_ref().expect("user activation").message,
+            )];
             services.set_transcript(messages.clone()).await?;
             services
                 .model(ModelRequest {

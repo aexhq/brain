@@ -13,23 +13,23 @@ pub enum Dialect {
 #[serde(deny_unknown_fields)]
 pub struct ModelDef {
     pub id: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window_tokens: Option<u64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call: Option<bool>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub structured_output: Option<bool>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<bool>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<ModelCost>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_modalities: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_modalities: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment: Option<bool>,
 }
 
@@ -39,9 +39,9 @@ pub struct ModelDef {
 pub struct ModelCost {
     pub input: f64,
     pub output: f64,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read: Option<f64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write: Option<f64>,
 }
 

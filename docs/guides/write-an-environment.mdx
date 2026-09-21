@@ -36,19 +36,21 @@ The response carries the same contract and sequence and a receipt.
 | Request | Responsibility |
 | --- | --- |
 | `setup { configuration }` | Validate Environment-owned options and establish the binding. Allocation can be lazy. |
-| `execute { implementation, input, deadline_ms, callback? }` | Prepare and run the opaque implementation within configured authority. |
+| `execute { implementation, input, deadline_ms?, callback? }` | Prepare and run the opaque implementation within configured authority. An absent deadline is unlimited. |
 | `call { name, input }` | An Environment-specific operation, such as explicit workspace reset. |
 | `cancel { target_sequence }` | Best-effort cancellation of the named invocation. |
 | `detach` | Release session attachment mechanisms while retaining owned resources. |
 | `teardown` | Release resources owned by this Environment instance. |
 
-Receipts are `accepted`, `progress`, `result { output }`, `failure`, or `unknown`. Return an
+Receipts are `accepted`, `progress`, `result { output }`, `returned { output? }`, `failure`, or `unknown`. Return an
 `unsupported` failure for an unsupported operation or descriptor. Neither `turn` nor `invoke`
 is an Environment operation. An Agentloop adapter interprets its typed input and output above
 this generic boundary; an Environment can support both Agentloops and Tools.
 
-Execute requires a terminal `result`, `failure`, or `unknown` receipt. Returning `accepted` or
-`progress` leaves the dispatched outcome unknown. Failure fields `code`, `message`, `retryable`,
+An Agentloop returns its turn result. For a Tool, `result` and `returned` end only the synchronous
+phase, optionally emitting output. Call the granted `finish` service to complete the Tool, either
+before returning or later. Its callback remains valid after return under the original deadline.
+Returning `accepted` or `progress` leaves the dispatched outcome unknown. Failure fields `code`, `message`, `retryable`,
 and optional JSON `details` reach Tool results unchanged. Retryability is advisory; Brain does
 not retry or restore failed resources automatically.
 
@@ -62,11 +64,18 @@ mark the Environment unreachable; a transport failure still does.
 
 An execution may receive `callback: { url, token, methods }`. POST `{ method, input }` to that
 URL with its bearer token. The response is the method's JSON result. Only listed methods are
-granted. A Tool receives `emit` and `telemetry`; an Agentloop also receives `events`, `model`,
+granted. A Tool receives `emit`, `result`, `returned`, `finish`, and `telemetry`;
+an Agentloop receives `emit`, `telemetry`, `events`, `acknowledge`, `model`,
 `dispatch`, `set_transcript`, `kv_read`, `kv_put`, and `kv_delete`. Dispatch input is an array of `{ call_id, name, environment, input }`; model
 input is `ModelRequest`; events input is a cursor number; emit input is `{ event_type, data }`;
-telemetry input is the diagnostic record. Results are respectively Tool results, ModelResult,
+telemetry input is the diagnostic record. Results are respectively `ToolReturn[]`, ModelResult,
 EventPage, committed sequence, and null.
+
+Tool `result` takes an Outcome; `returned` and `finish` take an optional Outcome (JSON null
+means no new result). Each returns its committed sequence. Finish orders after earlier admitted
+emissions and closes further emission authority. `acknowledge` takes the loop's processed-through
+sequence and durably advances `brain.last_activation`. Journal observations never automatically
+edit model messages. Event-triggered Agentloop input omits the user input field.
 
 `set_transcript` takes a message array. `kv_put` takes `{ key, value }`; `kv_delete` takes
 an identifier string. Mutations return the committed sequence. `kv_read` takes an identifier
@@ -91,8 +100,10 @@ turn completion. After a successful, failed, or cancelled turn, Brain sends
 The Environment decides what this method does and whether its configuration enables it.
 For example, a disposable sandbox can terminate; a workspace can remain available.
 
-The answer is saved and returned before this call finishes. Brain journals the call and its
-outcome and waits for it before starting another turn or completing a graceful drain. A failed
+The answer is saved and returned before this call finishes. Unfinished Tools defer turn-end
+cleanup until their execution resources have been released. The session can process later
+messages and Tool observations while that background work remains open. Brain journals cleanup
+and waits for it before completing a graceful drain. A failed
 cleanup does not replace the answer. Like other effects, callbacks are not retried or replayed
 after a restart; a provider deadline still bounds resources if Brain stops before delivery.
 Report resource loss explicitly, without silently allocating replacements.

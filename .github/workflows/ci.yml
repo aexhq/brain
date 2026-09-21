@@ -199,7 +199,7 @@ jobs:
         run: |
           "$RUNNER_TEMP/python/venv/bin/pip" install --disable-pip-version-check uv==0.8.15
           BRAIN_TEST_UV="$RUNNER_TEMP/python/venv/bin/uv" node --test examples/python-environment.test.mjs
-      - run: cargo build -p brain-server --bin brain -p brain-env-worker --bin brain-env-worker
+      - run: cargo build -p brain-server --bin brain --bin brain-check-media-upgrade -p brain-env-worker --bin brain-env-worker
       - name: Exercise lazy providers, cold history, and retained sessions through HTTP
         env:
           BRAIN_TEST_SERVER: ${{ github.workspace }}/target/debug/brain

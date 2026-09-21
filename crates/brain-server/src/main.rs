@@ -135,11 +135,11 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
             deadline_ms: config
                 .limits
                 .max_turn()
-                .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
-                .unwrap_or(u64::MAX),
+                .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64),
         }),
         model_executor: model,
         tool_executor: Arc::new(SessionToolExecutor::new(environments.clone())),
+        tool_executions: Arc::default(),
         live: feed.clone(),
         telemetry: telemetry.clone(),
     });

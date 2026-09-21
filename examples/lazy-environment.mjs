@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
+import { finish } from "./environment-callback.mjs";
 
 const accepted = () => ({ type: "accepted" });
 const failure = (code, message) => ({ type: "failure", code, message, retryable: false });
@@ -7,7 +8,7 @@ const identifier = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0
 
 // Setup records configuration; the first execution allocates the workspace. The caller
 // decides when to detach or tear it down; this Environment has no idle policy.
-export function lazyEnvironment({ allocate = async () => new Map() } = {}) {
+export function lazyEnvironment({ allocate = async () => new Map(), fetch = globalThis.fetch } = {}) {
   const environments = new Map();
   const key = (op) => `${op.session_id}/${op.environment}`;
   async function handle(command) {
@@ -39,13 +40,14 @@ export function lazyEnvironment({ allocate = async () => new Map() } = {}) {
       receipt = accepted();
     } else if (request?.type === "execute") {
       if (request.implementation?.type !== "reference_echo") receipt = failure("unsupported", "This example runs only reference_echo Tools");
+      else if (!request.callback?.methods.includes("finish")) receipt = failure("no_callback", "Tool completion service is required");
       else {
         env.active += 1;
         try {
           env.resource ??= Promise.resolve().then(allocate);
           const resource = await env.resource;
           resource.set(op.sequence, request.input);
-          receipt = { type: "result", output: { echo: request.input, entries: resource.size } };
+          receipt = await finish(request.callback, { echo: request.input, entries: resource.size }, fetch);
         } catch (error) {
           receipt = failure("allocation_failed", String(error.message ?? error));
         } finally {

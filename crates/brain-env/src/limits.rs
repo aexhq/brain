@@ -85,16 +85,6 @@ impl EnvLimits {
         (self.max_native_http_secs != 0).then(|| Duration::from_secs(self.max_native_http_secs))
     }
 
-    /// How long the worker may go without a frame before the supervisor gives up on
-    /// it: one bounded native HTTP wait plus slack. Runaway guest compute is stopped
-    /// independently by fuel.
-    pub fn worker_liveness(&self) -> Duration {
-        match self.max_native_http() {
-            Some(wait) => wait + Duration::from_secs(5),
-            None => Duration::MAX,
-        }
-    }
-
     /// The largest request frame the worker accepts: a package arrives base64-encoded,
     /// everything else is a turn input plus its envelope.
     pub fn max_request_frame_bytes(&self) -> usize {

@@ -18,7 +18,7 @@ const lookup = tool({
   input: z.object({ id: z.string() }),
   run: async ({ id }, ctx) => {
     await ctx.emit("lookup_started", { id });
-    return { id, value: "found" };
+    return ctx.finish({ id, value: "found" });
   },
 });
 
@@ -81,8 +81,8 @@ which completes before imports or execution. Unsupported placement and setup fai
 errors, never a reason for Brain to install packages or choose another Environment.
 
 A Tool with `run` is a function this process holds and is placed in `hostEnv`. The SDK registers
-this process as a host over SSE, receives commands, validates inputs and outputs, and posts one
-terminal outcome. `ctx.emit(kind, data)` appends an extension event to the session's canonical
+this process as a host over SSE, receives commands, validates inputs and outputs, and posts ordered
+updates. `ctx.emit(kind, data)` appends an extension event to the session's canonical
 journal before its promise resolves. Save `await brain.credentials()` and pass it back as
 `credentials` to resume the host after a restart.
 
@@ -98,7 +98,15 @@ Tool input schemas use Zod's input semantics: defaulted arguments are optional, 
 receive parsed defaults and transforms. Ordinary objects strip extra properties; strict objects
 reject them. Output schemas continue to describe parsed output.
 
-Host functions may return ordinary successful output or an `Outcome` directly. The top-level
+Use `return ctx.finish(value)` for an ordinary Tool, with successful output or an `Outcome`.
+Returning alone ends only the synchronous phase; `emitResult` publishes observations and `finish`
+ends the whole execution. `finish()` supplies no extra result. Later emissions retain the original
+deadline and byte budget, survive turn completion, and wake the Agentloop. The loop owns model
+messages; results and finish always enter journal/history. Tools must finish explicitly. An omitted
+finish leaves the Tool open until its original deadline, cancellation, or execution loss.
+`ctx.deadline` is undefined for unlimited execution. Long deadlines have no implicit ten-minute cap.
+
+The top-level
 statuses `ok`, `error`, `timeout`, `cancelled` and `unknown` declare outcomes; malformed envelopes
 fail as `invalid_output`. Only successful values pass through the output schema. Structured errors
 retain code, message, retryable and details. Use an explicit `ok.value` for business data that uses a
@@ -132,11 +140,32 @@ for the life of a session. A canonical Tool can have one implementation in each 
 Environments. Loops choose a fixed pair or expose authorized choices to the model; Brain validates
 the actual pair and canonical input/output independently of model presentation.
 
-Agentloop authors can import generated `ModelRequest`, `ModelResult`, `ToolResult`, `EventPage`, and
+Agentloop authors can import generated `ModelRequest`, `ModelResult`, `ToolReturn`, `ToolResult`, `EventPage`, and
 `SessionTranscript` types. The JSON schemas ship at `@aexhq/brain/contracts/session.json`; WIT ships
 at `@aexhq/brain/contracts/agentloop.wit` and `@aexhq/brain/contracts/tool.wit`. `events(after)` reads
 history during an activation, and `emit` appends extension Events. Model, Tool, and Environment
 failures are never retried by Brain.
+
+After considering events and saving selected state, `acknowledge(through)` advances the durable
+`brain.last_activation` processed marker. Reading or returning does not advance it. Dismissed
+observations count as processed. Event-only activations omit user input; dispatch returns zero or
+more synchronous observations and a separate `finished` flag. Tool wake notifications coalesce
+for five milliseconds without delaying commits or live acknowledgements.
+
+## Upgrading to 0.28
+
+Upgrade the server, SDK, official extensions and HTTP Environment controllers together. Rebuild
+Components against `brain:agentloop@0.2.0` and `brain:tool@0.2.0`; old Components fail admission.
+Update Tools to call `finish`, loops to handle `ToolReturn` and absent user input, and consumers
+to distinguish `tool_result_emitted` from the completion outcome in `tool_call_ended`.
+Host result posts use `{ session_id, sequence, update }` with update type `result`, `returned`,
+or `finish`, and return HTTP 200 with a committed sequence. Native deadline zero means unlimited;
+HTTP and host commands omit an unlimited deadline.
+
+Retained active sessions have immutable old implementations. Keep their matching runtime and
+migrate explicitly; this release does not rewrite or discard them. After draining and stopping
+the old writer, run `brain-check-media-upgrade --data-dir <path> --from-tool-return`. It permits
+closed history and rejects sessions that could still execute the old contract.
 
 ## Upgrading to 0.24
 

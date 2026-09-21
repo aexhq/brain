@@ -85,7 +85,7 @@ impl BrainApi for Api {
             .send(HostCommand {
                 session_id: SessionId::new("ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
                 sequence: 7,
-                deadline_at_ms: 1_787_846_460_000,
+                deadline_at_ms: Some(1_787_846_460_000),
                 operation: HostOperation::InvokeTool {
                     name: "highlight_row".into(),
                     input: serde_json::json!({"row": 4}),
@@ -105,11 +105,11 @@ impl BrainApi for Api {
         host_id: HostId,
         token: String,
         _: HostResult,
-    ) -> Result<(), ApiError> {
+    ) -> Result<HostEventAck, ApiError> {
         if host_id.as_str() != "host_12345678901234567890" || token != "host-token" {
             return Err(ApiError::unauthorized("invalid host credential"));
         }
-        Ok(())
+        Ok(HostEventAck { sequence: 42 })
     }
     async fn emit_host_event(
         &self,
@@ -298,7 +298,7 @@ async fn exposes_every_v1_route_with_its_contract_status() {
             .uri("/v1/hosts/host_12345678901234567890/results")
             .header("authorization", "Bearer host-token")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"session_id":"ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sequence":7,"outcome":{"status":"ok","value":null}}"#))
+            .body(Body::from(r#"{"session_id":"ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sequence":7,"update":{"type":"finish","outcome":{"status":"ok","value":null}}}"#))
             .unwrap(),
         Request::builder()
             .method("POST")
@@ -630,11 +630,11 @@ async fn the_host_token_opens_exactly_the_host_surface() {
             "/v1/hosts/host_12345678901234567890/results",
             "POST",
             "host-token",
-            Some(r#"{"session_id":"ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sequence":7,"outcome":{"status":"ok","value":null}}"#),
+            Some(r#"{"session_id":"ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sequence":7,"update":{"type":"finish","outcome":{"status":"ok","value":null}}}"#),
         ))
         .await
         .unwrap();
-    assert_eq!(result.status(), StatusCode::NO_CONTENT);
+    assert_eq!(result.status(), StatusCode::OK);
 
     let wrong_key = build()
         .oneshot(authed(

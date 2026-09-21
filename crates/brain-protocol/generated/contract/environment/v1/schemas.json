@@ -94,6 +94,20 @@
           "type": "object"
         },
         {
+          "description": "The entrypoint returned; only an explicit finish closes a Tool execution.",
+          "properties": {
+            "output": true,
+            "type": {
+              "const": "returned",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
           "properties": {
             "code": {
               "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
@@ -183,7 +197,7 @@
             },
             "deadline_ms": {
               "format": "uint64",
-              "minimum": 1,
+              "minimum": 0,
               "type": "integer"
             },
             "implementation": {
@@ -198,8 +212,7 @@
           "required": [
             "type",
             "implementation",
-            "input",
-            "deadline_ms"
+            "input"
           ],
           "type": "object"
         },

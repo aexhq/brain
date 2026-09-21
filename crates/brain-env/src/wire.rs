@@ -23,9 +23,13 @@ pub enum HostCall {
     KvRead { key: String },
     KvDelete { key: String },
     Events { after: u64 },
+    Acknowledge { through: u64 },
     Model { request_json: String },
     Dispatch { calls_json: String },
     Emit { kind: String, payload_json: String },
+    ToolResult { outcome_json: String },
+    ToolReturned { outcome_json: Option<String> },
+    ToolFinish { outcome_json: Option<String> },
     Telemetry { record_json: String },
 }
 

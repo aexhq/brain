@@ -34,7 +34,8 @@ pub struct HostCommand {
     pub session_id: SessionId,
     #[schemars(range(min = 1))]
     pub sequence: u64,
-    pub deadline_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_at_ms: Option<u64>,
     pub operation: HostOperation,
 }
 
@@ -44,7 +45,23 @@ pub struct HostResult {
     pub session_id: SessionId,
     #[schemars(range(min = 1))]
     pub sequence: u64,
-    pub outcome: Outcome,
+    pub update: ToolExecutionUpdate,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ToolExecutionUpdate {
+    Result {
+        outcome: Outcome,
+    },
+    Returned {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<Outcome>,
+    },
+    Finish {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<Outcome>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]

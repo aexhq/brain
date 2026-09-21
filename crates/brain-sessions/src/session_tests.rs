@@ -10,6 +10,174 @@ use brain_protocol::{
 struct Echo;
 
 #[tokio::test]
+async fn background_completion_wakes_a_passivated_loop_once_and_never_edits_its_transcript() {
+    use brain::{ToolExecutor, ToolServices, TurnServices};
+
+    #[derive(Default)]
+    struct Background {
+        service: StdMutex<Option<Arc<dyn ToolServices>>>,
+    }
+    #[async_trait]
+    impl ToolExecutor for Background {
+        async fn execute(
+            &self,
+            _: ToolDispatch,
+            service: Arc<dyn ToolServices>,
+        ) -> Result<Option<Outcome>, brain::Error> {
+            *self.service.lock().unwrap() = Some(service);
+            Ok(None)
+        }
+        async fn cancel(&self, _: ToolCancellation) -> Result<(), brain::Error> {
+            Ok(())
+        }
+    }
+    #[derive(Default)]
+    struct Observer {
+        activations: std::sync::atomic::AtomicUsize,
+        observations: StdMutex<Vec<brain_protocol::Event>>,
+    }
+    #[async_trait]
+    impl LoopExecutor for Observer {
+        async fn turn(
+            &self,
+            _: &SessionId,
+            _: u64,
+            _: &AgentloopRef,
+            _: &Environment,
+            input: TurnInput,
+            services: Arc<dyn TurnServices>,
+        ) -> Result<TurnOutput, brain::Error> {
+            self.activations.fetch_add(1, Ordering::SeqCst);
+            if input.input.is_some() {
+                let returns = services
+                    .dispatch(vec![
+                        serde_json::from_value(serde_json::json!({
+                            "name":"background","call_id":"one","environment":"brain","input":{}
+                        }))
+                        .unwrap(),
+                    ])
+                    .await?;
+                assert!(!returns[0].finished);
+                assert_eq!(returns[0].events.len(), 1);
+                assert_eq!(returns[0].events[0].event_type, "tool_call_returned");
+                services
+                    .set_transcript(vec![Message::user_text("chosen by the loop")])
+                    .await?;
+            } else {
+                assert_eq!(
+                    input.transcript,
+                    vec![Message::user_text("chosen by the loop")]
+                );
+            }
+            let mut through = input
+                .kv
+                .get(brain::LAST_ACTIVATION_KEY)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            loop {
+                let page = services.events(through).await?;
+                if page.events.is_empty() {
+                    break;
+                }
+                through = page.next_cursor;
+                self.observations.lock().unwrap().extend(page.events);
+            }
+            services.acknowledge(through).await?;
+            Ok(TurnOutput::default())
+        }
+    }
+    let root = root("background-events");
+    let mut api = api(&root);
+    let background = Arc::new(Background::default());
+    let observer = Arc::new(Observer::default());
+    let runtime =
+        Arc::get_mut(&mut Arc::get_mut(&mut api.resources).unwrap().session_runtime).unwrap();
+    runtime.tool_executor = background.clone();
+    runtime.loop_executor = observer.clone();
+    runtime.limits.max_tool_secs = 0;
+    let mut config = session_config();
+    config.tools = vec![
+        serde_json::from_value(serde_json::json!({
+            "name":"background","description":"Background","input_schema":{},
+            "placements":{"brain":{"implementation":{}}}
+        }))
+        .unwrap(),
+    ];
+    let id = SessionId::new("ses_background");
+    let store = LocalSessionStore::create(
+        &api.resources.sessions_dir.join(id.as_str()),
+        id.clone(),
+        &serde_json::to_value(&config).unwrap(),
+        api.resources.writer.clone(),
+        api.resources.feed.clone(),
+    )
+    .unwrap();
+    let session = Session::begin(
+        store.clone(),
+        api.resources.session_runtime.clone(),
+        &config,
+        &[],
+    )
+    .unwrap()
+    .complete(config)
+    .unwrap();
+    api.remember(store.clone(), session).unwrap();
+    api.send_message(
+        id.clone(),
+        MessageRequest {
+            input: "start".into(),
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while api.sessions.lock().unwrap().contains_key(&id) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let service = background.service.lock().unwrap().take().unwrap();
+    let finish = service
+        .finish(Some(Outcome::Ok {
+            value: serde_json::json!("asynchronous result"),
+        }))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), api.drain())
+        .await
+        .unwrap();
+    assert_eq!(observer.activations.load(Ordering::SeqCst), 2);
+    assert!(store.processed_through().unwrap() >= finish);
+    let observed = observer.observations.lock().unwrap();
+    assert_eq!(
+        observed
+            .iter()
+            .filter(|event| event.event_type == "tool_result_emitted")
+            .count(),
+        1
+    );
+    assert_eq!(
+        observed
+            .iter()
+            .filter(|event| event.event_type == "tool_call_ended")
+            .count(),
+        1
+    );
+    assert!(
+        !observed
+            .iter()
+            .any(|event| event.event_type == "tool_call_failed")
+    );
+    assert_eq!(
+        store.fold().unwrap().transcript,
+        vec![Message::user_text("chosen by the loop")]
+    );
+    assert!(api.sessions.lock().unwrap().is_empty());
+    assert!(api.background_turns.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn turn_end_callbacks_are_journaled_and_do_not_delay_answers() {
     use brain_protocol::{EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest};
 
@@ -55,7 +223,13 @@ async fn turn_end_callbacks_are_journaled_and_do_not_delay_answers() {
             services
                 .set_transcript(vec![Message::user_text("saved")])
                 .await?;
-            match input.input.message.as_str() {
+            match input
+                .input
+                .as_ref()
+                .expect("user activation")
+                .message
+                .as_str()
+            {
                 "fail" => Err(brain::Error::Executor("turn failed".into())),
                 "cancel" => {
                     while !services.cancelled() {
@@ -202,7 +376,9 @@ async fn submission_commits_before_returning_and_drain_waits_for_completion() {
         ) -> Result<TurnOutput, brain::Error> {
             self.finish.notified().await;
             services
-                .set_transcript(vec![Message::user_text(input.input.message)])
+                .set_transcript(vec![Message::user_text(
+                    &input.input.as_ref().expect("user activation").message,
+                )])
                 .await?;
             Ok(TurnOutput::default())
         }
@@ -365,7 +541,9 @@ impl LoopExecutor for Echo {
         services: Arc<dyn brain::TurnServices>,
     ) -> Result<TurnOutput, brain::Error> {
         let mut transcript = input.transcript;
-        transcript.push(Message::user_text(input.input.message));
+        transcript.push(Message::user_text(
+            &input.input.as_ref().expect("user activation").message,
+        ));
         services.set_transcript(transcript).await?;
         Ok(TurnOutput { result: None })
     }
@@ -391,7 +569,7 @@ impl brain::ToolExecutor for Echo {
         &self,
         _: ToolDispatch,
         _: std::sync::Arc<dyn brain::ToolServices>,
-    ) -> Result<Outcome, brain::Error> {
+    ) -> Result<Option<Outcome>, brain::Error> {
         panic!("echo does not call tools")
     }
     async fn cancel(&self, _: ToolCancellation) -> Result<(), brain::Error> {
@@ -407,6 +585,7 @@ fn api(root: &std::path::Path) -> Sessions {
         writer: Writer::spawn(),
         feed: feed.clone(),
         session_runtime: Arc::new(SessionRuntime {
+            tool_executions: Arc::default(),
             limits: brain::Limits {
                 max_model_calls: 4,
                 max_turn_secs: 1,

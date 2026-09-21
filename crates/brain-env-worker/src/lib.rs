@@ -14,7 +14,7 @@ pub use service::WorkerService;
 
 /// The interfaces a guest may import: the contract's own types and the host services.
 pub const RUNTIME_SHIM_IMPORTS: &[&str] =
-    &["brain:agentloop/types@0.1.0", "brain:agentloop/host@0.1.0"];
+    &["brain:agentloop/types@0.2.0", "brain:agentloop/host@0.2.0"];
 pub const CAPABILITY_IMPORTS: &[&str] = &[
     "wasi:cli/environment@0.2.9",
     "wasi:cli/exit@0.2.9",
@@ -43,7 +43,7 @@ pub const CAPABILITY_IMPORTS: &[&str] = &[
     "wasi:http/types@0.2.12",
     "wasi:http/outgoing-handler@0.2.12",
 ];
-pub const TOOL_IMPORTS: &[&str] = &["brain:tool/types@0.1.0", "brain:tool/host@0.1.0"];
+pub const TOOL_IMPORTS: &[&str] = &["brain:tool/types@0.2.0", "brain:tool/host@0.2.0"];
 
 /// Read one request frame from Brain, bounded by the request ceiling.
 pub async fn worker_read<R: tokio::io::AsyncRead + Unpin>(

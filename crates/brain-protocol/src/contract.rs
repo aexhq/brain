@@ -49,6 +49,7 @@ pub fn session() -> Value {
             define::<crate::ModelRequest>(generator);
             define::<crate::ModelResult>(generator);
             define::<crate::ToolResult>(generator);
+            define::<crate::ToolReturn>(generator);
             define::<Outcome>(generator);
             define::<Tool>(generator);
             define::<ToolAdmission>(generator);

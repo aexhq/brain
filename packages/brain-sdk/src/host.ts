@@ -1,8 +1,8 @@
 import { z } from "zod";
 import type { Outcome, Schema } from "./types.js";
+import type { ToolExecutionUpdate } from "./generated/session.js";
 
-/** The contract of one Tool this process holds: what the model sees, declared where
- * the function lives. The function itself never leaves the process. */
+/** The model-facing contract lives with the function held by this process. */
 export interface HostToolContract<InputSchema extends Schema = Schema, OutputSchema extends Schema | undefined = Schema | undefined> {
   readonly name: string;
   readonly description: string;
@@ -10,36 +10,35 @@ export interface HostToolContract<InputSchema extends Schema = Schema, OutputSch
   readonly output?: OutputSchema;
 }
 
-export interface HostToolCall {
+export interface HostToolCall<Output = unknown> {
   readonly sessionId: string;
-  /** The sequence of the `tool_call_started` record: with the session id, the name of
-   * this call everywhere. */
+  /** The sequence of the tool_call_started record. */
   readonly sequence: number;
-  /** When Brain's budget for this call runs out. */
-  readonly deadline: Date;
-  /** Fires on best-effort cancellation and when the deadline passes. */
+  /** The original expiry; absent when the call has no deadline. */
+  readonly deadline: Date | undefined;
   readonly signal: AbortSignal;
-  /** Append a durable extension Event to this session. */
+  /** Append a durable extension Event. */
   emit(kind: string, data: unknown): Promise<number>;
+  /** Append a result without completing this execution. */
+  emitResult(value: Output | Outcome<Output>): Promise<number>;
+  /** Commit completion, optionally with a final result. Use return call.finish(value). */
+  finish(value?: Output | Outcome<Output>): Promise<void>;
 }
 
-export type HostToolHandler<Input, Output> = (input: Input, call: HostToolCall) => Output | Outcome<Output> | Promise<Output | Outcome<Output>>;
+export type HostToolHandler<Input, Output> = (input: Input, call: HostToolCall) => Output | Outcome<Output> | void | Promise<Output | Outcome<Output> | void>;
 
-/** One invocation as the pump hands it to the registry. `deadline_ms` is the
- * remaining budget, not an epoch. */
 export interface InvokeFrame {
   readonly sessionId: string;
   readonly environment: string;
   readonly sequence: number;
   readonly name: string;
   readonly arguments: unknown;
-  readonly deadline_ms: number;
+  readonly deadline_at_ms?: number;
   emit(kind: string, data: unknown): Promise<number>;
+  update(value: ToolExecutionUpdate): Promise<number>;
 }
 
-/** Ceiling on a wire-provided call deadline: generous next to Brain's default
- * tool deadline, small enough that a hostile frame cannot pin a timer for hours. */
-export const MAX_DEADLINE_MS = 600_000;
+const MAX_TIMER_MS = 2_147_483_647;
 
 export function errorOutcome(code: string, message: string): Outcome {
   return { status: "error", error: { code, message: message.slice(0, 4096) } };
@@ -52,12 +51,11 @@ interface RegisteredHostTool {
 
 type Interruption = Extract<Outcome, { status: "timeout" | "cancelled" | "unknown" }>;
 
-/** Shared execution semantics for the Tools this process holds, whoever answers the
- * session's feed: schema-checked input and output, a clamped deadline race, best-effort
- * cancellation, exactly one Outcome. Internal to the SDK's pump. */
+/** A handler's return releases dispatch. Only explicit finish or interruption
+ * closes the retained execution and its event authority. */
 export class HostToolRegistry {
   private readonly tools = new Map<string, RegisteredHostTool>();
-  private readonly active = new Map<number, { readonly controller: AbortController; outcome?: Interruption }>();
+  private readonly active = new Map<number, (outcome: Interruption) => void>();
 
   register(environment: string, contract: HostToolContract, handler: HostToolHandler<unknown, unknown>): void {
     if (typeof contract?.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(contract.name)) throw new TypeError("host tool name must be an identifier");
@@ -69,59 +67,118 @@ export class HostToolRegistry {
   }
 
   cancel(sequence: number): void {
-    this.interrupt(sequence, { status: "cancelled" });
+    this.active.get(sequence)?.({ status: "cancelled" });
   }
 
   disconnect(sequence: number): void {
-    this.interrupt(sequence, { status: "unknown", message: "host connection was lost after dispatch" });
+    this.active.get(sequence)?.({ status: "unknown", message: "host connection was lost after dispatch" });
   }
 
-  private interrupt(sequence: number, outcome: Interruption): void {
-    const call = this.active.get(sequence);
-    if (call === undefined || call.outcome !== undefined) return;
-    call.outcome = outcome;
-    call.controller.abort(new Error(outcome.status === "unknown" ? outcome.message : "host Tool " + outcome.status));
-  }
-
-  async run(frame: InvokeFrame): Promise<Outcome> {
+  async run(frame: InvokeFrame): Promise<void> {
+    const terminal = async (outcome: Outcome): Promise<void> => { await frame.update({ type: "finish", outcome }); };
     const registered = this.tools.get(`${frame.name}\0${frame.environment}`);
-    if (registered === undefined) return errorOutcome("unknown_tool", `no host tool named ${frame.name} is registered`);
+    if (registered === undefined) return terminal(errorOutcome("unknown_tool", `no host tool named ${frame.name} is registered`));
     let input: unknown;
     try {
       input = registered.contract.input.parse(frame.arguments);
     } catch (error) {
-      return errorOutcome("invalid_input", String(error instanceof Error ? error.message : error));
+      return terminal(errorOutcome("invalid_input", message(error)));
     }
-    const call: { controller: AbortController; outcome?: Interruption } = { controller: new AbortController() };
-    this.active.set(frame.sequence, call);
-    const deadlineMs = frame.deadline_ms > MAX_DEADLINE_MS ? MAX_DEADLINE_MS : frame.deadline_ms;
-    const timer = setTimeout(() => this.interrupt(frame.sequence, { status: "timeout" }), deadlineMs);
-    const interrupted = new Promise<typeof interruption>((resolve) => call.controller.signal.addEventListener("abort", () => resolve(interruption), { once: true }));
-    try {
-      const value = await Promise.race([
-        Promise.resolve(registered.handler(input, {
-          sessionId: frame.sessionId,
-          sequence: frame.sequence,
-          deadline: new Date(Date.now() + deadlineMs),
-          signal: call.controller.signal,
-          emit: frame.emit,
-        })),
-        interrupted,
-      ]);
-      if (call.outcome !== undefined) return call.outcome;
-      try {
-        const status = typeof value === "object" && value !== null && "status" in value ? value.status : undefined;
-        const outcome: Outcome = typeof status === "string" && ["ok", "error", "timeout", "cancelled", "unknown"].includes(status)
-          ? outcomeSchema.parse(value)
-          : { status: "ok", value: value ?? null };
-        if (outcome.status !== "ok" || registered.contract.output === undefined) return outcome;
-        return { status: "ok", value: registered.contract.output.parse(outcome.value) ?? null };
-      } catch (error) {
-        return errorOutcome("invalid_output", String(error instanceof Error ? error.message : error));
+    if (frame.deadline_at_ms !== undefined && frame.deadline_at_ms <= Date.now()) return terminal({ status: "timeout" });
+
+    const controller = new AbortController();
+    let resolve!: () => void;
+    let reject!: (reason: unknown) => void;
+    const completed = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+    let finishing = false;
+    let queue = Promise.resolve();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const enqueue = <T>(operation: () => Promise<T>): Promise<T> => {
+      const pending = queue.then(operation);
+      queue = pending.then(() => {}, () => {});
+      return pending;
+    };
+    const ensureOpen = (): void => {
+      if (finishing) throw new Error("Tool execution is finished");
+    };
+    const finish = (outcome?: Outcome): Promise<void> => {
+      ensureOpen();
+      finishing = true;
+      clearTimeout(timer);
+      return enqueue(async () => {
+        await frame.update({ type: "finish", ...(outcome === undefined ? {} : { outcome }) });
+        resolve();
+      }).catch(error => {
+        reject(error);
+        throw error;
+      });
+    };
+    const normalize = (value: unknown): Outcome => {
+      const status = typeof value === "object" && value !== null && "status" in value ? value.status : undefined;
+      let outcome: Outcome = typeof status === "string" && ["ok", "error", "timeout", "cancelled", "unknown"].includes(status)
+        ? outcomeSchema.parse(value)
+        : { status: "ok", value };
+      if (outcome.status === "ok" && registered.contract.output !== undefined) {
+        outcome = { status: "ok", value: registered.contract.output.parse(outcome.value) };
       }
-    } catch (error) {
-      if (call.outcome !== undefined) return call.outcome;
-      return errorOutcome("tool_error", String(error instanceof Error ? error.message : error));
+      return outcomeSchema.parse(outcome);
+    };
+    const invalidOutput = async (error: unknown): Promise<never> => {
+      await finish(errorOutcome("invalid_output", message(error)));
+      throw error;
+    };
+    this.active.set(frame.sequence, (outcome) => {
+      if (finishing) return;
+      controller.abort(new Error(outcome.status === "unknown" ? outcome.message : "host Tool " + outcome.status));
+      void finish(outcome).catch(reject);
+    });
+    const schedule = (): void => {
+      if (frame.deadline_at_ms === undefined || finishing) return;
+      const remaining = frame.deadline_at_ms - Date.now();
+      if (remaining <= 0) this.active.get(frame.sequence)?.({ status: "timeout" });
+      else timer = setTimeout(schedule, Math.min(remaining, MAX_TIMER_MS));
+    };
+    schedule();
+    try {
+      if (!finishing) {
+        void (async () => {
+          try {
+            const value = await registered.handler(input, {
+              sessionId: frame.sessionId,
+              sequence: frame.sequence,
+              deadline: frame.deadline_at_ms === undefined ? undefined : new Date(frame.deadline_at_ms),
+              signal: controller.signal,
+              emit: (kind, data) => {
+                ensureOpen();
+                return enqueue(() => frame.emit(kind, data));
+              },
+              emitResult: async (value) => {
+                ensureOpen();
+                let outcome: Outcome;
+                try { outcome = normalize(value); } catch (error) { return invalidOutput(error); }
+                return enqueue(() => frame.update({ type: "result", outcome }));
+              },
+              finish: async (value) => {
+                ensureOpen();
+                let outcome: Outcome | undefined;
+                try { outcome = value === undefined ? undefined : normalize(value); } catch (error) { return invalidOutput(error); }
+                await finish(outcome);
+              },
+            });
+            if (finishing) return;
+            let outcome: Outcome | undefined;
+            try { outcome = value === undefined ? undefined : normalize(value); } catch (error) {
+              await finish(errorOutcome("invalid_output", message(error)));
+              return;
+            }
+            if (outcome !== undefined && outcome.status !== "ok") await finish(outcome);
+            else await enqueue(() => frame.update({ type: "returned", ...(outcome === undefined ? {} : { outcome }) }));
+          } catch (error) {
+            if (!finishing) await finish(errorOutcome("tool_error", message(error)));
+          }
+        })().catch(reject);
+      }
+      await completed;
     } finally {
       clearTimeout(timer);
       this.active.delete(frame.sequence);
@@ -129,17 +186,19 @@ export class HostToolRegistry {
   }
 }
 
-const interruption = Symbol("call interrupted");
+function message(error: unknown): string {
+  return String(error instanceof Error ? error.message : error);
+}
 
 const outcomeSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("ok"), value: z.json() }),
-  z.object({ status: z.literal("error"), error: z.strictObject({
+  z.strictObject({ status: z.literal("ok"), value: z.json() }),
+  z.strictObject({ status: z.literal("error"), error: z.strictObject({
     code: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u),
     message: z.string().max(4096),
     retryable: z.boolean().optional(),
     details: z.json().optional(),
   }) }),
-  z.object({ status: z.literal("timeout") }),
-  z.object({ status: z.literal("cancelled") }),
-  z.object({ status: z.literal("unknown"), message: z.string() }),
+  z.strictObject({ status: z.literal("timeout") }),
+  z.strictObject({ status: z.literal("cancelled") }),
+  z.strictObject({ status: z.literal("unknown"), message: z.string() }),
 ]);

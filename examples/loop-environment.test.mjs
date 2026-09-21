@@ -7,7 +7,8 @@ test("a turn outside Brain calls back through its token and returns what the loo
   const env = loopEnvironment({ fetch: async (url, init) => {
     calls.push({ url, authorization: init.headers.authorization, body: JSON.parse(init.body) });
     if (JSON.parse(init.body).method === "kv_read") return Response.json({});
-    if (["set_transcript", "kv_put"].includes(JSON.parse(init.body).method)) return Response.json(4);
+    if (["set_transcript", "kv_put", "acknowledge"].includes(JSON.parse(init.body).method)) return Response.json(4);
+    if (JSON.parse(init.body).method === "events") return Response.json({ events: [], next_cursor: 0 });
     if (JSON.parse(init.body).method === "emit") return Response.json({ sequence: 5 });
     if (JSON.parse(init.body).method === "model") {
       return Response.json({ message: { role: "assistant", content: [{ type: "text", text: "hello back" }] }, stop_reason: "end_turn", usage: {} });
@@ -20,7 +21,7 @@ test("a turn outside Brain calls back through its token and returns what the loo
     type: "execute",
     implementation: { type: "reference_agentloop" },
     input: { input: { message: "hello" }, transcript: [], kv: {}, events: [], configuration: {}, system: "", tools: [], runtime: { logical_time_ms: 3, deterministic_seed: [] } },
-    callback: { url: "http://brain.example/v1/sessions/ses_one/executions/3/call", token: "execution-token", methods: ["model", "emit", "set_transcript", "kv_put", "kv_read", "kv_delete"] },
+    callback: { url: "http://brain.example/v1/sessions/ses_one/executions/3/call", token: "execution-token", methods: ["model", "emit", "set_transcript", "kv_put", "kv_read", "kv_delete", "events", "acknowledge"] },
   });
   assert.equal(turned.receipt.type, "result");
   assert.equal(calls.filter(({ body }) => body.method === "set_transcript").at(-1).body.input.length, 2);

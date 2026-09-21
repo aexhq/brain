@@ -23,16 +23,19 @@ impl ToolExecutor for EmittingTool {
         &self,
         _: ToolDispatch,
         services: Arc<dyn ToolServices>,
-    ) -> Result<Outcome, Error> {
+    ) -> Result<Option<Outcome>, Error> {
         services
             .emit(
                 "checkpoint".into(),
                 json!({"origin": {"kind": "agentloop", "sequence": 1}, "state": "tool"}),
             )
             .await?;
-        Ok(Outcome::Ok {
-            value: json!("done"),
-        })
+        services
+            .finish(Some(Outcome::Ok {
+                value: json!("done"),
+            }))
+            .await?;
+        Ok(None)
     }
     async fn cancel(&self, _: ToolCancellation) -> Result<(), Error> {
         Ok(())

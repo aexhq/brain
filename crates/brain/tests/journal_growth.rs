@@ -123,7 +123,7 @@ async fn the_journal_folds_to_the_final_transcript_after_the_turn() {
         CALLS * 2,
         "every filler message and every answer folds back out of the journal"
     );
-    assert!(folded.kv.contains_key(brain::LAST_ACTIVATION_KEY));
+    assert!(!folded.kv.contains_key(brain::LAST_ACTIVATION_KEY));
     drop(store);
     let _ = fs::remove_dir_all(data_dir);
 }
@@ -280,7 +280,9 @@ async fn a_rewritten_transcript_is_journalled_from_where_it_differs() {
                 // Compact: replace everything with one summary.
                 transcript = vec![Message::assistant(vec![ContentBlock::text("summary")])];
             }
-            transcript.push(Message::user_text(input.input.message));
+            transcript.push(Message::user_text(
+                &input.input.as_ref().expect("user activation").message,
+            ));
             services.set_transcript(transcript).await?;
             Ok::<_, Error>(TurnOutput { result: None })
         }),

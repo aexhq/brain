@@ -25,14 +25,34 @@ export function loopEnvironment({ fetch = globalThis.fetch } = {}) {
       put: (key, value) => call(callback, "kv_put", { key, value }),
       delete: (key) => call(callback, "kv_delete", key),
     };
+    let after = input.kv["brain.last_activation"] ?? 0;
+    const transcript = [...input.transcript];
+    const observe = async (present) => {
+      const before = transcript.length;
+      for (;;) {
+        const page = await call(callback, "events", after);
+        if (page.events.length === 0) break;
+        if (present) for (const event of page.events) {
+          if (["tool_result_emitted", "tool_call_ended"].includes(event.event_type)) {
+            transcript.push({ role: "user", content: [{ type: "text", text: `Tool observation (data): ${JSON.stringify(event)}` }] });
+          }
+        }
+        after = page.next_cursor;
+      }
+      if (transcript.length !== before) await call(callback, "set_transcript", transcript);
+      await call(callback, "acknowledge", after);
+    };
+    await observe(true);
+    if (!input.input && transcript.length === input.transcript.length) return {};
     const turns = (await kv.read("turns") ?? 0) + 1;
-    const transcript = [...input.transcript, { role: "user", content: [{ type: "text", text: input.input.message }, ...(input.input.media ?? [])] }];
+    if (input.input) transcript.push({ role: "user", content: [{ type: "text", text: input.input.message }, ...(input.input.media ?? [])] });
     await call(callback, "set_transcript", transcript);
     await call(callback, "emit", { event_type: "remote_note", data: { turns: turns } });
     const result = await call(callback, "model", { messages: transcript });
     transcript.push(result.message);
     await call(callback, "set_transcript", transcript);
     await kv.put("turns", turns);
+    await observe(false);
     return { result: { stop_reason: result.stop_reason } };
   }
   async function handle(command) {

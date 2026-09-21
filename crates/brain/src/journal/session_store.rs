@@ -382,8 +382,7 @@ impl LocalSessionStore {
     /// Removes the session from disk. Only an ended or failed session can go.
     pub fn delete(&self) -> Result<(), Error> {
         self.ensure_deletable()?;
-        self.sync()?;
-        fs::remove_dir_all(&self.directory).map_err(io_error)
+        self.journal.writer().delete(self.directory.clone())
     }
 
     pub fn ensure_deletable(&self) -> Result<(), Error> {
@@ -403,6 +402,16 @@ impl LocalSessionStore {
 
     pub fn directory(&self) -> &Path {
         &self.directory
+    }
+
+    pub fn processed_through(&self) -> Result<u64, Error> {
+        Ok(self
+            .lock()?
+            .folded
+            .kv
+            .get(crate::session::LAST_ACTIVATION_KEY)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0))
     }
 
     /// Saves a disposable projection at a quiescent boundary. The journal remains canonical:

@@ -22,7 +22,7 @@ export const lookup = tool({
   options: z.object({ prefix: z.string() }),
   run: async ({ id }, ctx) => {
     await ctx.emit("lookup_started", { id });
-    return database.get(`${ctx.options.prefix}${id}`) ?? null;
+    return ctx.finish(await database.get(`${ctx.options.prefix}${id}`) ?? null);
   },
 });
 
@@ -49,21 +49,34 @@ inside `try` and close the client in `finally`, including when creation fails.
 
 Brain commits the Tool intent before publishing a command. The command names the session, the
 journal sequence of the call, the absolute deadline, the Tool, and the input. The SDK validates
-input, calls the registered function, validates configured output, and posts one outcome to the
-host result endpoint.
+input, calls the registered function, validates each output, and posts ordered updates to the
+host result endpoint. Each update receives a committed journal sequence.
 
 ### Return values and outcomes
 
-Return ordinary output for success, or return an `Outcome` directly. An error outcome preserves
+Use `return ctx.finish(value)` to publish a result and finish the whole execution. Pass ordinary
+output for success or an `Outcome` directly. An error outcome preserves
 `error.code`, `error.message`, `error.retryable` and `error.details`. See the executable
 [Tool outcomes example](https://github.com/aexhq/brain/blob/main/examples/tool-outcomes.mjs).
 Thrown exceptions become `tool_error`.
+
+Returning and finishing are different boundaries. `return value` publishes one result and ends
+the synchronous phase; returning nothing publishes no result. The Tool remains open for later
+`ctx.emit`, `ctx.emitResult`, and `ctx.finish` calls. Emit before returning to make an observation
+available synchronously. `await ctx.finish(); return;` finishes without another result.
+
+Every Tool must finish explicitly. Forgetting leaves it open until its original deadline,
+cancellation, or connection loss; an unlimited execution can remain open indefinitely. Normal
+turn completion and actor suspension preserve background Tools. Brain wakes the Agentloop for
+later committed observations, and the loop decides whether to call the model or wait for a user.
 
 The top-level `status` values `ok`, `error`, `timeout`, `cancelled` and `unknown` are reserved for
 outcome envelopes. A malformed envelope becomes `invalid_output`. Successful-output validation
 applies to ordinary output or an explicit `ok.value`; non-success outcomes bypass it. If business
 data itself uses a reserved status, return it as the `value` of an explicit `ok` outcome. The SDK
 does not inspect that value for another outcome. Other status values remain ordinary data.
+The final value must be JSON after schema transforms as well; undefined, non-finite numbers,
+BigInt, and class instances are rejected. Returning a non-success outcome terminates the execution.
 
 ### Context
 
@@ -73,9 +86,11 @@ The second `run` argument contains:
 - `sessionId`: the owning session, for application operations such as attachment publication;
 - `sequence`: the journal sequence of the `tool_call_started` record, which with the session id
   names this call everywhere;
-- `deadline`: the caller-owned deadline;
+- `deadline`: the original caller-owned absolute deadline, or undefined for unlimited execution;
 - `signal`: best-effort cancellation and deadline notification;
-- `emit(kind, data)`: append a durable extension Event.
+- `emit(kind, data)`: append a durable extension Event;
+- `emitResult(value)`: append a validated result without finishing;
+- `finish(value?)`: optionally append a result, then commit the completion boundary.
 
 Always await `ctx.emit`. Its promise resolves with the committed journal sequence, so an emitted
 progress or audit Event is ordered before the Tool result:
@@ -83,7 +98,7 @@ progress or audit Event is ordered before the Tool result:
 ```ts
 run: async (input, ctx) => {
   const sequence = await ctx.emit("import_started", { source: input.source });
-  return { eventSequence: sequence, imported: await importRows(input) };
+  return ctx.finish({ eventSequence: sequence, imported: await importRows(input) });
 }
 ```
 
@@ -96,6 +111,11 @@ execution and protocol failures return `error`.
 The SDK aborts local in-flight work and reconnects the same registered host for future commands;
 it never replays the disconnected command. Cooperative functions should observe `ctx.signal` and
 stop promptly.
+
+Events are ordered per Tool. Finish waits for preceding admitted emissions, and later emissions
+are rejected. Results and finish always enter journal/history; only the Agentloop changes model
+messages. Brain batches wake notifications for five milliseconds from the first pending commit,
+without delaying commits or their acknowledgements. Further events do not extend that window.
 
 ### Reattaching after restart
 
@@ -133,6 +153,12 @@ input, parsed configuration, and deadline. The Component may call its `emit` hos
 an extension Event, or its fire-and-forget `telemetry` import for best-effort operational
 diagnostics that never enter the journal or model input. A Tool that wants an identifier for its
 own logging uses the session id and the sequence Brain records for the call.
+
+Build against `brain:tool@0.2.0`, exported as `@aexhq/brain/contracts/tool.wit`.
+`emit-result` takes an Outcome JSON string; `finish` takes an optional Outcome JSON string.
+`returned` ends the synchronous phase while the exported `run` function can keep executing.
+The fresh Wasm Store remains alive until that export returns and cleanup completes. Call `finish`
+before returning for an ordinary synchronous Tool. `deadline-at-ms = 0` means unlimited.
 
 ## A descriptor the Environment interprets
 
@@ -173,6 +199,7 @@ fails explicitly. Setup failures reach the ordinary Tool error path, without aut
 
 `ctx.emit` in a `run` Tool and the Component Tool's `emit` import both wait for the same thing: a
 committed extension Event in the session journal. Brain commits a Tool intent before dispatch,
-sends it once, and commits `ok`, `error`, `timeout`, `cancelled`, or `unknown` before the Agentloop
-sees the result. The Agentloop and all Tools share one turn budget for emitted Event bytes,
-`BRAIN_MAX_EMITTED_BYTES`. There is no automatic retry.
+sends it once, and commits each result, return, and finish before the Agentloop observes it.
+Result and extension emissions share the originating activation's `BRAIN_MAX_EMITTED_BYTES`
+budget. Returning or waking a later activation does not renew a Tool's budget or deadline.
+There is no automatic retry.

@@ -17,6 +17,18 @@ impl EnvironmentAdapter for Adapter {
 struct Leaf;
 #[async_trait]
 impl ToolServices for Leaf {
+    async fn result(&self, _: Outcome) -> Result<u64, brain::Error> {
+        unreachable!()
+    }
+    async fn returned(&self, _: Option<Outcome>) -> Result<u64, brain::Error> {
+        unreachable!()
+    }
+    async fn finish(&self, _: Option<Outcome>) -> Result<u64, brain::Error> {
+        unreachable!()
+    }
+    async fn closed(&self) {
+        unreachable!()
+    }
     async fn emit(&self, _: String, _: Value) -> Result<u64, brain::Error> {
         unreachable!()
     }
@@ -42,7 +54,7 @@ async fn environment_errors_reach_tools_without_losing_information() {
         },
     )))));
     let outcome = executor.execute(dispatch(), Arc::new(Leaf)).await.unwrap();
-    let result = ToolResult::from_outcome("one".into(), outcome);
+    let result = ToolResult::from_outcome("one".into(), outcome.unwrap());
     assert!(result.is_error);
     assert_eq!(
         result.output,
@@ -59,9 +71,9 @@ async fn an_explicit_unknown_receipt_is_a_tool_outcome_not_a_transport_failure()
     )))));
     assert_eq!(
         executor.execute(dispatch(), Arc::new(Leaf)).await.unwrap(),
-        Outcome::Unknown {
+        Some(Outcome::Unknown {
             message: "result lost after dispatch".into()
-        }
+        })
     );
 }
 

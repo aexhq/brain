@@ -3,7 +3,7 @@ title: Agentloop
 description: The placed WebAssembly Component that owns a turn's policy.
 ---
 
-An Agentloop decides how one user message becomes a completed turn. Brain owns mechanism: the
+An Agentloop decides how user input and committed observations affect the conversation. Brain owns mechanism: the
 journal, model credential, Tool catalogue, effect dispatch, deadlines, and cancellation. The
 Agentloop owns policy: prompts, context selection, compaction, Tool sequencing, and the final
 transcript and extension state.
@@ -35,15 +35,23 @@ or prepared by its Environment; resource grants belong to that Environment’s c
 The source of truth is [`crates/brain-env/wit/agentloop/agentloop.wit`](https://github.com/aexhq/brain/blob/main/crates/brain-env/wit/agentloop/agentloop.wit).
 The Component exports one `turn` function. Its input contains:
 
-- the user input;
+- optional user input (absent for an event-triggered activation);
 - the current transcript and the loop's kv (a key-value map it keeps between activations);
-- committed events since its previous activation;
+- committed events after its durable processed-through marker;
 - its configuration, system prompt, Tool definitions, and deterministic runtime envelope.
 
 During the activation it may call Brain's `events`, `model`, `dispatch`, `emit`, `set-transcript`,
-`kv-read`, `kv-put`, `kv-delete`, and `telemetry` imports.
+`acknowledge`, `kv-read`, `kv-put`, `kv-delete`, and `telemetry` imports.
 `model`, `dispatch`, and `emit` cross the Brain boundary. Brain commits an external-effect intent
-before dispatch, sends it once, and commits its terminal or unknown outcome before returning it.
+before dispatch, sends it once, and commits observations before returning them. Tool return releases
+the caller; explicit finish closes the execution. Dispatch exposes zero or more observations and
+whether completion has occurred, so background work does not need a fabricated final result.
+
+Results and finish always enter the journal. The loop alone chooses model messages and whether
+to call the model. After saving selected state, `acknowledge(sequence)` records the considered
+prefix, including dismissed observations, in `brain.last_activation`. Reads and activation return
+do not advance it. Later Tool events wake one activation at a time, with a five-millisecond window
+that combines nearby notifications without delaying durable commits.
 
 KV reads distinguish absence from JSON null. Put creates or replaces one value; delete removes a
 key from the current projection without erasing journal history. Missing-key deletion is a no-op.

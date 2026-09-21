@@ -316,9 +316,7 @@ impl WorkerSlot {
                 Ok(output)
             }
             Err(LoopError::Failed(message)) if message == "brain-env-worker stopped answering" => {
-                // The guest's own compute budget fires before this, so reaching here
-                // means the worker itself is not answering. Restarting it is the only
-                // thing left.
+                // A failed health probe applies to the worker, not just this invocation.
                 let mut state = self.state.lock().await;
                 if state.incarnation == incarnation {
                     self.stop_worker(&mut state).await;

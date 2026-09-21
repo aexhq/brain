@@ -112,7 +112,7 @@ for (const strict of [false, true]) {
     const input = strict ? z.strictObject(shape) : z.object(shape);
     const lookup = tool({ name: "lookup", description: "Look up values.", input,
       output: z.object({ text: z.string(), limit: z.number().default(10) }),
-      run: value => { called++; return value; },
+      run: (value, ctx) => { called++; return ctx.finish(value); },
     })({ env: hostEnv({ name: "app" }) });
     const source = inspectTool(lookup);
     assert.deepEqual(source.definition.inputSchema.required, ["text"]);
@@ -121,9 +121,14 @@ for (const strict of [false, true]) {
     assert.deepEqual(source.definition.outputSchema.required, ["text", "limit"]);
     const registry = new HostToolRegistry();
     registry.register("app", source.contract, source.handler);
-    const invoke = arguments_ => registry.run({ sessionId: "session", environment: "app", sequence: 1,
-      name: "lookup", arguments: arguments_, deadline_ms: 1_000, emit: async () => 1,
-    });
+    const invoke = async arguments_ => {
+      let outcome;
+      await registry.run({ sessionId: "session", environment: "app", sequence: 1,
+        name: "lookup", arguments: arguments_, deadline_at_ms: Date.now() + 1000, emit: async () => 1,
+        update: async update => { outcome = update.outcome; return 2; },
+      });
+      return outcome;
+    };
     assert.deepEqual(await invoke({ text: "cyan" }), { status: "ok", value: { text: "CYAN", limit: 10 } });
     assert.equal((await invoke({})).error.code, "invalid_input");
     assert.equal(called, 1);

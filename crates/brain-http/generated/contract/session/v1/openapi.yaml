@@ -398,7 +398,6 @@ components:
       - environment
       - session_id
       - sequence
-      - deadline_at_ms
       - operation
       type: object
     HostEvent:
@@ -477,18 +476,18 @@ components:
     HostResult:
       additionalProperties: false
       properties:
-        outcome:
-          $ref: '#/components/schemas/Outcome'
         sequence:
           format: uint64
           minimum: 1
           type: integer
         session_id:
           $ref: '#/components/schemas/SessionId'
+        update:
+          $ref: '#/components/schemas/ToolExecutionUpdate'
       required:
       - session_id
       - sequence
-      - outcome
+      - update
       type: object
     KvPutRequest:
       additionalProperties: false
@@ -554,11 +553,9 @@ components:
       description: USD per million tokens.
       properties:
         cache_read:
-          default: null
           format: double
           type: number
         cache_write:
-          default: null
           format: double
           type: number
         input:
@@ -575,41 +572,32 @@ components:
       additionalProperties: false
       properties:
         attachment:
-          default: null
           type: boolean
         context_window_tokens:
-          default: null
           format: uint64
           minimum: 0
           type: integer
         cost:
           $ref: '#/components/schemas/ModelCost'
-          default: null
         id:
           type: string
         input_modalities:
-          default: null
           items:
             type: string
           type: array
         max_output_tokens:
-          default: null
           format: uint64
           minimum: 0
           type: integer
         output_modalities:
-          default: null
           items:
             type: string
           type: array
         reasoning:
-          default: null
           type: boolean
         structured_output:
-          default: null
           type: boolean
         tool_call:
-          default: null
           type: boolean
       required:
       - id
@@ -918,6 +906,39 @@ components:
       - input_schema
       - output_schema
       type: object
+    ToolExecutionUpdate:
+      oneOf:
+      - additionalProperties: false
+        properties:
+          outcome:
+            $ref: '#/components/schemas/Outcome'
+          type:
+            const: result
+            type: string
+        required:
+        - type
+        - outcome
+        type: object
+      - additionalProperties: false
+        properties:
+          outcome:
+            $ref: '#/components/schemas/Outcome'
+          type:
+            const: returned
+            type: string
+        required:
+        - type
+        type: object
+      - additionalProperties: false
+        properties:
+          outcome:
+            $ref: '#/components/schemas/Outcome'
+          type:
+            const: finish
+            type: string
+        required:
+        - type
+        type: object
     ToolId:
       pattern: ^[0-9a-f]{64}$
       type: string
@@ -939,6 +960,28 @@ components:
       - call_id
       - output
       - is_error
+      type: object
+    ToolReturn:
+      description: Observations available when the synchronous phase returns. Execution can remain open.
+      properties:
+        call_id:
+          type: string
+        events:
+          items:
+            $ref: '#/components/schemas/Event'
+          type: array
+        finished:
+          type: boolean
+        sequence:
+          description: The original tool_call_started sequence.
+          format: uint64
+          minimum: 0
+          type: integer
+      required:
+      - call_id
+      - sequence
+      - events
+      - finished
       type: object
     TurnEmitRequest:
       additionalProperties: false
@@ -1170,8 +1213,12 @@ paths:
               $ref: '#/components/schemas/HostResult'
         required: true
       responses:
-        '204':
-          description: Host command result accepted
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostEventAck'
+          description: Tool execution event committed
         default:
           content:
             application/json:

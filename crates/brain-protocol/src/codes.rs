@@ -31,6 +31,8 @@ pub mod event {
     pub const MODEL_CALL_ENDED: &str = "model_call_ended";
     pub const MODEL_CALL_FAILED: &str = "model_call_failed";
     pub const TOOL_CALL_STARTED: &str = "tool_call_started";
+    pub const TOOL_CALL_RETURNED: &str = "tool_call_returned";
+    pub const TOOL_RESULT_EMITTED: &str = "tool_result_emitted";
     pub const TOOL_CALL_ENDED: &str = "tool_call_ended";
     pub const TOOL_CALL_FAILED: &str = "tool_call_failed";
     pub const TOOL_CANCEL_STARTED: &str = "tool_cancel_started";
@@ -86,6 +88,8 @@ pub mod event {
         MODEL_CALL_ENDED,
         MODEL_CALL_FAILED,
         TOOL_CALL_STARTED,
+        TOOL_CALL_RETURNED,
+        TOOL_RESULT_EMITTED,
         TOOL_CALL_ENDED,
         TOOL_CALL_FAILED,
         TOOL_CANCEL_STARTED,

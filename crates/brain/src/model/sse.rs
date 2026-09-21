@@ -52,6 +52,10 @@ impl SseDecoder {
                 overflowed = unread > self.max_frame;
                 break;
             };
+            if end.length > self.max_frame {
+                overflowed = true;
+                break;
+            }
             let content = &self.pending[self.consumed..self.consumed + end.content];
             let text = std::str::from_utf8(content)
                 .map_err(|error| Error::Executor(format!("model SSE is not UTF-8: {error}")))?;
@@ -113,6 +117,28 @@ fn frame_end(bytes: &[u8]) -> Option<FrameEnd> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_frame_limits_do_not_depend_on_chunk_boundaries() {
+        for frame in [
+            b"data: 12345\n\n".as_slice(),
+            b"data: 123\r\n\r\n".as_slice(),
+        ] {
+            for split in 0..=frame.len() {
+                let mut decoder = SseDecoder::new(frame.len());
+                let mut events = decoder.feed(&frame[..split]).unwrap();
+                events.extend(decoder.feed(&frame[split..]).unwrap());
+                assert_eq!(events.len(), 1);
+                let mut decoder = SseDecoder::new(frame.len() - 1);
+                assert!(
+                    decoder
+                        .feed(&frame[..split])
+                        .and_then(|_| decoder.feed(&frame[split..]))
+                        .is_err()
+                );
+            }
+        }
+    }
 
     /// A separator split across two chunks must still be found: the resumed scan backs
     /// up far enough to see it whole.

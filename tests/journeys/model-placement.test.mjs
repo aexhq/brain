@@ -25,11 +25,14 @@ const f = fixture({ providers: { selector: async ({ operation }) => {
       }, required: ["environment", "input"], additionalProperties: false },
     }] });
     transcript.push(model.message);
-    const results = await call("dispatch", model.message.content.filter((block) => block.type === "tool_use").map((block) => ({
+    const returned = await call("dispatch", model.message.content.filter((block) => block.type === "tool_use").map((block) => ({
       call_id: block.id, name: block.name, environment: block.input.environment, input: block.input.input,
     })));
+    const results = returned.map(value => value.events.find(event => event.event_type === "tool_result_emitted").data.result);
     transcript.push({ role: "user", content: results.map((result) => ({ type: "tool_result", tool_use_id: result.call_id, content: result.output, is_error: result.is_error })) });
     await call("set_transcript", transcript);
+    const page = await call("events", 0);
+    await call("acknowledge", page.next_cursor);
     receipt = { type: "result", output: { result: results[0].output } };
   }
   return { contract: "environment/v1", sequence, receipt };
@@ -39,7 +42,7 @@ test("model-visible selection dispatches one canonical Tool to the chosen author
   const called = [];
   const lookup = tool({ name: "lookup", description: "Lookup", input: z.object({}),
     output: z.object({ where: z.string() }), options: z.object({ where: z.string() }),
-    run: (_, context) => { called.push(context.options.where); return { where: context.options.where }; },
+    run: (_, context) => { called.push(context.options.where); return context.finish({ where: context.options.where }); },
   });
   f.model = (_request, response) => callTools(response, [{ name: "lookup", input: { environment: "right", input: {} } }]);
   const session = await f.create(t, {

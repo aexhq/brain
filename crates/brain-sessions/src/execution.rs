@@ -19,7 +19,7 @@ use std::sync::Arc;
 /// is handed the turn's routes and the token that opens them.
 pub struct EnvironmentLoopExecutor {
     pub environments: Arc<EnvironmentRegistry>,
-    pub deadline_ms: u64,
+    pub deadline_ms: Option<u64>,
 }
 
 #[async_trait]
@@ -96,7 +96,7 @@ impl ToolExecutor for SessionToolExecutor {
         &self,
         dispatch: ToolDispatch,
         services: std::sync::Arc<dyn ToolServices>,
-    ) -> Result<Outcome, brain::Error> {
+    ) -> Result<Option<Outcome>, brain::Error> {
         let operation = EnvironmentOperation {
             sequence: dispatch.sequence,
             environment: dispatch.environment.name.clone(),
@@ -117,21 +117,24 @@ impl ToolExecutor for SessionToolExecutor {
             )
             .await?
         {
-            EnvironmentReceipt::Result { output } => Ok(Outcome::Ok { value: output }),
+            EnvironmentReceipt::Result { output } => Ok(Some(Outcome::Ok { value: output })),
+            EnvironmentReceipt::Returned { output } => {
+                Ok(output.map(|value| Outcome::Ok { value }))
+            }
             EnvironmentReceipt::Failure {
                 code,
                 message,
                 retryable,
                 details,
-            } => Ok(Outcome::Error {
+            } => Ok(Some(Outcome::Error {
                 error: brain_protocol::OutcomeError {
                     code,
                     message,
                     retryable,
                     details,
                 },
-            }),
-            EnvironmentReceipt::Unknown { message } => Ok(Outcome::Unknown { message }),
+            })),
+            EnvironmentReceipt::Unknown { message } => Ok(Some(Outcome::Unknown { message })),
             _ => Err(brain::Error::Ambiguous(
                 "Environment returned a nonterminal Tool receipt".into(),
             )),
@@ -173,6 +176,7 @@ impl ExecutionServices for SessionServices {
         match self {
             Self::Loop(_) => &[
                 "events",
+                "acknowledge",
                 "model",
                 "dispatch",
                 "emit",
@@ -182,7 +186,7 @@ impl ExecutionServices for SessionServices {
                 "kv_read",
                 "kv_delete",
             ],
-            Self::Tool(_) => &["emit", "telemetry"],
+            Self::Tool(_) => &["emit", "result", "returned", "finish", "telemetry"],
         }
     }
     async fn call(&self, method: &str, input: Value) -> Result<Value, brain::Error> {
@@ -190,6 +194,26 @@ impl ExecutionServices for SessionServices {
             return Err(brain::Error::Cancelled("execution cancelled".into()));
         }
         match (self, method) {
+            (Self::Loop(services), "acknowledge") => Ok(json!(
+                services
+                    .acknowledge(serde_json::from_value(input).map_err(json_error)?)
+                    .await?
+            )),
+            (Self::Tool(services), "result") => Ok(json!(
+                services
+                    .result(serde_json::from_value(input).map_err(json_error)?)
+                    .await?
+            )),
+            (Self::Tool(services), "returned") => Ok(json!(
+                services
+                    .returned(serde_json::from_value(input).map_err(json_error)?)
+                    .await?
+            )),
+            (Self::Tool(services), "finish") => Ok(json!(
+                services
+                    .finish(serde_json::from_value(input).map_err(json_error)?)
+                    .await?
+            )),
             (Self::Loop(services), "set_transcript") => Ok(json!(
                 services
                     .set_transcript(serde_json::from_value(input).map_err(json_error)?)
@@ -255,6 +279,12 @@ impl ExecutionServices for SessionServices {
         match self {
             Self::Loop(s) => s.cancelled(),
             Self::Tool(s) => s.cancelled(),
+        }
+    }
+    async fn closed(&self) {
+        match self {
+            Self::Tool(services) => services.closed().await,
+            Self::Loop(_) => std::future::pending().await,
         }
     }
 }

@@ -28,3 +28,4 @@ zeroize = { workspace = true }
 
 [dev-dependencies]
 axum = { workspace = true }
+tempfile = { workspace = true }

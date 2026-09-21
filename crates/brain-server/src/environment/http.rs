@@ -105,11 +105,10 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
                 *callback = Some(grant);
                 open = Some(guard);
             }
-            (*deadline_ms != u64::MAX).then(|| Duration::from_millis(*deadline_ms))
+            deadline_ms.map(Duration::from_millis)
         } else {
             self.max_operation
         };
-        let _open = open;
         let command = EnvironmentCommand {
             contract: ENVIRONMENT_CONTRACT.into(),
             operation: operation.clone(),
@@ -181,10 +180,19 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
             }
             Ok(response.receipt)
         };
-        tokio::select! {
+        let result = tokio::select! {
             result = receive => result,
             () = cancelled => Err(brain::Error::Cancelled("execution cancelled".into())),
+        };
+        if let Some(services) = services
+            && services.methods().contains(&"finish")
+        {
+            tokio::spawn(async move {
+                let _open = open;
+                services.closed().await;
+            });
         }
+        result
     }
 }
 

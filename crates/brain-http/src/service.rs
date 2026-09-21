@@ -33,7 +33,7 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
         host_id: HostId,
         token: String,
         result: HostResult,
-    ) -> Result<(), ApiError>;
+    ) -> Result<HostEventAck, ApiError>;
     async fn emit_host_event(
         &self,
         host_id: HostId,

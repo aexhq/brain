@@ -7,8 +7,8 @@ export const lookupRecord = tool({
   description: "Look up a record by id.",
   input: z.object({ id: z.string() }),
   output: z.object({ name: z.string() }),
-  run: ({ id }) => records.get(id) ?? {
+  run: ({ id }, context) => context.finish(records.get(id) ?? {
     status: "error",
     error: { code: "not_found", message: "Record not found", retryable: false, details: { id } },
-  },
+  }),
 });

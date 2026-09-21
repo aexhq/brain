@@ -6,6 +6,10 @@
 
 Supersedes: [ADR-002: Execute replaceable Agentloops through an isolated step contract](2026-08-21-01-step-loops.md); [ADR-017: Reuse per-session Wasm instances and resident turn context](2026-09-01-02-warm-instances.md).
 
+Refined by [ADR-048](2026-09-21-01-tool-completion-and-event-activation.md), accepted
+and implemented in 0.28: committed Tool observations can activate the
+Agentloop, which acknowledges processing with a durable sequence marker.
+
 ## Context
 
 A loop that only returned one decision at a time could not naturally choose sequential or parallel tool execution, skip a tool, perform its own retry policy, or call another API for compaction. Step-shaped execution also created repeated context transfers.

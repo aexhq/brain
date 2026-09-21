@@ -298,7 +298,7 @@ async fn host_commands<A: BrainApi>(
     params(("host_id" = contract::HostId, Path)),
     request_body = contract::HostResult,
     responses(
-        (status = 204, description = "Host command result accepted"),
+        (status = 200, description = "Tool execution event committed", body = contract::HostEventAck),
         (status = "default", description = "Structured error", body = contract::ApiError)
     )
 )]
@@ -307,11 +307,11 @@ async fn resolve_host<A: BrainApi>(
     Path(host_id): Path<HostId>,
     headers: HeaderMap,
     Json(result): Json<HostResult>,
-) -> Result<StatusCode, HttpError> {
+) -> Result<Json<HostEventAck>, HttpError> {
     api.resolve_host(host_id, bearer(&headers)?, result)
         .await
-        .map_err(HttpError)?;
-    Ok(StatusCode::NO_CONTENT)
+        .map(Json)
+        .map_err(HttpError)
 }
 
 #[utoipa::path(

@@ -11,7 +11,7 @@ const untilAbort = (signal) => new Promise((_, reject) => {
   else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
 });
 
-function fixture(t, { route, run = () => "done" } = {}) {
+function fixture(t, { route, run = (_, ctx) => ctx.finish("done") } = {}) {
   const requests = [];
   const connections = [];
   const result = Promise.withResolvers();
@@ -32,7 +32,7 @@ function fixture(t, { route, run = () => "done" } = {}) {
         cancel() { connection.cancelled = true; },
       }));
     }
-    if (path.endsWith("/results")) { result.resolve(await request.json()); return new Response(null, { status: 204 }); }
+    if (path.endsWith("/results")) { result.resolve(await request.json()); return Response.json({ sequence: 4 }); }
     if (path === "/v1/sessions") return Response.json(state(`session-${++sessions}`));
     if (path.endsWith("/end")) return Response.json(state(path.split("/")[3], "ended"));
     if (path === "/v1/models") return Response.json({ providers: [] });
@@ -94,7 +94,7 @@ test("ending the last session does not stop a concurrent create", async (t) => {
   response.resolve(Response.json(state("second")));
   const second = await pending;
   f.invoke(second.id);
-  assert.deepEqual((await f.result).outcome, { status: "ok", value: "done" });
+  assert.deepEqual((await f.result).update.outcome, { status: "ok", value: "done" });
   assert.equal(f.connections.length, 1);
   await assert.rejects((async () => { await f.client.close(); await f.client.admit(f.options.agentloop); })(), aborted);
 });
@@ -111,7 +111,7 @@ test("a failed reattachment leaves the client usable and closes with it", async 
   await assert.rejects(f.client.sessions.get("retained", { tools: f.options.tools }), /exactly those/u);
   const session = await f.client.sessions.create(f.options);
   f.invoke(session.id);
-  assert.equal((await f.result).outcome.status, "ok");
+  assert.equal((await f.result).update.outcome.status, "ok");
   assert.equal(f.connections.length, 1);
   await f.client.close();
   assert.equal(f.connections[0].cancelled, true);

@@ -22,7 +22,7 @@ test("saved host credentials reattach handlers to an existing session", async (t
       assert.equal(request.headers.get("authorization"), "Bearer saved-token");
       return new Response(new ReadableStream({ start(value) { controller = value; } }), { headers: { "content-type": "text/event-stream" } });
     }
-    if (path.endsWith("/results")) { finish(await request.json()); return new Response(null, { status: 204 }); }
+    if (path.endsWith("/results")) { finish(await request.json()); return Response.json({ sequence: 5 }); }
     if (path.endsWith("/events")) {
       return Response.json({ events: [{ sequence: 1, recorded_at_ms: 0, event_type: "session_creation_ended", data: { configuration: {
         tools: [{ name: "lookup", placements: { app: { implementation: { type: "host_function", name: "lookup" } } } }],
@@ -34,11 +34,11 @@ test("saved host credentials reattach handlers to an existing session", async (t
     throw new Error(`unexpected request ${path}`);
   } });
   t.after(() => client.close());
-  const lookup = tool({ name: "lookup", description: "Lookup.", input: z.object({}), run: async () => "restored" });
+  const lookup = tool({ name: "lookup", description: "Lookup.", input: z.object({}), run: (_, ctx) => ctx.finish("restored") });
   const session = await client.sessions.get(sessionId, { tools: [lookup({ env: hostEnv({ name: "app" }) })] });
   assert.deepEqual(await client.credentials(), credentials);
   controller.enqueue(new TextEncoder().encode(sse({ session_id: sessionId, environment: "app", sequence: 2, deadline_at_ms: Date.now() + 5000, operation: { type: "invoke_tool", name: "lookup", input: {} } })));
-  assert.deepEqual((await result).outcome, { status: "ok", value: "restored" });
+  assert.deepEqual((await result).update.outcome, { status: "ok", value: "restored" });
   await session.end();
 });
 
@@ -71,7 +71,7 @@ test("one host runs the Tools placed in it and commits ctx.emit before its resul
     if (path.endsWith("/events")) return Response.json({ sequence: 4 });
     if (path.endsWith("/results")) {
       releaseStream();
-      return new Response(null, { status: 204 });
+      return Response.json({ sequence: 5 });
     }
     if (path === "/v1/sessions") {
       setTimeout(() => releaseCommand(), 0);
@@ -88,7 +88,7 @@ test("one host runs the Tools placed in it and commits ctx.emit before its resul
       assert.equal(ctx.sessionId, sessionId);
       assert.equal(ctx.sequence, 3);
       assert.equal(await ctx.emit("lookup_progress", { id }), 4);
-      return { id };
+      return ctx.finish({ id });
     },
   });
   const pi = agentloop({ implementation: component(new Uint8Array([1])) });
@@ -112,7 +112,7 @@ test("one host runs the Tools placed in it and commits ctx.emit before its resul
   assert.ok(resultRequest);
   assert.equal(eventRequest.headers.get("authorization"), "Bearer host-token");
   assert.deepEqual(await eventRequest.json(), { session_id: sessionId, sequence: 3, event_type: "lookup_progress", data: { id: "1" } });
-  assert.deepEqual(await resultRequest.json(), { session_id: sessionId, sequence: 3, outcome: { status: "ok", value: { id: "1" } } });
+  assert.deepEqual(await resultRequest.json(), { session_id: sessionId, sequence: 3, update: { type: "finish", outcome: { status: "ok", value: { id: "1" } } } });
   await session.delete();
 });
 
@@ -167,7 +167,7 @@ test("a host reconnects without replaying old commands", async () => {
         else signal?.addEventListener("abort", resolve, { once: true });
       });
     },
-    result: async (result) => finish(result),
+    result: async (result) => { finish(result); return { sequence: 10 }; },
     emit: async () => ({ sequence: 10 }),
   });
   const registry = new HostToolRegistry();
@@ -175,13 +175,13 @@ test("a host reconnects without replaying old commands", async () => {
     name: "lookup",
     description: "Look up one value.",
     input: z.object({ id: z.string() }),
-  }, async ({ id }) => ({ id }));
+  }, ({ id }, ctx) => ctx.finish({ id }));
   pump.register(sessionId, registry);
 
   await pump.start();
   const result = await finished;
   assert.equal(connections, 2);
-  assert.deepEqual(result.outcome, { status: "ok", value: { id: "2" } });
+  assert.deepEqual(result.update.outcome, { status: "ok", value: { id: "2" } });
   pump.unregister(sessionId);
   pump.stop();
   await pump.closed;
@@ -200,7 +200,7 @@ test("losing the command stream reports an in-flight call as unknown without rep
         operation: { type: "invoke_tool", name: "lookup", input: {} },
       } };
     },
-    result: async result => { finish(result); pump.stop(); },
+    result: async result => { finish(result); pump.stop(); return { sequence: 10 }; },
     emit: async () => ({ sequence: 10 }),
   });
   const registry = new HostToolRegistry();
@@ -210,7 +210,7 @@ test("losing the command stream reports an in-flight call as unknown without rep
   });
   pump.register(sessionId, registry);
   await pump.start();
-  assert.equal((await finished).outcome.status, "unknown");
+  assert.equal((await finished).update.outcome.status, "unknown");
   await pump.closed;
   assert.equal(calls, 1);
 });
