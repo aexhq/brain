@@ -260,6 +260,7 @@ fn string(value: &Value, key: &str) -> Result<String, Error> {
 
 fn usage(value: &Value) -> Usage {
     Usage {
+        total_input_tokens: value["input_tokens"].as_u64(),
         input_tokens: value["input_tokens"].as_u64(),
         output_tokens: value["output_tokens"].as_u64(),
         cache_read_input_tokens: value["input_tokens_details"]["cached_tokens"].as_u64(),

@@ -59,6 +59,11 @@ fn present_value<'de, D: serde::Deserializer<'de>>(
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ModelStreamEvent {
+    /// Encoded request size, not a token count or a bound on provider consumption.
+    Request {
+        input_bytes: u64,
+        media_inputs: u64,
+    },
     NativeStart {
         index: usize,
         format: String,
@@ -93,8 +98,7 @@ pub enum ModelStreamEvent {
     BlockDone {
         index: usize,
     },
-    /// Usage-only provider frame. It may precede content or follow the
-    /// terminal stop frame.
+    /// Cumulative usage for this call. It may precede content or follow the terminal frame.
     Usage {
         usage: Usage,
     },

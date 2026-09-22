@@ -65,6 +65,7 @@ export interface ModelMessage {
 }
 export type ModelStopReason = "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | "refusal" | "unknown";
 export interface ModelUsage {
+  readonly total_input_tokens?: number;
   readonly input_tokens?: number;
   readonly output_tokens?: number;
   readonly cache_read_input_tokens?: number;

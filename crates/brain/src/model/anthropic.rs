@@ -266,7 +266,7 @@ pub fn decode(data: &str) -> Result<Vec<ModelStreamEvent>, Error> {
                 .and_then(Value::as_str);
             vec![ModelStreamEvent::MessageDone {
                 stop_reason: map_stop(stop),
-                usage: usage_of(value.get("usage")),
+                usage: usage_of(value.get("usage"))?,
             }]
         }
         "message_start" => {
@@ -278,7 +278,7 @@ pub fn decode(data: &str) -> Result<Vec<ModelStreamEvent>, Error> {
                 .and_then(|message| message.get("usage"));
             if usage.is_some() {
                 vec![ModelStreamEvent::Usage {
-                    usage: usage_of(usage),
+                    usage: usage_of(usage)?,
                 }]
             } else {
                 vec![]
@@ -308,19 +308,33 @@ fn map_stop(reason: Option<&str>) -> StopReason {
 }
 
 /// **Absent is never zero.** A field the provider did not send stays `None`.
-fn usage_of(usage: Option<&Value>) -> Usage {
+fn usage_of(usage: Option<&Value>) -> Result<Usage, Error> {
     let Some(usage) = usage else {
-        return Usage::default();
+        return Ok(Usage::default());
     };
     let get = |key: &str| usage.get(key).and_then(Value::as_u64);
-    Usage {
+    let total_input_tokens = match (
+        get("input_tokens"),
+        get("cache_read_input_tokens"),
+        get("cache_creation_input_tokens"),
+    ) {
+        (Some(input), Some(read), Some(write)) => Some(
+            input
+                .checked_add(read)
+                .and_then(|total| total.checked_add(write))
+                .ok_or_else(|| Error::Ambiguous("provider input usage overflowed u64".into()))?,
+        ),
+        _ => None,
+    };
+    Ok(Usage {
+        total_input_tokens,
         input_tokens: get("input_tokens"),
         output_tokens: get("output_tokens"),
         cache_read_input_tokens: get("cache_read_input_tokens"),
         cache_creation_input_tokens: get("cache_creation_input_tokens"),
         reasoning_tokens: None,
         provider_cost_usd: None,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -346,6 +360,37 @@ mod tests {
             input_schema: serde_json::json!({"type": "object"}),
             output_schema: None,
         }]
+    }
+
+    #[test]
+    fn cumulative_usage_counts_cached_input_and_final_output_once() {
+        let mut accumulator = Accumulator::new(&crate::Limits::default());
+        for frame in [
+            serde_json::json!({"type":"message_start","message":{"usage":{
+                "input_tokens":11,"cache_read_input_tokens":40,"cache_creation_input_tokens":20,"output_tokens":1
+            }}}),
+            serde_json::json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":15}}),
+        ] {
+            for event in decode(&frame.to_string()).unwrap() {
+                accumulator.push(event).unwrap();
+            }
+        }
+        let (_, _, usage) = accumulator.finish().unwrap();
+        assert_eq!(usage.total_input_tokens, Some(71));
+        assert_eq!(usage.input_tokens, Some(11));
+        assert_eq!(usage.output_tokens, Some(15));
+        assert_eq!(
+            usage_of(Some(&serde_json::json!({"input_tokens":11})))
+                .unwrap()
+                .total_input_tokens,
+            None
+        );
+        assert!(
+            usage_of(Some(&serde_json::json!({
+                "input_tokens":u64::MAX,"cache_read_input_tokens":1,"cache_creation_input_tokens":0
+            })))
+            .is_err()
+        );
     }
 
     #[test]

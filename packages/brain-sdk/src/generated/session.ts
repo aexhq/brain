@@ -614,6 +614,10 @@ export interface Usage {
   output_tokens?: number;
   provider_cost_usd?: string;
   reasoning_tokens?: number;
+  /**
+   * Inclusive input, including cache reads and writes. Raw input remains dialect-specific.
+   */
+  total_input_tokens?: number;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema

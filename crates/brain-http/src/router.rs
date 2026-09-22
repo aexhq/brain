@@ -709,7 +709,9 @@ fn sse(event: brain_protocol::Event) -> Result<SseEvent, std::convert::Infallibl
 fn streaming_sse(
     streaming: brain_protocol::StreamingEvent,
 ) -> Result<SseEvent, std::convert::Infallible> {
-    let data = serde_json::to_string(&streaming.data).expect("JSON event payload is serializable");
+    let mut payload = streaming.data;
+    payload["model_call_sequence"] = serde_json::json!(streaming.sequence);
+    let data = serde_json::to_string(&payload).expect("JSON event payload is serializable");
     Ok(SseEvent::default().event(streaming.event_type).data(data))
 }
 

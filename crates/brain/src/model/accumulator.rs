@@ -77,6 +77,7 @@ impl Accumulator {
             ModelStreamEvent::ToolUseStart { id, name, .. } => id.len().saturating_add(name.len()),
             ModelStreamEvent::ToolInputDelta { partial_json, .. } => partial_json.len(),
             ModelStreamEvent::BlockDone { .. }
+            | ModelStreamEvent::Request { .. }
             | ModelStreamEvent::Usage { .. }
             | ModelStreamEvent::MessageDone { .. } => 0,
         };
@@ -200,6 +201,7 @@ impl Accumulator {
                     )));
                 }
             },
+            ModelStreamEvent::Request { .. } => {}
             ModelStreamEvent::Usage { usage } => self.merge_usage(&usage)?,
             ModelStreamEvent::MessageDone { stop_reason, usage } => {
                 // OpenAI emits usage in a final choices=[] chunk. Its unknown stop
@@ -237,7 +239,7 @@ impl Accumulator {
 
     fn merge_usage(&mut self, usage: &Usage) -> Result<(), Error> {
         self.usage
-            .merge(usage)
+            .observe(usage)
             .map_err(|message| protocol(message.into()))
     }
 
@@ -415,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_usage_overflow_without_wrapping() {
+    fn rejects_decreasing_usage_without_losing_the_last_snapshot() {
         let mut a = Accumulator::new(&crate::Limits::default());
         a.push(ModelStreamEvent::Usage {
             usage: Usage {

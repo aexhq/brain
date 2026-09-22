@@ -115,7 +115,7 @@ async fn completed_provider_status_survives_invalid_json_in_the_durable_failure(
         assert_eq!(failed.data["retryable"], false);
         assert_eq!(
             failed.data["response"]["usage"],
-            json!({"input_tokens":11,"output_tokens":6,"reasoning_tokens":4})
+            json!({"total_input_tokens":11,"input_tokens":11,"output_tokens":6,"reasoning_tokens":4})
         );
         assert_eq!(
             failed.data["response"]["stop_reason"],
