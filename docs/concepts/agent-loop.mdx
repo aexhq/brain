@@ -1,77 +1,36 @@
 ---
-title: Agentloop
-description: The placed WebAssembly Component that owns a turn's policy.
+title: Agent loops
+description: Choose the logic that calls the model, uses tools and manages the conversation.
 ---
 
-An Agentloop decides how user input and committed observations affect the conversation. Brain owns mechanism: the
-journal, model credential, Tool catalogue, effect dispatch, deadlines, and cancellation. The
-Agentloop owns policy: prompts, context selection, compaction, Tool sequencing, and the final
-transcript and extension state.
+An agent loop decides what the model sees, when to call tools, and when the agent has finished
+answering. Brain runs that loop and saves its progress. You can use a ready-made loop or write
+your own.
 
-## Place a Component
+## Use a ready-made loop
 
-Brain accepts an already-built WebAssembly Component. It does not compile TypeScript or another
-source language.
+The [quickstart](/brain/docs/quickstart) uses Pi:
 
-```ts
-import { agentloop, brainEnv, component } from "@aexhq/brain";
-import { z } from "zod";
+```js
+import { brainEnv } from "@aexhq/brain";
+import { pi } from "@aexhq/agentloop-pi";
 
-const assistant = agentloop({
-  options: z.object({ compactAt: z.number().min(0).max(1) }),
-  implementation: component(new URL("./assistant.wasm", import.meta.url)),
-});
-
-const placed = assistant({ env: brainEnv({ name: "brain" }), compactAt: 0.8 });
+const loop = pi({ env: brainEnv({ name: "brain" }) });
 ```
 
-`component(...)` accepts a `URL` or `Uint8Array`. The client reads the raw bytes, admits them, and
-creates the session with the resulting id, the parsed options, and the Environment. Every Agentloop
-factory is placed with `{ env, ...options }`. Dependencies are packaged with the implementation
-or prepared by its Environment; resource grants belong to that Environment’s configuration.
+Pass `loop` as `agentloop` when creating a session. Pi handles model calls, parallel tool calls,
+and summarizing older conversation when the context fills up. The
+[Codex loop](https://github.com/aexhq/extensions/tree/main/packages/loop-codex) is another option.
 
-## The Component contract
+These are loop implementations for Brain, not the Pi or Codex applications. Their package
+guides describe supported behavior and options.
 
-The source of truth is [`crates/brain-env/wit/agentloop/agentloop.wit`](https://github.com/aexhq/brain/blob/main/crates/brain-env/wit/agentloop/agentloop.wit).
-The Component exports one `turn` function. Its input contains:
+## Customize behavior
 
-- optional user input (absent for an event-triggered activation);
-- the current transcript and the loop's kv (a key-value map it keeps between activations);
-- committed events after its durable processed-through marker;
-- its configuration, system prompt, Tool definitions, and deterministic runtime envelope.
+Start with a session's `system` prompt and the loop's options. Write a custom loop when you need
+different context selection, tool sequencing or stopping rules. A loop can also respond to results
+from background tools without a new user message.
 
-During the activation it may call Brain's `events`, `model`, `dispatch`, `emit`, `set-transcript`,
-`acknowledge`, `kv-read`, `kv-put`, `kv-delete`, and `telemetry` imports.
-`model`, `dispatch`, and `emit` cross the Brain boundary. Brain commits an external-effect intent
-before dispatch, sends it once, and commits observations before returning them. Tool return releases
-the caller; explicit finish closes the execution. Dispatch exposes zero or more observations and
-whether completion has occurred, so background work does not need a fabricated final result.
-
-Results and finish always enter the journal. The loop alone chooses model messages and whether
-to call the model. After saving selected state, `acknowledge(sequence)` records the considered
-prefix, including dismissed observations, in `brain.last_activation`. Reads and activation return
-do not advance it. Later Tool events wake one activation at a time, with a five-millisecond window
-that combines nearby notifications without delaying durable commits.
-
-KV reads distinguish absence from JSON null. Put creates or replaces one value; delete removes a
-key from the current projection without erasing journal history. Missing-key deletion is a no-op.
-JavaScript bindings expose `ctx.kv.read(key)`, `ctx.kv.put(key, value)`, and `ctx.kv.delete(key)`.
-
-The Component saves transcript and kv changes inline through the state imports, each committed
-before returning. Turn output carries only the result. Every turn uses a fresh Wasm instance,
-while compiled and prelinked code is reused.
-
-## Where it runs
-
-An Agentloop may be placed in any Environment. The brain env runs it in a fresh Wasmtime instance
-per activation with its Environment’s configured grants, the same way it runs a Tool. An
-Environment reached over HTTP receives each turn with the address of Brain's turn routes for that
-turn and the token that opens them, and reaches the same services through them; Brain
-journals every call the same way. The factory always requires an explicit `env` so the placement
-is sealed into the session instead of inferred; Brain does not fall back to another placement.
-
-## State and failures
-
-Saved transcript, kv, and effect records survive an activation. Guest memory and open connections
-do not. An activation interrupted by restart is recorded as failed and is not replayed.
-The next turn rebuilds its inputs from the canonical journal.
+The [authoring guide](/brain/docs/guides/write-a-loop) includes JavaScript, Rust and Python
+examples and build instructions. The [contract](/brain/docs/reference/agentloop-contract)
+describes saved state and model/tool calls.

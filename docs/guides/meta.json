@@ -1,11 +1,11 @@
 {
   "title": "Guides",
   "pages": [
-    "write-a-loop",
     "write-a-tool",
-    "subagents",
-    "structured-output",
+    "write-a-loop",
     "write-an-environment",
+    "structured-output",
+    "subagents",
     "embed"
   ]
 }

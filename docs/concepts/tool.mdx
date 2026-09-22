@@ -1,113 +1,37 @@
 ---
 title: Tools
-description: One typed contract, its implementation, and the Environment that runs it.
+description: Give an agent access to functions in your application or another environment.
 ---
 
-A Tool is the model-visible contract for one action: a name, description, input schema, and
-optional output schema. A Tool can have placements in several Environments of its session,
-each declared with `{ env, ...options }`. Each `(Tool name, Environment name)` pair has one
-implementation. Where that Environment is, and how Brain reaches it, is the
-Environment's concern; the Tool's declaration is the same everywhere.
+A tool is a function an agent can call: look up an order, search documents, update a record,
+or run a calculation. Its description tells the model when to use it; its input schema defines
+the arguments your function accepts.
 
-## A function this process holds
-
-Use `run` and place the Tool in `hostEnv`:
-
-```ts
+```js
 import { hostEnv, tool } from "@aexhq/brain";
 import { z } from "zod";
 
 const lookup = tool({
   name: "lookup",
-  description: "Look up one item.",
+  description: "Look up an item by id.",
   input: z.object({ id: z.string() }),
-  options: z.object({ prefix: z.string() }),
-  run: async ({ id }, ctx) => {
-    await ctx.emit("lookup_started", { id });
-    return ctx.finish({ value: `${ctx.options.prefix}${id}` });
-  },
+  run: ({ id }, ctx) => ctx.finish({ id, name: "Example item" }),
 });
 
-const placed = lookup({ env: hostEnv({ name: "app" }), prefix: "item:" });
+const tools = [lookup({ env: hostEnv({ name: "app" }) })];
 ```
 
-The SDK registers this process as a host with Brain and consumes its command stream over SSE. A
-command names the session and the committed journal sequence of the call, its deadline, the Tool,
-and the input. The host validates input and each output and posts ordered updates.
-`ctx` contains `options`, `sequence`, optional `deadline`, `signal`, `emit`, `emitResult`, and `finish`. Awaiting `ctx.emit(kind, data)`
-waits until Brain has committed the extension event.
+Pass `tools` when creating the session. This function runs in your app and can use its database
+connections and dependencies. Keep the app connected while the agent needs the tool.
 
-Return ends only the synchronous phase. The Tool may keep emitting after return; `finish(value?)`
-commits completion and rejects further emissions. Use `return ctx.finish(value)` for an ordinary
-Tool. A missing finish leaves it open under its original deadline and cancellation signal.
-Background results survive normal turn completion, enter journal/history, and wake the Agentloop.
-The loop decides whether to use them in model messages. No result is invented for an empty return
-or finish. See [Tool lifecycle](/brain/docs/guides/write-a-tool#return-values-and-outcomes).
+Use `ctx.finish(value)` to return a result and finish the tool. Background tools can send
+multiple results before finishing. Saved tool results appear in session history; the agent
+loop decides how to present them to the model.
 
-The function keeps the ambient authority of your process; the host env inserts nothing around it.
+Choose the session's tools before creation. The model can call those tools; it cannot add new
+ones or grant them access to another environment. Brain does not automatically retry failed
+calls, and cancellation does not undo effects that already happened.
 
-## An implementation an Environment interprets
-
-Use `implementation` and place the Tool in the Environment that runs it:
-
-```ts
-import { brainEnv, component, tool } from "@aexhq/brain";
-import { z } from "zod";
-
-const inspect = tool({
-  name: "inspect",
-  description: "Inspect one workspace path.",
-  input: z.object({ path: z.string() }),
-  options: z.object({ depth: z.number().int().positive() }),
-  implementation: component(new URL("./inspect.wasm", import.meta.url)),
-});
-
-const placed = inspect({ env: brainEnv({ name: "reader", filesystem: { workspace: "read" } }), depth: 2 });
-```
-
-`implementation` may be a Component, an opaque object the Environment understands, or a function of
-the parsed options that returns that object. A Component implements
-[`crates/brain-env/wit/tool/tool.wit`](https://github.com/aexhq/brain/blob/main/crates/brain-env/wit/tool/tool.wit):
-it receives JSON input, its configuration, and a deadline, and can emit committed extension events
-through its host import.
-
-## Dependencies and resource access
-
-Package dependencies with the implementation or let the chosen Environment prepare them using
-its loader, lockfile, or optional setup script. Preparation must finish before import-time
-dependencies or the entrypoint are used. Brain has no universal `needs` declaration and installs
-nothing in its own process.
-
-The application configures access through the Environment. For example,
-`brainEnv({ name: "reader", filesystem: { workspace: "read" } })` requests a workspace within
-the server's allow-list. Use separate Environment bindings for different grants; every Tool in
-one native binding receives that binding's authority. A denied grant or unsupported runtime
-fails explicitly. Setup failures reach the ordinary Tool error path, without automatic retry.
-
-## One execution rule
-
-Brain durably commits `tool_call_started` before dispatch and sends the operation once. The record
-names the Tool and selected Environment. The invocation explicitly names that authorized pair.
-Brain validates canonical input and output schemas for every placement. Brain commits
-results, return, and completion before the Agentloop sees them, and never
-automatically retries a Tool call.
-
-The invocation deadline produces `timeout`, explicit cancellation produces `cancelled`, and a known
-failure produces `error` with its structured details. `unknown` is reserved for a possibly dispatched
-operation whose result cannot be established. All four are failed Tool results. Timeout and
-cancellation describe the stop cause and do not imply rollback. A host function may return an
-Outcome directly; see [Write a Tool](/brain/docs/guides/write-a-tool#return-values-and-outcomes).
-
-
-## Placement and model presentation
-
-Pass the same Tool factory more than once with different Environments to declare multiple
-placements: `tools: [read({ env: local }), read({ env: remote })]`. Definitions must agree and
-duplicate pairs are refused. The catalogue and placements are immutable after session creation.
-
-The Agentloop receives canonical Tool definitions and authorized Environment names. It independently
-chooses the schemas in `ModelRequest.tools`: it may show ordinary Tools and apply an explicit
-placement policy, or wrap inputs with a model-visible Environment selector. Dispatch always carries
-`{ call_id, name, environment, input }`, with the canonical Tool input unwrapped. Brain never ranks
-Environments or falls back to another placement. Invalid input becomes an `invalid_input` Tool
-result without executing; invalid successful output becomes `invalid_output`.
+See [Write a tool](/brain/docs/guides/write-a-tool) for a complete example, language choices
+and packaging. The [tool contract](/brain/docs/reference/tool-contract) covers errors,
+background work and multiple placements.

@@ -1,182 +1,49 @@
 ---
-title: Model
-description: Bindings, wire formats, and why the model is pinned.
+title: Models
+description: Choose a model and connect your provider account.
 ---
 
-A model binding is a provider, a model name, and a key:
+Bring a model-provider key and choose a model when you create the session. Your provider bills
+model usage to that key.
 
-```ts
+```js
 model: {
-  provider: "vercel-ai-gateway",
-  name: "openai/gpt-5-mini",
-  apiKey: process.env.VERCEL_AI_GATEWAY_API_KEY!,
-}
+  provider: "openai",
+  name: "gpt-5-mini",
+  apiKey: process.env.OPENAI_API_KEY,
+},
 ```
 
-Brain implements OpenAI Responses and Anthropic Messages. Provider definitions and model metadata
-come from the reviewed [models.dev](https://models.dev) snapshot vendored in the repository.
-Refresh it with `tools/fetch-models-dev.mjs` and regenerate contracts with `npm run gen`.
-There is no runtime catalogue fetch.
+Keep the key in your server environment. The model stays fixed for the session; create another
+session to use a different model.
 
-| Provider | Wire dialect | Model names | Default endpoint |
-| --- | --- | --- | --- |
-| `vercel-ai-gateway` | OpenAI Responses | namespaced, `openai/gpt-5-mini` | `https://ai-gateway.vercel.sh/v1` |
-| `openai` | OpenAI Responses | bare, `gpt-5-mini` | `https://api.openai.com/v1` |
-| `anthropic` | Anthropic Messages | bare, `claude-sonnet-4-5` | `https://api.anthropic.com/v1` |
-| `deepseek` | OpenAI Responses | bare, `deepseek-flash` | `https://api.deepseek.com` |
+## Choose a provider
 
-Chat Completions-only providers and the `openai-responses` alias are unsupported. Unknown model
-IDs still pass admission for an existing provider; the provider validates actual model support.
-DeepSeek uses its Responses endpoint with the customer's DeepSeek key. A models.dev npm package
-name alone does not establish which protocols an endpoint supports; the generator maps verified
-Responses providers explicitly and imports their model metadata from the snapshot.
+| Provider | `provider` | Model name |
+| --- | --- | --- |
+| OpenAI | `openai` | For example, `gpt-5-mini` |
+| Anthropic | `anthropic` | The model ID from your provider |
+| Vercel AI Gateway | `vercel-ai-gateway` | Provider-prefixed, such as `openai/gpt-5-mini` |
+| DeepSeek | `deepseek` | The model ID from your provider |
 
-Authenticated `GET /v1/models`, or `brain.models(provider?)`, returns the composed deployment
-catalogue, its snapshot digest, input/output modalities and each adapter's supported media forms.
-Optional metadata stays unknown when absent. `attachment: true` alone does not establish PDF
-support. Catalogue metadata helps select models; it is not a guarantee that a gateway implements
-every feature. Credentials and internal endpoints are excluded.
+Use `await brain.models()` to discover models and known capabilities, or
+`await brain.models("openai")` for one provider. Availability and supported inputs depend on
+the provider and your account.
 
-## Image and PDF inputs
+## Send images and PDFs
 
-`UserInput.media` and model Tool-result `media` share two forms:
-`{ type: "image", url }` and `{ type: "file", media_type: "application/pdf", url }`.
-Ordered model messages may contain the same blocks alongside text and Tool calls/results.
-Anthropic rejects developer messages; supply its instructions through `system`.
+Choose a model that supports the input, then pass an accessible HTTPS URL:
 
-URLs must use HTTPS without embedded username/password and be reachable by the model provider.
-Brain passes the URL to Responses `input_image.image_url` / `input_file.file_url`, or an Anthropic
-URL image / document source. Brain does not fetch, host, upload, convert or refresh attachments.
-Inline data, local paths and provider file IDs are unsupported, including in known native input
-positions. Opaque signed thinking and encrypted continuation state remain unchanged.
-Responses continuation may include `file_id: null` or `file_data: null` beside an HTTPS source;
-Brain preserves those empty optional fields, including after compaction.
-
-The caller owns file storage, access and lifetime. Keep the same bytes available at the same URL
-for every later turn that needs them. Expiry can cause a later model call to fail, and cannot
-retract bytes a provider has already fetched. Brain journals references and preserves them across
-restart. Request limits bound encoded JSON; providers enforce file size, page and model context
-limits. Download/format failures become ordinary failed model effects, without automatic retry.
-
-Tool execution still returns arbitrary JSON. The Agentloop explicitly maps selected output into
-Tool-result media. URL length is not an estimate of image or PDF model tokens.
-
-PDF processing varies by provider. If a diagram's visual content is not recognized, supply it as
-an image or a PDF containing embedded page images.
-
-## Native continuation state
-
-`{ type: "native", format, data }` retains adapter-owned JSON in content order. Keep these blocks
-unchanged with the messages and Tool turns they accompany. The formats currently implemented are:
-
-| Format | Retained state |
-| --- | --- |
-| `anthropic.messages.v1` | Signed and redacted thinking blocks |
-| `openai.responses.v1` | Reasoning and compaction items, including retained items returned by compaction |
-
-An incompatible adapter rejects the state. A format identifies its representation, not universal
-portability across endpoints, credentials, models, or provider versions. Previously discarded state
-cannot be recovered from older journals. Native blocks are not ordinary display text.
-
-Responses calls are stateless (`store: false`) and request encrypted reasoning. Set
-`options.operation` to `compact` to call `/responses/compact`; that operation accepts context and
-instructions only, with `response_format: null` to reset an inherited format. Save the returned
-message as the selected context before continuing. Brain does not compact automatically.
-
-The September 2026 live probe found that Vercel wraps Responses reasoning with `gwenc1`, while its
-compaction route forwards to OpenAI, which rejects that wrapper. After the Tool turn completed,
-explicitly selecting visible context for compaction succeeded, and the returned compaction state
-continued successfully. Brain preserves the provider error and never silently strips native state.
-
-## Usage observations
-
-`usage.total_input_tokens` includes cache reads and writes. `input_tokens` retains the
-provider's raw meaning; cache and reasoning counters remain available as breakdowns.
-Responses input already includes cache tokens, and output includes reasoning. Anthropic
-input is the sum of ordinary input, cache reads and cache writes when all are reported.
-Absent counters remain unknown. Streaming usage is cumulative within one call, not additive.
-
-The live Events feed emits `model_request` with encoded `input_bytes` and `media_inputs`,
-`model_usage` with reported usage, and `model_output` byte deltas for native output.
-Live data includes `model_call_sequence`, naming its `model_call_started` record without
-advancing the SSE resume cursor. Request bytes are observation metadata,
-not a token prediction or consumption limit. Live delivery never waits for consumers;
-reconnect replays committed Events, not lost live observations.
-
-Completed results retain usage in the journal. Controlled interruption and stream errors
-retain already-observed counters in `model_call_failed.response`, marked
-`usage_complete: false`; a completed unusable response has `usage_complete: true`.
-Process loss can leave usage unknown. Brain does not estimate missing consumption or
-wait for external spending authorization. Consumers may implement their own policy and
-request ordinary session interruption; provider work may already have occurred.
-
-## Per-call options
-
-After a provider stream terminates, Brain checks its stop reason before parsing Tool parameters.
-Tool calls from a length-limited, refused, or unknown response fail as `model_output_incomplete`,
-even if their JSON happens to parse. Invalid Tool JSON from an otherwise completed response fails
-as `model_output_invalid`. Neither becomes an executable Tool call.
-
-The durable `model_call_failed` Event retains the initiating `sequence` and a `response` object
-with `stop_reason` and provider-reported `usage`, including reasoning tokens when supplied.
-Absent counters remain absent. These known unusable responses are distinct from an interrupted
-stream with an unknown outcome. Brain does not retry either; the Agentloop owns any new attempt.
-
-An omitted `response_format` inherits the session format; a value replaces it; explicit `null`
-resets it. Other provider options are per request and pass only through the selected adapter:
-
-| Dialect | Allowed option keys |
-| --- | --- |
-| Anthropic | `thinking`, `output_config`, `temperature`, `top_p`, `top_k`, `stop_sequences` |
-| Responses | `operation`, `reasoning`, `temperature`, `top_p` |
-
-The provider validates supported values for its model. Options cannot override credentials,
-destinations, model binding, or Tool authority. Deployment limits bound encoded input and output.
-
-## Custom providers
-
-The catalog is data feeding a normalized provider layer, and a deployment can feed that layer
-itself. `--providers-file` (`BRAIN_PROVIDERS_FILE`) names a JSON file of definitions in the same
-shape, merged over the catalog -- a definition with a catalog provider's name supersedes it:
-
-```json
-{
-  "providers": [
-    {
-      "name": "local-responses",
-      "dialect": "openai_responses",
-      "base_url": "http://127.0.0.1:8088/v1",
-      "models": [{ "id": "local-model", "context_window_tokens": 131072 }]
-    }
-  ]
-}
+```js
+await session.send({
+  message: "Describe this image.",
+  media: [{ type: "image", url: "https://your-app.example/image.png" }],
+});
 ```
 
-`dialect` is `openai_responses` or `anthropic_messages`. Endpoints can also be overridden per
-provider without a file: `BRAIN_MODEL_BASE_URL` (the gateway), `BRAIN_OPENAI_BASE_URL`, and
-`BRAIN_ANTHROPIC_BASE_URL`. Overrides must implement the selected dialect.
+Replace the example URL with your own file and keep it accessible while the conversation needs
+it. Aex can [upload attachments](https://github.com/aexhq/aex/blob/main/docs/attachments.md)
+for you. Standalone Brain does not host files.
 
-For an upgrade from the Chat/inline-media contract, stop the writer and run the candidate image's
-`brain-check-media-upgrade --data-dir PATH --from-chat`, adding `--providers-file` when used.
-It checks every retained journal, including ended and suspended sessions, without repairing or
-rewriting records. Incompatible bindings, inline media, old native Chat state and unreadable
-history stop the upgrade. Resume the previous runtime and arrange explicit migration; never
-delete retained sessions to make the check pass. Omit `--from-chat` for subsequent URL-media
-contract checks.
-
-## Pinned for the session
-
-The binding is fixed when the session is created and cannot change while it is alive. A turn cannot
-silently land on a different model than the one before it, and a replayed log means what it said
-when it was written.
-
-Change models by starting a new session.
-
-The system prompt, the tools, and the response format are set at create and are not pinned: the
-agent loop may replace the prompt, offer a subset of the tools, or send a different response format
-on any model call. A response format is rejected at create for a provider that cannot carry it.
-
-## Keys
-
-Keys are yours. Brain holds the binding for the session's lifetime and uses it to make calls; it
-never writes the key into the log or into an event.
+See [model compatibility](/brain/docs/reference/models) for PDF formats, provider protocols
+and exact request behavior.

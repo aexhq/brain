@@ -1,0 +1,221 @@
+---
+title: Session history and recovery
+description: Event ordering, persistence, delivery and restart behavior.
+---
+
+A session is a conversation plus everything Brain did on its behalf. Its creation configuration,
+lifecycle, effects, transcript changes, and Agentloop state are ordered in one append-only journal
+under `sessions/{id}/journal/`.
+
+## One journal, several projections
+
+One sequence counter orders every record. Public Events, session status, the current transcript,
+and Agentloop kv are projections built from that journal. They are not independent state stores.
+Brain opens sessions on demand. A checksummed disposable checkpoint accelerates ordinary opens;
+stale or damaged checkpoints rebuild from the canonical journal. Checkpoints are not a second source of truth.
+
+Every committed lifecycle, effect, transcript and kv mutation appears through
+`GET /v1/sessions/{id}/events` and the live stream at its canonical journal sequence.
+`transcript_delta` carries `{ keep, append }`: retain that many messages and append the
+supplied tail. It covers initial messages, pure appends and replacements.
+`kv_set` carries `{ key, value }`; `kv_delete` carries `{ key }`. An authorized listener
+can reconstruct the saved transcript and Agentloop kv by replaying these Events in order,
+resuming with `after` on reconnect. These are projections of the original commits, not
+additional writes. Live delivery alone is not an external backup: the listener must persist
+its projection and cursor, and use replay to recover missed records.
+
+## Effects happen after commit
+
+Before Brain calls a model, invokes a Tool, or starts an Environment operation, it durably commits
+the corresponding `*_started` record. It then sends the effect once. Brain never automatically
+retries it.
+
+Before the Agentloop observes an answer, Brain commits its record referencing the
+started sequence. Tools separately commit `tool_result_emitted`, `tool_call_returned`, and
+`tool_call_ended`; completion need not include another result. If a remote result is uncertain,
+the failure or Tool outcome says `unknown`; an
+unknown effect is not replayed onto another target.
+
+Extension Events use the same commit path. A turn may emit at most `BRAIN_MAX_EMITTED_BYTES`
+across the serialized Event kinds and payloads, 1 MiB unless the deployment sets otherwise.
+Public system codes and private journal record names are reserved; extensions cannot emit them.
+
+Every new extension Event carries Brain-assigned `origin`: `kind` is `agentloop` or `tool`, and
+`sequence` references that execution's `activation_started` or `tool_call_started` record.
+Payload fields cannot change the origin. Historical Events without origin remain unauthenticated;
+never infer authorship from their names. An origin identifies the submitting execution, not the
+truth of its payload or a human approval.
+
+This makes `{session_id, sequence}` the stable name of an operation throughout the journal and its
+execution path. There is no other identifier: a record carries references, not copies.
+`tool_call_started` names the Tool, the invocation, and the deadline; where the call goes is the
+configuration's answer for that name, recorded once at creation. Environment records name the
+Environment and carry the request.
+
+## Transcript and Agentloop state
+
+The Agentloop owns transcript contents while Brain owns persistence. `set-transcript` commits the
+difference from the saved transcript. Appends store only the tail; summaries, edits, and reorders
+restart at the first changed item. Recovery folds those deltas in journal order.
+
+Tool observations always enter history. The loop chooses which affect model messages, then
+calls `acknowledge(through)` after saving its decision. This advances the reserved
+`brain.last_activation` sequence through a considered prefix; dismissing an observation counts
+as processing it. Reading history or returning from an activation does not acknowledge it.
+
+`kv-put` commits one key/value change; `kv-delete` commits removal from current state without
+erasing history. `kv-read` distinguishes a missing key from stored JSON null. Each operation is durable before it returns, independently
+of turn success. Every invocation uses a fresh Wasm instance; save state through these services.
+Turn completion cannot overwrite saved state with a returned snapshot.
+
+Model calls do not change the saved transcript. Their start records retain a message count and
+`context: { through_sequence, delta }`: apply the delta to the saved transcript at that journal
+sequence to reconstruct the exact request. This records auxiliary contexts without copying the
+entire conversation on every model call. Outcomes retain the complete model result.
+
+## Turns
+
+For a short-lived caller, `session.submit(input, { idempotencyKey })` returns the
+sequence number of the durably committed `turn_started` event without
+waiting for completion. The HTTP operation is `POST /v1/sessions/{id}/messages` with
+`Prefer: respond-async`; it returns `202` and `Preference-Applied: respond-async`.
+Omitting that header preserves the synchronous response.
+
+Submission and synchronous send have separate idempotency scopes. Retry an uncertain
+submission with the same key and mode; do not switch to `send` as a retry. Another async
+submission while the session is occupied is rejected. Read Events after that
+sequence and retrieve the session to observe its eventual status; the handle's cached
+state is not updated by background work.
+
+Closing a client after acceptance does not cancel hosted execution. Host Environments
+still require their host process, and client-side structured-output correction requires
+`send`; put independent execution and output policy in hosted extensions. Drain waits
+for accepted turns. Restart records interrupted work without replay, as described below.
+
+Environments may register a turn-end method during setup. The answer is available before
+these calls finish; their results appear in the same event stream. Resource cleanup belongs
+to the Environment's configuration. It does not end the session or discard its transcript.
+
+A turn starts for a user message or pending Tool observations and ends when the Agentloop returns or fails. During
+the activation the loop may call Brain's model, Tool dispatch, event emission, and telemetry
+services in any order.
+
+Tool return releases the synchronous caller. Explicit finish completes the whole execution.
+Background Tools survive normal turn completion and actor passivation, with their original
+deadline and emission budget. Later emissions wake one Agentloop activation at a time; event-only
+activations have no user input. Brain combines wake notifications for five milliseconds from the
+first pending commit, without delaying journal acknowledgements or extending the window as
+more events arrive. The loop may call the model, dismiss an observation, or wait for a user.
+
+Three deployment limits bound a turn, each with a default the server ships and zero meaning no
+bound; see [Configuration](/brain/docs/reference/configuration) for the rest:
+
+- `BRAIN_MAX_MODEL_CALLS` limits model calls per turn.
+- `BRAIN_MAX_TURN_SECS` limits wall time.
+- `BRAIN_MAX_TOOL_SECS` is the deadline handed to every Tool call.
+
+The wall deadline initiates cancellation. Brain records outstanding effect outcomes and waits for
+bounded executor cancellation before closing the turn; this cleanup can extend the response time.
+
+Cancellation requests stop local waiting and are forwarded to active executors. Outstanding Tool
+calls return `cancelled`; their own invocation deadlines return `timeout`. Neither promises that
+external effects were rolled back. `unknown` means dispatch may have happened but no reliable
+terminal result is available, such as a lost connection or an unfinished effect recovered after
+restart. These Tool results all have `is_error: true` and are never replayed automatically.
+
+## Suspension and recovery
+
+By default, create and turn completion release the actor and its history indexes. Transcript and
+Event reads do not activate it. A message or pending Tool observations open a new activation; the session's
+Environments stay set up. `idleTtlMs` can retain execution for a chosen interval; explicit zero retains it
+indefinitely. The server-wide TTL is optional and has the same zero convention.
+
+Journal commits used as effect fences are durable before dispatch. If the process stops during a
+turn, the first access after restart records the interrupted turn as failed and does not rerun it. Any already committed
+effect record remains the source of truth.
+
+Restart also fails interrupted creation and closes interrupted ending. Every started effect with
+no terminal record becomes an ambiguous failure; Brain does not resend it. Ending is recorded before
+detach starts, so a partly detached session cannot accept another message. A failed detach does not
+prevent the session from ending. Teardown remains a separate journaled operation. If teardown fails,
+the Environment record remains without automatic retry; an explicit session delete
+with a new idempotency key can request another attempt.
+
+HTTP idempotency claims survive restart. Completed answers are retained for 24 hours. If a claimed
+request has no recorded answer, reusing its key returns an ambiguous error and never executes the
+request again. Inspect the session before choosing a new operation key. A create body contains only
+names, so repeating the same create sends the same body.
+
+You can also seed a new session with `transcript`; Brain records those messages as its opening
+conversation.
+
+## Reading history without execution
+
+`session.transcript()` reads the current canonical messages and `through_sequence`, including while
+suspended. It corresponds to `GET /v1/sessions/{id}/transcript`. Event pages and per-session live
+subscriptions also work without keeping an actor alive. Historical telemetry requires a configured
+sink; live model deltas are not silently promoted to durable history.
+
+Acknowledged canonical records survive process and OS/power failure when the local filesystem and
+storage honor flushes. Storage loss is outside this guarantee. Brain refuses complete corrupt
+frames and incomplete nonfinal segments; only an incomplete final write is truncated. Recovery
+keeps committed prefixes and never replays agent effects.
+
+## Reading Events
+
+Read committed Events from a sequence cursor:
+
+```ts
+let cursor = 0;
+for await (const event of session.events(cursor)) {
+  await handle(event);
+  cursor = event.sequence;
+  await saveCursor(cursor);
+}
+```
+
+A finite page returns at most 1,000 Events and normally at most 8 MiB of journal frames. If the
+next Event alone exceeds that byte bound, Brain returns that one Event so the cursor can advance.
+
+For live delivery, request the same endpoint as SSE:
+
+```text
+GET /v1/sessions/{id}/events?after={cursor}
+Accept: text/event-stream
+```
+
+SSE first catches up from the journal and then follows new commits. Each session has its own live backlog; unrelated traffic cannot make a subscriber lag. Model token deltas are live-only
+and have no journal sequence; reconnecting yields the completed committed model result. A consumer
+that needs at-least-once delivery into another system owns its saved cursor, queue, retries, and
+deduplication.
+
+For recorded Events, SSE `data` contains the complete Event envelope, including origin. The SDK
+exposes the payload as `event.data` and provenance as `event.origin` on both pages and streams.
+
+## Lifecycle
+
+`session.interrupt()` requests cancellation of work in flight, including unfinished Tools while
+the loop is idle, and keeps the session available
+for another turn. The HTTP operation remains `POST /v1/sessions/{id}/cancel`.
+`end` refuses new messages and detaches the
+session's Environments while preserving history. `delete` removes the session directory, tears
+down its Environments, and forgets its credentials; the session must first be ended or failed.
+
+`await brain.close()` releases the client's connections and local handlers. It is idempotent,
+rejects subsequent client operations, and does not interrupt, end or delete stored sessions.
+The client retains its shared host connection until close, including after failed creation or
+ending its last session. Put creation inside `try` and close the client in `finally`, as in the
+[lifecycle example](https://github.com/aexhq/brain/blob/main/examples/session-lifecycle.mjs).
+Handlers should observe their cancellation signal; close does not wait for application code
+that ignores it. A client created by `withToken` has its own lifetime.
+
+`end` cancels unfinished Tools and waits for their cleanup before detaching Environments.
+Deletion closes execution authority before teardown and journal removal.
+SIGTERM/server shutdown stops admitting work and drains admitted
+operations while their callbacks remain available, then closes subscriptions and workers. Deadlines,
+`interrupt`, and forced process termination can still interrupt a turn and expose partial progress.
+
+An owning host Tool can pass its signal to `child.send(input, { signal: context.signal })`.
+Use a fresh handle for an exclusively owned child; do not concurrently send through other owners.
+The SDK waits for admission before cancelling and waits for any issued cancellation request before
+returning. Creating a session alone does not establish ownership or affect independent sessions.

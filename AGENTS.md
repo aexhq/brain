@@ -1,5 +1,9 @@
 # Working in this repository
 
+- Public docs serve newcomers: purpose, benefit, then usage. Follow the concise
+  [documentation design and wording guide](references/documentation.md); keep implementation
+  details in reference pages and start authoring guides with working examples and language choices.
+
 - The Rust types in `crates/brain-protocol`, the `#[utoipa::path]` annotations in
   `crates/brain-http`, and the vendored snapshot under `catalog/` are the only source of the
   session, Environment, Agentloop, and provider contracts. Each crate renders its own

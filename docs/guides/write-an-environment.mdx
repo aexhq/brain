@@ -1,139 +1,84 @@
 ---
-title: Write an Environment
-description: Implement lifecycle mechanisms and execute opaque implementations.
+title: Write an environment
+description: Connect your own runtime or workspace so Brain can run tools there.
 ---
 
-An Environment extension has a factory that describes how to reach it and an implementation
-that answers `environment/v1`. Use `brainEnv` for packaged Wasm Components or `hostEnv` for
-JavaScript functions in a browser or application process.
+An environment lets Brain run code in a service you control, such as a sandbox or browser.
+You usually need only an [existing environment](/brain/docs/concepts/environment).
+Write one when you need a different runtime or resource lifecycle.
 
-## Factory
-
-```ts
-import { environment } from "@aexhq/brain";
-import { z } from "zod";
-
-export const sandbox = environment({
-  options: z.object({ url: z.url(), token: z.string(), image: z.string() }),
-  url: ({ url }) => url,
-  credential: ({ token }) => token,
-  configure: ({ image }) => ({ image }),
-});
-
-const env = sandbox({ name: "sandbox", url: "https://sandbox.example",
-  token: process.env.SANDBOX_TOKEN, image: "node:22" });
-```
-
-Brain posts to `{url}/v1/operations`. Credentials are sealed by the server and never journaled.
-Configuration is recorded and forwarded unread. The Environment name is unique within its session.
-
-## Operations
-
-The Rust types in `brain-protocol` generate the published Environment schemas. A command has
-`contract: "environment/v1"` and `operation: { session_id, environment, sequence, request }`.
-The response carries the same contract and sequence and a receipt.
-
-| Request | Responsibility |
-| --- | --- |
-| `setup { configuration }` | Validate Environment-owned options and establish the binding. Allocation can be lazy. |
-| `execute { implementation, input, deadline_ms?, callback? }` | Prepare and run the opaque implementation within configured authority. An absent deadline is unlimited. |
-| `call { name, input }` | An Environment-specific operation, such as explicit workspace reset. |
-| `cancel { target_sequence }` | Best-effort cancellation of the named invocation. |
-| `detach` | Release session attachment mechanisms while retaining owned resources. |
-| `teardown` | Release resources owned by this Environment instance. |
-
-Receipts are `accepted`, `progress`, `result { output }`, `returned { output? }`, `failure`, or `unknown`. Return an
-`unsupported` failure for an unsupported operation or descriptor. Neither `turn` nor `invoke`
-is an Environment operation. An Agentloop adapter interprets its typed input and output above
-this generic boundary; an Environment can support both Agentloops and Tools.
-
-An Agentloop returns its turn result. For a Tool, `result` and `returned` end only the synchronous
-phase, optionally emitting output. Call the granted `finish` service to complete the Tool, either
-before returning or later. Its callback remains valid after return under the original deadline.
-Returning `accepted` or `progress` leaves the dispatched outcome unknown. Failure fields `code`, `message`, `retryable`,
-and optional JSON `details` reach Tool results unchanged. Retryability is advisory; Brain does
-not retry or restore failed resources automatically.
-
-For Tool invocations, return a failure with code `timeout` when its deadline expires, or `cancelled`
-for explicit cancellation. Keep the first stop cause if cleanup also fails, including cleanup
-evidence in `details`. These codes do not promise rollback. Use `unknown` only when dispatch may
-have happened but no reliable result is available. An explicit unknown receipt does not itself
-mark the Environment unreachable; a transport failure still does.
-
-## Invocation services
-
-An execution may receive `callback: { url, token, methods }`. POST `{ method, input }` to that
-URL with its bearer token. The response is the method's JSON result. Only listed methods are
-granted. A Tool receives `emit`, `result`, `returned`, `finish`, and `telemetry`;
-an Agentloop receives `emit`, `telemetry`, `events`, `acknowledge`, `model`,
-`dispatch`, `set_transcript`, `kv_read`, `kv_put`, and `kv_delete`. Dispatch input is an array of `{ call_id, name, environment, input }`; model
-input is `ModelRequest`; events input is a cursor number; emit input is `{ event_type, data }`;
-telemetry input is the diagnostic record. Results are respectively `ToolReturn[]`, ModelResult,
-EventPage, committed sequence, and null.
-
-Tool `result` takes an Outcome; `returned` and `finish` take an optional Outcome (JSON null
-means no new result). Each returns its committed sequence. Finish orders after earlier admitted
-emissions and closes further emission authority. `acknowledge` takes the loop's processed-through
-sequence and durably advances `brain.last_activation`. Journal observations never automatically
-edit model messages. Event-triggered Agentloop input omits the user input field.
-
-`set_transcript` takes a message array. `kv_put` takes `{ key, value }`; `kv_delete` takes
-an identifier string. Mutations return the committed sequence. `kv_read` takes an identifier
-string and returns `{}` for absence or `{ value }` for a stored value, including JSON null.
-The author binding exposes these as `ctx.kv.read/put/delete`; reads after an awaited mutation
-observe it. These services belong only to the Agentloop. Turn output is `{ result? }`, with
-no transcript or KV snapshot. Deletion appends a journal mutation, preserving earlier records.
-
-The token belongs to one invocation and is revoked on completion or cancellation. It is never
-part of the journal. It grants no lifecycle or general session API access. Cancellation makes
-subsequent calls fail. Never preserve a callback for the next execution.
-
-## Lifecycle and delivery
-
-Resource lifetime belongs to the Environment's configuration. Session creation calls setup,
-ending calls detach, and deletion calls teardown. Brain passivating between turns does not end
-the session or release its resources.
-
-Setup can return `{ type: "accepted", on_turn_end: "release" }` to register a method for
-turn completion. After a successful, failed, or cancelled turn, Brain sends
-`call { name: "release", input: { sequence } }`, where `sequence` names `turn_started`.
-The Environment decides what this method does and whether its configuration enables it.
-For example, a disposable sandbox can terminate; a workspace can remain available.
-
-The answer is saved and returned before this call finishes. Unfinished Tools defer turn-end
-cleanup until their execution resources have been released. The session can process later
-messages and Tool observations while that background work remains open. Brain journals cleanup
-and waits for it before completing a graceful drain. A failed
-cleanup does not replace the answer. Like other effects, callbacks are not retried or replayed
-after a restart; a provider deadline still bounds resources if Brain stops before delivery.
-Report resource loss explicitly, without silently allocating replacements.
-
-Brain commits each operation before delivery and sends it once. Identify it by session and
-sequence, retain uncertainty when an effect may have occurred, and never automatically retry
-an unknown execution. Retained files belong to `(session_id, environment)`; invocation state
-and callback credentials belong only to the current call.
+## Run the JavaScript example
 
 The [lazy workspace example](https://github.com/aexhq/brain/blob/main/examples/lazy-environment.mjs)
-tests concurrent first allocation and caller-controlled cleanup. The
-[remote Agentloop example](https://github.com/aexhq/brain/blob/main/examples/loop-environment.mjs)
-resolves a JavaScript implementation and calls granted Brain services. Both bind loopback and
-are authoring examples; they do not isolate untrusted code.
+is a small HTTP service that echoes tool input and keeps a shared in-memory workspace.
+With Node.js 22 or newer:
 
-## Optional implementation preparation
+```sh
+git clone https://github.com/aexhq/brain.git
+cd brain
+node examples/lazy-environment.mjs
+```
 
-Keep dependency details inside the implementation's package and this Environment's loader.
-The descriptor can select a project with a lockfile and optional setup script. Bootstrap the
-interpreter and import-time dependencies before loading setup or run functions. A setup function
-written in Python cannot install the Python interpreter required to invoke itself.
+It listens on `127.0.0.1:8090`. For this local example, run Brain on the same host using the
+[source build](https://github.com/aexhq/brain/blob/main/CONTRIBUTING.md#setup):
 
-The [Python Environment example](https://github.com/aexhq/brain/blob/main/examples/python-environment.mjs)
-uses operator-selected projects, `uv sync --locked`, an optional setup module, then
-`uv run --no-sync`. Concurrent first use shares preparation by installation directory, even
-across sessions. Detach and teardown release the binding, not the externally owned installation.
-A failed preparation remains failed until the operator replaces the loader; no request silently
-retries it. A preprepared package needs no custom setup hook.
+```sh
+BRAIN_DATA_DIR="$PWD/brain-data" \
+BRAIN_ENV_WORKER="$PWD/target/debug/brain-env-worker" \
+./target/debug/brain --listen 127.0.0.1:8080
+```
 
-This helper is an OS-runtime example, not a sandbox. The operator must supply an isolated
-runtime, package-network policy, and appropriately limited process credentials. Project paths
-and module names are operator configuration, not arbitrary session input. Brain does not
-run these commands, resolve dependencies, or fall back from incompatible Wasm placement.
+These are Bash commands. On Windows use PowerShell environment assignments and the `.exe`
+binaries. A Docker-hosted Brain cannot reach this service through its own `127.0.0.1`.
+
+## Connect a tool
+
+In the [quickstart app](/brain/docs/quickstart), import `environment` and replace the order tool with:
+
+```js
+import { environment } from "@aexhq/brain";
+
+const workspace = environment({ url: () => "http://127.0.0.1:8090" });
+const echo = tool({
+  name: "echo",
+  description: "Echo a message in the workspace.",
+  input: z.object({ message: z.string() }),
+  implementation: { type: "reference_echo" },
+});
+
+// In sessions.create:
+// tools: [echo({ env: workspace({ name: "workspace" }) })],
+```
+
+The source-built server above uses no API token; remove `token` from the example client options.
+Send `"Call echo with the message hello."` and run the app. The transcript contains the echoed
+input and a workspace entry count. JavaScript needs no build step; use your normal compiler
+for a TypeScript service.
+
+Edit the example's `execute` handler to run your own fixed operation. It calls the supplied
+`finish` callback before returning a receipt, so Brain knows the tool has completed.
+
+## Python and other languages
+
+An environment service uses HTTP and JSON, so it can be written in any language with an HTTP
+server. Brain includes tested JavaScript services and a
+[Python project runner](https://github.com/aexhq/brain/blob/main/examples/python-environment.mjs).
+The runner itself is JavaScript; it prepares and runs Python tools using `uv` and their lockfiles.
+
+For Python code that only needs computation and Brain callbacks, use the smaller
+[packaged Python tool](/brain/docs/guides/write-a-tool#python) example instead. For other service
+languages, implement the [Environment protocol](/brain/docs/reference/environment-protocol);
+Brain does not supply a separate environment SDK for each language.
+
+## Deploy and use it
+
+Deploy the service where your Brain server can reach it. Configure its URL and credential in
+the `environment(...)` factory, then create a new session with that environment. Prepare code
+and dependencies before executing the tool. Define when workspaces are kept and released.
+
+The local example does not isolate untrusted code. A deployed service must authenticate requests,
+validate operations, and limit the code's access to files, secrets and the network. The protocol
+reference describes setup, execution, cancellation and cleanup.
+
+Aex hosting accepts only managed profiles granted to your account, not arbitrary environment
+URLs. See [managed environments](https://github.com/aexhq/aex/blob/main/docs/environments.md).

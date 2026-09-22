@@ -1,0 +1,125 @@
+---
+title: Environment settings
+description: Resource grants, runtime limits and worker configuration.
+---
+
+An Environment is anything that implements the Environment protocol. A session names each one
+once; Tool placements and the Agentloop refer to those names; Brain sets them up as part of create
+and reaches them for every operation after. Where the code behind the protocol runs is the
+Environment's concern. Brain ships two, and any other is an extension.
+
+## The brain env
+
+`brainEnv({ name })` is Brain's own Environment, managed by the server in a separate pool of OS worker processes. A Tool placed here is a
+Component admitted through `POST /v1/tools`; the Agentloop is one admitted through
+`POST /v1/agentloops`. Each invocation receives this Environment's configured grants,
+bounded by the deployment's allow-lists:
+
+- `filesystem.workspace` is `"read"` or `"write"` for the session and Environment's retained
+  `/workspace`; `filesystem.scratch` grants an invocation-local `/scratch`. The root must
+  appear in `BRAIN_ENV_FILESYSTEM_ALLOW`.
+- `network` lists HTTP(S) origins, optionally `https://*.example.com`, within
+  `BRAIN_ENV_NETWORK_ALLOW`.
+- `secrets` names process environment variables within `BRAIN_ENV_SECRET_ALLOW`, mounted
+  read-only under `/secrets`.
+
+```ts
+import { brainEnv } from "@aexhq/brain";
+
+const writer = brainEnv({
+  name: "writer",
+  filesystem: { workspace: "write", scratch: "read" },
+  network: ["https://api.example.com"],
+  secrets: ["SERVICE_TOKEN"],
+});
+```
+
+Omitted access is denied, and all server allow-lists are empty by default. Tools in the same
+Environment share its grants; use separate named bindings for different authority. Do not
+silently union old per-Tool grants. Components bring their own code; this Environment installs
+no OS packages or interpreters.
+
+By default each invocation receives 10 billion Wasmtime fuel units for guest computation; model, Tool,
+HTTP, and filesystem waits consume no fuel. `BRAIN_MAX_TURN_SECS` still bounds the whole turn.
+
+## The host env
+
+`hostEnv({ name })` is your own process, registered with Brain as a host: a browser tab, a Node
+process, a server. A Tool placed here has `run`, and Brain sends the call over the command stream
+the SDK holds open. See [Tools](/brain/docs/concepts/tool).
+
+## Environments reached over HTTP
+
+An `environment(...)` extension defines its options and how each instance is reached. The
+application configures every instance; Brain reads the URL and the optional credential, seals the
+credential beside the model key without journaling it, and carries the configuration unread:
+
+```ts
+import { environment } from "@aexhq/brain";
+import { z } from "zod";
+
+const sandbox = environment({
+  options: z.object({ url: z.url(), region: z.string(), token: z.string() }),
+  url: ({ url }) => url,
+  credential: ({ token }) => token,
+  configure: ({ region }) => ({ region }),
+});
+
+const env = sandbox({
+  name: "sandbox",
+  url: "https://sandbox.example",
+  region: "eu",
+  token: process.env.SANDBOX_TOKEN,
+});
+```
+
+The same Environment object places several Tools in one session:
+
+```ts
+const session = await brain.sessions.create({
+  model,
+  agentloop: loop({ env: brainEnv({ name: "brain" }) }),
+  tools: [read({ env }), write({ env })],
+});
+```
+
+## What an Environment is told
+
+Setup carries only the Environment's configuration. Execute carries an opaque implementation,
+input, deadline, and optional invocation-scoped service grants. There is no universal dependency
+manifest. The Environment's loader may prepare a project before its first execution, using
+normal lockfiles, scripts, or images. Preparation finishes before imports and the entrypoint.
+Concurrent first uses share preparation of one installation; reuse follows the actual resource
+lifetime, not a turn or automatically a session. Setup code cannot widen configured authority.
+
+A lazy preparation failure can happen after session creation succeeds. It is an ordinary
+execution failure; Brain does not retry, change placement, or claim partial effects were undone.
+
+## Lifecycle and delivery
+
+Session creation sets every Environment up before reporting ready. Brain journals each operation
+before it sends it, sends it once, and records a terminal receipt or an unknown outcome; it does not
+retry. Ending a session detaches it from its Environments; deleting the session asks each one to
+tear down. An Environment wrapping an externally owned service may implement teardown as releasing
+only its own binding.
+
+Environment files and process state follow the Environment. They are not session state; the
+canonical journal survives independently. The caller owns lifecycle policy; the Environment
+implements its mechanisms and has no idle-expiry timer. Resources may be allocated on first
+execution and are retained until caller-requested teardown. The standalone
+[lazy Environment](https://github.com/aexhq/brain/blob/main/examples/lazy-environment.mjs) shows that
+mechanism on the execution wire. Environment and Tool failures are committed for the Agentloop before
+their results return.
+
+
+## Worker pool
+
+`BRAIN_ENV_WORKERS` selects a positive worker count (default two). Every worker can execute both
+Agentloop and Tool Components in fresh Stores. Compiled code is cached per process; guest heaps
+are not retained. Calls that may dispatch nested work use separate capacity from leaf executions,
+so a pool full of Agentloops can still run their Tools. Saturation fails explicitly.
+
+A failed worker affects its own invocations. Brain reports uncertain outcomes, restarts that worker
+for later requests, and never replays the interrupted work. Shutdown stops and reaps every worker.
+The deployment controls instance, memory, fuel, and concurrency ceilings; multiplying workers also
+multiplies their potential memory use. See the [configuration reference](/brain/docs/reference/configuration).
