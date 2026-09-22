@@ -155,7 +155,7 @@ bash tools/build-python-fixtures.sh "$PWD/build/python"
 ```
 
 Copy `build/python/python-agentloop.wasm` to your app as `loop.wasm`. Add
-`BRAIN_MAX_CORE_INSTANCES=1024` to the Brain server's environment, then create a session with
+`BRAIN_MAX_CORE_INSTANCES=1024` to a Brain server you control, then create a session with
 `custom` as above. After sending a message, read `session.events()` to see `python_ran` and
 the saved count. This example supplies computation and Brain callbacks, not Python file or network APIs.
 

@@ -103,7 +103,9 @@ The script installs the pinned builder and generates the imports. Copy
 `build/python/python-tool.wasm` into your app as `echo.wasm`.
 This example supports Python computation and Brain callbacks, not Python filesystem or network
 APIs. The server needs `BRAIN_MAX_CORE_INSTANCES=1024`; add that environment variable to the
-quickstart's Docker command. Use a [Python environment service](/brain/docs/guides/write-an-environment#python-and-other-languages)
+quickstart's Docker command. This requires a Brain server you control. On Aex, use a
+[managed Python profile](https://github.com/aexhq/aex/blob/main/docs/environments.md) granted to your account.
+Use a [Python environment service](/brain/docs/guides/write-an-environment#python-and-other-languages)
 for OS packages and ordinary file/network access.
 
 ## Use the built tool
