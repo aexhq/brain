@@ -7,36 +7,64 @@ An agent loop chooses what the model sees and what happens next. Use a ready-mad
 only need a prompt or different tools. Write your own when you need different context management,
 tool sequencing or stopping rules.
 
-## Start with a working JavaScript loop
+## A minimal JavaScript loop
 
-The official Pi loop is an editable example that already handles model calls, tools and history.
-With Node.js 22 or newer, clone and build it:
-
-```sh
-git clone https://github.com/aexhq/extensions.git
-cd extensions
-npm ci
-npm run build -w packages/loop-pi
-```
-
-Its [logic.mjs](https://github.com/aexhq/extensions/blob/main/packages/loop-pi/src/logic.mjs)
-uses ordinary JavaScript. The essential operations look like this (excerpt, not a complete loop):
+Start in the [quickstart app](/brain/docs/quickstart) with Node.js 22 or newer. Save this as
+`loop.mjs`. It calls the model once per message and saves the conversation; it does not call tools.
 
 ```js
-const response = await ctx.model({ messages: transcript });
-transcript.push(response.message);
-await ctx.setTranscript(transcript);
+import * as host from "brain:agentloop/host@0.2.0";
+
+export function turn(input) {
+  const user = JSON.parse(input.inputJson);
+  if (user === null) {
+    const last = JSON.parse(input.eventsJson).at(-1);
+    if (last) host.acknowledge(BigInt(last.sequence));
+    return { resultJson: undefined };
+  }
+  const messages = JSON.parse(input.transcriptJson);
+  messages.push({
+    role: "user",
+    content: [{ type: "text", text: user.message }, ...(user.media ?? [])],
+  });
+  host.setTranscript(JSON.stringify(messages));
+  const reply = JSON.parse(host.model(JSON.stringify({
+    messages, system: input.system, tools: [],
+  })));
+  messages.push(reply.message);
+  host.acknowledge(host.setTranscript(JSON.stringify(messages)));
+  return { resultJson: undefined };
+}
 ```
 
-Edit the loop's logic, then run its policy tests and rebuild:
+## Build it
+
+Install the builder:
 
 ```sh
-npm run test:logic -w packages/loop-pi
-npm run build -w packages/loop-pi
+npm install --save-dev @bytecodealliance/componentize-js@0.19.3 @bytecodealliance/jco@1.17.9
 ```
 
-Copy `packages/loop-pi/dist/loop.component.wasm` into your quickstart app as `loop.wasm`.
-The build tool also accepts TypeScript entry files; JavaScript is the maintained example.
+Save as `build-loop.mjs`:
+
+```js
+import { componentize } from "@bytecodealliance/componentize-js";
+import { writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+
+const { component } = await componentize({
+  sourcePath: "loop.mjs",
+  witPath: fileURLToPath(import.meta.resolve("@aexhq/brain/contracts/agentloop.wit")),
+  worldName: "agentloop",
+  disableFeatures: ["stdio", "random", "clocks", "http", "fetch-event"],
+});
+await writeFile("loop.wasm", component);
+```
+
+Run `node build-loop.mjs`. The resulting `loop.wasm` is the file you give Brain.
+For TypeScript, compile your source to this JavaScript entry file first; Brain receives the
+same built file. The [official loop build](https://github.com/aexhq/extensions/blob/main/tools/build-agentloop.mjs)
+shows TypeScript bundling with esbuild.
 
 ## Use your built loop
 
@@ -51,17 +79,15 @@ const custom = agentloop({
 ```
 
 Change `agentloop: pi(...)` to `agentloop: custom({ env: brainEnv({ name: "brain" }) })`,
-then run `node order.mjs`. The new session uses your loop and the same order tool. Rebuild and
-create a new session to try each change; existing sessions keep their original loop.
-
-For Pi options as well as source changes, import the built `dist/index.mjs` factory directly
-instead of wrapping the file yourself.
+remove the `tools` setting, and change the prompt to `"Say hello in one sentence."`.
+Run `node order.mjs`: the transcript contains your message and the model's reply.
+Rebuild and create a new session to try each change; existing sessions keep their original loop.
 
 ## Language choices
 
 | Language | Working source | Build |
 | --- | --- | --- |
-| JavaScript / TypeScript | Pi above; JavaScript source, TypeScript-capable build | `npm run build -w packages/loop-pi` |
+| JavaScript / TypeScript | The example above; compile TypeScript to JavaScript first | `node build-loop.mjs` |
 | Rust | Reference loop below | Cargo with `wasm32-wasip2` |
 | Python | Minimal stateful loop below | `tools/build-python-fixtures.sh` |
 | A language in your own service | [HTTP loop example](https://github.com/aexhq/brain/blob/main/examples/loop-environment.mjs) | Your environment's deployment tools |
@@ -97,7 +123,8 @@ cargo build --manifest-path examples/reference-agentloop/Cargo.toml --target was
 ```
 
 Copy `examples/reference-agentloop/target/wasm32-wasip2/release/reference_agentloop.wasm`
-to your app as `loop.wasm`, then use the session example above.
+to your app as `loop.wasm`, then use the session example above. This reference also supports
+tools; restore the quickstart's `tools` setting to try its order lookup.
 
 ## Python
 
@@ -138,5 +165,7 @@ Use the [loop contract](/brain/docs/reference/agentloop-contract) for model call
 and saved state. Save conversation changes explicitly; local variables do not survive the next
 activation. Process and acknowledge background events even when there is no new user message.
 
+For a complete JavaScript loop with tool dispatch and context management, use
+[Pi's source](https://github.com/aexhq/extensions/tree/main/packages/loop-pi) as a starting point.
 Test your policy with fake model/tool responses, then run it against Brain. Check tool failures,
 cancellation and a second message, as well as the first successful answer.
