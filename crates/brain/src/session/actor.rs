@@ -18,7 +18,7 @@ use std::{
 use brain_protocol::{
     LiveEvent, Message, MessageRequest, ModelRequest, ModelResult, ModelStreamEvent,
     RuntimeEnvelope, SessionConfig, SessionStatus, SessionSummary, StreamingEvent, ToolDefinition,
-    ToolDispatch, ToolInvocation, ToolReturn, TurnInput, TurnOutput,
+    ToolDispatch, ToolInvocation, ToolReturn, TurnInput, TurnOutput, Usage,
     codes::{self, Failure},
 };
 use futures_util::future::join_all;
@@ -589,28 +589,43 @@ impl TurnServices for TurnHost {
         let live = self.runtime.live.clone();
         let live_session = self.session_id.clone();
         let cancel = self.cancel_requested.clone();
-        let mut on_event = move |event: ModelStreamEvent| {
-            if let Some(streaming) = streaming_event(sequence, &event) {
-                live.send((live_session.clone(), LiveEvent::Streaming(streaming)));
+        let mut observed_usage = Usage::default();
+        let mut usage_error = None;
+        let result = {
+            let mut on_event = |event: ModelStreamEvent| {
+                if let ModelStreamEvent::Usage { usage }
+                | ModelStreamEvent::MessageDone { usage, .. } = &event
+                    && let Err(error) = observed_usage.observe(usage)
+                {
+                    usage_error = Some(error);
+                    return;
+                }
+                if let Some(streaming) = streaming_event(sequence, &event) {
+                    live.send((live_session.clone(), LiveEvent::Streaming(streaming)));
+                }
+            };
+            let call = self.runtime.model_executor.execute(
+                &self.session_id,
+                &self.config.model,
+                request,
+                &tools,
+                &mut on_event,
+            );
+            // A cancellation ends the wait, not the provider's work: the stream is dropped and
+            // the record says the outcome is unknown.
+            let cancelled = async {
+                while !cancel.load(Ordering::Acquire) {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            };
+            tokio::select! {
+                result = call => result,
+                () = cancelled => Err(Error::Ambiguous("turn cancelled during a model call".into())),
             }
         };
-        let call = self.runtime.model_executor.execute(
-            &self.session_id,
-            &self.config.model,
-            request,
-            &tools,
-            &mut on_event,
-        );
-        // A cancellation ends the wait, not the provider's work: the stream is dropped and
-        // the record says the outcome is unknown.
-        let cancelled = async {
-            while !cancel.load(Ordering::Acquire) {
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-        };
-        let result = tokio::select! {
-            result = call => result,
-            () = cancelled => Err(Error::Ambiguous("turn cancelled during a model call".into())),
+        let result = match usage_error {
+            Some(error) => Err(Error::Ambiguous(error.into())),
+            None => result,
         };
         let mut cursor = self.cursor.lock().await;
         match result {
@@ -631,8 +646,10 @@ impl TurnServices for TurnHost {
                     stop_reason, usage, ..
                 } = &error
                 {
+                    payload["response"] = serde_json::json!({ "stop_reason": stop_reason, "usage": usage, "usage_complete": true });
+                } else if observed_usage != Usage::default() {
                     payload["response"] =
-                        serde_json::json!({ "stop_reason": stop_reason, "usage": usage });
+                        serde_json::json!({ "usage": observed_usage, "usage_complete": false });
                 }
                 self.append(
                     &mut cursor,
@@ -868,6 +885,20 @@ pub(crate) fn valid_kind(kind: &str) -> bool {
 /// use, keyed to the `model_call_started` record it belongs to.
 fn streaming_event(sequence: u64, event: &ModelStreamEvent) -> Option<StreamingEvent> {
     let (event_type, data) = match event {
+        ModelStreamEvent::Request {
+            input_bytes,
+            media_inputs,
+        } => (
+            "model_request",
+            serde_json::json!({"input_bytes": input_bytes, "media_inputs": media_inputs}),
+        ),
+        ModelStreamEvent::Usage { usage } | ModelStreamEvent::MessageDone { usage, .. } => {
+            ("model_usage", serde_json::json!({"usage": usage}))
+        }
+        ModelStreamEvent::NativeDelta { text, .. } => (
+            "model_output",
+            serde_json::json!({"output_bytes": text.len()}),
+        ),
         ModelStreamEvent::TextDelta { index, text } => (
             "assistant_delta",
             serde_json::json!({"index": index, "text": text}),
@@ -887,11 +918,7 @@ fn streaming_event(sequence: u64, event: &ModelStreamEvent) -> Option<StreamingE
             "tool_call_delta",
             serde_json::json!({"index": index, "partial_json": partial_json}),
         ),
-        ModelStreamEvent::NativeStart { .. }
-        | ModelStreamEvent::NativeDelta { .. }
-        | ModelStreamEvent::BlockDone { .. }
-        | ModelStreamEvent::Usage { .. }
-        | ModelStreamEvent::MessageDone { .. } => return None,
+        ModelStreamEvent::NativeStart { .. } | ModelStreamEvent::BlockDone { .. } => return None,
     };
     Some(StreamingEvent {
         sequence,

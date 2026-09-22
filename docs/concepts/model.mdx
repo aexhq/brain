@@ -88,6 +88,28 @@ compaction route forwards to OpenAI, which rejects that wrapper. After the Tool 
 explicitly selecting visible context for compaction succeeded, and the returned compaction state
 continued successfully. Brain preserves the provider error and never silently strips native state.
 
+## Usage observations
+
+`usage.total_input_tokens` includes cache reads and writes. `input_tokens` retains the
+provider's raw meaning; cache and reasoning counters remain available as breakdowns.
+Responses input already includes cache tokens, and output includes reasoning. Anthropic
+input is the sum of ordinary input, cache reads and cache writes when all are reported.
+Absent counters remain unknown. Streaming usage is cumulative within one call, not additive.
+
+The live Events feed emits `model_request` with encoded `input_bytes` and `media_inputs`,
+`model_usage` with reported usage, and `model_output` byte deltas for native output.
+Live data includes `model_call_sequence`, naming its `model_call_started` record without
+advancing the SSE resume cursor. Request bytes are observation metadata,
+not a token prediction or consumption limit. Live delivery never waits for consumers;
+reconnect replays committed Events, not lost live observations.
+
+Completed results retain usage in the journal. Controlled interruption and stream errors
+retain already-observed counters in `model_call_failed.response`, marked
+`usage_complete: false`; a completed unusable response has `usage_complete: true`.
+Process loss can leave usage unknown. Brain does not estimate missing consumption or
+wait for external spending authorization. Consumers may implement their own policy and
+request ordinary session interruption; provider work may already have occurred.
+
 ## Per-call options
 
 After a provider stream terminates, Brain checks its stop reason before parsing Tool parameters.

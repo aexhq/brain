@@ -1040,6 +1040,11 @@ components:
           format: uint64
           minimum: 0
           type: integer
+        total_input_tokens:
+          description: Inclusive input, including cache reads and writes. Raw input remains dialect-specific.
+          format: uint64
+          minimum: 0
+          type: integer
       type: object
     UserInput:
       additionalProperties: false

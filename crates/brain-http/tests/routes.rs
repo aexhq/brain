@@ -889,6 +889,7 @@ async fn the_event_stream_carries_model_output_before_the_turn_finishes() {
         body.contains("half a thought"),
         "model output never reached a client watching the turn: {body}"
     );
+    assert!(body.contains("\"model_call_sequence\":1"));
     assert!(
         !body.contains("not yours"),
         "another session's model output reached this stream: {body}"

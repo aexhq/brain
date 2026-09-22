@@ -170,14 +170,28 @@ impl ModelExecutor for RemoteModelClient {
         on_event: &mut (dyn FnMut(ModelStreamEvent) + Send),
     ) -> Result<ModelResult, Error> {
         let body = self.body(binding, &request, tools)?;
-        if body.to_string().len()
-            > crate::limits::ceiling(self.transport.limits.max_model_input_bytes)
-        {
+        let input_bytes = body.to_string().len();
+        if input_bytes > crate::limits::ceiling(self.transport.limits.max_model_input_bytes) {
             return Err(Error::InvalidState(
                 "model request exceeds its byte limit".into(),
             ));
         }
         let compact = self.dialect == Dialect::OpenAiResponses && responses::compact(&request)?;
+        let media_inputs = request
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .map(|block| match block {
+                brain_protocol::ContentBlock::Image { .. }
+                | brain_protocol::ContentBlock::File { .. } => 1,
+                brain_protocol::ContentBlock::ToolResult { media, .. } => media.len() as u64,
+                _ => 0,
+            })
+            .sum();
+        on_event(ModelStreamEvent::Request {
+            input_bytes: input_bytes as u64,
+            media_inputs,
+        });
         let mut response = self.request(&body, compact).send().await.map_err(|error| {
             Error::Ambiguous(format!("model request outcome is unknown: {error}"))
         })?;

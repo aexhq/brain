@@ -163,6 +163,9 @@ pub enum StopReason {
 /// read zero cache tokens.
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct Usage {
+    /// Inclusive input, including cache reads and writes. Raw input remains dialect-specific.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -192,6 +195,7 @@ impl Usage {
             Ok(())
         }
         let mut merged = self.clone();
+        add(&mut merged.total_input_tokens, other.total_input_tokens)?;
         add(&mut merged.input_tokens, other.input_tokens)?;
         add(&mut merged.output_tokens, other.output_tokens)?;
         add(
@@ -213,6 +217,44 @@ impl Usage {
             }
         }
         *self = merged;
+        Ok(())
+    }
+
+    /// Update one call from a cumulative provider snapshot; omitted fields retain their evidence.
+    pub fn observe(&mut self, other: &Usage) -> Result<(), &'static str> {
+        let mut next = self.clone();
+        for (current, incoming) in [
+            (&mut next.total_input_tokens, other.total_input_tokens),
+            (&mut next.input_tokens, other.input_tokens),
+            (&mut next.output_tokens, other.output_tokens),
+            (
+                &mut next.cache_read_input_tokens,
+                other.cache_read_input_tokens,
+            ),
+            (
+                &mut next.cache_creation_input_tokens,
+                other.cache_creation_input_tokens,
+            ),
+            (&mut next.reasoning_tokens, other.reasoning_tokens),
+        ] {
+            if let Some(value) = incoming {
+                if current.is_some_and(|previous| value < previous) {
+                    return Err("provider usage decreased within a model call");
+                }
+                *current = Some(value);
+            }
+        }
+        if let Some(cost) = &other.provider_cost_usd {
+            if next
+                .provider_cost_usd
+                .as_ref()
+                .is_some_and(|previous| previous != cost)
+            {
+                return Err("provider reported conflicting costs");
+            }
+            next.provider_cost_usd = Some(cost.clone());
+        }
+        *self = next;
         Ok(())
     }
 }
