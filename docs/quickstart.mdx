@@ -1,9 +1,14 @@
 ---
 title: Quickstart
-description: Run Brain and give a session a Tool from your own process.
+description: Run an agent that looks up an order and tells you whether it has shipped.
 ---
 
-## Run a server
+This example connects an AI model to a small order lookup function. You need Docker,
+Node.js 22 or newer, and an OpenAI API key. Model calls use your provider account.
+
+Prefer hosting? Use the [Aex quickstart](/docs).
+
+## 1. Start Brain
 
 ```sh
 docker run --rm -p 127.0.0.1:8080:8080 \
@@ -11,98 +16,86 @@ docker run --rm -p 127.0.0.1:8080:8080 \
   -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
 ```
 
-Or build both executables:
+Leave this terminal running. The Docker volume keeps your saved sessions between restarts.
+The example token is for local use; choose your own token when deploying a server.
+
+## 2. Install the client
+
+In another terminal, create a project:
 
 ```sh
-cargo build --release -p brain-server --bin brain -p brain-env-worker --bin brain-env-worker
-BRAIN_DATA_DIR="$PWD/brain-data" \
-BRAIN_ENV_WORKER="$PWD/target/release/brain-env-worker" \
-./target/release/brain --listen 127.0.0.1:8080
+mkdir brain-example
+cd brain-example
+npm init -y
+npm install @aexhq/brain@0.29.0 @aexhq/agentloop-pi@7.0.1 zod@4
 ```
 
-Brain permits an unauthenticated loopback listener. A non-loopback listener requires
-`BRAIN_API_TOKEN`.
-
-## Create a session
-
-Install the client, an Agentloop, and Zod:
+Set your model key in this terminal:
 
 ```sh
-npm install @aexhq/brain@0.28.0 @aexhq/agentloop-pi@7.0.0 zod
+export OPENAI_API_KEY="your-key"
 ```
 
-Keep the Brain SDK version aligned with the version required by your extensions.
+In PowerShell, use `$env:OPENAI_API_KEY = "your-key"` instead. Keep keys out of source control.
 
-Save this as `order.mjs`:
+## 3. Add a tool and send a message
+
+Save as `order.mjs`. This JavaScript also works in TypeScript; the SDK infers tool arguments
+from the Zod schema.
 
 ```js
 import { Brain, brainEnv, hostEnv, tool } from "@aexhq/brain";
 import { pi } from "@aexhq/agentloop-pi";
 import { z } from "zod";
 
-const orders = { "A-1001": { status: "shipped", eta: "Thursday" } };
-
-// `run` is a function this process holds. Placing the Tool in `hostEnv` says so.
 const lookupOrder = tool({
   name: "lookup_order",
-  description: "Look up an order's status by id.",
+  description: "Look up an order by id.",
   input: z.object({ id: z.string() }),
-  run: async ({ id }, ctx) => {
-    await ctx.emit("order_lookup_started", { id });
-    return ctx.finish(orders[id] ?? { status: "unknown order" });
-  },
+  run: ({ id }, ctx) => ctx.finish({ id, status: "shipped" }),
 });
 
-const brain = new Brain({
-  baseUrl: "http://127.0.0.1:8080",
-  token: "quickstart",
-});
+const brain = new Brain({ baseUrl: "http://127.0.0.1:8080", token: "quickstart" });
 try {
   const session = await brain.sessions.create({
-    model: {
-      provider: "openai",
-      name: "gpt-5-mini",
-      apiKey: process.env.OPENAI_API_KEY,
-    },
+    model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
     agentloop: pi({ env: brainEnv({ name: "brain" }) }),
     tools: [lookupOrder({ env: hostEnv({ name: "app" }) })],
   });
-
-  await session.send("Where is order A-1001?");
-  for await (const event of session.events()) {
-    console.log(event.sequence, event.type, event.data);
+  try {
+    await session.send("Look up order A-1001. Has it shipped?");
+    console.log(JSON.stringify(await session.transcript(), null, 2));
+    console.log("Session:", session.id);
+  } finally {
+    await session.end();
   }
-
-  await session.end();
-  await session.delete();
 } finally {
   await brain.close();
 }
 ```
 
-The SDK registers this process as a host and keeps its command connection open until `brain.close()`. Brain commits
-`tool_call_started` before sending the command. `ctx.emit` appends an extension event to the same
-journal before its promise resolves, and the Tool result is committed before the Agentloop receives
-it. Brain sends each effect once; it does not retry a Tool when the outcome is uncertain.
+## 4. Run it
 
-For a custom Agentloop, wrap already-built Component bytes and place the factory explicitly:
-
-```js
-import { agentloop, brainEnv, component } from "@aexhq/brain";
-
-const custom = agentloop({
-  implementation: component(new URL("./agentloop.wasm", import.meta.url)),
-});
-const placed = custom({ env: brainEnv({ name: "brain" }) });
+```sh
+node order.mjs
 ```
 
-Brain admits the raw Component. Compilation and source-language tooling stay outside Brain.
+The printed transcript includes a `lookup_order` result and an answer saying order A-1001
+has shipped. The exact wording depends on the model. The function returns sample data;
+replace it with a lookup in your own application.
 
-## Build without an extension package
+`brainEnv` runs the ready-made loop on the Brain server. `hostEnv` runs your lookup function
+in this Node process. Keep the process connected while its tools are needed. `ctx.finish(value)`
+returns the result and marks the tool complete.
 
-The repository includes a small Rust [reference Agentloop](https://github.com/aexhq/brain/tree/main/examples/reference-agentloop)
-and a [lazy Environment](https://github.com/aexhq/brain/blob/main/examples/lazy-environment.mjs).
-They depend only on Brain's public contracts. Build the loop with
-`cargo build --manifest-path examples/reference-agentloop/Cargo.toml --target wasm32-wasip2 --release`,
-then explicitly admit the Component before creating sessions. See [Write an Agentloop](./guides/write-a-loop)
-and [Write an Environment](./guides/write-an-environment) for the host calls and the Environment protocol.
+The example ends the conversation but keeps its history. To keep chatting in the same run,
+add another `session.send(...)` before `session.end()`.
+
+## Next steps
+
+- [Sessions](/brain/docs/concepts/sessions): read history, stream output, stop work.
+- [Write a tool](/brain/docs/guides/write-a-tool): use JavaScript, TypeScript, Rust or Python.
+- [Agent loops](/brain/docs/concepts/agent-loop): choose or customize the agent's behavior.
+- [Server configuration](/brain/docs/reference/configuration): deploy with your own settings.
+
+For a source build, see [Contributing](https://github.com/aexhq/brain/blob/main/CONTRIBUTING.md).

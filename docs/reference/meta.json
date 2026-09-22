@@ -1,4 +1,15 @@
 {
   "title": "Reference",
-  "pages": ["api", "configuration", "benchmarks"]
+  "pages": [
+    "api",
+    "tool-contract",
+    "agentloop-contract",
+    "environment-protocol",
+    "session-history",
+    "structured-output",
+    "models",
+    "environment-runtime",
+    "configuration",
+    "benchmarks"
+  ]
 }

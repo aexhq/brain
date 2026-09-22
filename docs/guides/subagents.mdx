@@ -1,64 +1,49 @@
 ---
-title: Spawn a subagent
-description: A tool in your own process creates a child session and returns its answer.
+title: Add a subagent
+description: Give an agent a tool that asks a separate agent to do a task.
 ---
 
-A Tool with a `run` function, placed in the host env, stays in the process that created the
-session, so it can use the SDK. That is enough for a subagent today: the tool creates a child session, sends it
-the task, reads the reply from the child's event feed, and returns it as the tool's output.
-The parent's loop sees an ordinary tool result. Native parent and child links between
-sessions are on the roadmap.
+A subagent is another session with its own conversation and tools. Your main agent can call a
+tool that creates that session, sends a task, and returns its result.
 
-```ts
-import { hostEnv, tool } from "@aexhq/brain";
-import { z } from "zod";
-import { coder } from "./loops.js";
-import { sandbox } from "./environments.js";
-import { test } from "./tools.js";
+## Add a delegation tool
 
+Use the client and imports from the [quickstart](/brain/docs/quickstart). Declare this tool
+after creating `brain` and before creating the parent session:
+
+```js
 const delegate = tool({
   name: "delegate",
-  description: "Hand a subtask to a fresh agent and return its answer.",
+  description: "Ask another agent to work on a self-contained task.",
   input: z.object({ task: z.string() }),
   run: async ({ task }, ctx) => {
-    const childEnv = sandbox({ name: "sandbox", image: "node:22" });
     const child = await brain.sessions.create({
-      model,
-      agentloop: coder({ env: childEnv }),
-      tools: [test({ env: childEnv })],
+      model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
+      agentloop: pi({ env: brainEnv({ name: "brain" }) }),
     });
-    await child.send(task, { signal: ctx.signal });
-    let answer;
-    for await (const event of child.events()) {
-      if (event.type === "output_emitted" && event.data.type === "assistant_message") {
-        answer = event.data.message;
-        break;
-      }
+    try {
+      await child.send(task, { signal: ctx.signal });
+      return ctx.finish(await child.transcript());
+    } finally {
+      await child.end();
     }
-    await child.end();
-    return ctx.finish({ answer });
   },
 });
 ```
 
-The child gets its own Agentloop, model, Tools, Environments, and canonical journal. Calling the
-Environment factory again gives the child its own Environment.
+Add `delegate({ env: hostEnv({ name: "app" }) })` to the parent's `tools` array. Send
+`"Ask the other agent to suggest three short names for an order-tracking app."` and run the app.
+The parent receives the child's conversation as a tool result and can use it in its answer.
 
-## Put it in a session
+The child in this example has no tools. Add only the tools it needs when creating it.
+The parent does not automatically share its conversation, files or permissions with the child.
 
-The parent runs the same loop with the sandbox tools plus `delegate`. Brain sends the `delegate`
-call to this process over the host's command stream, the function above answers it, and the
-child's whole run is journalled under its own session id.
+## Lifetime and history
 
-```ts
-const box = sandbox({ name: "sandbox", image: "node:22" });
-const session = await brain.sessions.create({
-  model,
-  agentloop: coder({ env: box }),
-  tools: [test({ env: box }), bash({ env: box }), delegate({ env: hostEnv({ name: "app" }) })],
-});
-```
+This tool runs in your process, which must stay connected while the child works. Passing
+`ctx.signal` stops the child's current turn when the owning tool is cancelled. Use that child
+exclusively during the call so cancellation cannot interrupt another caller's work.
 
-Every event the child produces is readable on its own session, so a trace of the parent and
-a trace of the child are the same kind of journal projection. See [Write a
-Tool](/brain/docs/guides/write-a-tool) for the host path used by a `run` Tool.
+The example ends the child but keeps its history. Save the child's ID if you want to inspect it
+later; call `child.delete()` after ending when you no longer need it. Brain records each session
+separately; your application owns the relationship between parent and child.

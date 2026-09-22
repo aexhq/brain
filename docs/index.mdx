@@ -1,48 +1,43 @@
 ---
 title: Introduction
-description: Brain's durable session engine and the four things that plug into it.
+description: Run an AI agent, connect your tools, and keep its conversation and progress.
 ---
 
-Brain runs agent sessions. It owns one canonical journal per session, activates an Agentloop,
-executes the model and Tool effects the loop requests, and exposes journal projections over HTTP
-and SSE.
+Brain runs AI agents and saves their conversations, tool results and progress. Your application
+chooses a model, adds tools, and sends messages. You can follow the output as it arrives or come
+back later to read the history.
 
-Run it as a server your app talks to over HTTP, or embed the `brain` crate in a Rust service you
-already own.
+Use Brain when you want to keep control of your agent's behavior without building session
+storage, event streaming and lifecycle management yourself. Run the server on your infrastructure;
+[Aex](/docs) provides hosting if you prefer a managed service.
 
 <Callout type="warn">
-Brain is under early development. Contracts are replaced in place until the first stable release,
-and there is no upgrade path from earlier builds.
+Brain is in early preview. APIs may change before 1.0. A server restart preserves saved history,
+but interrupted work fails and is not automatically retried.
 </Callout>
 
-## The four parts
+## Start here
 
-| Part | You supply | Brain does |
+[Run your first agent](/brain/docs/quickstart) with Docker and JavaScript. The example gives
+the agent a function that looks up an order and prints its answer.
+
+## The pieces you choose
+
+| Piece | What it means | Example |
 | --- | --- | --- |
-| [Agentloop](/brain/docs/concepts/agent-loop) | A raw WebAssembly Component placed in an Environment | Activates it there and performs its model and Tool requests |
-| [Model](/brain/docs/concepts/model) | A provider, model name, and credential | Seals the credential for the session and makes calls |
-| [Tool](/brain/docs/concepts/tool) | A typed contract, its implementation, and where it runs | Commits the call before dispatch and records its outcome |
-| [Environment](/brain/docs/concepts/environment) | A named place that runs Tools and the loop | Sets it up, invokes, cancels, detaches, and tears it down |
+| [Model](/brain/docs/concepts/model) | The AI that generates responses | Your OpenAI or Anthropic model |
+| [Tool](/brain/docs/concepts/tool) | A function the agent can call | Look up an order or search your data |
+| [Agent loop](/brain/docs/concepts/agent-loop) | The logic that calls the model and tools | Use Pi, Codex, or your own loop |
+| [Environment](/brain/docs/concepts/environment) | Where that code runs | Your app, Brain, or a sandbox |
 
-Application code composes these values explicitly. `component(...)` wraps already-built Wasm,
-`brainEnv({ name })` is Brain's own Environment, `hostEnv({ name })` is your own process, an
-`environment(...)` extension is anything reached over HTTP, and every Tool and Agentloop factory
-takes `{ env, ...options }`.
+A [session](/brain/docs/concepts/sessions) brings these together for one conversation.
+Start with a ready-made loop and add your own tools; you can replace more pieces as needed.
 
-## The durable rule
+## Next tasks
 
-Brain commits every external-effect intent to the session journal before dispatch and sends it
-once. It never automatically retries an effect. A known result, a known failure, or an unknown
-outcome is committed before the Agentloop observes it.
+- [Write a tool](/brain/docs/guides/write-a-tool) to connect an API or database.
+- [Write an agent loop](/brain/docs/guides/write-a-loop) to control the conversation.
+- [Get structured output](/brain/docs/guides/structured-output) for your application.
+- [Choose an environment](/brain/docs/concepts/environment) for code that needs a workspace.
 
-The public event feed, session status, transcript, and Agentloop kv are projections of the same
-journal. SSE is a live notification path; reconnecting clients resume from a committed sequence.
-
-## Where to go next
-
-- [Quickstart](/brain/docs/quickstart) — run a server and create a first session.
-- [Sessions](/brain/docs/concepts/sessions) — journal, turns, suspension, and recovery.
-- [Agentloop](/brain/docs/concepts/agent-loop) — raw Components and explicit placement.
-- [Tools](/brain/docs/concepts/tool) — one Tool form, placed where it runs.
-- [Environments](/brain/docs/concepts/environment) — the brain env, the host env, and yours.
-- [API reference](/brain/docs/reference/api) — generated from the protocol types.
+Exact behavior and server settings live in the [reference](/brain/docs/reference/api).

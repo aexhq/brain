@@ -1,186 +1,66 @@
-# `@aexhq/brain`
+# Brain SDK
 
-The typed client and extension composition contract for a Brain server.
+Connect your JavaScript or TypeScript app to [Brain](https://aex.dev/brain), an open-source
+server that runs AI agents and saves their conversations and progress. Add your own functions
+as tools, send messages and read the results.
 
-Short-lived callers can use `session.submit(input, { idempotencyKey })` to receive a
-committed `turn_started` event sequence, then observe Events through another client. Hosted execution
-continues after `close()`; host Tools still require their host process. Use `send()` for
-client-side structured-output correction. See [session semantics](https://aex.dev/brain/docs/concepts/sessions).
+## Get started
 
-```ts
+Start a Brain server with the [quickstart](https://aex.dev/brain/docs/quickstart), then install:
+
+```sh
+npm install @aexhq/brain@0.29.0 @aexhq/agentloop-pi@7.0.1 zod@4
+```
+
+Set `OPENAI_API_KEY`, save the following as `order.mjs`, and run `node order.mjs`:
+
+```js
 import { Brain, brainEnv, hostEnv, tool } from "@aexhq/brain";
 import { pi } from "@aexhq/agentloop-pi";
 import { z } from "zod";
 
-const lookup = tool({
-  name: "lookup",
-  description: "Look up a value.",
+const lookupOrder = tool({
+  name: "lookup_order",
+  description: "Look up an order by id.",
   input: z.object({ id: z.string() }),
-  run: async ({ id }, ctx) => {
-    await ctx.emit("lookup_started", { id });
-    return ctx.finish({ id, value: "found" });
-  },
+  run: ({ id }, ctx) => ctx.finish({ id, status: "shipped" }),
 });
 
-const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });
+const brain = new Brain({ baseUrl: "http://127.0.0.1:8080", token: "quickstart" });
 try {
   const session = await brain.sessions.create({
-    model: {
-      provider: "vercel-ai-gateway",
-      name: "openai/gpt-5-mini",
-      apiKey: process.env.VERCEL_AI_GATEWAY_API_KEY!,
-    },
+    model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
     agentloop: pi({ env: brainEnv({ name: "brain" }) }),
-    tools: [lookup({ env: hostEnv({ name: "app" }) })],
+    tools: [lookupOrder({ env: hostEnv({ name: "app" }) })],
   });
-
-  await session.send("Look up item 42.");
-  for await (const event of session.events()) console.log(event);
+  try {
+    await session.send("Look up order A-1001. Has it shipped?");
+    console.log(JSON.stringify(await session.transcript(), null, 2));
+    console.log("Session:", session.id);
+  } finally {
+    await session.end();
+  }
 } finally {
   await brain.close();
 }
 ```
 
-Every Tool and Agentloop is placed in a named Environment with `{ env, ...options }`. Three kinds
-exist: `brainEnv({ name })` is Brain's own, hosted in the server; `hostEnv({ name })` is this
-process, registered with Brain as a host; and `environment({ url, credential, configure })` is an
-extension reached over HTTP, configured per instance by the application.
+The transcript includes the lookup result and the agent's answer. Your tool runs in this process;
+keep the client connected while the agent needs it. Use `ctx.finish(value)` to complete a tool.
 
-`component(urlOrBytes)` wraps an already-built WebAssembly Component. Brain admits those raw bytes;
-it does not compile application source. Use it to declare a custom Agentloop or a Tool the brain
-env runs:
+## Next steps
 
-```ts
-import { agentloop, brainEnv, component, tool } from "@aexhq/brain";
-import { z } from "zod";
+| Task | Guide |
+| --- | --- |
+| Send messages, reconnect, stream output or stop work | [Sessions](https://aex.dev/brain/docs/concepts/sessions) |
+| Add application functions or packaged tools | [Write a tool](https://aex.dev/brain/docs/guides/write-a-tool) |
+| Customize the agent's behavior | [Write an agent loop](https://aex.dev/brain/docs/guides/write-a-loop) |
+| Validate a JSON answer | [Structured output](https://aex.dev/brain/docs/guides/structured-output) |
+| Use another model | [Models](https://aex.dev/brain/docs/concepts/model) |
 
-const loop = agentloop({
-  implementation: component(new URL("./loop.wasm", import.meta.url)),
-});
+`brain.close()` releases client connections; it keeps stored sessions. `session.interrupt()`
+stops work, `session.end()` finishes the conversation, and `session.delete()` removes its history.
+Hosted execution can continue after client close; tools in your app still need your process.
 
-const inspect = tool({
-  name: "inspect",
-  description: "Inspect the workspace.",
-  input: z.object({ path: z.string() }),
-  implementation: component(new URL("./inspect.wasm", import.meta.url)),
-});
-
-const env = brainEnv({ name: "reader", filesystem: { workspace: "read" } });
-const placedLoop = loop({ env });
-const placedTool = inspect({ env });
-```
-
-Resource grants are Environment options. `brainEnv` accepts `filesystem: { workspace?, scratch? }`
-with `"read"` or `"write"` access, `network` as HTTP(S) origins, and `secrets` as server-variable
-names. Omitted access stays denied; the server's `BRAIN_ENV_*` allow-lists remain the ceiling.
-The example requires `workspace` in `BRAIN_ENV_FILESYSTEM_ALLOW`. Use separate bindings if the
-loop and Tool should receive different grants.
-
-There is no universal `needs`. Dependencies belong to packages and Environment-owned preparation,
-which completes before imports or execution. Unsupported placement and setup failure are explicit
-errors, never a reason for Brain to install packages or choose another Environment.
-
-A Tool with `run` is a function this process holds and is placed in `hostEnv`. The SDK registers
-this process as a host over SSE, receives commands, validates inputs and outputs, and posts ordered
-updates. `ctx.emit(kind, data)` appends an extension event to the session's canonical
-journal before its promise resolves. Save `await brain.credentials()` and pass it back as
-`credentials` to resume the host after a restart.
-
-The host connection belongs to the client and stays open until `await brain.close()`, including
-after failed creation or ending the last session. Put creation inside `try` and close in `finally`.
-Close is idempotent, aborts client I/O and local handlers, and rejects subsequent operations.
-It leaves stored sessions available. Use `session.interrupt()` to stop the current turn,
-`session.end()` to finish a session while keeping history, and `session.delete()` to remove an
-ended or failed session. See the [lifecycle example](../../examples/session-lifecycle.mjs).
-Clients returned by `withToken` have independent lifetimes.
-
-Tool input schemas use Zod's input semantics: defaulted arguments are optional, and handlers
-receive parsed defaults and transforms. Ordinary objects strip extra properties; strict objects
-reject them. Output schemas continue to describe parsed output.
-
-Use `return ctx.finish(value)` for an ordinary Tool, with successful output or an `Outcome`.
-Returning alone ends only the synchronous phase; `emitResult` publishes observations and `finish`
-ends the whole execution. `finish()` supplies no extra result. Later emissions retain the original
-deadline and byte budget, survive turn completion, and wake the Agentloop. The loop owns model
-messages; results and finish always enter journal/history. Tools must finish explicitly. An omitted
-finish leaves the Tool open until its original deadline, cancellation, or execution loss.
-`ctx.deadline` is undefined for unlimited execution. Long deadlines have no implicit ten-minute cap.
-
-The top-level
-statuses `ok`, `error`, `timeout`, `cancelled` and `unknown` declare outcomes; malformed envelopes
-fail as `invalid_output`. Only successful values pass through the output schema. Structured errors
-retain code, message, retryable and details. Use an explicit `ok.value` for business data that uses a
-reserved status. See [the tested example](../../examples/tool-outcomes.mjs).
-
-Tool deadlines produce `timeout`, explicit cancellation produces `cancelled`, and known failures
-produce `error`. `unknown` means an operation may have been dispatched but its result is unavailable.
-All non-success outcomes become failed Tool results. Cancellation and timeout do not promise rollback.
-
-The SDK admits Component bytes by content, preserves explicit placement, and supplies deterministic
-idempotency keys for admission. A caller may supply an `idempotencyKey` for other mutating
-requests. Repeating session creation with the same key keeps the existing host handlers, including
-any active calls and their cancellation signals.
-
-Requests have no implicit client-side deadline because a turn may legitimately outlive a short
-HTTP timeout. Set `timeoutMs` on `Brain` when the caller owns a tighter bound; Brain still enforces
-its configured model, Tool, and whole-turn limits.
-
-## Preparation and suspended history
-
-Prepare an Agentloop with `await brain.admit(placedLoop)` or
-`await brain.admitAgentloop(loopComponent)`, and a Tool with `await brain.admitTool(toolComponent)`.
-Use the same Component objects when placing them for creation. Successful admission is cached.
-`await session.transcript()` returns canonical messages and their journal sequence without starting
-execution; Events and live subscriptions also remain accessible while suspended.
-
-Brain releases session execution at turn end by default. Explicit session `idleTtlMs: 0` retains it.
-The caller controls Environment lifetime through setup, detach, and teardown; providers enforce
-physical resource ceilings. Setup may defer allocation to the first execute. Placements are fixed
-for the life of a session. A canonical Tool can have one implementation in each of several named
-Environments. Loops choose a fixed pair or expose authorized choices to the model; Brain validates
-the actual pair and canonical input/output independently of model presentation.
-
-Agentloop authors can import generated `ModelRequest`, `ModelResult`, `ToolReturn`, `ToolResult`, `EventPage`, and
-`SessionTranscript` types. The JSON schemas ship at `@aexhq/brain/contracts/session.json`; WIT ships
-at `@aexhq/brain/contracts/agentloop.wit` and `@aexhq/brain/contracts/tool.wit`. `events(after)` reads
-history during an activation, and `emit` appends extension Events. Model, Tool, and Environment
-failures are never retried by Brain.
-
-After considering events and saving selected state, `acknowledge(through)` advances the durable
-`brain.last_activation` processed marker. Reading or returning does not advance it. Dismissed
-observations count as processed. Event-only activations omit user input; dispatch returns zero or
-more synchronous observations and a separate `finished` flag. Tool wake notifications coalesce
-for five milliseconds without delaying commits or live acknowledgements.
-
-## Upgrading to 0.28
-
-Upgrade the server, SDK, official extensions and HTTP Environment controllers together. Rebuild
-Components against `brain:agentloop@0.2.0` and `brain:tool@0.2.0`; old Components fail admission.
-Update Tools to call `finish`, loops to handle `ToolReturn` and absent user input, and consumers
-to distinguish `tool_result_emitted` from the completion outcome in `tool_call_ended`.
-Host result posts use `{ session_id, sequence, update }` with update type `result`, `returned`,
-or `finish`, and return HTTP 200 with a committed sequence. Native deadline zero means unlimited;
-HTTP and host commands omit an unlimited deadline.
-
-Retained active sessions have immutable old implementations. Keep their matching runtime and
-migrate explicitly; this release does not rewrite or discard them. After draining and stopping
-the old writer, run `brain-check-media-upgrade --data-dir <path> --from-tool-return`. It permits
-closed history and rejects sessions that could still execute the old contract.
-
-## Upgrading to 0.24
-
-Replace SDK `session.cancel()` with `session.interrupt()` and close each client when finished.
-The HTTP cancellation route and stored session format are unchanged. Host streams now remain
-open for the client lifetime. `register()` and `credentials()` retain their existing roles;
-saved host credentials are separate from provider and API credentials.
-
-## Upgrading from 0.19
-
-Upgrade the server and SDK together and rebuild Agentloop Components against the packaged WIT.
-Replace `set_kv` with `kv_put`; bindings expose `kv.read/put/delete`. Remove `needs` from
-extension declarations and configure native resource grants explicitly on their Environment.
-Do not translate per-Tool grants into a shared union without choosing that authority boundary.
-
-This pre-stable change does not migrate retained 0.19 sessions or old Agentloop binaries.
-Keep their matching server/artifacts for recovery; use a separately admitted new session for
-the new contract. Deployment must not discard or rewrite existing session data implicitly.
+For the exact tool return, error and background-work behavior, see the
+[tool contract](https://aex.dev/brain/docs/reference/tool-contract).

@@ -1,17 +1,18 @@
 # Brain examples
 
-These examples use the public TypeScript SDK and HTTP API against a locally running Brain server.
+New to Brain? Start with the [order lookup quickstart](https://aex.dev/brain/docs/quickstart).
+These runnable examples show individual tasks against a local Brain server.
 
 | Example | What it shows |
 | --- | --- |
 | `basic-session.mjs` | Create a session, run one model turn, and inspect its events. |
-| `event-history.mjs` | Read committed public Events and resume from a journal cursor. |
-| `session-lifecycle.mjs` | List, reopen, cancel, end, and delete a session. |
-| `raw-http.mjs` | Admit raw Agentloop Component bytes and run a session using only HTTP. |
+| `event-history.mjs` | Read saved progress and catch up after reconnecting. |
+| `session-lifecycle.mjs` | List, reopen, interrupt, end and delete a session. |
+| `raw-http.mjs` | Run a session through HTTP without the SDK. |
 | `example-brain.mjs` | Wrap a compiled Agentloop Component in the SDK factory. |
 | `reference-agentloop/` | A Rust Agentloop Component written against Brain's public contracts alone. |
-| `lazy-environment.mjs` | A standalone Environment: logical setup with configuration, lazy allocation, caller-controlled cleanup, explicit restart. |
-| `loop-environment.mjs` | A standalone Environment that runs an Agentloop on another server, calling Brain's turn routes back. |
+| `lazy-environment.mjs` | Run tools in a service with a shared workspace. |
+| `loop-environment.mjs` | Run an agent loop in a separate JavaScript service. |
 
 On Linux, from the repository root, install dependencies, build the SDK, and build the two Brain
 executables:
@@ -30,11 +31,10 @@ BRAIN_ENV_WORKER="$PWD/target/release/brain-env-worker" \
 ./target/release/brain --listen 127.0.0.1:8080
 ```
 
-An Agentloop is a WebAssembly Component implementing `crates/brain-env/wit/agentloop/agentloop.wit`. Brain
-accepts the compiled Component as raw Wasm; it does not build extension source. Compile one with its
-own language toolchain, or build the reference loop in this directory:
+Build the included Rust loop (requires the `wasm32-wasip2` target):
 
 ```sh
+rustup target add wasm32-wasip2
 cargo build --manifest-path examples/reference-agentloop/Cargo.toml --target wasm32-wasip2 --release
 ```
 
