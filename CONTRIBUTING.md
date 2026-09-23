@@ -49,6 +49,11 @@ and supply accessible HTTPS URLs for the two fixtures. Keep secrets out of shell
 Main CI publishes immutable candidate images. Only release promotion moves the image and npm
 `latest` tags, after the media gate passes.
 
+Publication and registry verification are separate jobs. Verification allows up to five minutes
+for registry visibility and rejects conflicting archive integrities or authentication failures.
+If verification fails after an upload, re-run the failed jobs in the same workflow run: they
+download the original archives and do not publish again.
+
 ## The Rust types are the source of the contracts
 
 The wire is defined once, as the types in [`crates/brain-protocol`](crates/brain-protocol) and the
