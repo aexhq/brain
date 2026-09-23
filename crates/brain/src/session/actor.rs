@@ -16,9 +16,9 @@ use std::{
 };
 
 use brain_protocol::{
-    LiveEvent, Message, MessageRequest, ModelRequest, ModelResult, ModelStreamEvent,
-    RuntimeEnvelope, SessionConfig, SessionStatus, SessionSummary, StreamingEvent, ToolDefinition,
-    ToolDispatch, ToolInvocation, ToolReturn, TurnInput, TurnOutput, Usage,
+    Message, MessageRequest, ModelRequest, ModelResult, ModelStreamEvent, RuntimeEnvelope,
+    SessionConfig, SessionStatus, SessionSummary, StreamingEvent, ToolDispatch, ToolInvocation,
+    ToolReturn, TurnInput, TurnOutput,
     codes::{self, Failure},
 };
 use futures_util::future::join_all;
@@ -405,22 +405,15 @@ impl TurnHost {
         Ok(())
     }
 
-    fn offered_tools(&self, request: &ModelRequest) -> Result<Vec<ToolDefinition>, Error> {
-        let definitions = request
-            .tools
-            .clone()
-            .unwrap_or_else(|| self.config.definitions());
-        let mut seen = HashSet::with_capacity(definitions.len());
-        for definition in &definitions {
-            super::validate_tool_definition(definition)?;
-            if !seen.insert(&definition.name) {
-                return Err(Error::InvalidState(format!(
-                    "model request offers Tool `{}` twice",
-                    definition.name
-                )));
-            }
+    fn model_service(&self, origin: brain_protocol::EventOrigin) -> super::model::ModelService {
+        super::model::ModelService {
+            session_id: self.session_id.clone(),
+            config: self.config.clone(),
+            runtime: self.runtime.clone(),
+            store: self.store.clone(),
+            calls: self.model_calls.clone(),
+            origin,
         }
-        Ok(definitions)
     }
 
     async fn append(
@@ -532,29 +525,8 @@ impl TurnServices for TurnHost {
     async fn model(&self, mut request: ModelRequest) -> Result<ModelResult, Error> {
         let _active = self.admit().await?;
         self.check_cancelled()?;
-        let calls = self.model_calls.fetch_add(1, Ordering::AcqRel) + 1;
-        if calls > crate::limits::ceiling(self.runtime.limits.max_model_calls) {
-            return Err(Error::Budget(format!(
-                "turn exceeded its budget of {} model calls",
-                self.runtime.limits.max_model_calls
-            )));
-        }
-        // What the loop left unsaid is what the session was created with.
-        if request.system.is_none() {
-            request.system = Some(self.config.system.clone());
-        }
-        if request.tools.is_none() {
-            request.tools = Some(self.config.definitions());
-        }
-        if request.response_format.is_none() {
-            request.response_format = self.config.response_format.clone();
-        }
-        if request.messages.is_empty() {
-            return Err(Error::InvalidState(
-                "model request must carry at least one message".into(),
-            ));
-        }
-        let tools = self.offered_tools(&request)?;
+        let model = self.model_service(self.origin.clone());
+        let tools = model.prepare(&mut request)?;
         // Auxiliary model views are auditable without replacing conversation state.
         let sequence = {
             let mut cursor = self.cursor.lock().await;
@@ -584,81 +556,15 @@ impl TurnServices for TurnHost {
                 .await?;
             saved[0].sequence
         };
-        // Model output is streamed and not stored: the assembled response is the durable
-        // truth, and a client that wants the pieces takes them off the stream.
-        let live = self.runtime.live.clone();
-        let live_session = self.session_id.clone();
-        let cancel = self.cancel_requested.clone();
-        let mut observed_usage = Usage::default();
-        let mut usage_error = None;
-        let result = {
-            let mut on_event = |event: ModelStreamEvent| {
-                if let ModelStreamEvent::Usage { usage }
-                | ModelStreamEvent::MessageDone { usage, .. } = &event
-                    && let Err(error) = observed_usage.observe(usage)
-                {
-                    usage_error = Some(error);
-                    return;
-                }
-                if let Some(streaming) = streaming_event(sequence, &event) {
-                    live.send((live_session.clone(), LiveEvent::Streaming(streaming)));
-                }
-            };
-            let call = self.runtime.model_executor.execute(
-                &self.session_id,
-                &self.config.model,
-                request,
-                &tools,
-                &mut on_event,
-            );
-            // A cancellation ends the wait, not the provider's work: the stream is dropped and
-            // the record says the outcome is unknown.
-            let cancelled = async {
-                while !cancel.load(Ordering::Acquire) {
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
-            };
-            tokio::select! {
-                result = call => result,
-                () = cancelled => Err(Error::Ambiguous("turn cancelled during a model call".into())),
+        let cancelled = async {
+            while !self.cancel_requested.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(25)).await;
             }
         };
-        let result = match usage_error {
-            Some(error) => Err(Error::Ambiguous(error.into())),
-            None => result,
-        };
+        let result = model.execute(sequence, request, tools, cancelled).await;
         let mut cursor = self.cursor.lock().await;
-        match result {
-            Ok(result) => {
-                self.append(
-                    &mut cursor,
-                    vec![AppendRecord::new(
-                        codes::event::MODEL_CALL_ENDED,
-                        serde_json::json!({"sequence": sequence, "result": result}),
-                    )],
-                )
-                .await?;
-                Ok(result)
-            }
-            Err(error) => {
-                let mut payload = failure_payload(Some(sequence), &failure_of(&error))?;
-                if let Error::ModelOutput {
-                    stop_reason, usage, ..
-                } = &error
-                {
-                    payload["response"] = serde_json::json!({ "stop_reason": stop_reason, "usage": usage, "usage_complete": true });
-                } else if observed_usage != Usage::default() {
-                    payload["response"] =
-                        serde_json::json!({ "usage": observed_usage, "usage_complete": false });
-                }
-                self.append(
-                    &mut cursor,
-                    vec![AppendRecord::new(codes::event::MODEL_CALL_FAILED, payload)],
-                )
-                .await?;
-                Err(error)
-            }
-        }
+        cursor.through_sequence = self.store.session_row()?.through_sequence;
+        result
     }
 
     async fn dispatch(&self, calls: Vec<ToolInvocation>) -> Result<Vec<ToolReturn>, Error> {
@@ -738,12 +644,16 @@ impl TurnServices for TurnHost {
         let waits = dispatches
             .into_iter()
             .map(|dispatch| {
+                let model = self.model_service(brain_protocol::EventOrigin::Tool {
+                    sequence: dispatch.sequence,
+                });
                 self.tools.start(
                     dispatch,
                     self.store.clone(),
                     self.runtime.tool_executor.clone(),
                     self.emissions.clone(),
                     self.runtime.telemetry.clone(),
+                    model,
                 )
             })
             .collect::<Vec<_>>();
@@ -883,7 +793,7 @@ pub(crate) fn valid_kind(kind: &str) -> bool {
 
 /// Model output as the live feed carries it: only what a client watching the turn can
 /// use, keyed to the `model_call_started` record it belongs to.
-fn streaming_event(sequence: u64, event: &ModelStreamEvent) -> Option<StreamingEvent> {
+pub(super) fn streaming_event(sequence: u64, event: &ModelStreamEvent) -> Option<StreamingEvent> {
     let (event_type, data) = match event {
         ModelStreamEvent::Request {
             input_bytes,

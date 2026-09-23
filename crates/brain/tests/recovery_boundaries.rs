@@ -7,6 +7,56 @@ use common::{NoModels, NoTools, Runtime, SlowModel, config, scripted};
 use std::sync::Arc;
 
 #[tokio::test]
+async fn recovery_closes_tool_model_intents_after_the_activation_has_ended() {
+    let directory = common::temporary_directory("tool-model-recovery");
+    let (telemetry, _) = telemetry_channel();
+    let runtime = Runtime::open(
+        &directory,
+        telemetry,
+        4,
+        1,
+        common::echo_loop(),
+        Arc::new(NoModels),
+        Arc::new(NoTools),
+    );
+    let session = runtime.create(&config(), &[]).unwrap();
+    session
+        .record(
+            "model_call_started",
+            serde_json::json!({"tool_sequence": 2}),
+        )
+        .await
+        .unwrap();
+    let recovered = LocalSessionStore::open_all(
+        &runtime.sessions_dir(),
+        runtime.writer.clone(),
+        runtime.feed.clone(),
+    )
+    .unwrap();
+    let events: Vec<_> = recovered[0]
+        .records_after(0, 100)
+        .unwrap()
+        .into_iter()
+        .map(|record| record.into_event())
+        .collect();
+    let started = events
+        .iter()
+        .find(|event| event.event_type == "model_call_started")
+        .unwrap();
+    let failed = events
+        .iter()
+        .find(|event| event.event_type == "model_call_failed")
+        .unwrap();
+    assert_eq!(failed.data["sequence"], started.sequence);
+    assert_eq!(failed.data["ambiguous"], true);
+    assert!(matches!(
+        failed.origin,
+        Some(brain_protocol::EventOrigin::Tool { sequence: 2 })
+    ));
+    assert!(!recovered[0].interrupt_unfinished_turn().unwrap());
+}
+
+#[tokio::test]
 async fn interrupted_ending_is_terminal_and_pending_detach_is_unknown() {
     let directory = common::temporary_directory("regression-ending");
     let (telemetry, _) = telemetry_channel();

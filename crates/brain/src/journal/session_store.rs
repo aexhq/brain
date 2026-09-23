@@ -337,9 +337,15 @@ impl LocalSessionStore {
             .map(|(sequence, kind)| {
                 let mut payload = failure.clone();
                 payload["sequence"] = serde_json::json!(sequence);
-                AppendRecord::new(format!("{kind}_failed"), payload)
+                if kind == "model_call"
+                    && let Some(started) = self.records_after(sequence - 1, 1)?.first()
+                    && let Some(tool) = started.payload.get("tool_sequence")
+                {
+                    payload["tool_sequence"] = tool.clone();
+                }
+                Ok(AppendRecord::new(format!("{kind}_failed"), payload))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, Error>>()?;
         let next = match status {
             SessionStatus::Creating => {
                 records.push(AppendRecord::new(

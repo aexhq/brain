@@ -186,7 +186,7 @@ impl ExecutionServices for SessionServices {
                 "kv_read",
                 "kv_delete",
             ],
-            Self::Tool(_) => &["emit", "result", "returned", "finish", "telemetry"],
+            Self::Tool(_) => &["model", "emit", "result", "returned", "finish", "telemetry"],
         }
     }
     async fn call(&self, method: &str, input: Value) -> Result<Value, brain::Error> {
@@ -194,6 +194,12 @@ impl ExecutionServices for SessionServices {
             return Err(brain::Error::Cancelled("execution cancelled".into()));
         }
         match (self, method) {
+            (Self::Tool(services), "model") => serde_json::to_value(
+                services
+                    .model(serde_json::from_value(input).map_err(json_error)?)
+                    .await?,
+            )
+            .map_err(json_error),
             (Self::Loop(services), "acknowledge") => Ok(json!(
                 services
                     .acknowledge(serde_json::from_value(input).map_err(json_error)?)

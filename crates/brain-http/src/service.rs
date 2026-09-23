@@ -40,6 +40,12 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
         token: String,
         event: HostEvent,
     ) -> Result<HostEventAck, ApiError>;
+    async fn host_model(
+        &self,
+        host_id: HostId,
+        token: String,
+        request: brain_protocol::HostModelRequest,
+    ) -> Result<brain_protocol::ModelResult, ApiError>;
     /// One call on an open turn's routes by the Environment running that turn, opened
     /// by the token minted for it.
     async fn execution_call(

@@ -396,6 +396,18 @@ impl bindings::brain::agentloop::host::Host for HostState {
 }
 
 impl tool_bindings::brain::tool::host::Host for HostState {
+    async fn model(
+        &mut self,
+        request_json: String,
+    ) -> Result<String, tool_bindings::brain::tool::types::ToolError> {
+        self.call(HostCall::Model { request_json })
+            .await
+            .map_err(|error| tool_bindings::brain::tool::types::ToolError {
+                code: error.code,
+                message: error.message,
+            })
+    }
+
     async fn emit_result(
         &mut self,
         outcome_json: String,

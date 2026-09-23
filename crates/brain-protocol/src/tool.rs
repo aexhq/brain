@@ -116,6 +116,27 @@ pub struct ToolResult {
     pub call_id: String,
     pub output: serde_json::Value,
     pub is_error: bool,
+    /// Optional model-facing text; the structured output and failure status are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
+
+/// A Tool observation with an optional presentation for the Agentloop.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub struct ToolOutput {
+    #[serde(flatten)]
+    pub outcome: Outcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
+
+impl From<Outcome> for ToolOutput {
+    fn from(outcome: Outcome) -> Self {
+        Self {
+            outcome,
+            content: None,
+        }
+    }
 }
 
 /// Observations available when the synchronous phase returns. Execution can remain open.
@@ -137,6 +158,7 @@ impl ToolResult {
                 call_id,
                 output: value,
                 is_error: false,
+                content: None,
             },
             Outcome::Error { error } => ToolResult {
                 call_id,
@@ -147,6 +169,7 @@ impl ToolResult {
                     "details": error.details,
                 }),
                 is_error: true,
+                content: None,
             },
             Outcome::Timeout => ToolResult {
                 call_id,
@@ -155,6 +178,7 @@ impl ToolResult {
                     "message": "the Tool call did not finish before its deadline",
                 }),
                 is_error: true,
+                content: None,
             },
             Outcome::Cancelled => ToolResult {
                 call_id,
@@ -163,6 +187,7 @@ impl ToolResult {
                     "message": "the Tool call was cancelled",
                 }),
                 is_error: true,
+                content: None,
             },
             Outcome::Unknown { message } => ToolResult {
                 call_id,
@@ -171,6 +196,7 @@ impl ToolResult {
                     "message": message,
                 }),
                 is_error: true,
+                content: None,
             },
         }
     }

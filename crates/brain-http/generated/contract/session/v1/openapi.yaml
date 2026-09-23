@@ -433,6 +433,22 @@ components:
     HostId:
       pattern: ^host_[A-Za-z0-9]{20,32}$
       type: string
+    HostModelRequest:
+      additionalProperties: false
+      properties:
+        request:
+          $ref: '#/components/schemas/ModelRequest'
+        sequence:
+          format: uint64
+          minimum: 1
+          type: integer
+        session_id:
+          $ref: '#/components/schemas/SessionId'
+      required:
+      - session_id
+      - sequence
+      - request
+      type: object
     HostOperation:
       description: |-
         What a host is asked to do for a session placed in it. A call is named by the
@@ -911,7 +927,7 @@ components:
       - additionalProperties: false
         properties:
           outcome:
-            $ref: '#/components/schemas/Outcome'
+            $ref: '#/components/schemas/ToolOutput'
           type:
             const: result
             type: string
@@ -922,7 +938,7 @@ components:
       - additionalProperties: false
         properties:
           outcome:
-            $ref: '#/components/schemas/Outcome'
+            $ref: '#/components/schemas/ToolOutput'
           type:
             const: returned
             type: string
@@ -932,7 +948,7 @@ components:
       - additionalProperties: false
         properties:
           outcome:
-            $ref: '#/components/schemas/Outcome'
+            $ref: '#/components/schemas/ToolOutput'
           type:
             const: finish
             type: string
@@ -942,6 +958,56 @@ components:
     ToolId:
       pattern: ^[0-9a-f]{64}$
       type: string
+    ToolOutput:
+      description: A Tool observation with an optional presentation for the Agentloop.
+      oneOf:
+      - properties:
+          status:
+            const: ok
+            type: string
+          value: true
+        required:
+        - status
+        - value
+        type: object
+      - properties:
+          error:
+            $ref: '#/components/schemas/OutcomeError'
+          status:
+            const: error
+            type: string
+        required:
+        - status
+        - error
+        type: object
+      - properties:
+          status:
+            const: timeout
+            type: string
+        required:
+        - status
+        type: object
+      - properties:
+          status:
+            const: cancelled
+            type: string
+        required:
+        - status
+        type: object
+      - properties:
+          message:
+            type: string
+          status:
+            const: unknown
+            type: string
+        required:
+        - status
+        - message
+        type: object
+      properties:
+        content:
+          type: string
+      type: object
     ToolPlacement:
       additionalProperties: false
       properties:
@@ -952,6 +1018,9 @@ components:
     ToolResult:
       properties:
         call_id:
+          type: string
+        content:
+          description: Optional model-facing text; the structured output and failure status are unchanged.
           type: string
         is_error:
           type: boolean
@@ -1196,6 +1265,34 @@ paths:
               schema:
                 $ref: '#/components/schemas/HostEventAck'
           description: Host Event committed
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/hosts/{host_id}/model:
+    post:
+      operationId: callHostModel
+      parameters:
+      - in: path
+        name: host_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/HostId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HostModelRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelResult'
+          description: Invocation model result
         default:
           content:
             application/json:

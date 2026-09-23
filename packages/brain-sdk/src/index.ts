@@ -2,6 +2,7 @@ export { BrainClient as Brain, BrainClient, SessionHandle, Sessions } from "./cl
 export type { BrainOptions, HostCredentials } from "./client.js";
 export {
   agentloop,
+  bindTool,
   brainEnv,
   component,
   environment,
@@ -11,6 +12,7 @@ export {
   inspectEnvironment,
   inspectTool,
   tool,
+  toolMetadata,
 } from "./extensions.js";
 export type {
   AgentloopContract,
@@ -19,8 +21,11 @@ export type {
   EnvironmentDriver,
   ToolContract,
   ToolRunContext,
+  ToolMetadata,
+  ToolFactory,
+  ToolPlacement,
 } from "./extensions.js";
-export type { HostToolCall } from "./host.js";
+export type { HostToolCall, ToolResultOptions } from "./host.js";
 export { BrainError } from "./errors.js";
 export { StructuredOutputError } from "./structured-output.js";
 export type { EventPage, ModelList, ModelProvider, ModelDef, ModelRequest, ModelResult, SessionTranscript, ToolResult } from "./generated/session.js";

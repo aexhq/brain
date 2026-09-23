@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{HostId, Outcome, SessionId};
+use crate::{HostId, ModelRequest, SessionId, ToolOutput};
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -52,15 +52,15 @@ pub struct HostResult {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ToolExecutionUpdate {
     Result {
-        outcome: Outcome,
+        outcome: ToolOutput,
     },
     Returned {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        outcome: Option<Outcome>,
+        outcome: Option<ToolOutput>,
     },
     Finish {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        outcome: Option<Outcome>,
+        outcome: Option<ToolOutput>,
     },
 }
 
@@ -81,4 +81,13 @@ pub struct HostEventAck {
     /// The sequence Brain assigned to the committed Event.
     #[schemars(range(min = 1))]
     pub sequence: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostModelRequest {
+    pub session_id: SessionId,
+    #[schemars(range(min = 1))]
+    pub sequence: u64,
+    pub request: ModelRequest,
 }

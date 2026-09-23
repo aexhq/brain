@@ -139,9 +139,12 @@ async fn background_completion_wakes_a_passivated_loop_once_and_never_edits_its_
     .unwrap();
     let service = background.service.lock().unwrap().take().unwrap();
     let finish = service
-        .finish(Some(Outcome::Ok {
-            value: serde_json::json!("asynchronous result"),
-        }))
+        .finish(Some(
+            Outcome::Ok {
+                value: serde_json::json!("asynchronous result"),
+            }
+            .into(),
+        ))
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(2), api.drain())

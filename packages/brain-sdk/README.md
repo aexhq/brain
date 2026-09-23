@@ -9,13 +9,13 @@ as tools, send messages and read the results.
 Start a Brain server with the [quickstart](https://aex.dev/brain/docs/quickstart), then install:
 
 ```sh
-npm install @aexhq/brain@0.29.0 @aexhq/agentloop-pi@7.0.1 zod@4
+npm install @aexhq/brain@0.30.0 @aexhq/agentloop-pi@7.0.1 zod@4
 ```
 
 Set `OPENAI_API_KEY`, save the following as `order.mjs`, and run `node order.mjs`:
 
 ```js
-import { Brain, brainEnv, hostEnv, tool } from "@aexhq/brain";
+import { Brain, brainEnv, tool } from "@aexhq/brain";
 import { pi } from "@aexhq/agentloop-pi";
 import { z } from "zod";
 
@@ -31,7 +31,7 @@ try {
   const session = await brain.sessions.create({
     model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
     agentloop: pi({ env: brainEnv({ name: "brain" }) }),
-    tools: [lookupOrder({ env: hostEnv({ name: "app" }) })],
+    tools: [lookupOrder()],
   });
   try {
     await session.send("Look up order A-1001. Has it shipped?");

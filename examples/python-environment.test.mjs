@@ -3,6 +3,8 @@ import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
+import { bindTool, environment, inspectTool } from "@aexhq/brain";
 import { pythonEnvironment } from "./python-environment.mjs";
 
 async function fixture(t, setup = "prepare", module = "run") {
@@ -31,6 +33,14 @@ test("Python imports follow locked preparation; concurrent first use shares setu
   await f.attach();
   assert.equal((await f.execute("again")).type, "result");
   assert.equal(await readFile(join(f.directory, ".venv/prepared"), "utf8"), "1.17.0");
+  const metadata = JSON.parse(execFileSync(process.env.BRAIN_TEST_UV ?? "uv",
+    ["run", "--no-sync", "--project", f.directory, "python", "-m", "describe"], { cwd: f.directory, encoding: "utf8" }));
+  const echo = bindTool(metadata, { type: "python_project", name: "example" });
+  const placed = inspectTool(echo({ env: environment({ url: () => "https://python.example" })({ name: "python" }) }));
+  assert.deepEqual(placed.definition.inputSchema, { type: "string" });
+  const result = await f.send({ type: "execute", implementation: placed.implementation, input: "from JavaScript",
+    callback: { url: "https://brain.example/call", token: "fixture", methods: ["finish"] } });
+  assert.deepEqual(result.output, { echo: "from JavaScript", dependency: "1.17.0" });
 });
 
 test("failed setup prevents imports and is not silently retried", { timeout: 60_000 }, async (t) => {
@@ -40,7 +50,7 @@ test("failed setup prevents imports and is not silently retried", { timeout: 60_
     assert.match(result.message, /fixture setup failure/u);
   }
   assert.equal((await f.execute("explicit new invocation")).code, "preparation_failed");
-  assert.equal(await readFile(join(f.directory, ".venv/setup_attempts"), "utf8"), "attempt\n");
+  assert.deepEqual((await readFile(join(f.directory, ".venv/setup_attempts"), "utf8")).split(/\r?\n/u), ["attempt", ""]);
   await assert.rejects(readFile(join(f.directory, ".venv/prepared")), { code: "ENOENT" });
 });
 

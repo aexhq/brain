@@ -128,6 +128,15 @@ impl BrainApi for ServerApi {
         self.resources.hosts.emit(&host_id, &token, event).await
     }
 
+    async fn host_model(
+        &self,
+        host_id: HostId,
+        token: String,
+        request: brain_protocol::HostModelRequest,
+    ) -> Result<brain_protocol::ModelResult, ApiError> {
+        self.resources.hosts.model(&host_id, &token, request).await
+    }
+
     async fn execution_call(
         &self,
         session_id: SessionId,
@@ -619,7 +628,7 @@ fn loop_error(error: LoopError) -> ApiError {
 }
 
 /// A runtime error names its own API code; nothing here reads the message.
-fn api_error(error: brain::Error) -> ApiError {
+pub(crate) fn api_error(error: brain::Error) -> ApiError {
     ApiError::new(error.code(), error.to_string(), error.retryable())
 }
 

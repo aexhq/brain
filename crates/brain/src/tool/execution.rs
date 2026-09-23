@@ -8,8 +8,8 @@ use std::{
 };
 
 use brain_protocol::{
-    Event, EventOrigin, Outcome, OutcomeError, SessionId, ToolCancellation, ToolDispatch,
-    ToolResult, ToolReturn, codes,
+    Event, EventOrigin, ModelRequest, ModelResult, Outcome, OutcomeError, SessionId,
+    ToolCancellation, ToolDispatch, ToolOutput, ToolResult, ToolReturn, codes,
 };
 use brain_telemetry::{TelemetryKind, TelemetryPublisher, TelemetryRecord};
 use tokio::sync::{Mutex, Notify, oneshot, watch};
@@ -184,6 +184,7 @@ impl ToolGroup {
         executor: Arc<dyn ToolExecutor>,
         budget: Arc<EmissionBudget>,
         telemetry: TelemetryPublisher,
+        model: crate::session::model::ModelService,
     ) -> oneshot::Receiver<ToolReturn> {
         let (reply, returned) = oneshot::channel();
         let (closed, _) = watch::channel(false);
@@ -199,9 +200,11 @@ impl ToolGroup {
             executor,
             budget,
             telemetry,
+            model,
             group: Arc::downgrade(self),
             state: Mutex::new(CallState {
                 events: Vec::new(),
+                models: Vec::new(),
                 returned: Some(reply),
                 finished: false,
                 sequence: 0,
@@ -225,6 +228,12 @@ impl ToolGroup {
                 call.cancelled.store(true, Ordering::Release);
                 call.closed.send_replace(true);
             }
+            let models = std::mem::take(&mut call.state.lock().await.models);
+            for model in models {
+                if let Err(error) = model.await {
+                    tracing::error!(%error, "Tool model task failed");
+                }
+            }
             group
                 .calls
                 .lock()
@@ -237,6 +246,7 @@ impl ToolGroup {
 }
 
 struct CallState {
+    models: Vec<tokio::task::JoinHandle<()>>,
     events: Vec<Event>,
     returned: Option<oneshot::Sender<ToolReturn>>,
     finished: bool,
@@ -250,6 +260,7 @@ struct ToolCall {
     executor: Arc<dyn ToolExecutor>,
     budget: Arc<EmissionBudget>,
     telemetry: TelemetryPublisher,
+    model: crate::session::model::ModelService,
     group: Weak<ToolGroup>,
     state: Mutex<CallState>,
     closed: watch::Sender<bool>,
@@ -319,13 +330,15 @@ impl ToolCall {
         }
     }
 
-    fn result_record(&self, outcome: Outcome) -> Result<AppendRecord, Error> {
-        if let (Outcome::Ok { value }, Some(validator)) = (&outcome, &self.output_schema) {
+    fn result_record(&self, output: ToolOutput) -> Result<AppendRecord, Error> {
+        if let (Outcome::Ok { value }, Some(validator)) = (&output.outcome, &self.output_schema) {
             validator
                 .validate(value)
                 .map_err(|error| Error::InvalidState(format!("invalid Tool output: {error}")))?;
         }
-        let result = ToolResult::from_outcome(self.dispatch.invocation.call_id.clone(), outcome);
+        let mut result =
+            ToolResult::from_outcome(self.dispatch.invocation.call_id.clone(), output.outcome);
+        result.content = output.content;
         let payload =
             serde_json::to_value(result).map_err(|error| Error::InvalidState(error.to_string()))?;
         self.budget.reserve(
@@ -421,11 +434,11 @@ impl ToolCall {
                     let is_returned = self.state.lock().await.returned.is_none();
                     let result = if is_returned {
                         match outcome {
-                            Some(outcome) => self.result(outcome).await.map(|_| ()),
+                            Some(outcome) => self.result(outcome.into()).await.map(|_| ()),
                             None => Ok(()),
                         }
                     } else {
-                        self.returned(outcome).await.map(|_| ())
+                        self.returned(outcome.map(Into::into)).await.map(|_| ())
                     };
                     if let Err(error) = result {
                         return self
@@ -453,6 +466,49 @@ impl ToolCall {
 
 #[async_trait::async_trait]
 impl ToolServices for ToolCall {
+    async fn model(&self, mut request: ModelRequest) -> Result<ModelResult, Error> {
+        let mut state = self.state.lock().await;
+        Self::ensure_open(&state)?;
+        if self.cancelled() {
+            return Err(Error::Cancelled("Tool execution cancelled".into()));
+        }
+        let tools = self.model.prepare(&mut request)?;
+        let service = self.model.clone();
+        let mut closed = self.closed.subscribe();
+        let mut stop = self.stop.subscribe();
+        let (reply, answer) = oneshot::channel();
+        // A disconnected callback must not abandon a committed model intent.
+        state.models.push(tokio::spawn(async move {
+            let result = async {
+                if *closed.borrow() || *stop.borrow() {
+                    return Err(Error::Cancelled("Tool execution closed".into()));
+                }
+        let sequence = service.append(AppendRecord::new(
+            codes::event::MODEL_CALL_STARTED,
+            serde_json::json!({
+                "system": request.system, "tools": request.tools,
+                "messages": request.messages.len(),
+                "context": {"through_sequence": 0, "delta": JournalEntry::TranscriptDelta { keep: 0, append: request.messages.clone() }},
+                "response_format": request.response_format, "max_output_tokens": request.max_output_tokens,
+                "options": request.options,
+            }),
+        )).await?;
+            let cancelled = async {
+                tokio::select! {
+                    _ = closed.wait_for(|value| *value) => {},
+                    _ = stop.wait_for(|value| *value) => {},
+                }
+            };
+            service.execute(sequence, request, tools, cancelled).await
+            }.await;
+            let _ = reply.send(result);
+        }));
+        drop(state);
+        answer
+            .await
+            .map_err(|error| Error::Executor(error.to_string()))?
+    }
+
     async fn emit(&self, kind: String, payload: serde_json::Value) -> Result<u64, Error> {
         if kind == "_extension_event"
             || !crate::session::valid_kind(&kind)
@@ -471,14 +527,14 @@ impl ToolServices for ToolCall {
             .await
     }
 
-    async fn result(&self, outcome: Outcome) -> Result<u64, Error> {
+    async fn result(&self, outcome: ToolOutput) -> Result<u64, Error> {
         let mut state = self.state.lock().await;
         Self::ensure_open(&state)?;
         let record = self.result_record(outcome)?;
         self.append(&mut state, vec![record]).await
     }
 
-    async fn returned(&self, outcome: Option<Outcome>) -> Result<u64, Error> {
+    async fn returned(&self, outcome: Option<ToolOutput>) -> Result<u64, Error> {
         let mut state = self.state.lock().await;
         Self::ensure_open(&state)?;
         if state.returned.is_none() {
@@ -497,18 +553,23 @@ impl ToolServices for ToolCall {
         Ok(sequence)
     }
 
-    async fn finish(&self, outcome: Option<Outcome>) -> Result<u64, Error> {
+    async fn finish(&self, outcome: Option<ToolOutput>) -> Result<u64, Error> {
         let mut state = self.state.lock().await;
         Self::ensure_open(&state)?;
         let mut records = Vec::new();
         let terminal = match outcome {
-            Some(outcome @ Outcome::Ok { .. }) => {
-                records.push(self.result_record(outcome)?);
-                Outcome::Ok {
-                    value: serde_json::Value::Null,
+            Some(output) => {
+                let outcome = output.outcome.clone();
+                if matches!(outcome, Outcome::Ok { .. }) || output.content.is_some() {
+                    records.push(self.result_record(output)?);
+                }
+                match outcome {
+                    Outcome::Ok { .. } => Outcome::Ok {
+                        value: serde_json::Value::Null,
+                    },
+                    outcome => outcome,
                 }
             }
-            Some(outcome) => outcome,
             None => Outcome::Ok {
                 value: serde_json::Value::Null,
             },

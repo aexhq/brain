@@ -43,6 +43,7 @@ pub fn session() -> Value {
             define::<HostId>(generator);
             define::<HostRegistration>(generator);
             define::<HostResult>(generator);
+            define::<crate::HostModelRequest>(generator);
             define::<Message>(generator);
             define::<MessageRequest>(generator);
             define::<crate::ModelList>(generator);

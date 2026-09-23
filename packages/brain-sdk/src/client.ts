@@ -1,6 +1,6 @@
 import { HostPump } from "./client-pump.js";
 import { BrainError } from "./errors.js";
-import { inspectAgentloop, inspectComponent, inspectEnvironment, inspectTool, isComponent } from "./extensions.js";
+import { inspectAgentloop, inspectComponent, inspectEnvironment, inspectTool, isComponent, placeDefaultTools, loadHostTool } from "./extensions.js";
 import { HostToolRegistry } from "./host.js";
 import { structuredOutput } from "./structured-output.js";
 import type {
@@ -30,6 +30,9 @@ interface Host {
   readonly pump: HostPump;
   unregister(sessionId: string): void;
 }
+
+// A browser placing remote Tools must not bundle Node's file loader.
+const nodeFilesystem = "node:fs/promises";
 
 export class BrainClient {
   readonly baseUrl: string;
@@ -214,6 +217,7 @@ export class BrainClient {
       this.hostClient = hostClient;
       const pump = new HostPump({
         stream: (signal, onOpen) => hostClient.streamPath(`/v1/hosts/${encodeURIComponent(registration.host_id)}/commands`, signal, onOpen),
+        model: (value) => hostClient.request("POST", `/v1/hosts/${encodeURIComponent(registration.host_id)}/model`, value),
         result: (value) => hostClient.request("POST", `/v1/hosts/${encodeURIComponent(registration.host_id)}/results`, value),
         emit: (value) => hostClient.request<{ sequence: number }>("POST", `/v1/hosts/${encodeURIComponent(registration.host_id)}/events`, value),
       });
@@ -254,7 +258,7 @@ export class BrainClient {
       const bytes = source.artifact instanceof Uint8Array
         ? source.artifact
         : source.artifact.protocol === "file:"
-          ? await this.io(async (signal) => new Uint8Array(await (await import("node:fs/promises")).readFile(source.artifact as URL, { signal })))
+          ? await this.io(async (signal) => new Uint8Array(await (await import(nodeFilesystem)).readFile(source.artifact as URL, { signal })))
           : await this.io(async (signal) => {
               const response = await this.transport(source.artifact as URL, { signal });
               if (!response.ok) throw new BrainError(response.status, "http_error", response.statusText, false);
@@ -279,6 +283,11 @@ export class Sessions {
     validateSessionOptions(options);
     const key = keyOf(operation);
     const loop = inspectAgentloop(options.agentloop);
+    const explicit = [loop.environment, ...(options.tools ?? []).map(placed => inspectTool(placed).environment)]
+      .map(inspectEnvironment).filter(env => !env.automatic).map(env => env.name);
+    let hostName = "brain-sdk-host";
+    for (let suffix = 1; explicit.includes(hostName); suffix++) hostName = `brain-sdk-host-${suffix}`;
+    options = { ...options, tools: await Promise.all(placeDefaultTools(options.tools ?? [], hostName).map(loadHostTool)) };
     const environments = collectEnvironments(options);
     const tools = (options.tools ?? []).map((placed) => [placed, inspectTool(placed)] as const);
     for (const [, tool] of tools) {
@@ -330,7 +339,8 @@ export class Sessions {
     const session = await this.client.request<WireSession>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}`);
     const handle = new SessionHandle(this.client, toSessionState(session));
     if (options.tools === undefined) return handle;
-    const tools = options.tools.map((placed) => {
+    options = { ...options, tools: await Promise.all(options.tools.map(loadHostTool)) };
+    let tools = options.tools!.map((placed) => {
       const tool = inspectTool(placed);
       if (tool.handler === undefined || tool.contract === undefined) throw new TypeError("reattachment accepts only Tools with run");
       return tool;
@@ -338,7 +348,12 @@ export class Sessions {
     const host = await this.client.register();
     for await (const event of handle.events()) {
       if (event.type !== "session_creation_ended") continue;
-      const configuration = (event.data as { configuration: { tools: WireTool[]; environments: { name: string; driver: string; host_id?: string }[] } }).configuration;
+      const configuration = (event.data as { configuration: { tools: WireTool[]; environments: { name: string; driver: string; host_id?: string; configuration?: { sdk_default?: boolean } }[] } }).configuration;
+      if (tools.some(tool => inspectEnvironment(tool.environment).automatic)) {
+        const original = configuration.environments.find(env => env.driver === "host" && env.host_id === host.hostId && env.configuration?.sdk_default === true);
+        if (original === undefined) throw new TypeError("session has no default Tool binding for this host");
+        tools = placeDefaultTools(options.tools!, original.name).map(inspectTool);
+      }
       const here = configuration.environments.filter((environment) => environment.driver === "host" && environment.host_id === host.hostId).map((environment) => environment.name);
       const placed = configuration.tools.flatMap((tool) => Object.keys(tool.placements).filter((environment) => here.includes(environment)).map((environment) => `${tool.name}\0${environment}`)).sort();
       const supplied = tools.map((tool) => `${tool.definition.name}\0${inspectEnvironment(tool.environment).name}`).sort();

@@ -79,6 +79,7 @@ fn registered(token: [u8; 32]) -> Host {
 }
 
 struct PendingCall {
+    services: Arc<dyn ExecutionServices>,
     events: mpsc::Sender<PendingEvent>,
 }
 
@@ -313,6 +314,31 @@ impl HostEnvironment {
         .await
     }
 
+    pub async fn model(
+        &self,
+        host_id: &HostId,
+        token: &str,
+        request: brain_protocol::HostModelRequest,
+    ) -> Result<brain_protocol::ModelResult, ApiError> {
+        let services = {
+            let mut state = self.lock()?;
+            let host = authorized(&mut state, host_id, token)?;
+            host.pending
+                .get(&(request.session_id, request.sequence))
+                .map(|pending| pending.services.clone())
+                .ok_or_else(|| ApiError::conflict("the host command is no longer pending"))?
+        };
+        let value = services
+            .call(
+                "model",
+                serde_json::to_value(request.request)
+                    .map_err(|error| ApiError::invalid_request(error.to_string()))?,
+            )
+            .await
+            .map_err(crate::service::api_error)?;
+        serde_json::from_value(value).map_err(|error| ApiError::internal(error.to_string()))
+    }
+
     async fn call(
         &self,
         host_id: &HostId,
@@ -359,7 +385,7 @@ impl HostEnvironment {
         name: &str,
         input: &serde_json::Value,
         deadline_ms: Option<u64>,
-        services: &dyn ExecutionServices,
+        services: Arc<dyn ExecutionServices>,
     ) -> Result<(), brain::Error> {
         let key = (operation.session_id.clone(), operation.sequence);
         let (event_sender, mut event_receiver) = mpsc::channel(8);
@@ -390,6 +416,7 @@ impl HostEnvironment {
                 key.clone(),
                 PendingCall {
                     events: event_sender,
+                    services: services.clone(),
                 },
             );
             sender
@@ -540,7 +567,7 @@ impl EnvironmentAdapter for HostEnvironment {
                         Err(_) => return Ok(unsupported("run this implementation")),
                     };
                 let Implementation::HostFunction { name } = implementation;
-                self.invoke(host_id, operation, &name, input, *deadline_ms, &*services)
+                self.invoke(host_id, operation, &name, input, *deadline_ms, services)
                     .await?;
                 Ok(EnvironmentReceipt::Returned { output: None })
             }
@@ -663,13 +690,22 @@ mod tests {
 
     #[async_trait::async_trait]
     impl brain::ToolServices for NoEvents {
-        async fn result(&self, _: Outcome) -> Result<u64, brain::Error> {
+        async fn model(
+            &self,
+            _: brain_protocol::ModelRequest,
+        ) -> Result<brain_protocol::ModelResult, brain::Error> {
+            unreachable!()
+        }
+        async fn result(&self, _: brain_protocol::ToolOutput) -> Result<u64, brain::Error> {
             Ok(8)
         }
-        async fn returned(&self, _: Option<Outcome>) -> Result<u64, brain::Error> {
+        async fn returned(
+            &self,
+            _: Option<brain_protocol::ToolOutput>,
+        ) -> Result<u64, brain::Error> {
             Ok(9)
         }
-        async fn finish(&self, _: Option<Outcome>) -> Result<u64, brain::Error> {
+        async fn finish(&self, _: Option<brain_protocol::ToolOutput>) -> Result<u64, brain::Error> {
             self.0.send_replace(true);
             Ok(10)
         }
@@ -805,9 +841,12 @@ mod tests {
                     session_id: command.session_id,
                     sequence: command.sequence,
                     update: ToolExecutionUpdate::Finish {
-                        outcome: Some(Outcome::Ok {
-                            value: serde_json::json!({"ok": true}),
-                        }),
+                        outcome: Some(
+                            Outcome::Ok {
+                                value: serde_json::json!({"ok": true}),
+                            }
+                            .into(),
+                        ),
                     },
                 },
             )
@@ -873,6 +912,7 @@ mod tests {
                         outcome: Outcome::Ok {
                             value: serde_json::json!("later")
                         }
+                        .into()
                     })
                 )
                 .await

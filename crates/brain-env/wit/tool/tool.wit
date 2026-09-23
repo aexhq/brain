@@ -19,6 +19,9 @@ interface types {
 interface host {
   use types.{tool-error};
 
+  // An independent request using this invocation's model authority and lifetime.
+  model: func(request-json: string) -> result<string, tool-error>;
+
   emit: func(kind: string, payload-json: string) -> result<u64, tool-error>;
   // Outcomes use the session contract. Each call commits before returning.
   emit-result: func(outcome-json: string) -> result<u64, tool-error>;
