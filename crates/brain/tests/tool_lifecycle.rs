@@ -21,9 +21,12 @@ impl ToolExecutor for Background {
         services: Arc<dyn ToolServices>,
     ) -> Result<Option<Outcome>, Error> {
         services
-            .result(Outcome::Ok {
-                value: json!("synchronous"),
-            })
+            .result(
+                Outcome::Ok {
+                    value: json!("synchronous"),
+                }
+                .into(),
+            )
             .await?;
         *self.services.lock().unwrap() = Some(services);
         Ok(None)
@@ -129,18 +132,24 @@ async fn background_results_survive_turn_return_and_completion_is_an_ordered_eve
 
     let tool = tools.services.lock().unwrap().take().unwrap();
     let result = tool
-        .result(Outcome::Ok {
-            value: json!("asynchronous"),
-        })
+        .result(
+            Outcome::Ok {
+                value: json!("asynchronous"),
+            }
+            .into(),
+        )
         .await
         .unwrap();
     let finish = tool.finish(None).await.unwrap();
     assert!(finish > result);
     assert!(tool.emit("late".into(), json!({})).await.is_err());
     assert!(
-        tool.result(Outcome::Ok {
-            value: json!("late")
-        })
+        tool.result(
+            Outcome::Ok {
+                value: json!("late")
+            }
+            .into()
+        )
         .await
         .is_err()
     );
@@ -230,9 +239,12 @@ async fn the_original_deadline_still_bounds_a_tool_after_return() {
         .await
         .unwrap();
     assert!(
-        tool.result(Outcome::Ok {
-            value: json!("late")
-        })
+        tool.result(
+            Outcome::Ok {
+                value: json!("late")
+            }
+            .into()
+        )
         .await
         .is_err()
     );

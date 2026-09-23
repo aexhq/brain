@@ -35,6 +35,16 @@ impl SessionRecord {
     /// The record as a client reads it.
     pub fn into_event(self) -> Event {
         let origin = self.origin.or_else(|| {
+            if matches!(
+                self.kind.as_str(),
+                "model_call_started" | "model_call_ended" | "model_call_failed"
+            ) {
+                return self
+                    .payload
+                    .get("tool_sequence")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|sequence| EventOrigin::Tool { sequence });
+            }
             matches!(
                 self.kind.as_str(),
                 brain_protocol::codes::event::TOOL_RESULT_EMITTED

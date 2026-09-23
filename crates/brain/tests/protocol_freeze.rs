@@ -31,9 +31,12 @@ impl ToolExecutor for EmittingTool {
             )
             .await?;
         services
-            .finish(Some(Outcome::Ok {
-                value: json!("done"),
-            }))
+            .finish(Some(
+                Outcome::Ok {
+                    value: json!("done"),
+                }
+                .into(),
+            ))
             .await?;
         Ok(None)
     }

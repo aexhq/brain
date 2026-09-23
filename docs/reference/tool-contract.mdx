@@ -3,10 +3,11 @@ title: Tool contract
 description: Inputs, results, completion, errors and background work.
 ---
 
-Every Tool has a model-visible name, description, input schema, and optional output schema, and is
-placed in one or more Environments of its session with `{ env, ...options }`. Choose one
-implementation form: `run` for a function this process holds, placed in `hostEnv`; or
-`implementation` for code the Environment interprets, placed in the Environment that runs it.
+A Tool declares its name, description, input schema, optional output schema, and `run` function.
+Call its factory to configure it: `lookup()` runs in the registering application by default;
+`lookup({ env, ...options })` selects an explicit Environment. Packaged factories carry their
+executable reference. [Publish a Tool](/brain/docs/guides/write-a-tool#publish-a-tool-library)
+with the ordinary build and the `brain-tools` helper.
 
 ## A function this process holds
 
@@ -26,13 +27,12 @@ export const lookup = tool({
   },
 });
 
-const app = hostEnv({ name: "app" });
-const placed = lookup({ env: app, prefix: "customer:" });
+const placed = lookup({ prefix: "customer:" });
 ```
 
 The function stays in this process and may close over application state; the host env inserts
 nothing around it, so the application owns its isolation and ambient authority. The factory parses
-and freezes options. With no options schema, place it as `lookup({ env: app })`.
+and freezes options. With no options schema, call `lookup()`. Explicit `hostEnv` names remain available.
 
 Tool input JSON Schema describes what Zod accepts before parsing (`io: "input"`): defaulted
 arguments are optional, and the handler receives their parsed defaults and transforms.
@@ -89,8 +89,9 @@ The second `run` argument contains:
 - `deadline`: the original caller-owned absolute deadline, or undefined for unlimited execution;
 - `signal`: best-effort cancellation and deadline notification;
 - `emit(kind, data)`: append a durable extension Event;
-- `emitResult(value)`: append a validated result without finishing;
-- `finish(value?)`: optionally append a result, then commit the completion boundary.
+- `emitResult(value, { content }?)`: append a validated result, optionally with model-facing text;
+- `finish(value?, { content }?)`: optionally append a result, then commit completion;
+- `model(request)`: call the session's model with independent messages and return its response.
 
 Always await `ctx.emit`. Its promise resolves with the committed journal sequence, so an emitted
 progress or audit Event is ordered before the Tool result:
@@ -117,6 +118,22 @@ are rejected. Results and finish always enter journal/history; only the Agentloo
 messages. Brain batches wake notifications for five milliseconds from the first pending commit,
 without delaying commits or their acknowledgements. Further events do not extend that window.
 
+### Result presentation and independent model calls
+
+`content` is optional text representing a result, including a structured error. It never replaces
+the journal's structured output, bypasses output validation, or changes failure status. Agentloops
+select and format it for their conversation; only the Agentloop edits or compacts that conversation.
+The [document summarizer](https://github.com/aexhq/brain/blob/main/examples/tool-model.mjs) demonstrates both APIs.
+
+Tool `model` requests use `ModelRequest` and return `ModelResult`. Messages are explicit. Omitted
+system and tools mean an empty prompt and no tools; response format has no conversation default.
+The session's fixed provider, model, and credentials apply. Tool requests share the originating
+activation's model-call budget, including after that activation returns. Concurrent calls retain
+the Tool's identity in `origin` and do not emit conversational assistant deltas. Usage and outcomes
+are journaled before the response returns. Completion, interruption, and the original Tool deadline
+stop pending requests; an interrupted provider call has an unknown outcome and is never replayed.
+HTTP Environments call the granted `model` execution service. Native Tools use `brain:tool/host.model`.
+
 ### Reattaching after restart
 
 Save `await brain.credentials()` in application credential storage. This registers the host if
@@ -124,6 +141,7 @@ needed and returns `{ hostId, token }`, the identity for host commands rather th
 Aex API key. Close the old client before replacing its connection. After restarting the
 application, pass those credentials as `credentials` to `new Brain(...)`, then call
 `brain.sessions.get(sessionId, { tools: [lookup({ env: app })] })` with the session's `run` Tools.
+Tools placed by default reattach with `lookup()` to their original stored host Environment.
 The supplied Tools must be exactly those the session placed in this host. Without `tools`, `get`
 only opens a session handle. Brain persists the host identity and token hash; a registration with
 sessions placed in it does not expire while disconnected. Restoring a host accepts future commands,

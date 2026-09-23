@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use brain_protocol::{Outcome, ToolCancellation, ToolDispatch};
+use brain_protocol::{
+    ModelRequest, ModelResult, Outcome, ToolCancellation, ToolDispatch, ToolOutput,
+};
 
 use crate::Error;
 
@@ -9,10 +11,11 @@ pub use execution::{ToolExecutions, ToolGroup, ToolWakeup};
 
 #[async_trait]
 pub trait ToolServices: Send + Sync {
+    async fn model(&self, request: ModelRequest) -> Result<ModelResult, Error>;
     async fn emit(&self, kind: String, payload: serde_json::Value) -> Result<u64, Error>;
-    async fn result(&self, outcome: Outcome) -> Result<u64, Error>;
-    async fn returned(&self, outcome: Option<Outcome>) -> Result<u64, Error>;
-    async fn finish(&self, outcome: Option<Outcome>) -> Result<u64, Error>;
+    async fn result(&self, output: ToolOutput) -> Result<u64, Error>;
+    async fn returned(&self, output: Option<ToolOutput>) -> Result<u64, Error>;
+    async fn finish(&self, output: Option<ToolOutput>) -> Result<u64, Error>;
     async fn closed(&self);
     fn telemetry(&self, record: serde_json::Value);
     fn cancelled(&self) -> bool {

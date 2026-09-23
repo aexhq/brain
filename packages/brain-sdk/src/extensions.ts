@@ -7,6 +7,7 @@ import type {
 } from "./types.js";
 
 const source = Symbol.for("@aexhq/brain/extension-source");
+const factorySource = Symbol.for("@aexhq/brain/tool-factory");
 
 interface ComponentSource {
   readonly kind: "component";
@@ -21,6 +22,7 @@ export type EnvironmentDriver =
 
 interface EnvironmentSource {
   readonly kind: "environment";
+  readonly automatic?: boolean;
   readonly name: string;
   readonly driver: EnvironmentDriver;
   readonly configuration: unknown;
@@ -41,6 +43,7 @@ interface ToolSource {
   readonly implementation: Component | Readonly<Record<string, unknown>> | undefined;
   readonly handler?: (input: unknown, call: HostToolCall) => unknown;
   readonly contract?: HostToolContract;
+  readonly load?: () => Promise<ToolSource>;
   readonly configuration: unknown;
   readonly environment: Environment;
 }
@@ -142,6 +145,21 @@ export function hostEnv(options: { readonly name: string }): Environment {
   return branded({ kind: "environment", name: options.name, driver: { driver: "host" }, configuration: {} });
 }
 
+const defaultHost = branded<Environment>({
+  kind: "environment", name: "brain-sdk-host", driver: { driver: "host" },
+  configuration: { sdk_default: true }, automatic: true,
+});
+
+export function placeDefaultTools(tools: readonly PlacedTool[], name: string): PlacedTool[] {
+  const environment = branded<Environment>({
+    kind: "environment", name, driver: { driver: "host" }, configuration: { sdk_default: true },
+  });
+  return tools.map(placed => {
+    const tool = inspectTool(placed);
+    return inspectEnvironment(tool.environment).automatic ? branded({ ...tool, environment }) : placed;
+  });
+}
+
 export interface AgentloopContract<OptionsSchema extends Schema | undefined = undefined> {
   readonly options?: OptionsSchema;
   readonly implementation: Component | Readonly<Record<string, unknown>> | ((options: Options<OptionsSchema>) => Readonly<Record<string, unknown>>);
@@ -190,15 +208,21 @@ export interface ToolContract<OptionsSchema extends Schema | undefined, InputSch
   readonly implementation?: Component | Readonly<Record<string, unknown>> | ((options: Options<OptionsSchema>) => unknown);
 }
 
+export type ToolPlacement<OptionsSchema extends Schema | undefined> = { readonly env?: Environment } &
+  (OptionsSchema extends Schema ? SchemaInput<OptionsSchema> : Record<never, never>);
+
+export type ToolFactory<OptionsSchema extends Schema | undefined, Input, Output> =
+  (...args: {} extends ToolPlacement<OptionsSchema> ? [placement?: ToolPlacement<OptionsSchema>] : [placement: ToolPlacement<OptionsSchema>]) => PlacedTool<Input, Output>;
+
 export function tool<OptionsSchema extends Schema | undefined = undefined, InputSchema extends Schema = Schema, OutputSchema extends Schema | undefined = undefined>(
   contract: ToolContract<OptionsSchema, InputSchema, OutputSchema>,
-): (placement: Placement<OptionsSchema>) => PlacedTool<SchemaInput<InputSchema>, OutputSchema extends Schema ? SchemaOutput<OutputSchema> : unknown> {
+): ToolFactory<OptionsSchema, SchemaInput<InputSchema>, OutputSchema extends Schema ? SchemaOutput<OutputSchema> : unknown> {
   const definition = toolDefinition(contract);
   if ((typeof contract.run === "function") === ("implementation" in contract && contract.implementation !== undefined)) {
     throw new TypeError("tool needs exactly one of run or implementation");
   }
-  return ((raw: unknown) => {
-    const { env, options } = placedOptions(contract.options, raw);
+  const factory = ((raw: unknown) => {
+    const { env, options } = placedOptions(contract.options, raw ?? {}, defaultHost);
     if (typeof contract.run === "function") {
       const run = contract.run;
       const hostContract: HostToolContract = {
@@ -227,7 +251,57 @@ export function tool<OptionsSchema extends Schema | undefined = undefined, Input
       configuration: clone(options),
       environment: env,
     });
-  }) as (placement: Placement<OptionsSchema>) => PlacedTool<SchemaInput<InputSchema>, OutputSchema extends Schema ? SchemaOutput<OutputSchema> : unknown>;
+  }) as ToolFactory<OptionsSchema, SchemaInput<InputSchema>, OutputSchema extends Schema ? SchemaOutput<OutputSchema> : unknown>;
+  return Object.defineProperty(factory, factorySource, { value: {
+    definition,
+    ...(contract.options === undefined ? {} : { optionsSchema: z.toJSONSchema(contract.options, { io: "input" }) }),
+  } });
+}
+
+export interface ToolMetadata {
+  readonly definition: ToolDefinition;
+  readonly optionsSchema?: Readonly<Record<string, unknown>>;
+}
+
+/** Build integrations read exported factories, without evaluating an invocation. */
+export function toolMetadata(factory: unknown): ToolMetadata {
+  if (typeof factory !== "function" || !(factorySource in factory)) throw new TypeError("expected an exported Tool factory");
+  return clone((factory as unknown as { [factorySource]: ToolMetadata })[factorySource]);
+}
+
+/** Language bindings supply JSON Schema metadata and their Environment's code reference. */
+export function bindTool<Input = unknown, Output = unknown, Options extends object = Record<never, never>>(
+  metadata: ToolMetadata,
+  implementation: Component | Readonly<Record<string, unknown>>,
+  runtime?: { readonly url: URL; readonly export: string },
+): (...args: {} extends Options ? [placement?: Options & { env?: Environment }] : [placement: Options & { env?: Environment }]) => PlacedTool<Input, Output> {
+  identifier(metadata.definition.name, "Tool name");
+  const factory = (raw: Options & { env?: Environment } = {} as Options) => {
+    if (!isRecord(raw)) throw new TypeError("Tool placement must be an object");
+    const { env = defaultHost, ...options } = raw;
+    inspectEnvironment(env);
+    if (metadata.optionsSchema === undefined && Object.keys(options).length !== 0) throw new TypeError("this Tool does not accept options");
+    const configuration = z.json().parse(options);
+    return branded<PlacedTool<Input, Output>>({
+      kind: "tool", definition: clone(metadata.definition), environment: env,
+      configuration, implementation: isComponent(implementation) ? implementation : { ...clone(implementation), configuration },
+      ...(runtime === undefined ? {} : { load: async () => {
+        const module = await import(runtime.url.href);
+        const exported = module[runtime.export];
+        if (typeof exported !== "function") throw new TypeError(`package has no Tool export ${runtime.export}`);
+        const loaded = inspectTool(exported({ ...options, env }));
+        if (loaded.handler === undefined) throw new TypeError("packaged executable must define run");
+        return loaded;
+      } }),
+    });
+  };
+  return Object.defineProperty(factory, factorySource, { value: clone(metadata) });
+}
+
+export async function loadHostTool(placed: PlacedTool): Promise<PlacedTool> {
+  const tool = inspectTool(placed);
+  return tool.load !== undefined && inspectEnvironment(tool.environment).driver.driver === "host"
+    ? branded(await tool.load()) : placed;
 }
 
 export function inspectComponent(value: Component): ComponentSource {
@@ -272,9 +346,9 @@ function parseOptions(schema: Schema | undefined, raw: unknown): unknown {
   return Object.freeze(schema.parse(raw));
 }
 
-function placedOptions(schema: Schema | undefined, raw: unknown): { readonly env: Environment; readonly options: unknown } {
-  if (!isRecord(raw) || !("env" in raw)) throw new TypeError("a placed extension requires { env }");
-  const env = raw.env as Environment;
+function placedOptions(schema: Schema | undefined, raw: unknown, defaultEnvironment?: Environment): { readonly env: Environment; readonly options: unknown } {
+  if (!isRecord(raw) || (!("env" in raw) && defaultEnvironment === undefined)) throw new TypeError("a placed extension requires { env }");
+  const env = (raw.env ?? defaultEnvironment) as Environment;
   inspectEnvironment(env);
   const { env: _environment, ...options } = raw;
   return { env, options: parseOptions(schema, options) };

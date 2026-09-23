@@ -1,5 +1,6 @@
 mod actor;
 mod config;
+pub(crate) mod model;
 mod services;
 
 use std::sync::{

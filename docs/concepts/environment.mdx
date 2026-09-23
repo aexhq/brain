@@ -18,7 +18,7 @@ In the [quickstart](/brain/docs/quickstart), the loop runs on Brain and the look
 
 ```js
 agentloop: pi({ env: brainEnv({ name: "brain" }) }),
-tools: [lookupOrder({ env: hostEnv({ name: "app" }) })],
+tools: [lookupOrder()],
 ```
 
 `name` identifies the environment within that session. Reuse an environment when tools should

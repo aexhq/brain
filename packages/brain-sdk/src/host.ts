@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { Outcome, Schema } from "./types.js";
-import type { ToolExecutionUpdate } from "./generated/session.js";
+import type { ModelRequest, ModelResult, ToolExecutionUpdate } from "./generated/session.js";
 
 /** The model-facing contract lives with the function held by this process. */
 export interface HostToolContract<InputSchema extends Schema = Schema, OutputSchema extends Schema | undefined = Schema | undefined> {
@@ -8,6 +8,11 @@ export interface HostToolContract<InputSchema extends Schema = Schema, OutputSch
   readonly description: string;
   readonly input: InputSchema;
   readonly output?: OutputSchema;
+}
+
+export interface ToolResultOptions {
+  /** Text representing this result in the model conversation. */
+  readonly content?: string;
 }
 
 export interface HostToolCall<Output = unknown> {
@@ -20,9 +25,11 @@ export interface HostToolCall<Output = unknown> {
   /** Append a durable extension Event. */
   emit(kind: string, data: unknown): Promise<number>;
   /** Append a result without completing this execution. */
-  emitResult(value: Output | Outcome<Output>): Promise<number>;
+  emitResult(value: Output | Outcome<Output>, options?: ToolResultOptions): Promise<number>;
   /** Commit completion, optionally with a final result. Use return call.finish(value). */
-  finish(value?: Output | Outcome<Output>): Promise<void>;
+  finish(value?: Output | Outcome<Output>, options?: ToolResultOptions): Promise<void>;
+  /** An independent call using the session model; does not edit conversation state. */
+  model(request: ModelRequest): Promise<ModelResult>;
 }
 
 export type HostToolHandler<Input, Output> = (input: Input, call: HostToolCall) => Output | Outcome<Output> | void | Promise<Output | Outcome<Output> | void>;
@@ -36,6 +43,7 @@ export interface InvokeFrame {
   readonly deadline_at_ms?: number;
   emit(kind: string, data: unknown): Promise<number>;
   update(value: ToolExecutionUpdate): Promise<number>;
+  model(request: ModelRequest): Promise<ModelResult>;
 }
 
 const MAX_TIMER_MS = 2_147_483_647;
@@ -101,7 +109,7 @@ export class HostToolRegistry {
     const ensureOpen = (): void => {
       if (finishing) throw new Error("Tool execution is finished");
     };
-    const finish = (outcome?: Outcome): Promise<void> => {
+    const finish = (outcome?: Outcome & ToolResultOptions): Promise<void> => {
       ensureOpen();
       finishing = true;
       clearTimeout(timer);
@@ -122,6 +130,11 @@ export class HostToolRegistry {
         outcome = { status: "ok", value: registered.contract.output.parse(outcome.value) };
       }
       return outcomeSchema.parse(outcome);
+    };
+    const present = (outcome: Outcome, options?: ToolResultOptions): Outcome & ToolResultOptions => {
+      if (options?.content === undefined) return outcome;
+      if (typeof options.content !== "string") throw new TypeError("Tool content must be text");
+      return { ...outcome, content: options.content };
     };
     const invalidOutput = async (error: unknown): Promise<never> => {
       await finish(errorOutcome("invalid_output", message(error)));
@@ -152,16 +165,17 @@ export class HostToolRegistry {
                 ensureOpen();
                 return enqueue(() => frame.emit(kind, data));
               },
-              emitResult: async (value) => {
+              model: (request) => { ensureOpen(); return frame.model(request); },
+              emitResult: async (value, options) => {
                 ensureOpen();
                 let outcome: Outcome;
-                try { outcome = normalize(value); } catch (error) { return invalidOutput(error); }
+                try { outcome = present(normalize(value), options); } catch (error) { return invalidOutput(error); }
                 return enqueue(() => frame.update({ type: "result", outcome }));
               },
-              finish: async (value) => {
+              finish: async (value, options) => {
                 ensureOpen();
                 let outcome: Outcome | undefined;
-                try { outcome = value === undefined ? undefined : normalize(value); } catch (error) { return invalidOutput(error); }
+                try { outcome = value === undefined && options?.content === undefined ? undefined : present(normalize(value ?? null), options); } catch (error) { return invalidOutput(error); }
                 await finish(outcome);
               },
             });

@@ -38,6 +38,7 @@ const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
         host_commands,
         resolve_host,
         emit_host_event,
+        host_model,
         create_session,
         list_sessions,
         list_models,
@@ -173,6 +174,7 @@ fn host_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>, body_limit: u
         documented::<__path_host_commands, _, _, _>(routed, host_commands::<A>),
         documented::<__path_resolve_host, _, _, _>(routed, resolve_host::<A>),
         documented::<__path_emit_host_event, _, _, _>(routed, emit_host_event::<A>),
+        documented::<__path_host_model, _, _, _>(routed, host_model::<A>),
     ] {
         router = router.route(&path, method);
     }
@@ -336,6 +338,29 @@ async fn emit_host_event<A: BrainApi>(
             .await
             .map_err(HttpError)?,
     ))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/hosts/{host_id}/model",
+    operation_id = "callHostModel",
+    params(("host_id" = contract::HostId, Path)),
+    request_body = contract::HostModelRequest,
+    responses(
+        (status = 200, description = "Invocation model result", body = contract::ModelResult),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
+async fn host_model<A: BrainApi>(
+    State(api): State<A>,
+    Path(host_id): Path<HostId>,
+    headers: HeaderMap,
+    Json(request): Json<brain_protocol::HostModelRequest>,
+) -> Result<Json<brain_protocol::ModelResult>, HttpError> {
+    api.host_model(host_id, bearer(&headers)?, request)
+        .await
+        .map(Json)
+        .map_err(HttpError)
 }
 
 fn host_sse(command: HostCommand) -> Result<SseEvent, std::convert::Infallible> {

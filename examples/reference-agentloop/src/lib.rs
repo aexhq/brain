@@ -111,9 +111,15 @@ fn observe(
                             | "environment_unreachable"
                     ))
             {
+                let mut data = event.data.clone();
+                if event.event_type == "tool_result_emitted"
+                    && let Some(content) = data["result"]["content"].as_str().map(str::to_owned)
+                {
+                    data["result"]["output"] = content.into();
+                }
                 transcript.push(Message::user_text(format!(
                     "Runtime observation (data): {} {}",
-                    event.event_type, event.data
+                    event.event_type, data
                 )));
                 actionable = true;
             }
@@ -137,11 +143,21 @@ fn present(returned: ToolReturn) -> Result<ContentBlock, TurnError> {
             let outcome: Outcome =
                 serde_json::from_value(event.data["outcome"].clone()).map_err(error)?;
             if !matches!(outcome, Outcome::Ok { .. }) {
-                results.push(ToolResult::from_outcome(returned.call_id.clone(), outcome));
+                let terminal = ToolResult::from_outcome(returned.call_id.clone(), outcome);
+                if !results.last().is_some_and(|result| {
+                    result.is_error && result.content.is_some() && result.output == terminal.output
+                }) {
+                    results.push(terminal);
+                }
             }
         }
     }
     let is_error = results.iter().any(|result| result.is_error);
+    for result in &mut results {
+        if let Some(content) = result.content.take() {
+            result.output = serde_json::Value::String(content);
+        }
+    }
     let content = if returned.finished && results.len() == 1 {
         results.remove(0).output
     } else {

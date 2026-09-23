@@ -576,6 +576,28 @@
       "pattern": "^host_[A-Za-z0-9]{20,32}$",
       "type": "string"
     },
+    "HostModelRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/ModelRequest"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "session_id": {
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "required": [
+        "session_id",
+        "sequence",
+        "request"
+      ],
+      "type": "object"
+    },
     "HostOperation": {
       "description": "What a host is asked to do for a session placed in it. A call is named by the\ncommand's `(session_id, sequence)`; the Tool's own call id never leaves Brain.",
       "oneOf": [
@@ -1241,7 +1263,7 @@
           "additionalProperties": false,
           "properties": {
             "outcome": {
-              "$ref": "#/$defs/Outcome"
+              "$ref": "#/$defs/ToolOutput"
             },
             "type": {
               "const": "result",
@@ -1258,7 +1280,7 @@
           "additionalProperties": false,
           "properties": {
             "outcome": {
-              "$ref": "#/$defs/Outcome"
+              "$ref": "#/$defs/ToolOutput"
             },
             "type": {
               "const": "returned",
@@ -1274,7 +1296,7 @@
           "additionalProperties": false,
           "properties": {
             "outcome": {
-              "$ref": "#/$defs/Outcome"
+              "$ref": "#/$defs/ToolOutput"
             },
             "type": {
               "const": "finish",
@@ -1292,6 +1314,87 @@
       "pattern": "^[0-9a-f]{64}$",
       "type": "string"
     },
+    "ToolOutput": {
+      "description": "A Tool observation with an optional presentation for the Agentloop.",
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "ok",
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "status",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/OutcomeError"
+            },
+            "status": {
+              "const": "error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "timeout",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "cancelled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "status": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "message"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "content": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "ToolPlacement": {
       "additionalProperties": false,
       "properties": {
@@ -1305,6 +1408,10 @@
     "ToolResult": {
       "properties": {
         "call_id": {
+          "type": "string"
+        },
+        "content": {
+          "description": "Optional model-facing text; the structured output and failure status are unchanged.",
           "type": "string"
         },
         "is_error": {

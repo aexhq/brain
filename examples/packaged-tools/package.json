@@ -1,0 +1,17 @@
+{
+  "name": "@brain-example/files",
+  "version": "1.0.0",
+  "type": "module",
+  "files": ["dist"],
+  "exports": {
+    ".": { "import": "./dist/client.js", "types": "./dist/client.d.ts" },
+    "./runtime": { "import": "./dist/runtime.js" }
+  },
+  "brain": { "tools": { ".": { "runtime": "./runtime", "exports": ["readText"] } } },
+  "scripts": {
+    "build": "tsc --module NodeNext --target ES2023 --strict --declaration --outDir dist runtime.ts && brain-tools",
+    "prepack": "npm run build"
+  },
+  "dependencies": { "@aexhq/brain": "0.30.0", "zod": "4.4.3" },
+  "devDependencies": { "typescript": "^5.9.2", "@types/node": "^24.3.0" }
+}

@@ -111,6 +111,15 @@ impl BrainApi for Api {
         }
         Ok(HostEventAck { sequence: 42 })
     }
+    async fn host_model(
+        &self,
+        _: HostId,
+        _: String,
+        _: brain_protocol::HostModelRequest,
+    ) -> Result<brain_protocol::ModelResult, ApiError> {
+        Err(ApiError::conflict("no invocation"))
+    }
+
     async fn emit_host_event(
         &self,
         host_id: HostId,

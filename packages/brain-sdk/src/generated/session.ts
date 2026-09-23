@@ -166,17 +166,51 @@ export type SessionId = string;
  */
 export type ToolExecutionUpdate =
   | {
-      outcome: Outcome;
+      outcome: ToolOutput;
       type: "result";
     }
   | {
-      outcome?: Outcome;
+      outcome?: ToolOutput;
       type: "returned";
     }
   | {
-      outcome?: Outcome;
+      outcome?: ToolOutput;
       type: "finish";
     };
+/**
+ * A Tool observation with an optional presentation for the Agentloop.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ToolOutput".
+ */
+export type ToolOutput = {
+  content?: string;
+} & ToolOutput1;
+export type ToolOutput1 =
+  | {
+      status: "ok";
+      value: unknown;
+    }
+  | {
+      error: OutcomeError;
+      status: "error";
+    }
+  | {
+      status: "timeout";
+    }
+  | {
+      status: "cancelled";
+    }
+  | {
+      message: string;
+      status: "unknown";
+    };
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "StopReason".
+ */
+export type StopReason =
+  ("end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | "refusal") | "unknown";
 /**
  * The one envelope every tool invocation resolves to.
  *
@@ -206,12 +240,6 @@ export type Outcome =
       message: string;
       status: "unknown";
     };
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "StopReason".
- */
-export type StopReason =
-  ("end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | "refusal") | "unknown";
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "SessionStatus".
@@ -452,6 +480,57 @@ export interface HostEventAck {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "HostModelRequest".
+ */
+export interface HostModelRequest {
+  request: ModelRequest;
+  sequence: number;
+  session_id: SessionId;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ModelRequest".
+ */
+export interface ModelRequest {
+  max_output_tokens?: number;
+  messages: Message[];
+  /**
+   * Presentation options validated by the selected adapter; never execution authority.
+   */
+  options?: {
+    [k: string]: unknown | undefined;
+  };
+  /**
+   * Absent inherits the session default; null resets it; an object sets it.
+   */
+  response_format?: {
+    [k: string]: unknown | undefined;
+  };
+  /**
+   * The system prompt for this call. Absent means the one the session was created
+   * with; empty means none. The session fills it in before the call is journalled.
+   */
+  system?: string;
+  /**
+   * The tools to offer on this call, by name. Absent means every tool the session was
+   * created with; each name given must be one of them. Filled in like `system`.
+   */
+  tools?: ToolDefinition[];
+}
+/**
+ * What the model may be told about a Tool.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ToolDefinition".
+ */
+export interface ToolDefinition {
+  description: string;
+  input_schema: {};
+  name: string;
+  output_schema: {};
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "HostRegistration".
  */
 export interface HostRegistration {
@@ -550,48 +629,6 @@ export interface ModelProvider {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "ModelRequest".
- */
-export interface ModelRequest {
-  max_output_tokens?: number;
-  messages: Message[];
-  /**
-   * Presentation options validated by the selected adapter; never execution authority.
-   */
-  options?: {
-    [k: string]: unknown | undefined;
-  };
-  /**
-   * Absent inherits the session default; null resets it; an object sets it.
-   */
-  response_format?: {
-    [k: string]: unknown | undefined;
-  };
-  /**
-   * The system prompt for this call. Absent means the one the session was created
-   * with; empty means none. The session fills it in before the call is journalled.
-   */
-  system?: string;
-  /**
-   * The tools to offer on this call, by name. Absent means every tool the session was
-   * created with; each name given must be one of them. Filled in like `system`.
-   */
-  tools?: ToolDefinition[];
-}
-/**
- * What the model may be told about a Tool.
- *
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "ToolDefinition".
- */
-export interface ToolDefinition {
-  description: string;
-  input_schema: {};
-  name: string;
-  output_schema: {};
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "ModelResult".
  */
 export interface ModelResult {
@@ -677,6 +714,10 @@ export interface TurnError {
  */
 export interface ToolResult {
   call_id: string;
+  /**
+   * Optional model-facing text; the structured output and failure status are unchanged.
+   */
+  content?: string;
   is_error: boolean;
   output: unknown;
 }

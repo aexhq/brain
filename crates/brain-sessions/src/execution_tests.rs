@@ -17,13 +17,19 @@ impl EnvironmentAdapter for Adapter {
 struct Leaf;
 #[async_trait]
 impl ToolServices for Leaf {
-    async fn result(&self, _: Outcome) -> Result<u64, brain::Error> {
+    async fn model(
+        &self,
+        _: brain_protocol::ModelRequest,
+    ) -> Result<brain_protocol::ModelResult, brain::Error> {
         unreachable!()
     }
-    async fn returned(&self, _: Option<Outcome>) -> Result<u64, brain::Error> {
+    async fn result(&self, _: brain_protocol::ToolOutput) -> Result<u64, brain::Error> {
         unreachable!()
     }
-    async fn finish(&self, _: Option<Outcome>) -> Result<u64, brain::Error> {
+    async fn returned(&self, _: Option<brain_protocol::ToolOutput>) -> Result<u64, brain::Error> {
+        unreachable!()
+    }
+    async fn finish(&self, _: Option<brain_protocol::ToolOutput>) -> Result<u64, brain::Error> {
         unreachable!()
     }
     async fn closed(&self) {

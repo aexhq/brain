@@ -21,6 +21,9 @@ remain in [the contracts](../../contracts), [user docs](../../docs), and
 
 ## Current architecture
 
+- [ADR-049: Default inline Tools to the caller and generate bindings for packaged Tools](2026-09-23-01-tool-authoring-and-packaging.md)
+- [ADR-050: Let Tools present results while one Agentloop owns the conversation](2026-09-23-02-tool-context-and-model-boundary.md)
+
 - [ADR-001: Make Brain an independent runtime with injected execution ports](2026-08-20-01-standalone.md)
 - [ADR-021: Make the core runtime one session and let the server manage sessions](2026-09-02-04-session-runtime.md)
 - [ADR-023: Give the Agentloop one whole turn and asynchronous Brain services](2026-09-04-01-turn-services.md)

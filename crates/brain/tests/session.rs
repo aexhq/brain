@@ -121,7 +121,7 @@ impl ToolExecutor for OutcomeTools {
     ) -> Result<Option<Outcome>, Error> {
         self.entered.notify_one();
         tokio::time::sleep(self.delay).await;
-        services.finish(Some(self.outcome.clone())).await?;
+        services.finish(Some(self.outcome.clone().into())).await?;
         Ok(None)
     }
     async fn cancel(&self, cancellation: ToolCancellation) -> Result<(), Error> {
@@ -377,9 +377,12 @@ async fn wall_deadline_keeps_completed_tool_results_and_records_unknown_cancella
                 std::future::pending::<()>().await;
             }
             services
-                .finish(Some(Outcome::Ok {
-                    value: serde_json::json!("known answer"),
-                }))
+                .finish(Some(
+                    Outcome::Ok {
+                        value: serde_json::json!("known answer"),
+                    }
+                    .into(),
+                ))
                 .await?;
             Ok(None)
         }

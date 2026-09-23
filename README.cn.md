@@ -33,13 +33,13 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 在另一个终端安装依赖，并设置环境变量 `OPENAI_API_KEY`：
 
 ```sh
-npm install @aexhq/brain@0.29.0 @aexhq/agentloop-pi@7.0.1 zod@4
+npm install @aexhq/brain@0.30.0 @aexhq/agentloop-pi@7.0.1 zod@4
 ```
 
 将以下内容保存为 `order.mjs`，运行 `node order.mjs`：
 
 ```js
-import { Brain, brainEnv, hostEnv, tool } from "@aexhq/brain";
+import { Brain, brainEnv, tool } from "@aexhq/brain";
 import { pi } from "@aexhq/agentloop-pi";
 import { z } from "zod";
 
@@ -55,7 +55,7 @@ try {
   const session = await brain.sessions.create({
     model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
     agentloop: pi({ env: brainEnv({ name: "brain" }) }),
-    tools: [lookupOrder({ env: hostEnv({ name: "app" }) })],
+    tools: [lookupOrder()],
   });
   try {
     await session.send("Look up order A-1001. Has it shipped?");

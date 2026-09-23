@@ -4,6 +4,22 @@ import { z } from "zod";
 import { HostToolRegistry } from "../dist/host.js";
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
+
+test("Tool model calls use explicit messages and content never replaces structured results or errors", async () => {
+  const requests = [];
+  let retained;
+  const { running, updates } = invoke(registry(async (_, ctx) => {
+    retained = ctx;
+    const response = await ctx.model({ messages: [{ role: "user", content: [{ type: "text", text: "private" }] }] });
+    await ctx.emitResult({ rows: 3 }, { content: "Three matches." });
+    return ctx.finish({ status: "error", error: { code: "unavailable", message: response.message } }, { content: "Try later." });
+  }), { model: async request => { requests.push(request); return { message: "offline" }; } });
+  await running;
+  assert.equal(requests.length, 1);
+  assert.deepEqual(updates[0].outcome, { status: "ok", value: { rows: 3 }, content: "Three matches." });
+  assert.deepEqual(updates[1].outcome, { status: "error", error: { code: "unavailable", message: "offline" }, content: "Try later." });
+  assert.throws(() => retained.model(requests[0]), /finished/u);
+});
 function registry(handler, output) {
   const tools = new HostToolRegistry();
   tools.register("app", { name: "test", description: "Test outcomes.", input: z.object({}), output }, handler);

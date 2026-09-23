@@ -1,11 +1,12 @@
 import type { HostToolRegistry } from "./host.js";
-import type { HostCommand, HostEvent, HostEventAck, HostResult } from "./generated/session.js";
+import type { HostCommand, HostEvent, HostEventAck, HostResult, HostModelRequest, ModelResult } from "./generated/session.js";
 import type { SessionStreamEvent } from "./types.js";
 
 export interface HostTransport {
   stream(signal?: AbortSignal, onOpen?: () => void): AsyncGenerator<SessionStreamEvent>;
   result(value: HostResult): Promise<HostEventAck>;
   emit(value: HostEvent): Promise<HostEventAck>;
+  model(value: HostModelRequest): Promise<ModelResult>;
 }
 
 /** Answers the commands Brain sends this host: one registry per session placed here,
@@ -133,6 +134,7 @@ export class HostPump {
       name: command.operation.name,
       arguments: command.operation.input,
       ...(command.deadline_at_ms === undefined ? {} : { deadline_at_ms: command.deadline_at_ms }),
+      model: request => this.transport.model({ session_id: command.session_id, sequence: command.sequence, request }),
       update: async (value) => (await this.transport.result({
         session_id: command.session_id,
         sequence: command.sequence,

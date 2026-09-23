@@ -27,12 +27,47 @@ Replace the quickstart's inline `lookupOrder` declaration with
 `import { lookupOrder } from "./order-tool.mjs"`. Keep its session configuration:
 
 ```js
-tools: [lookupOrder({ env: hostEnv({ name: "app" }) })],
+tools: [lookupOrder()],
 ```
 
 Run `node order.mjs`. The transcript includes the lookup result and an answer about the order.
 JavaScript needs no build step; TypeScript uses your app's normal build. The tool runs in your
 process and can use its installed packages. Keep that process connected until the tool finishes.
+
+## Publish a tool library
+
+Write and export `tool({ ..., run })` using your normal TypeScript or JavaScript build. The
+[runnable package example](https://github.com/aexhq/brain/tree/main/examples/packaged-tools)
+contains a filesystem Tool, a normal `tsc` build, and two package exports. `brain.tools` in its
+`package.json` selects the executable export and factory names. After compilation, `brain-tools`
+generates the public client entry and its types. Build and inspect the release with:
+
+```sh
+npm install
+npm run build
+npm pack
+```
+
+Consumers import the factory from the package and call `readText({ env: workspace })`. Its browser
+entry does not import the filesystem implementation. `readText()` loads the executable in the
+registering app when that runtime supports it. The selected Environment prepares ordinary npm
+dependencies and loads the exact package version; an unavailable package or incompatible placement
+fails explicitly. Neither the Tool author nor its consumer writes an execution descriptor.
+
+Environment implementers can use `@aexhq/brain/runtime` and the `brain-tool-runtime` process bridge.
+Install packages in the isolated runtime, then use its supported loader; do not import customer
+packages into the Environment controller. The bridge supports events, intermediate results,
+return-before-finish, model calls and explicit completion.
+
+## Supply useful model context
+
+Finish with the full structured value and optional short text: `ctx.finish(value, { content: summary })`.
+`ctx.emitResult` accepts the same option for partial results. The Agentloop decides where to place
+that text and when to compact it.
+
+A Tool can call `ctx.model` with its own messages. The
+[document summarizer](https://github.com/aexhq/brain/blob/main/examples/tool-model.mjs) is a complete
+example. Its request returns to that Tool; the Agentloop still owns the shared conversation.
 
 ## Language choices
 
