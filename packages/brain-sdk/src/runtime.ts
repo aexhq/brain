@@ -11,7 +11,7 @@ export const nodePackage = z.strictObject({
   type: z.literal("node_package"),
   package: z.string().regex(packageName),
   version: z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u),
-  entry: z.string().refine(value => value === "." || /^\.\/(?:[A-Za-z0-9_-]+\/?)+$/u.test(value), "invalid package export"),
+  entry: z.string().refine(value => value === "." || /^\.\/[A-Za-z0-9_-][A-Za-z0-9._-]*(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$/u.test(value), "invalid package export"),
   export: z.string().regex(/^[A-Za-z_$][\w$]*$/u),
   configuration: z.record(z.string(), z.json()).default({}),
 });

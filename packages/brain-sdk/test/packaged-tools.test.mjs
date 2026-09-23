@@ -29,7 +29,7 @@ test("ordinary compilation publishes browser-safe bindings and an executable pac
     brain: { tools: { ".": { runtime: "./runtime", exports: ["readText"] } } },
     dependencies: { "@aexhq/brain": `file:${archive.replaceAll("\\", "/")}`, zod: "4.4.3" },
   }));
-  npm(library, "install", "--ignore-scripts", "--offline", "--no-audit", "--no-fund");
+  npm(library, "install", "--ignore-scripts", "--no-audit", "--no-fund");
   await writeFile(join(library, "runtime.ts"), `import { readFile } from "node:fs/promises";
 import { tool } from "@aexhq/brain";
 import { z } from "zod";
@@ -47,7 +47,7 @@ export const readText = tool({ name: "read_text", description: "Read a file.",
   execFileSync(process.execPath, [join(library, "node_modules/@aexhq/brain/bin/brain-tools.mjs")], { cwd: library, stdio: "pipe" });
   const published = join(root, pack(library, root));
   await writeFile(join(app, "package.json"), JSON.stringify({ type: "module", dependencies: { "@fixture/files": `file:${published.replaceAll("\\", "/")}` } }));
-  npm(app, "install", "--ignore-scripts", "--offline", "--no-audit", "--no-fund");
+  npm(app, "install", "--ignore-scripts", "--no-audit", "--no-fund");
   // Only the published archive supplies the executable and its dependencies.
   await rm(library, { recursive: true, force: true });
   const clientFile = join(app, "node_modules/@fixture/files/dist/client.js");
