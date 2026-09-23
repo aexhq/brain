@@ -97,7 +97,7 @@ const pack = async (directory) => {
   };
   await writeFile(path.join(directory, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   // Registry mutation consumes these reviewed copies from the immutable workflow artifact.
-  for (const filename of ["npm-release.mjs", "publish.mjs"]) {
+  for (const filename of ["npm-release.mjs", "publish.mjs", "npm-registry.mjs"]) {
     await writeFile(path.join(directory, filename), await readFile(path.join(root, "tools", filename)));
   }
 };

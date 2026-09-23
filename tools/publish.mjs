@@ -9,6 +9,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { registryValue as readRegistry, waitFor } from "./npm-registry.mjs";
 
 const npmCli = [
   process.env.npm_execpath,
@@ -33,44 +34,28 @@ const run = (args, stdio = "pipe", cwd = directory) => {
   return typeof output === "string" ? output.trim() : "";
 };
 
-const registryValue = (spec, field) => {
-  try {
-    return JSON.parse(run(["view", spec, field, "--json"]));
-  } catch {
-    return undefined;
-  }
-};
-
-const waitFor = async (read, expected, description) => {
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    if (read() === expected) return;
-    await new Promise((resolve) => setTimeout(resolve, 5_000));
-  }
-  throw new Error(`${description} did not become ${JSON.stringify(expected)} within 60 seconds`);
-};
+const registryValue = (spec, field) => readRegistry(run, spec, field);
 
 const assertRegistryObject = (item) => {
   const spec = `${item.name}@${item.version}`;
   const integrity = registryValue(spec, "dist.integrity");
-  if (integrity !== item.integrity) {
-    throw new Error(
-      integrity === undefined
-        ? `${spec} is not visible on the public registry`
-        : `${spec} exists with integrity ${integrity}, not this release's ${item.integrity}`,
-    );
+  if (integrity !== undefined && integrity !== item.integrity) {
+    throw new Error(`${spec} exists with integrity ${integrity}, not this release's ${item.integrity}`);
   }
+  return integrity;
 };
 
 const fetchProvenance = async (url, spec) => {
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    const response = await fetch(url, { redirect: "error" });
+  const deadline = Date.now() + 300_000;
+  while (Date.now() < deadline) {
+    const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(10_000) });
     if (response.ok) return response.json();
     if (response.status !== 404) {
       throw new Error(`${spec} provenance endpoint returned ${response.status}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 5_000));
   }
-  throw new Error(`${spec} provenance endpoint remained unavailable for 60 seconds`);
+  throw new Error(`${spec} provenance remained unavailable for 5 minutes; re-run the failed verification job`);
 };
 
 const assertOriginalProvenance = async (item) => {
@@ -137,7 +122,12 @@ const verifyRegistrySignatures = () => {
 
 const verifyPublishedRelease = async () => {
   for (const item of manifest.packages) {
-    assertRegistryObject(item);
+    await waitFor(() => assertRegistryObject(item), item.integrity, `${item.name}@${item.version} integrity`);
+    await waitFor(
+      () => registryValue(`${item.name}@${item.version}`, "dist.attestations.provenance.predicateType"),
+      "https://slsa.dev/provenance/v1",
+      `${item.name}@${item.version} provenance`,
+    );
     await assertOriginalProvenance(item);
   }
   verifyRegistrySignatures();
@@ -171,20 +161,18 @@ if (operation === "stage") {
         "inherit",
       );
     }
-    await waitFor(() => registryValue(spec, "dist.integrity"), item.integrity, `${spec} integrity`);
-    await waitFor(
-      () => registryValue(spec, "dist.attestations.provenance.predicateType"),
-      "https://slsa.dev/provenance/v1",
-      `${spec} provenance`,
-    );
+    process.stdout.write(`submitted ${spec} (${item.integrity})\n`);
+  }
+} else if (operation === "verify") {
+  await verifyPublishedRelease();
+  for (const item of manifest.packages) {
     await waitFor(
       () => registryValue(`${item.name}@next`, "version"),
       item.version,
       `${item.name}@next`,
     );
-    process.stdout.write(`staged ${spec} (${item.integrity})\n`);
+    process.stdout.write(`verified ${item.name}@${item.version} (${item.integrity})\n`);
   }
-  await verifyPublishedRelease();
 } else if (operation === "promote") {
   if (!process.env.NODE_AUTH_TOKEN) {
     throw new Error("the protected npm-production environment has no NPM_DIST_TAG_TOKEN");
@@ -210,5 +198,5 @@ if (operation === "stage") {
     process.stdout.write(`promoted ${spec} without republishing\n`);
   }
 } else {
-  throw new Error("usage: publish.mjs stage|promote");
+  throw new Error("usage: publish.mjs stage|verify|promote");
 }

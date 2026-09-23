@@ -187,16 +187,39 @@ jobs:
         env:
           EXPECTED_COMMIT: ${{ inputs.expected_commit }}
         run: node "$RUNNER_TEMP/brain-npm-release/publish.mjs" stage
-      - name: Record staged versions
+      - name: Record submitted versions
         shell: bash
         env:
           VERSIONS: ${{ needs.prepare.outputs.versions }}
         run: |
-          echo "Staged exact versions under npm dist-tag \`next\`: \`$VERSIONS\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Submitted exact versions under npm dist-tag \`next\`: \`$VERSIONS\`" >> "$GITHUB_STEP_SUMMARY"
+
+  verify:
+    if: inputs.operation == 'stage'
+    needs: stage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: brain-npm-release-${{ inputs.expected_commit }}
+          path: ${{ runner.temp }}/brain-npm-release
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: npm install --global npm@11.19.0
+      - name: Verify the submitted archives without publishing
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+        run: node "$RUNNER_TEMP/brain-npm-release/publish.mjs" verify
 
   e2e-sdk:
     if: inputs.operation == 'stage'
-    needs: stage
+    needs: verify
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -251,7 +274,7 @@ jobs:
 
   e2e-http:
     if: inputs.operation == 'stage'
-    needs: stage
+    needs: verify
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -306,7 +329,7 @@ jobs:
 
   e2e-contracts:
     if: inputs.operation == 'stage'
-    needs: stage
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -379,17 +402,19 @@ jobs:
 
   stage-gate:
     if: always() && inputs.operation == 'stage'
-    needs: [stage, e2e-sdk, e2e-http, e2e-contracts]
+    needs: [stage, verify, e2e-sdk, e2e-http, e2e-contracts]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every candidate interface
         env:
           STAGE: ${{ needs.stage.result }}
+          VERIFY: ${{ needs.verify.result }}
           SDK: ${{ needs.e2e-sdk.result }}
           HTTP: ${{ needs.e2e-http.result }}
           CONTRACTS: ${{ needs.e2e-contracts.result }}
         run: |
           test "$STAGE" = success
+          test "$VERIFY" = success
           test "$SDK" = success
           test "$HTTP" = success
           test "$CONTRACTS" = success
