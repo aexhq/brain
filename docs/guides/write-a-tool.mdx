@@ -71,6 +71,11 @@ example. Its request returns to that Tool; the Agentloop still owns the shared c
 
 ## Language choices
 
+Other languages can supply JSON Schema metadata directly through `bindTool`; no Zod schema
+reconstruction is needed. The [Python package example](https://github.com/aexhq/brain/tree/main/tests/fixtures/python-project)
+exports metadata from Python and runs in a prepared Python Environment. Its JavaScript caller
+is exercised in [the cross-language test](https://github.com/aexhq/brain/blob/main/examples/python-environment.test.mjs).
+
 | Language | Where it runs | Build path |
 | --- | --- | --- |
 | JavaScript / TypeScript | Your application (`hostEnv`) | The example above |
