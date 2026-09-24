@@ -13,6 +13,11 @@ use brain_protocol::{
 };
 use tokio::sync::Mutex;
 
+fn not_admitted(mut error: ApiError) -> ApiError {
+    error.details = Some(serde_json::json!({ "admission": "rejected" }));
+    error
+}
+
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod session_tests;
@@ -364,22 +369,35 @@ impl BrainApi for ServerApi {
         idempotency_key: String,
         request: MessageRequest,
     ) -> Result<SessionSummary, ApiError> {
-        Session::validate_message(&request).map_err(api_error)?;
+        Session::validate_message(&request)
+            .map_err(api_error)
+            .map_err(not_admitted)?;
         let scope = format!("session:{session_id}:message");
         let lock = self.idempotency_lock(&scope, &idempotency_key)?;
         let _guard = lock.lock().await;
         if let Some(saved) = self
             .resources
             .idempotency
-            .replay_or_claim(&scope, &idempotency_key, &request)
+            .replay(&scope, &idempotency_key, &request)
             .map_err(api_error)?
         {
             return Self::replay(saved);
         }
-        let session = self
+        let admission = self
             .sessions
-            .send_message(session_id.clone(), request.clone())
-            .await?;
+            .prepare_message(session_id, request.clone(), true)
+            .await
+            .map_err(not_admitted)?;
+        let _ = self
+            .resources
+            .idempotency
+            .replay_or_claim(&scope, &idempotency_key, &request)
+            .map_err(api_error)?;
+        let (_, result) = admission.start().await?;
+        let session = result
+            .await
+            .map_err(|_| internal("turn stopped"))?
+            .map_err(api_error)?;
         self.resources
             .idempotency
             .put(
@@ -398,22 +416,31 @@ impl BrainApi for ServerApi {
         idempotency_key: String,
         request: MessageRequest,
     ) -> Result<u64, ApiError> {
-        Session::validate_message(&request).map_err(api_error)?;
+        Session::validate_message(&request)
+            .map_err(api_error)
+            .map_err(not_admitted)?;
         let scope = format!("session:{session_id}:submit");
         let lock = self.idempotency_lock(&scope, &idempotency_key)?;
         let _guard = lock.lock().await;
         if let Some(saved) = self
             .resources
             .idempotency
-            .replay_or_claim(&scope, &idempotency_key, &request)
+            .replay(&scope, &idempotency_key, &request)
             .map_err(api_error)?
         {
             return Self::replay(saved);
         }
-        let sequence = self
+        let admission = self
             .sessions
-            .submit_message(session_id, request.clone())
-            .await?;
+            .prepare_message(session_id, request.clone(), false)
+            .await
+            .map_err(not_admitted)?;
+        let _ = self
+            .resources
+            .idempotency
+            .replay_or_claim(&scope, &idempotency_key, &request)
+            .map_err(api_error)?;
+        let (sequence, _) = admission.start().await?;
         self.resources
             .idempotency
             .put(

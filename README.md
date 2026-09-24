@@ -105,3 +105,7 @@ For source builds and checks, see [Contributing](CONTRIBUTING.md).
 
 [MIT license](LICENSE). [Report an issue](https://github.com/aexhq/brain/issues)
 or contact [support@aex.dev](mailto:support@aex.dev).
+
+For short-lived requests, `session.submit()` returns a durable turn sequence;
+`session.outcome(sequence)` reads its committed result from another client.
+[Submission example](https://github.com/aexhq/brain/blob/main/examples/submitted-turn.mjs).

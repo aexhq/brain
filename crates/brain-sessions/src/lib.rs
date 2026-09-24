@@ -2,7 +2,7 @@
 mod environment;
 mod service;
 pub use environment::EnvironmentRegistry;
-pub use service::{SessionResources, Sessions};
+pub use service::{MessageAdmission, SessionResources, Sessions};
 #[doc(hidden)]
 pub mod locks;
 

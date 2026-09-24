@@ -142,7 +142,15 @@ Aex API key. Close the old client before replacing its connection. After restart
 application, pass those credentials as `credentials` to `new Brain(...)`, then call
 `brain.sessions.get(sessionId, { tools: [lookup({ env: app })] })` with the session's `run` Tools.
 Tools placed by default reattach with `lookup()` to their original stored host Environment.
-The supplied Tools must be exactly those the session placed in this host. Without `tools`, `get`
+The supplied Tools must be exactly those the session placed in this host, with identical advertised
+input and output schemas. Reattachment rejects changed contracts before invocation. Keep compatible
+handlers for existing sessions, or create a new session when changing a contract.
+
+Native input and output validation awaits Zod `parseAsync`, including defaults and transformations.
+Async checks consume the invocation deadline; expiry or cancellation prevents late results. Already
+expired calls stop before validation or customer code. Schema export still happens during authoring.
+The host command carries an absolute Unix `deadline_at_ms`; Environment requests carry remaining
+`deadline_ms`. Without `tools`, `get`
 only opens a session handle. Brain persists the host identity and token hash; a registration with
 sessions placed in it does not expire while disconnected. Restoring a host accepts future commands,
 never replays old ones, and does not restore the application state captured by its functions.

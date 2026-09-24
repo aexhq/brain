@@ -10,7 +10,7 @@ import type {
 import type {
   Component, CreateSessionOptions, Environment, OperationOptions, PlacedAgentloop, PlacedTool,
   SessionEvent, SessionState, SessionStreamEvent, UserInput, SendOptions,
-  Schema, SchemaOutput, StructuredSendOptions,
+  Schema, SchemaOutput, StructuredSendOptions, TurnOutcome,
 } from "./types.js";
 
 export interface BrainOptions {
@@ -360,6 +360,13 @@ export class Sessions {
       if (placed.length === 0 || JSON.stringify(placed) !== JSON.stringify(supplied)) {
         throw new TypeError("the Tools supplied must be exactly those the session placed in this host");
       }
+      for (const tool of tools) {
+        const original = configuration.tools.find(candidate => candidate.name === tool.definition.name)!;
+        if (!sameJson(original.input_schema, tool.definition.inputSchema)
+          || !sameJson(original.output_schema, tool.definition.outputSchema)) {
+          throw new TypeError(`Tool ${tool.definition.name} has a different advertised contract; use compatible handlers or create a new session`);
+        }
+      }
       const registry = new HostToolRegistry();
       for (const tool of tools) registry.register(inspectEnvironment(tool.environment).name, tool.contract!, tool.handler!);
       host.pump.register(sessionId, registry);
@@ -451,6 +458,29 @@ export class SessionHandle {
 
   transcript(): Promise<SessionTranscript> {
     return this.client.request("GET", `/v1/sessions/${encodeURIComponent(this.id)}/transcript`);
+  }
+
+  /** Read the committed outcome of one submitted turn without waiting for future events. */
+  async outcome(sequence: number, signal?: AbortSignal): Promise<TurnOutcome> {
+    if (!Number.isSafeInteger(sequence) || sequence < 1) throw new TypeError("sequence must name a turn_started event");
+    let started = false;
+    let answer: string | undefined;
+    for await (const event of this.events(sequence - 1, signal)) {
+      if (!started) {
+        if (event.sequence !== sequence || event.type !== "turn_started") throw new TypeError("sequence must name a turn_started event");
+        started = true;
+      }
+      if (event.type === "output_emitted" && event.origin?.kind === "agentloop") {
+        const data = event.data as { type?: unknown; message?: unknown } | null;
+        if (data?.type === "assistant_message" && typeof data.message === "string") answer = data.message;
+      }
+      if (event.type === "turn_ended" || event.type === "turn_failed") {
+        return { sequence, status: event.type === "turn_ended" ? "ended" : "failed", terminal: event,
+          ...(answer === undefined ? {} : { answer }) };
+      }
+    }
+    if (!started) throw new TypeError("sequence must name a turn_started event");
+    return { sequence, status: "pending" };
   }
 
   events(after = 0, signal?: AbortSignal): AsyncIterable<SessionEvent> {
@@ -597,4 +627,14 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 
 function toSessionState(session: WireSession): SessionState {
   return Object.freeze({ id: session.session_id, status: session.status, lastSequence: session.last_sequence });
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  const a = Object.keys(left).sort();
+  const b = Object.keys(right).sort();
+  return a.length === b.length && a.every((key, index) => key === b[index]
+    && sameJson((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key]));
 }

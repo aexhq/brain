@@ -56,6 +56,7 @@ export type {
   SchemaOutput,
   SessionEvent,
   SessionState,
+  TurnOutcome,
   SessionStreamEvent,
   SessionTool,
   ToolDefinition,

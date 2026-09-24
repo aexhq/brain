@@ -216,3 +216,31 @@ test("long operations have no implicit client timeout", async () => {
   await bounded.sessions.list();
   assert.ok(explicitSignal instanceof AbortSignal);
 });
+
+test("turn outcomes select the submitted turn and preserve failure evidence", async () => {
+  let rows = [
+    [8, "turn_started", {}],
+    [9, "output_emitted", { type: "assistant_message", message: "answer" }, { kind: "agentloop" }],
+  ];
+  const brain = new Brain({ baseUrl: "https://brain.example", fetch: async url => {
+    if (String(url).includes("/events?")) {
+      const after = Number(new URL(url).searchParams.get("after"));
+      const events = rows.filter(([sequence]) => sequence > after).map(([sequence, event_type, data, origin]) => ({ sequence, recorded_at_ms: 0, event_type, data, ...(origin ? { origin } : {}) }));
+      return Response.json({ events, next_cursor: events.at(-1)?.sequence ?? after });
+    }
+    return Response.json(sessionResponse);
+  } });
+  const session = await brain.sessions.get(sessionResponse.session_id);
+  assert.deepEqual(await session.outcome(8), { sequence: 8, status: "pending" });
+  rows.push([10, "turn_failed", { code: "cancelled", message: "Stopped" }], [11, "turn_started", {}], [12, "turn_ended", { result: "other" }]);
+  const failed = await session.outcome(8);
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.terminal.sequence, 10);
+  assert.deepEqual(failed.terminal.data, { code: "cancelled", message: "Stopped" });
+  assert.equal(failed.answer, "answer");
+  assert.equal((await session.outcome(11)).status, "ended");
+  await assert.rejects(session.outcome(9), /turn_started/);
+  await assert.rejects(session.outcome(100), /turn_started/);
+  await assert.rejects(session.outcome(0), /turn_started/);
+  await brain.close();
+});

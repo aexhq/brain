@@ -45,6 +45,80 @@ struct Entry {
     idle_ttl: Option<Duration>,
 }
 
+/// An exclusively reserved session whose next message has not been dispatched.
+pub struct MessageAdmission {
+    api: Sessions,
+    session_id: SessionId,
+    request: MessageRequest,
+    active: tokio::sync::OwnedRwLockReadGuard<()>,
+    guard: tokio::sync::OwnedMutexGuard<()>,
+    session: Session,
+    store: Arc<LocalSessionStore>,
+}
+
+impl MessageAdmission {
+    /// Start work independently of the submitting request, after its intent is durable.
+    pub async fn start(
+        self,
+    ) -> Result<
+        (
+            u64,
+            tokio::sync::oneshot::Receiver<Result<SessionSummary, brain::Error>>,
+        ),
+        ApiError,
+    > {
+        let Self {
+            api,
+            session_id,
+            request,
+            active,
+            guard,
+            session,
+            store,
+        } = self;
+        let (reply, accepted) = tokio::sync::oneshot::channel();
+        let (finished, result) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            match session.submit(request).await {
+                Ok(turn) => {
+                    let sequence = turn.sequence;
+                    let _ = reply.send(Ok(sequence));
+                    let _ = finished.send(turn.wait().await);
+                    let tools = session.tools();
+                    let following = api
+                        .background_turns
+                        .lock()
+                        .expect("background turn table poisoned")
+                        .contains_key(&session_id);
+                    if !following
+                        && !tools.has_work_after(store.processed_through().map_err(api_error)?)
+                    {
+                        api.resources
+                            .environments
+                            .turn_ended(&session, &*store, sequence)
+                            .await
+                            .map_err(api_error)?;
+                        return api.passivate_unretained(&session_id).await;
+                    }
+                    let passivated = api.passivate_unretained(&session_id).await;
+                    drop(session);
+                    api.follow_tools(session_id, store, tools, sequence, active);
+                    drop(guard);
+                    passivated
+                }
+                Err(error) => {
+                    let _ = reply.send(Err(api_error(error)));
+                    api.passivate_unretained(&session_id).await
+                }
+            }
+        });
+        let sequence = accepted
+            .await
+            .map_err(|_| internal("turn admission stopped"))??;
+        Ok((sequence, result))
+    }
+}
+
 impl Sessions {
     pub fn new(resources: SessionResources) -> Result<Self, brain::Error> {
         std::fs::create_dir_all(&resources.sessions_dir)
@@ -382,21 +456,21 @@ impl Sessions {
         session_id: SessionId,
         request: MessageRequest,
     ) -> Result<u64, ApiError> {
-        Ok(self.start_message(session_id, request, false).await?.0)
+        Ok(self
+            .prepare_message(session_id, request, false)
+            .await?
+            .start()
+            .await?
+            .0)
     }
 
-    async fn start_message(
+    /// Reserve a session before the caller commits its request claim. Dropping this runs no turn.
+    pub async fn prepare_message(
         &self,
         session_id: SessionId,
         request: MessageRequest,
         wait_for_session: bool,
-    ) -> Result<
-        (
-            u64,
-            tokio::sync::oneshot::Receiver<Result<SessionSummary, brain::Error>>,
-        ),
-        ApiError,
-    > {
+    ) -> Result<MessageAdmission, ApiError> {
         Session::validate_message(&request).map_err(api_error)?;
         let active = self.admit_work().await?;
         let lock = self.session_lock(&session_id)?;
@@ -408,47 +482,21 @@ impl Sessions {
         };
         let session = self.session(&session_id).await?;
         let store = self.store(&session_id).await?;
-        let api = self.clone();
-        let (reply, accepted) = tokio::sync::oneshot::channel();
-        let (finished, result) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            match session.submit(request).await {
-                Ok(turn) => {
-                    let sequence = turn.sequence;
-                    let _ = reply.send(Ok(sequence));
-                    let _ = finished.send(turn.wait().await);
-                    let tools = session.tools();
-                    let following = api
-                        .background_turns
-                        .lock()
-                        .expect("background turn table poisoned")
-                        .contains_key(&session_id);
-                    if !following
-                        && !tools.has_work_after(store.processed_through().map_err(api_error)?)
-                    {
-                        api.resources
-                            .environments
-                            .turn_ended(&session, &*store, sequence)
-                            .await
-                            .map_err(api_error)?;
-                        return api.passivate_unretained(&session_id).await;
-                    }
-                    let passivated = api.passivate_unretained(&session_id).await;
-                    drop(session);
-                    api.follow_tools(session_id, store, tools, sequence, active);
-                    drop(guard);
-                    passivated
-                }
-                Err(error) => {
-                    let _ = reply.send(Err(api_error(error)));
-                    api.passivate_unretained(&session_id).await
-                }
-            }
-        });
-        let sequence = accepted
-            .await
-            .map_err(|_| internal("turn admission stopped"))??;
-        Ok((sequence, result))
+        if !matches!(
+            store.session_summary().map_err(api_error)?.status,
+            SessionStatus::Idle
+        ) {
+            return Err(ApiError::conflict("session is not idle"));
+        }
+        Ok(MessageAdmission {
+            api: self.clone(),
+            session_id,
+            request,
+            active,
+            guard,
+            session,
+            store,
+        })
     }
 
     fn follow_tools(
@@ -640,7 +688,11 @@ impl Sessions {
         session_id: SessionId,
         request: MessageRequest,
     ) -> Result<SessionSummary, ApiError> {
-        let (_, result) = self.start_message(session_id, request, true).await?;
+        let (_, result) = self
+            .prepare_message(session_id, request, true)
+            .await?
+            .start()
+            .await?;
         result
             .await
             .map_err(|_| internal("turn stopped"))?

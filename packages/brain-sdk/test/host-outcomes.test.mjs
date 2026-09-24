@@ -141,9 +141,9 @@ test("final wrapped and transformed outputs must be JSON", async () => {
   }
 });
 
-test("expired calls validate input but never enter customer code", async () => {
+test("expired calls stop before async validation or customer code", async () => {
   let called = 0;
-  for (const [arguments_, expected] of [[{}, "timeout"], [null, "invalid_input"]]) {
+  for (const [arguments_, expected] of [[{}, "timeout"], [null, "timeout"]]) {
     const { running, updates } = invoke(registry(() => { called++; }), { arguments: arguments_, deadline_at_ms: Date.now() - 1 });
     await running;
     const outcome = updates[0].outcome;
@@ -154,12 +154,15 @@ test("expired calls validate input but never enter customer code", async () => {
 
 test("deadline, cancellation and loss retain the first cause despite a late handler failure", async () => {
   for (const cause of ["timeout", "cancelled", "unknown"]) {
-    let signal, reject;
+    let signal, reject, entered;
+    const started = new Promise(resolve => { entered = resolve; });
     const tools = registry((_, call) => {
       signal = call.signal;
+      entered();
       return new Promise((_, fail) => { reject = fail; });
     });
     const { running, updates } = invoke(tools, { deadline_at_ms: Date.now() + (cause === "timeout" ? 5 : 5000) });
+    await started;
     if (cause === "cancelled") { tools.cancel(1); tools.disconnect(1); }
     if (cause === "unknown") { tools.disconnect(1); tools.cancel(1); }
     await running;
@@ -191,4 +194,53 @@ test("unlimited and long deadlines retain their original lifetime after return",
   assert.equal(unlimited.signal.aborted, false);
   await unlimited.finish();
   await infinite.running;
+});
+
+test("async input/output parsing preserves defaults and transformations", async () => {
+  const tools = new HostToolRegistry();
+  tools.register("app", { name: "test", description: "Validate", input: z.object({ id: z.string().refine(async id => id === "A-1"), count: z.number().default(2) }), output: z.string().transform(async text => text.toUpperCase()) },
+    (input, ctx) => { assert.deepEqual(input, { id: "A-1", count: 2 }); return ctx.finish("ready"); });
+  const result = invoke(tools, { arguments: { id: "A-1" } });
+  await result.running;
+  assert.deepEqual(result.updates, [{ type: "finish", outcome: { status: "ok", value: "READY" } }]);
+});
+
+test("async result validation preserves emission order before finish", async () => {
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  const output = z.string().refine(async text => { if (text === "first") await held; return true; });
+  const result = invoke(registry(async (_, ctx) => {
+    const first = ctx.emitResult("first");
+    const last = ctx.finish("last");
+    await Promise.all([first, last]);
+  }, output));
+  await settle();
+  assert.deepEqual(result.updates, []);
+  release();
+  await result.running;
+  assert.deepEqual(result.updates, [
+    { type: "result", outcome: { status: "ok", value: "first" } },
+    { type: "finish", outcome: { status: "ok", value: "last" } },
+  ]);
+});
+
+test("cancellation during async input validation never starts the handler", async () => {
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  const tools = new HostToolRegistry();
+  tools.register("app", { name: "test", description: "Validate", input: z.object({}).refine(async () => { await held; return true; }) }, () => assert.fail("cancelled handler ran"));
+  const result = invoke(tools);
+  await settle();
+  tools.cancel(1);
+  await result.running;
+  release();
+  await settle();
+  assert.deepEqual(result.updates, [{ type: "finish", outcome: { status: "cancelled" } }]);
+});
+
+test("the deadline also bounds an async output validator", async () => {
+  const output = z.string().refine(() => new Promise(() => {}));
+  const result = invoke(registry((_, ctx) => ctx.finish("pending"), output), { deadline_at_ms: Date.now() + 20 });
+  await result.running;
+  assert.deepEqual(result.updates, [{ type: "finish", outcome: { status: "timeout" } }]);
 });
