@@ -83,9 +83,15 @@ Omitting that header preserves the synchronous response.
 
 Submission and synchronous send have separate idempotency scopes. Retry an uncertain
 submission with the same key and mode; do not switch to `send` as a retry. Another async
-submission while the session is occupied is rejected. Read Events after that
-sequence and retrieve the session to observe its eventual status; the handle's cached
-state is not updated by background work.
+submission while the session is occupied is rejected without consuming its key; retry that same
+key after the session becomes available. Errors marked `details.admission: "rejected"` mean no
+turn was dispatched. An unresolved claim after dispatch remains ambiguous and is never replayed.
+
+Use `await session.outcome(sequence)` to read committed Events for exactly that submitted turn.
+It returns `pending`, `ended`, or `failed`; terminal outcomes include the original terminal Event
+and the last assistant text, when the loop emitted one. Idle alone does not prove success. A
+completed turn also does not prove that an application save or background job succeeded.
+See the [submission example](https://github.com/aexhq/brain/blob/main/examples/submitted-turn.mjs).
 
 Closing a client after acceptance does not cancel hosted execution. Host Environments
 still require their host process, and client-side structured-output correction requires

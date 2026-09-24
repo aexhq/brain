@@ -120,6 +120,10 @@ export interface SessionEvent<Data = unknown> {
   readonly data: Data;
 }
 
+export type TurnOutcome =
+  | { readonly sequence: number; readonly status: "pending" }
+  | { readonly sequence: number; readonly status: "ended" | "failed"; readonly terminal: SessionEvent; readonly answer?: string };
+
 export interface SessionStreamEvent<Data = unknown> {
   readonly origin?: EventOrigin;
   readonly sequence?: number;

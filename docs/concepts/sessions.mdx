@@ -48,7 +48,8 @@ the client closes. Tools in `hostEnv` still need their application process conne
 If you lose the response, repeat the same submission with the same key.
 
 In another client, open the session with `await brain.sessions.get(sessionId)`, then read
-its events and transcript. To use application tools after an application restart, follow
+its events and transcript. `await session.outcome(sequence)` reports whether that specific turn
+is pending, ended or failed, including its terminal event and any assistant answer. To use application tools after an application restart, follow
 [host reconnection](/brain/docs/reference/tool-contract#reattaching-after-restart).
 
 ## Stop, finish or delete

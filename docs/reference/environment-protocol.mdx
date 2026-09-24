@@ -36,7 +36,7 @@ The response carries the same contract and sequence and a receipt.
 | Request | Responsibility |
 | --- | --- |
 | `setup { configuration }` | Validate Environment-owned options and establish the binding. Allocation can be lazy. |
-| `execute { implementation, input, deadline_ms?, callback? }` | Prepare and run the opaque implementation within configured authority. An absent deadline is unlimited. |
+| `execute { implementation, input, deadline_ms?, callback? }` | Prepare and run the opaque implementation within configured authority. `deadline_ms` is the remaining duration in milliseconds, not a Unix timestamp. An absent deadline is unlimited. |
 | `call { name, input }` | An Environment-specific operation, such as explicit workspace reset. |
 | `cancel { target_sequence }` | Best-effort cancellation of the named invocation. |
 | `detach` | Release session attachment mechanisms while retaining owned resources. |
@@ -64,7 +64,7 @@ mark the Environment unreachable; a transport failure still does.
 
 An execution may receive `callback: { url, token, methods }`. POST `{ method, input }` to that
 URL with its bearer token. The response is the method's JSON result. Only listed methods are
-granted. A Tool receives `emit`, `result`, `returned`, `finish`, and `telemetry`;
+granted. A Tool receives `emit`, `result`, `returned`, `finish`, `model`, and `telemetry`;
 an Agentloop receives `emit`, `telemetry`, `events`, `acknowledge`, `model`,
 `dispatch`, `set_transcript`, `kv_read`, `kv_put`, and `kv_delete`. Dispatch input is an array of `{ call_id, name, environment, input }`; model
 input is `ModelRequest`; events input is a cursor number; emit input is `{ event_type, data }`;

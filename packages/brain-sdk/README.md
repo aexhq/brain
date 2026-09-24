@@ -64,3 +64,7 @@ Hosted execution can continue after client close; tools in your app still need y
 
 For the exact tool return, error and background-work behavior, see the
 [tool contract](https://aex.dev/brain/docs/reference/tool-contract).
+
+For short-lived requests, `session.submit()` returns a durable turn sequence;
+`session.outcome(sequence)` reads its committed result from another client.
+[Submission example](https://github.com/aexhq/brain/blob/main/examples/submitted-turn.mjs).

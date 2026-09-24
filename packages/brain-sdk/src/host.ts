@@ -86,19 +86,16 @@ export class HostToolRegistry {
     const terminal = async (outcome: Outcome): Promise<void> => { await frame.update({ type: "finish", outcome }); };
     const registered = this.tools.get(`${frame.name}\0${frame.environment}`);
     if (registered === undefined) return terminal(errorOutcome("unknown_tool", `no host tool named ${frame.name} is registered`));
-    let input: unknown;
-    try {
-      input = registered.contract.input.parse(frame.arguments);
-    } catch (error) {
-      return terminal(errorOutcome("invalid_input", message(error)));
-    }
-    if (frame.deadline_at_ms !== undefined && frame.deadline_at_ms <= Date.now()) return terminal({ status: "timeout" });
-
     const controller = new AbortController();
+    const interrupted = new Promise<void>(resolve => controller.signal.addEventListener("abort", () => resolve(), { once: true }));
+    const parse = (schema: Schema, value: unknown): Promise<unknown> => Promise.race([
+      schema.parseAsync(value), interrupted.then(() => { throw controller.signal.reason; }),
+    ]);
     let resolve!: () => void;
     let reject!: (reason: unknown) => void;
     const completed = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
     let finishing = false;
+    let closing = false;
     let queue = Promise.resolve();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const enqueue = <T>(operation: () => Promise<T>): Promise<T> => {
@@ -107,27 +104,28 @@ export class HostToolRegistry {
       return pending;
     };
     const ensureOpen = (): void => {
-      if (finishing) throw new Error("Tool execution is finished");
+      if (closing || finishing) throw new Error("Tool execution is finished");
     };
-    const finish = (outcome?: Outcome & ToolResultOptions): Promise<void> => {
-      ensureOpen();
-      finishing = true;
-      clearTimeout(timer);
-      return enqueue(async () => {
+    const commitFinish = async (outcome?: Outcome & ToolResultOptions): Promise<void> => {
+      try {
         await frame.update({ type: "finish", ...(outcome === undefined ? {} : { outcome }) });
         resolve();
-      }).catch(error => {
-        reject(error);
-        throw error;
-      });
+      } catch (error) { reject(error); throw error; }
     };
-    const normalize = (value: unknown): Outcome => {
+    const finish = (outcome?: Outcome & ToolResultOptions): Promise<void> => {
+      if (finishing) throw new Error("Tool execution is finished");
+      finishing = true;
+      closing = true;
+      clearTimeout(timer);
+      return enqueue(() => commitFinish(outcome));
+    };
+    const normalize = async (value: unknown): Promise<Outcome> => {
       const status = typeof value === "object" && value !== null && "status" in value ? value.status : undefined;
       let outcome: Outcome = typeof status === "string" && ["ok", "error", "timeout", "cancelled", "unknown"].includes(status)
         ? outcomeSchema.parse(value)
         : { status: "ok", value };
       if (outcome.status === "ok" && registered.contract.output !== undefined) {
-        outcome = { status: "ok", value: registered.contract.output.parse(outcome.value) };
+        outcome = { status: "ok", value: await parse(registered.contract.output, outcome.value) };
       }
       return outcomeSchema.parse(outcome);
     };
@@ -137,7 +135,7 @@ export class HostToolRegistry {
       return { ...outcome, content: options.content };
     };
     const invalidOutput = async (error: unknown): Promise<never> => {
-      await finish(errorOutcome("invalid_output", message(error)));
+      if (!finishing) await finish(errorOutcome("invalid_output", message(error)));
       throw error;
     };
     this.active.set(frame.sequence, (outcome) => {
@@ -156,6 +154,13 @@ export class HostToolRegistry {
       if (!finishing) {
         void (async () => {
           try {
+            let input: unknown;
+            try { input = await parse(registered.contract.input, frame.arguments); }
+            catch (error) {
+              if (!finishing) await finish(errorOutcome("invalid_input", message(error)));
+              return;
+            }
+            if (finishing) return;
             const value = await registered.handler(input, {
               sessionId: frame.sessionId,
               sequence: frame.sequence,
@@ -163,30 +168,43 @@ export class HostToolRegistry {
               signal: controller.signal,
               emit: (kind, data) => {
                 ensureOpen();
-                return enqueue(() => frame.emit(kind, data));
+                return enqueue(async () => {
+                  if (finishing) throw new Error("Tool execution is finished");
+                  return frame.emit(kind, data);
+                });
               },
               model: (request) => { ensureOpen(); return frame.model(request); },
               emitResult: async (value, options) => {
                 ensureOpen();
-                let outcome: Outcome;
-                try { outcome = present(normalize(value), options); } catch (error) { return invalidOutput(error); }
-                return enqueue(() => frame.update({ type: "result", outcome }));
+                return enqueue(async () => {
+                  const outcome = present(await normalize(value), options);
+                  if (finishing) throw new Error("Tool execution is finished");
+                  return frame.update({ type: "result", outcome });
+                }).catch(invalidOutput);
               },
               finish: async (value, options) => {
                 ensureOpen();
-                let outcome: Outcome | undefined;
-                try { outcome = value === undefined && options?.content === undefined ? undefined : present(normalize(value ?? null), options); } catch (error) { return invalidOutput(error); }
-                await finish(outcome);
+                closing = true;
+                return enqueue(async () => {
+                  const outcome = value === undefined && options?.content === undefined ? undefined : present(await normalize(value ?? null), options);
+                  if (finishing) throw new Error("Tool execution is finished");
+                  finishing = true;
+                  clearTimeout(timer);
+                  await commitFinish(outcome);
+                }).catch(invalidOutput);
               },
             });
-            if (finishing) return;
-            let outcome: Outcome | undefined;
-            try { outcome = value === undefined ? undefined : normalize(value); } catch (error) {
-              await finish(errorOutcome("invalid_output", message(error)));
-              return;
-            }
-            if (outcome !== undefined && outcome.status !== "ok") await finish(outcome);
-            else await enqueue(() => frame.update({ type: "returned", ...(outcome === undefined ? {} : { outcome }) }));
+            if (closing || finishing) return;
+            await enqueue(async () => {
+              const outcome = value === undefined ? undefined : await normalize(value);
+              if (closing || finishing) return;
+              if (outcome !== undefined && outcome.status !== "ok") {
+                finishing = true;
+                closing = true;
+                clearTimeout(timer);
+                await commitFinish(outcome);
+              } else await frame.update({ type: "returned", ...(outcome === undefined ? {} : { outcome }) });
+            }).catch(invalidOutput);
           } catch (error) {
             if (!finishing) await finish(errorOutcome("tool_error", message(error)));
           }

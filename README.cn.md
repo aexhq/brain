@@ -87,3 +87,7 @@ Brain 管理会话历史、事件和生命周期，让你专注于模型、工�
 
 [MIT 许可证](LICENSE)。问题反馈：[GitHub Issues](https://github.com/aexhq/brain/issues)
 或 [support@aex.dev](mailto:support@aex.dev)。
+
+短时请求可用 `session.submit()` 获取已持久化的回合序号，再通过另一个客户端调用
+`session.outcome(sequence)` 读取该回合的结果。
+[完整示例](https://github.com/aexhq/brain/blob/main/examples/submitted-turn.mjs)。

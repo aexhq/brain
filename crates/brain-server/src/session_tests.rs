@@ -121,6 +121,10 @@ impl brain::ToolExecutor for Echo {
 }
 
 fn api(root: &std::path::Path) -> ServerApi {
+    api_with_loop(root, Arc::new(Echo))
+}
+
+fn api_with_loop(root: &std::path::Path, loop_executor: Arc<dyn LoopExecutor>) -> ServerApi {
     let (telemetry, _) = brain_telemetry::telemetry_channel();
     let feed = Arc::new(Feed::new(telemetry.clone()));
     let credentials =
@@ -146,7 +150,7 @@ fn api(root: &std::path::Path) -> ServerApi {
                 max_tool_secs: 1,
                 ..Default::default()
             },
-            loop_executor: Arc::new(Echo),
+            loop_executor,
             model_executor: Arc::new(Echo),
             tool_executor: Arc::new(Echo),
             live: feed,
@@ -291,5 +295,106 @@ async fn a_session_is_created_set_up_and_deleted_through_its_environments() {
             .is_none()
     );
     drop(api);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn a_busy_submission_can_retry_its_key_after_restart() {
+    struct Held(tokio::sync::Notify);
+    #[async_trait]
+    impl LoopExecutor for Held {
+        async fn turn(
+            &self,
+            id: &SessionId,
+            sequence: u64,
+            loop_ref: &AgentloopRef,
+            environment: &Environment,
+            input: TurnInput,
+            services: Arc<dyn brain::TurnServices>,
+        ) -> Result<TurnOutput, brain::Error> {
+            self.0.notified().await;
+            Echo.turn(id, sequence, loop_ref, environment, input, services)
+                .await
+        }
+    }
+    let root = root("busy-retry");
+    let held = Arc::new(Held(tokio::sync::Notify::new()));
+    let server = api_with_loop(&root, held.clone());
+    let create = serde_json::from_value(serde_json::json!({
+        "agentloop": {"implementation": {"type":"brain_component","entrypoint":"turn","id":"a".repeat(64)}, "configuration":{}, "environment":"brain"},
+        "model": {"provider":"openai","name":"gpt-5-mini","api_key":"model-key"},
+        "tools": [], "environments": [{"name":"brain","driver":"brain"}]
+    })).unwrap();
+    let id = server
+        .create_session("create".into(), create)
+        .await
+        .unwrap()
+        .session_id;
+    server
+        .submit_message(
+            id.clone(),
+            "first".into(),
+            MessageRequest {
+                input: "first".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let request = MessageRequest {
+        input: "second".into(),
+    };
+    let error = server
+        .submit_message(id.clone(), "second".into(), request.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "overloaded");
+    assert_eq!(
+        error.details,
+        Some(serde_json::json!({"admission":"rejected"}))
+    );
+    held.0.notify_one();
+    server.sessions.drain().await;
+    drop(server);
+    let server = api(&root);
+    let sequence = server
+        .submit_message(id.clone(), "second".into(), request.clone())
+        .await
+        .unwrap();
+    server.sessions.drain().await;
+    assert_eq!(
+        server
+            .submit_message(id.clone(), "second".into(), request)
+            .await
+            .unwrap(),
+        sequence
+    );
+    assert_eq!(
+        server
+            .events(id.clone(), None)
+            .await
+            .unwrap()
+            .events
+            .iter()
+            .filter(|event| event.event_type == "turn_started")
+            .count(),
+        2
+    );
+    let uncertain = MessageRequest {
+        input: "uncertain".into(),
+    };
+    server
+        .resources
+        .idempotency
+        .replay_or_claim(&format!("session:{id}:submit"), "unknown", &uncertain)
+        .unwrap();
+    assert_eq!(
+        server
+            .submit_message(id, "unknown".into(), uncertain)
+            .await
+            .unwrap_err()
+            .code,
+        "ambiguous"
+    );
+    drop(server);
     std::fs::remove_dir_all(root).unwrap();
 }

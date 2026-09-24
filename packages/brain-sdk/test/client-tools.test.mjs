@@ -25,7 +25,7 @@ test("saved host credentials reattach handlers to an existing session", async (t
     if (path.endsWith("/results")) { finish(await request.json()); return Response.json({ sequence: 5 }); }
     if (path.endsWith("/events")) {
       return Response.json({ events: [{ sequence: 1, recorded_at_ms: 0, event_type: "session_creation_ended", data: { configuration: {
-        tools: [{ name: "lookup", placements: { app: { implementation: { type: "host_function", name: "lookup" } } } }],
+        tools: [{ name: "lookup", input_schema: z.toJSONSchema(z.object({}), { io: "input" }), placements: { app: { implementation: { type: "host_function", name: "lookup" } } } }],
         environments: [{ name: "brain", driver: "brain" }, { name: "app", driver: "host", host_id: credentials.hostId }],
       } } }], next_cursor: 1 });
     }
@@ -189,6 +189,8 @@ test("a host reconnects without replaying old commands", async () => {
 
 test("losing the command stream reports an in-flight call as unknown without replay", async () => {
   let calls = 0;
+  let entered;
+  const started = new Promise(resolve => { entered = resolve; });
   let finish;
   const finished = new Promise(resolve => { finish = resolve; });
   const pump = new HostPump({
@@ -199,6 +201,7 @@ test("losing the command stream reports an in-flight call as unknown without rep
         deadline_at_ms: Date.now() + 5_000,
         operation: { type: "invoke_tool", name: "lookup", input: {} },
       } };
+      await started;
     },
     result: async result => { finish(result); pump.stop(); return { sequence: 10 }; },
     emit: async () => ({ sequence: 10 }),
@@ -206,6 +209,7 @@ test("losing the command stream reports an in-flight call as unknown without rep
   const registry = new HostToolRegistry();
   registry.register("app", { name: "lookup", description: "Lookup.", input: z.object({}) }, () => {
     calls += 1;
+    entered();
     return new Promise(() => {});
   });
   pump.register(sessionId, registry);
@@ -271,4 +275,21 @@ test("a new session shares the host connection after the previous session ends",
   assert.equal(hosts, 1);
   assert.equal(connections, 1);
   assert.deepEqual(placements, ["host_1", "host_1"]);
+});
+
+for (const changed of ["input", "output"]) test(`reattachment rejects a changed ${changed} schema before invocation`, async t => {
+  const credentials = { hostId: "host_12345678901234567890", token: "saved-token" };
+  const client = new Brain({ baseUrl: "https://brain.example", credentials, fetch: async (url) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/commands")) return new Response(new ReadableStream({ start() {} }), { headers: { "content-type": "text/event-stream" } });
+    if (path.endsWith("/events")) return Response.json({ events: [{ sequence: 1, recorded_at_ms: 0, event_type: "session_creation_ended", data: { configuration: {
+      tools: [{ name: "lookup", input_schema: z.toJSONSchema(z.object({ id: z.string() }), { io: "input" }), output_schema: z.toJSONSchema(z.string()), placements: { app: { implementation: { type: "host_function", name: "lookup" } } } }],
+      environments: [{ name: "app", driver: "host", host_id: credentials.hostId }],
+    } } }], next_cursor: 1 });
+    if (path === `/v1/sessions/${sessionId}`) return Response.json({ session_id: sessionId, status: "idle", last_sequence: 1 });
+    throw new Error(`unexpected request ${path}`);
+  } });
+  t.after(() => client.close());
+  const lookup = tool({ name: "lookup", description: "Lookup", input: changed === "input" ? z.object({ id: z.string(), region: z.string() }) : z.object({ id: z.string() }), output: changed === "output" ? z.number() : z.string(), run() { assert.fail("incompatible handler ran"); } });
+  await assert.rejects(client.sessions.get(sessionId, { tools: [lookup({ env: hostEnv({ name: "app" }) })] }), /different advertised contract/);
 });
