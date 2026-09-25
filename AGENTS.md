@@ -14,6 +14,8 @@
   `npm run gen`.
 - `hands` and downstream products consume immutable Brain tags or revisions. Brain must not depend
   on a Hands implementation crate or product-specific runtime.
+- Prompt-based answer shaping, schema validation and correction turns belong to downstream
+  products, including their SDKs. Brain owns neutral session operations and model-format controls.
 - Journal every effect before it happens. The local store must durably commit the intent before
   dispatch. A session's Tool catalogue and placement authority do not change after create;
   live Environment instances may change only within admitted templates and grants. Preserve absent

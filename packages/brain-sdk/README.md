@@ -4,12 +4,16 @@ Connect your JavaScript or TypeScript app to [Brain](https://aex.dev/brain), an 
 server that runs AI agents and saves their conversations and progress. Add your own functions
 as tools, send messages and read the results.
 
+SDK 0.34 moves prompt-based typed answers to the Aex SDK. Raw Brain `send()` returns
+session state and rejects `output` options. See the [typed-answer migration](https://aex.dev/docs#structured-output)
+for existing callers; provider-native model formats and Tool schemas are unchanged.
+
 ## Get started
 
 Start a Brain server with the [quickstart](https://aex.dev/brain/docs/quickstart), then install:
 
 ```sh
-npm install @aexhq/brain@0.33.0 @aexhq/agentloop-pi@7.2.1 zod@4
+npm install @aexhq/brain@0.34.0 @aexhq/agentloop-pi@7.2.1 zod@4
 ```
 
 Set `OPENAI_API_KEY`, save the following as `order.mjs`, and run `node order.mjs`:
@@ -55,7 +59,6 @@ keep the client connected while the agent needs it. Use `ctx.finish(value)` to c
 | Send messages, reconnect, stream output or stop work | [Sessions](https://aex.dev/brain/docs/concepts/sessions) |
 | Add application functions or packaged tools | [Write a tool](https://aex.dev/brain/docs/guides/write-a-tool) |
 | Customize the agent's behavior | [Write an agent loop](https://aex.dev/brain/docs/guides/write-a-loop) |
-| Validate a JSON answer | [Structured output](https://aex.dev/brain/docs/guides/structured-output) |
 | Use another model | [Models](https://aex.dev/brain/docs/concepts/model) |
 
 `brain.close()` releases client connections; it keeps stored sessions. `session.interrupt()`

@@ -3,7 +3,6 @@ import { BrainError } from "./errors.js";
 import { EnvironmentServices } from "./environments.js";
 import { inspectAgentloop, inspectComponent, inspectEnvironment, inspectTool, isComponent, placeDefaultTools, loadHostTool } from "./extensions.js";
 import { HostToolRegistry } from "./host.js";
-import { structuredOutput } from "./structured-output.js";
 import type {
   AgentloopAdmission, CreateSessionRequest, Environment as WireEnvironment, EventPage, HostRegistration,
   SessionList, SessionSummary as WireSession, SessionTranscript, Tool as WireTool, ToolAdmission,
@@ -11,7 +10,7 @@ import type {
 import type {
   Component, CreateSessionOptions, Environment, OperationOptions, PlacedAgentloop, PlacedTool,
   SessionEvent, SessionState, SessionStreamEvent, UserInput, SendOptions,
-  Schema, SchemaOutput, StructuredSendOptions, TurnOutcome,
+  TurnOutcome,
 } from "./types.js";
 
 export interface BrainOptions {
@@ -385,8 +384,6 @@ export class Sessions {
 
 export class SessionHandle {
   readonly environments: EnvironmentServices;
-  private activeSends = 0;
-  private structuredSend = false;
   constructor(
     private readonly client: BrainClient,
     public state: SessionState,
@@ -400,33 +397,15 @@ export class SessionHandle {
   async submit(input: UserInput | string, operation: OperationOptions = {}): Promise<number> {
     const normalized = typeof input === "string" ? { message: input } : input;
     if (typeof normalized?.message !== "string" || normalized.message === "") throw new TypeError("submit needs a non-empty message");
-    if ("output" in operation) throw new TypeError("submit requires structured output to run in the hosted Agentloop");
-    if (this.structuredSend) throw new Error("structured output requires exclusive sends on this session handle");
+    if ("output" in operation) throw new TypeError("submit does not accept output options");
     return this.client.request("POST", `/v1/sessions/${encodeURIComponent(this.id)}/messages`,
       { input: normalized }, keyOf(operation), "application/json", undefined, { prefer: "respond-async" });
   }
 
-  send<S extends Schema>(input: UserInput | string, operation: StructuredSendOptions<S>): Promise<SchemaOutput<S>>;
-  send(input: UserInput | string, operation?: SendOptions): Promise<SessionState>;
-  async send(input: UserInput | string, operation: SendOptions | StructuredSendOptions<Schema> = {}): Promise<unknown> {
+  async send(input: UserInput | string, operation: SendOptions = {}): Promise<SessionState> {
     const normalized = typeof input === "string" ? { message: input } : input;
     if (typeof normalized?.message !== "string" || normalized.message === "") throw new TypeError("send needs a non-empty message");
-    const output = "output" in operation ? operation.output : undefined;
-    if (this.structuredSend || (output !== undefined && this.activeSends !== 0)) throw new Error("structured output requires exclusive sends on this session handle");
-    this.activeSends++;
-    this.structuredSend = output !== undefined;
-    try {
-      if (output === undefined) return await this.sendTurn(normalized, operation);
-      return await structuredOutput(normalized, { ...operation, output }, keyOf(operation),
-        (message, options) => this.sendTurn(message, options),
-        (after) => this.events(after, operation.signal), () => this.state.lastSequence);
-    } finally {
-      this.activeSends--;
-      this.structuredSend = false;
-    }
-  }
-
-  private async sendTurn(normalized: UserInput, operation: SendOptions): Promise<SessionState> {
+    if ("output" in operation) throw new TypeError("send does not accept output options");
     operation.signal?.throwIfAborted();
     const after = this.state.lastSequence;
     const pending = this.client.request<WireSession>("POST", `/v1/sessions/${encodeURIComponent(this.id)}/messages`, { input: normalized }, keyOf(operation));

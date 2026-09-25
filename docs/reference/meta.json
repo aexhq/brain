@@ -6,7 +6,6 @@
     "agentloop-contract",
     "environment-protocol",
     "session-history",
-    "structured-output",
     "models",
     "environment-runtime",
     "configuration",
