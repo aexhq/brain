@@ -83,9 +83,11 @@ export type Media = Readonly<WireMedia>;
 export interface UserInput { readonly message: string; readonly media?: readonly Media[] }
 
 export interface CreateSessionOptions {
-  readonly environmentLifecycle: {
-    readonly default: import("./environments.js").EnvironmentLifecycle;
-    readonly bindings?: Readonly<Record<string, import("./environments.js").EnvironmentLifecycle>>;
+  readonly environment?: {
+    readonly lifecycle?: {
+      readonly default?: import("./environments.js").EnvironmentLifecycle;
+      readonly bindings?: Readonly<Record<string, import("./environments.js").EnvironmentLifecycle>>;
+    };
   };
   readonly environments?: readonly Environment[];
   readonly model: ModelSelection;

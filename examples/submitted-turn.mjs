@@ -11,7 +11,7 @@ const submitter = new Brain(options);
 let id, sequence;
 try {
   const session = await submitter.sessions.create({
-    environmentLifecycle: { default: "automatic" }, model: { provider: "vercel-ai-gateway", name: "openai/gpt-5-mini", apiKey },
+    model: { provider: "vercel-ai-gateway", name: "openai/gpt-5-mini", apiKey },
     agentloop: example({ env: brainEnv({ name: "brain" }) }),
   });
   id = session.id;

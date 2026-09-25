@@ -96,7 +96,7 @@ test("one host runs the Tools placed in it and commits ctx.emit before its resul
   t.after(() => client.close());
   const app = hostEnv({ name: "app" });
   const session = await client.sessions.create({
-    environmentLifecycle: { default: "automatic" }, model,
+    model,
     agentloop: pi({ env: brainEnv({ name: "brain" }) }),
     tools: [lookup({ env: app })],
   });
@@ -137,7 +137,7 @@ test("session creation waits for the host command stream", async (t) => {
     run: async () => null,
   });
   await assert.rejects(client.sessions.create({
-    environmentLifecycle: { default: "automatic" }, model,
+    model,
     agentloop: pi({ env: brainEnv({ name: "brain" }) }),
     tools: [local({ env: hostEnv({ name: "app" }) })],
   }), /offline/u);
@@ -262,7 +262,7 @@ test("a new session shares the host connection after the previous session ends",
     run: async () => null,
   });
   const options = {
-    environmentLifecycle: { default: "automatic" }, model,
+    model,
     agentloop: pi({ env: brainEnv({ name: "brain" }) }),
     tools: [local({ env: hostEnv({ name: "app" }) })],
   };

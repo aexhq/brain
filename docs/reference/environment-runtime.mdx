@@ -77,7 +77,6 @@ The same Environment object places several Tools in one session:
 
 ```ts
 const session = await brain.sessions.create({
-  environmentLifecycle: { default: "automatic" },
   model,
   agentloop: loop({ env: brainEnv({ name: "brain" }) }),
   tools: [read({ env }), write({ env })],

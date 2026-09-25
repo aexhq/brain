@@ -43,7 +43,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 In another terminal, install the packages:
 
 ```sh
-npm install @aexhq/brain@0.32.1 @aexhq/agentloop-pi@7.2.0 zod@4
+npm install @aexhq/brain@0.33.0 @aexhq/agentloop-pi@7.2.1 zod@4
 ```
 
 Set `OPENAI_API_KEY` in your environment. Save this as `order.mjs`:
@@ -63,7 +63,6 @@ const lookupOrder = tool({
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080", token: "quickstart" });
 try {
   const session = await brain.sessions.create({
-    environmentLifecycle: { default: "automatic" },
     model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
     agentloop: pi({ env: brainEnv({ name: "brain" }) }),
     tools: [lookupOrder()],

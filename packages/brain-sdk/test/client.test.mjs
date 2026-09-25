@@ -39,12 +39,12 @@ test("remote implementations need no Brain admission and a Tool can have two pla
   const second = remote({ name: "second" });
   const loop = agentloop({ implementation: { runtime: "python", module: "loop.py" } });
   const read = tool({ name: "read", description: "Read", input: z.object({ path: z.string() }), implementation: { runtime: "python", module: "read.py" } });
-  const options = { environmentLifecycle: { default: "automatic" }, model: { provider: "openai", name: "gpt-5", apiKey: "key" }, agentloop: loop({ env: first }), tools: [read({ env: first }), read({ env: second })] };
+  const options = { model: { provider: "openai", name: "gpt-5", apiKey: "key" }, agentloop: loop({ env: first }), tools: [read({ env: first }), read({ env: second })] };
   await client.sessions.create(options);
   assert.deepEqual(requests[0].agentloop.implementation, { runtime: "python", module: "loop.py" });
   assert.equal(requests[0].tools.length, 1);
   assert.deepEqual(Object.keys(requests[0].tools[0].placements), ["first", "second"]);
-  await assert.rejects(client.sessions.create({ environmentLifecycle: { default: "automatic" }, ...options, tools: [read({ env: first }), read({ env: first })] }), /duplicate|already/iu);
+  await assert.rejects(client.sessions.create({ ...options, tools: [read({ env: first }), read({ env: first })] }), /duplicate|already/iu);
 });
 
 test("a transcript can be read without sending a turn", async () => {
@@ -91,7 +91,7 @@ test("session creation admits Components and names every placement", async () =>
     });
   const client = new Brain({ baseUrl: "https://brain.example/", token: "brain-token", fetch: fetchStub });
   const session = await client.sessions.create({
-    environmentLifecycle: { default: "automatic" }, model: { provider: "openai", name: "gpt-5", apiKey: "model-token" },
+    model: { provider: "openai", name: "gpt-5", apiKey: "model-token" },
     agentloop: pi({ env: runtime }),
     tools: [read({ env: runtime }), bash({ env: sandbox })],
   });
@@ -127,14 +127,14 @@ test("one name for two different Environments is refused before any request", as
   const pi = agentloop({ implementation: component(new Uint8Array([1])) });
   const read = tool({ name: "read", description: "Read.", input: z.object({}), implementation: { kind: "test" } });
   await assert.rejects(client.sessions.create({
-    environmentLifecycle: { default: "automatic" }, model: { provider: "openai", name: "gpt-5", apiKey: "key" },
+    model: { provider: "openai", name: "gpt-5", apiKey: "key" },
     agentloop: pi({ env: brainEnv({ name: "brain" }) }),
     tools: [read({ env: brainEnv({ name: "brain", secrets: ["TOKEN"] }) })],
   }), /two Environments are named brain/u);
   assert.equal(requests.length, 0);
   // Two values that say the same thing are one declaration.
   await client.sessions.create({
-    environmentLifecycle: { default: "automatic" }, model: { provider: "openai", name: "gpt-5", apiKey: "key" },
+    model: { provider: "openai", name: "gpt-5", apiKey: "key" },
     agentloop: pi({ env: brainEnv({ name: "brain" }) }),
     tools: [read({ env: brainEnv({ name: "brain" }) })],
   });
@@ -148,13 +148,13 @@ test("a Tool with run belongs in a hostEnv and a Tool with an implementation doe
   const brain = brainEnv({ name: "brain" });
   const lookup = tool({ name: "lookup", description: "Lookup.", input: z.object({}), run: async () => null });
   await assert.rejects(client.sessions.create({
-    environmentLifecycle: { default: "automatic" }, model: { provider: "openai", name: "gpt-5", apiKey: "key" },
+    model: { provider: "openai", name: "gpt-5", apiKey: "key" },
     agentloop: pi({ env: brain }),
     tools: [lookup({ env: brain })],
   }), /must be placed in a hostEnv/u);
   const read = tool({ name: "read", description: "Read.", input: z.object({}), implementation: { kind: "test" } });
   await assert.rejects(client.sessions.create({
-    environmentLifecycle: { default: "automatic" }, model: { provider: "openai", name: "gpt-5", apiKey: "key" },
+    model: { provider: "openai", name: "gpt-5", apiKey: "key" },
     agentloop: pi({ env: brain }),
     tools: [read({ env: hostEnv({ name: "app" }) })],
   }), /must have run/u);
@@ -185,7 +185,7 @@ test("retrying create with the same key sends the same body", async () => {
     return Response.json(sessionResponse);
   } });
   const pi = agentloop({ implementation: component(new Uint8Array([1])) });
-  const options = { environmentLifecycle: { default: "automatic" }, model: { provider: "openai", name: "gpt-5", apiKey: "key" }, agentloop: pi({ env: brainEnv({ name: "brain" }) }) };
+  const options = { model: { provider: "openai", name: "gpt-5", apiKey: "key" }, agentloop: pi({ env: brainEnv({ name: "brain" }) }) };
   await assert.rejects(client.sessions.create(options, { idempotencyKey: "create-once" }));
   await client.sessions.create(options, { idempotencyKey: "create-once" });
   assert.deepEqual(bodies[1], bodies[0]);

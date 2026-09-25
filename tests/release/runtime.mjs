@@ -93,7 +93,7 @@ try {
   const provider = environment({ options: z.object({ url: z.url(), token: z.string() }), url: ({ url }) => url, credential: ({ token }) => token, configure: () => ({}) });
   const tools = ["first", "second"].map((name) => tool({ name, input: z.object({ value: z.string() }),
     implementation: { type: "reference_echo" }, description: "Echo input" })({ env: provider({ name, url: providers[name], token: name }) }));
-  const options = { environmentLifecycle: { default: "automatic" }, model: { provider: "vercel-ai-gateway", name: "test/scripted", apiKey: "test" }, agentloop: loop({ env: brainEnv({ name: "brain" }) }), tools };
+  const options = { model: { provider: "vercel-ai-gateway", name: "test/scripted", apiKey: "test" }, agentloop: loop({ env: brainEnv({ name: "brain" }) }), tools };
   const session = await brain.sessions.create(options);
   assert.equal(allocations, 0, "logical setup must not allocate");
   await session.send("use both environments");
