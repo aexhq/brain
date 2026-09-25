@@ -97,7 +97,9 @@ impl EnvironmentRegistry {
         operation.template = Some(view.template.clone());
         operation.binding = Some(view.reference.clone());
         let result = self.send(environment, &operation, services).await;
-        if let Err(error) = &result {
+        if let Err(error) = &result
+            && !matches!(error, brain::Error::Cancelled(_))
+        {
             store.append_sync(&[brain::AppendRecord::new(codes::event::ENVIRONMENT_UNREACHABLE,
                 serde_json::json!({"environment": view.reference, "sequence": operation.sequence,
                     "domain": "transport", "code": error.code(), "message": error.to_string(),

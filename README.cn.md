@@ -37,7 +37,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 在另一个终端安装依赖，并设置环境变量 `OPENAI_API_KEY`：
 
 ```sh
-npm install @aexhq/brain@0.32.0 @aexhq/agentloop-pi@7.2.0 zod@4
+npm install @aexhq/brain@0.32.1 @aexhq/agentloop-pi@7.2.0 zod@4
 ```
 
 将以下内容保存为 `order.mjs`，运行 `node order.mjs`：
