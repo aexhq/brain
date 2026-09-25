@@ -17,6 +17,13 @@ struct Answering {
 impl GuestHost for Answering {
     async fn call(&self, call: HostCall) -> Result<String, TurnError> {
         match call {
+            HostCall::Environments { request_json } => {
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&request_json).unwrap(),
+                    serde_json::json!({"operation": "list"})
+                );
+                Ok("[]".into())
+            }
             HostCall::KvPut { key, value_json } => {
                 self.kv
                     .lock()

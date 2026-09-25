@@ -22,6 +22,14 @@ struct RecordingBridge {
 impl TurnBridge for RecordingBridge {
     async fn call(&self, call: HostCall) -> Result<String, TurnError> {
         match call {
+            HostCall::Environments { request_json } => {
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&request_json).unwrap(),
+                    serde_json::json!({"operation": "list"})
+                );
+                self.calls.lock().unwrap().push("environments list".into());
+                Ok("[]".into())
+            }
             HostCall::KvPut { key, value_json } => {
                 self.kv
                     .lock()
@@ -506,6 +514,7 @@ async fn real_worker_admits_and_runs_a_turn_of_the_diagnostic_loop() {
     );
     // The diagnostic loop emits one note through the host before it finishes.
     let calls = bridge.calls.lock().unwrap();
+    assert!(calls.iter().any(|call| call == "environments list"));
     assert!(
         calls.iter().any(|call| call.starts_with("emit note")),
         "the guest's host call must reach the bridge: {calls:?}"

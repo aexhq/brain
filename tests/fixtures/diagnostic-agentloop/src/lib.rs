@@ -32,6 +32,11 @@ impl Guest for Diagnostic {
             .unwrap_or_default()
             .to_owned();
         if message == "kv" {
+            let environments: serde_json::Value = serde_json::from_str(
+                &brain::agentloop::host::environments(r#"{"operation":"list"}"#)?,
+            )
+            .map_err(error)?;
+            assert_eq!(environments, serde_json::json!([]));
             assert!(brain::agentloop::host::kv_read("deleted")?.is_none());
             brain::agentloop::host::kv_put("deleted", "null")?;
             assert_eq!(
