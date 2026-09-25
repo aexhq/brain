@@ -124,6 +124,41 @@ async fn an_explicit_unknown_receipt_is_a_tool_outcome_not_a_transport_failure()
 }
 
 #[tokio::test]
+async fn closing_a_tool_callback_is_not_environment_transport_loss() {
+    struct Closed(bool);
+    #[async_trait]
+    impl EnvironmentAdapter for Closed {
+        async fn execute(
+            &self,
+            _: &Environment,
+            _: &EnvironmentOperation,
+            _: Services,
+        ) -> Result<EnvironmentReceipt, brain::Error> {
+            Err(if self.0 {
+                brain::Error::Cancelled("execution cancelled".into())
+            } else {
+                brain::Error::Ambiguous("connection lost".into())
+            })
+        }
+    }
+    for cancelled in [true, false] {
+        let (_root, store, _) = executor(EnvironmentReceipt::Result {
+            output: json!(null),
+        });
+        let registry = Arc::new(EnvironmentRegistry::new(Arc::new(Closed(cancelled))));
+        registry.track(store.clone());
+        let executor = SessionToolExecutor::new(registry);
+        assert!(executor.execute(dispatch(), Arc::new(Leaf)).await.is_err());
+        let unreachable = store
+            .records_after(0, 100)
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == codes::event::ENVIRONMENT_UNREACHABLE);
+        assert_eq!(unreachable, !cancelled);
+    }
+}
+
+#[tokio::test]
 async fn nonterminal_execute_receipts_leave_the_effect_unknown() {
     for receipt in [
         EnvironmentReceipt::Accepted { on_turn_end: None },

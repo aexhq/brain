@@ -9,7 +9,7 @@ as tools, send messages and read the results.
 Start a Brain server with the [quickstart](https://aex.dev/brain/docs/quickstart), then install:
 
 ```sh
-npm install @aexhq/brain@0.32.0 @aexhq/agentloop-pi@7.2.0 zod@4
+npm install @aexhq/brain@0.32.1 @aexhq/agentloop-pi@7.2.0 zod@4
 ```
 
 Set `OPENAI_API_KEY`, save the following as `order.mjs`, and run `node order.mjs`:

@@ -43,7 +43,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 In another terminal, install the packages:
 
 ```sh
-npm install @aexhq/brain@0.32.0 @aexhq/agentloop-pi@7.2.0 zod@4
+npm install @aexhq/brain@0.32.1 @aexhq/agentloop-pi@7.2.0 zod@4
 ```
 
 Set `OPENAI_API_KEY` in your environment. Save this as `order.mjs`:
