@@ -45,7 +45,7 @@ const session = await request("POST", "/v1/sessions", {
     api_key: "release-smoke-key",
   },
   tools: [],
-  environments: [{ name: "brain", driver: "brain" }],
+  environments: [{ name: "brain", driver: "brain", lifecycle: "automatic" }],
 });
 assert.equal(session.status, "idle");
 assert.equal((await request("GET", `/v1/sessions/${session.session_id}`)).session_id, session.session_id);
