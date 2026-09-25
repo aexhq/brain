@@ -13,7 +13,7 @@ for existing callers; provider-native model formats and Tool schemas are unchang
 Start a Brain server with the [quickstart](https://aex.dev/brain/docs/quickstart), then install:
 
 ```sh
-npm install @aexhq/brain@0.34.0 @aexhq/agentloop-pi@7.2.1 zod@4
+npm install @aexhq/brain@0.34.0 @aexhq/agentloop-pi@7.2.2 zod@4
 ```
 
 Set `OPENAI_API_KEY`, save the following as `order.mjs`, and run `node order.mjs`:
