@@ -21,9 +21,24 @@ test("submit returns the start sequence and closing sends no cancellation", asyn
   assert.equal(requests[1].headers.get("idempotency-key"), "stable");
   assert.deepEqual(await requests[1].json(), { input: { message: "work" } });
   await assert.rejects(session.submit("", {}), /non-empty/);
-  await assert.rejects(session.submit("work", { output: { type: z.string() } }), /hosted Agentloop/);
+  await assert.rejects(session.submit("work", { output: { type: z.string() } }), /does not accept output/);
   await brain.close();
   assert.equal(requests.length, 2);
+});
+
+test("removed typed sends fail before posting a message", async () => {
+  const requests = [];
+  const client = new Brain({ baseUrl: "https://brain.example", fetch: async (url) => {
+    requests.push(url);
+    return Response.json(sessionResponse);
+  } });
+  const session = await client.sessions.get(sessionResponse.session_id);
+  for (const output of [{ type: z.string() }, undefined]) {
+    await assert.rejects(session.send("work", { output }), /send does not accept output/);
+    await assert.rejects(session.submit("work", { output }), /submit does not accept output/);
+  }
+  assert.equal(requests.length, 1);
+  await client.close();
 });
 
 test("remote implementations need no Brain admission and a Tool can have two placements", async () => {

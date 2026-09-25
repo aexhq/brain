@@ -94,8 +94,8 @@ completed turn also does not prove that an application save or background job su
 See the [submission example](https://github.com/aexhq/brain/blob/main/examples/submitted-turn.mjs).
 
 Closing a client after acceptance does not cancel hosted execution. Host Environments
-still require their host process, and client-side structured-output correction requires
-`send`; put independent execution and output policy in hosted extensions. Drain waits
+still require their host process; put independent execution and output policy in hosted
+extensions. Drain waits
 for accepted turns. Restart records interrupted work without replay, as described below.
 
 Environments may register a turn-end method during setup. The answer is available before

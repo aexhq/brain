@@ -19,8 +19,8 @@ console.log(messages);
 ```
 
 Each message starts a turn: the agent can call the model and tools before it finishes.
-`send()` waits for the turn. Use [structured output](/brain/docs/guides/structured-output)
-when your app needs a validated value instead of a conversation.
+`send()` waits for the turn and returns session state. The Agentloop chooses its answer;
+your application decides how to present or validate it.
 
 ## Read progress
 
