@@ -91,7 +91,6 @@ own lookup. It runs in your app, so keep that process connected while its tools 
 | Connect my database or API | [Write a tool](https://aex.dev/brain/docs/guides/write-a-tool) |
 | Change how the agent reasons and uses tools | [Write an agent loop](https://aex.dev/brain/docs/guides/write-a-loop) |
 | Run code in a browser or sandbox | [Environments](https://aex.dev/brain/docs/concepts/environment) |
-| Get a typed JSON answer | [Structured output](https://aex.dev/brain/docs/guides/structured-output) |
 
 The client SDK supports JavaScript and TypeScript. Extension guides include JavaScript,
 Rust and Python examples with their build steps. Other clients can use the
