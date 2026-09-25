@@ -226,6 +226,7 @@ async fn reference_loop_reads_interruptions_and_hands_tool_failures_to_the_model
             environment(),
             TurnInput {
                 tools: vec![brain_protocol::ActivationTool {
+                    environment_refs: vec![],
                     definition: brain_protocol::ToolDefinition {
                         name: "echo".into(),
                         description: "Echo".into(),

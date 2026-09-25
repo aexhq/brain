@@ -21,7 +21,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, Payload},
 };
-use brain_protocol::{EnvironmentName, ModelSelection, SessionId};
+use brain_protocol::{EnvironmentName, EnvironmentRef, ModelSelection, SessionId};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -39,6 +39,12 @@ pub struct ModelCredential {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "record", rename_all = "snake_case")]
 enum Entry {
+    Observer {
+        session_id: SessionId,
+        environment: EnvironmentRef,
+        nonce: String,
+        ciphertext: String,
+    },
     /// The provider credential a session calls its model with.
     Model {
         session_id: SessionId,
@@ -59,6 +65,7 @@ enum Entry {
 }
 
 pub struct ServerMetadata {
+    observers: RwLock<Observers>,
     models: RwLock<HashMap<SessionId, ModelCredential>>,
     environments: RwLock<HashMap<(SessionId, EnvironmentName), Zeroizing<String>>>,
     log: Mutex<File>,
@@ -71,8 +78,9 @@ impl ServerMetadata {
         let key = load_or_create_key(&directory.join("master.key"))?;
         let path = directory.join("metadata.log");
         let (log, records) = crate::persistence::open_log(&path)?;
-        let (models, environments) = replay(records, &key)?;
+        let (models, environments, observers) = replay(records, &key)?;
         Ok(Self {
+            observers: RwLock::new(observers),
             models: RwLock::new(models),
             environments: RwLock::new(environments),
             log: Mutex::new(log),
@@ -177,7 +185,54 @@ impl ServerMetadata {
         })?;
         models.remove(session_id);
         environments.retain(|(session, _), _| session != session_id);
+        self.observers
+            .write()
+            .map_err(poisoned)?
+            .retain(|(session, _, _), _| session != session_id);
         Ok(())
+    }
+
+    pub fn observer(
+        &self,
+        session: &SessionId,
+        environment: &EnvironmentRef,
+    ) -> Result<Option<Zeroizing<String>>, brain::Error> {
+        Ok(self
+            .observers
+            .read()
+            .map_err(poisoned)?
+            .get(&(
+                session.clone(),
+                environment.name.clone(),
+                environment.sequence,
+            ))
+            .cloned())
+    }
+
+    pub fn register_observer(
+        &self,
+        session: &SessionId,
+        environment: &EnvironmentRef,
+    ) -> Result<Zeroizing<String>, brain::Error> {
+        let mut observers = self.observers.write().map_err(poisoned)?;
+        let key = (
+            session.clone(),
+            environment.name.clone(),
+            environment.sequence,
+        );
+        if let Some(token) = observers.get(&key) {
+            return Ok(token.clone());
+        }
+        let token = Zeroizing::new(brain::random_id("benv"));
+        let (nonce, ciphertext) = self.seal(&observer_aad(session, environment), &token)?;
+        self.append(&Entry::Observer {
+            session_id: session.clone(),
+            environment: environment.clone(),
+            nonce,
+            ciphertext,
+        })?;
+        observers.insert(key, token.clone());
+        Ok(token)
     }
 
     fn append(&self, entry: &Entry) -> Result<(), brain::Error> {
@@ -215,16 +270,48 @@ fn environment_aad(session_id: &SessionId, environment: &EnvironmentName) -> Str
     format!("environment:{session_id}:{environment}")
 }
 
+type Observers = HashMap<(SessionId, EnvironmentName, u64), Zeroizing<String>>;
 type Credentials = (
     HashMap<SessionId, ModelCredential>,
     HashMap<(SessionId, EnvironmentName), Zeroizing<String>>,
+    Observers,
 );
+
+fn observer_aad(session: &SessionId, environment: &EnvironmentRef) -> String {
+    format!(
+        "observer:{session}:{}:{}",
+        environment.name, environment.sequence
+    )
+}
 
 fn replay(records: Vec<Entry>, key: &[u8; KEY_BYTES]) -> Result<Credentials, brain::Error> {
     let mut models = HashMap::new();
     let mut environments = HashMap::new();
+    let mut observers = HashMap::new();
     for entry in records {
         match entry {
+            Entry::Observer {
+                session_id,
+                environment,
+                nonce,
+                ciphertext,
+            } => {
+                let token = unseal(
+                    key,
+                    &observer_aad(&session_id, &environment),
+                    &nonce,
+                    &ciphertext,
+                )
+                .ok_or_else(|| {
+                    brain::Error::Journal(
+                        "Environment observer credential cannot be decrypted".into(),
+                    )
+                })?;
+                observers.insert(
+                    (session_id, environment.name, environment.sequence),
+                    Zeroizing::new(token),
+                );
+            }
             Entry::Model {
                 session_id,
                 provider,
@@ -263,10 +350,11 @@ fn replay(records: Vec<Entry>, key: &[u8; KEY_BYTES]) -> Result<Credentials, bra
             Entry::Forgotten { session_id } => {
                 models.remove(&session_id);
                 environments.retain(|(session, _), _| session != &session_id);
+                observers.retain(|(session, _, _), _| session != &session_id);
             }
         }
     }
-    Ok((models, environments))
+    Ok((models, environments, observers))
 }
 
 fn unseal(key: &[u8; KEY_BYTES], aad: &str, nonce: &str, ciphertext: &str) -> Option<String> {
@@ -336,6 +424,45 @@ pub fn metadata_directory(data_dir: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reporter_credentials_survive_reopen_and_are_scoped_to_the_incarnation() {
+        use super::*;
+        let root = tempfile::tempdir().unwrap();
+        let session = SessionId::new("ses_reporter");
+        let binding = EnvironmentRef {
+            name: EnvironmentName::new("workspace"),
+            sequence: 1,
+        };
+        let metadata = ServerMetadata::open(root.path()).unwrap();
+        let token = metadata.register_observer(&session, &binding).unwrap();
+        assert!(metadata.register_observer(&session, &binding).unwrap() == token);
+        assert!(
+            metadata
+                .observer(
+                    &session,
+                    &EnvironmentRef {
+                        sequence: 2,
+                        ..binding.clone()
+                    }
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            metadata
+                .observer(&SessionId::new("ses_other"), &binding)
+                .unwrap()
+                .is_none()
+        );
+        drop(metadata);
+        let metadata = ServerMetadata::open(root.path()).unwrap();
+        assert!(metadata.observer(&session, &binding).unwrap().unwrap() == token);
+        metadata.forget(&session).unwrap();
+        drop(metadata);
+        let metadata = ServerMetadata::open(root.path()).unwrap();
+        assert!(metadata.observer(&session, &binding).unwrap().is_none());
+    }
+
     #[test]
     fn damaged_nonce_lengths_are_errors_not_panics() {
         use rand::Rng;

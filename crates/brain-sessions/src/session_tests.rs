@@ -1,13 +1,16 @@
 use super::*;
 use async_trait::async_trait;
 use brain::LoopExecutor;
-use brain_protocol::{AgentloopRef, ModelBinding};
+use brain_protocol::{AgentloopRef, Environment, ModelBinding};
 use brain_protocol::{
     Message, ModelRequest, ModelResult, ModelStreamEvent, Outcome, ToolCancellation, ToolDispatch,
     TurnInput, TurnOutput,
 };
 
 struct Echo;
+
+#[path = "environment_tests.rs"]
+mod environments;
 
 #[tokio::test]
 async fn background_completion_wakes_a_passivated_loop_once_and_never_edits_its_transcript() {
@@ -588,6 +591,7 @@ fn api(root: &std::path::Path) -> Sessions {
         writer: Writer::spawn(),
         feed: feed.clone(),
         session_runtime: Arc::new(SessionRuntime {
+            environment_control: None,
             tool_executions: Arc::default(),
             limits: brain::Limits {
                 max_model_calls: 4,
@@ -622,7 +626,7 @@ fn session_config() -> SessionConfig {
     serde_json::from_value(serde_json::json!({
         "agentloop": {"implementation": {"type": "brain_component", "entrypoint": "turn", "id": "a".repeat(64)}, "configuration": {}, "environment": "brain"},
         "model": {"provider": "openai", "name": "test"}, "system": "test", "tools": [],
-        "environments": [{"name": "brain", "driver": "brain"}]
+        "environments": [{"name": "brain", "lifecycle": "automatic", "driver": "brain"}]
     }))
     .unwrap()
 }

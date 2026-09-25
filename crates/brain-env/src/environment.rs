@@ -344,6 +344,7 @@ impl TurnBridge for ServicesBridge {
                     .unwrap_or_default(),
             ),
             HostCall::Model { request_json } => ("model", parse(&request_json)?),
+            HostCall::Environments { request_json } => ("environments", parse(&request_json)?),
             HostCall::Dispatch { calls_json } => ("dispatch", parse(&calls_json)?),
             HostCall::Emit { kind, payload_json } => (
                 "emit",
@@ -433,11 +434,20 @@ mod tests {
         let mut entries = Vec::new();
         for name in ["loop", "tools"] {
             let entry = Environment {
+                lifecycle: Some(brain_protocol::EnvironmentLifecycle::Automatic),
+                template: None,
+                methods: Default::default(),
+                environments: Vec::new(),
                 name: brain_protocol::EnvironmentName::new(name),
                 driver: brain_protocol::Driver::Brain {},
                 configuration: serde_json::json!({"filesystem": {"workspace": "write"}}),
             };
             let operation = EnvironmentOperation {
+                context: None,
+                binding: None,
+                reporter: None,
+                configuration: serde_json::Value::Null,
+                template: None,
                 session_id: session(),
                 environment: entry.name.clone(),
                 sequence: 1,
@@ -588,6 +598,10 @@ mod tests {
                 .is_err()
         );
         let entry = Environment {
+            lifecycle: Some(brain_protocol::EnvironmentLifecycle::Automatic),
+            template: None,
+            methods: Default::default(),
+            environments: Vec::new(),
             name: brain_protocol::EnvironmentName::new("brain"),
             driver: brain_protocol::Driver::Brain {},
             configuration: serde_json::json!({"network": {"allow": []}}),

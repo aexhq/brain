@@ -8,6 +8,7 @@ use crate::{LoopExecutor, ModelExecutor, ToolExecutor};
 /// effects, the limits it runs under, and where its live output goes. Built once by the
 /// host and shared by every session it runs.
 pub struct SessionRuntime {
+    pub environment_control: Option<Arc<dyn crate::environment::EnvironmentControl>>,
     /// The budgets every turn runs under. The Tool deadline is enforced by the session:
     /// it kills the call and records a `timeout` outcome, since the remote cannot be
     /// trusted to.

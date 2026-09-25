@@ -58,6 +58,48 @@ for a TypeScript service.
 Edit the example's `execute` handler to run your own fixed operation. It calls the supplied
 `finish` callback before returning a receipt, so Brain knows the tool has completed.
 
+## Add typed methods and observations
+
+Use `environmentHandler` to validate provider options and named method inputs like a Tool.
+The service authenticates Brain's request, then passes the decoded command to `handler.run()`:
+
+```ts
+import { environmentHandler } from "@aexhq/brain";
+import { z } from "zod";
+
+const handler = environmentHandler({
+  options: z.object({ region: z.string() }),
+  async setup(ctx) {
+    await provider.attach(ctx.sessionId, ctx.environment.name, ctx.options.region);
+    const reporter = ctx.reporter;
+    provider.onResourceLost(ctx.environment.name, async resource => {
+      await reporter.emitResult({
+        scope: "resource", resource, code: "lost", message: "The resource is no longer available.",
+      });
+    });
+  },
+  methods: {
+    inspect: {
+      description: "Read current provider health.",
+      input: z.object({ resource: z.string() }),
+      run: (input, ctx) => provider.inspect(ctx.environment.name, input.resource),
+    },
+  },
+  teardown: ctx => provider.release(ctx.environment.name),
+});
+```
+
+Here `provider` is your own integration. Give its watchers only `ctx.reporter`; keep operation
+services in the handler. The reporter can outlive setup and carries no control authority.
+An operation can call another authorized environment through `ctx.environments`. Its grants
+are separate from those of any Tool or Agentloop it hosts. Export `handler.methods` on the
+`environment(...)` factory so the application can grant the methods it chooses.
+
+Use `effect: "replace"` for a method that replaces the entire execution environment. Manage
+resources inside it with ordinary methods. Brain handles references, grants, journaling and
+activation; your Env implements the provider behavior. See
+[Control environments](/brain/docs/guides/environment-control).
+
 ## Python and other languages
 
 An environment service uses HTTP and JSON, so it can be written in any language with an HTTP

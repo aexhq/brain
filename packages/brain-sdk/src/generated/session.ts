@@ -18,6 +18,11 @@ export type AgentloopId = string;
 export type EnvironmentName = string;
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentPermission".
+ */
+export type EnvironmentPermission = "read" | "create" | "setup" | "update" | "delete" | "call";
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "ContentBlock".
  */
 export type ContentBlock =
@@ -95,7 +100,16 @@ export type Environment = {
   configuration?: {
     [k: string]: unknown | undefined;
   };
+  environments?: EnvironmentGrant[];
+  /**
+   * Required on new admissions; absence only supports retained session journals.
+   */
+  lifecycle?: "automatic" | "manual";
+  methods?: {
+    [k: string]: EnvironmentMethod | undefined;
+  };
   name: EnvironmentName;
+  template?: EnvironmentTemplate;
 } & Environment1;
 export type Environment1 =
   | {
@@ -127,6 +141,199 @@ export type Role = "user" | "assistant" | "developer";
 export type Dialect = "openai_responses" | "anthropic_messages";
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentAvailability".
+ */
+export type EnvironmentAvailability = "available" | "unavailable" | "unknown";
+/**
+ * What Brain asks an Environment to do. An Environment provides resources and learns
+ * what runs in it only when asked to run it: setup carries its configuration;
+ * execute carries an opaque implementation and input.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentRequest".
+ */
+export type EnvironmentRequest =
+  | {
+      configuration: unknown;
+      type: "setup";
+    }
+  | {
+      input: unknown;
+      name: string;
+      type: "call";
+    }
+  | {
+      callback?: ExecutionCallback2;
+      deadline_ms?: number;
+      /**
+       * Interpreted only by the Environment; fixes the runtime entrypoint and configuration.
+       */
+      implementation: {
+        [k: string]: unknown | undefined;
+      };
+      input: unknown;
+      type: "execute";
+    }
+  | {
+      target_sequence: number;
+      type: "cancel";
+    }
+  | {
+      type: "detach";
+    }
+  | {
+      type: "teardown";
+    };
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "SessionId".
+ */
+export type SessionId = string;
+/**
+ * The same service request in every extension role and transport.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentControlRequest".
+ */
+export type EnvironmentControlRequest =
+  | {
+      operation: "list";
+    }
+  | {
+      environment: EnvironmentRef;
+      operation: "get";
+    }
+  | {
+      configuration: unknown;
+      name: EnvironmentName;
+      operation: "create";
+      template: EnvironmentName;
+    }
+  | {
+      environment: EnvironmentRef;
+      operation: "setup";
+    }
+  | {
+      configuration: unknown;
+      environment: EnvironmentRef;
+      operation: "update";
+    }
+  | {
+      environment: EnvironmentRef;
+      operation: "delete";
+    }
+  | {
+      environment: EnvironmentRef;
+      input: unknown;
+      method: string;
+      operation: "call";
+    };
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentEvent".
+ */
+export type EnvironmentEvent =
+  | {
+      data: unknown;
+      event_type: string;
+      type: "event";
+    }
+  | {
+      output: EnvironmentOutput;
+      type: "result";
+    };
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentObservation".
+ */
+export type EnvironmentObservation =
+  | {
+      availability: EnvironmentAvailability;
+      message: string;
+      scope: "environment";
+    }
+  | {
+      code: string;
+      message: string;
+      resource: string;
+      scope: "resource";
+    }
+  | {
+      resolution: EnvironmentResolution;
+      scope: "operation";
+      sequence: number;
+    };
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentResolution".
+ */
+export type EnvironmentResolution =
+  | {
+      status: "ready";
+    }
+  | {
+      status: "deleted";
+    }
+  | {
+      status: "detached";
+    }
+  | {
+      error: OutcomeError;
+      status: "failed";
+    };
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentLifecycle".
+ */
+export type EnvironmentLifecycle = "automatic" | "manual";
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentMethodEffect".
+ */
+export type EnvironmentMethodEffect = "none" | "replace";
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentReceipt".
+ */
+export type EnvironmentReceipt =
+  | {
+      /**
+       * Setup may register a method Brain calls after each turn, with its start sequence.
+       */
+      on_turn_end?: string;
+      type: "accepted";
+    }
+  | {
+      data: unknown;
+      type: "progress";
+    }
+  | {
+      output: unknown;
+      type: "result";
+    }
+  | {
+      output?: unknown;
+      type: "returned";
+    }
+  | {
+      code: string;
+      details?: unknown;
+      message: string;
+      retryable: boolean;
+      type: "failure";
+    }
+  | {
+      message: string;
+      type: "unknown";
+    };
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentState".
+ */
+export type EnvironmentState =
+  "declared" | "starting" | "ready" | "failed" | "unknown" | "deleting" | "deleted" | "detached";
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "EventOrigin".
  */
 export type EventOrigin =
@@ -137,6 +344,10 @@ export type EventOrigin =
   | {
       kind: "tool";
       sequence: number;
+    }
+  | {
+      environment: EnvironmentRef;
+      kind: "environment";
     };
 /**
  * What a host is asked to do for a session placed in it. A call is named by the
@@ -155,11 +366,6 @@ export type HostOperation =
       target_sequence: number;
       type: "cancel_tool";
     };
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "SessionId".
- */
-export type SessionId = string;
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "ToolExecutionUpdate".
@@ -288,7 +494,19 @@ export interface ApiError {
 export interface AgentloopRef {
   configuration: unknown;
   environment: EnvironmentName;
+  environments?: EnvironmentGrant[];
   implementation: unknown;
+}
+/**
+ * Authority over a declared binding and instances made from its template.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentGrant".
+ */
+export interface EnvironmentGrant {
+  environment: EnvironmentName;
+  methods?: string[];
+  permissions: EnvironmentPermission[];
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
@@ -331,6 +549,26 @@ export interface CreateSessionRequest {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentMethod".
+ */
+export interface EnvironmentMethod {
+  description: string;
+  effect?: "none" | "replace";
+  input_schema: unknown;
+  output_schema?: unknown;
+}
+/**
+ * Fixed at admission. Provider configuration is validated, never interpreted by Brain.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentTemplate".
+ */
+export interface EnvironmentTemplate {
+  configuration_schema: unknown;
+  max_instances: number;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "ModelSelection".
  */
 export interface ModelSelection {
@@ -347,6 +585,7 @@ export interface ModelSelection {
  */
 export interface Tool {
   description: string;
+  environments?: EnvironmentGrant[];
   input_schema: {};
   name: string;
   output_schema?: {};
@@ -390,6 +629,131 @@ export interface EnvironmentCallResult {
   output: unknown;
 }
 /**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentCommand".
+ */
+export interface EnvironmentCommand {
+  contract: "environment/v1";
+  operation: EnvironmentOperation;
+}
+/**
+ * One operation on an Environment, named by `(session_id, environment, sequence)`.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentOperation".
+ */
+export interface EnvironmentOperation {
+  binding?: EnvironmentRef;
+  configuration?: {
+    [k: string]: unknown | undefined;
+  };
+  context?: ExecutionCallback;
+  environment: EnvironmentName;
+  reporter?: ExecutionCallback1;
+  request: EnvironmentRequest;
+  /**
+   * The sequence of the journal record that started this operation. With
+   * `session_id` it names the operation: a redelivery carries the same pair, so a
+   * receiver that already answered it can say so.
+   */
+  sequence: number;
+  session_id: SessionId;
+  template?: EnvironmentName;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentRef".
+ */
+export interface EnvironmentRef {
+  name: EnvironmentName;
+  sequence: number;
+}
+/**
+ * Controller services are separate from the hosted invocation's callback.
+ */
+export interface ExecutionCallback {
+  methods: string[];
+  token: string;
+  url: string;
+}
+/**
+ * Where a remote invocation reaches only its caller-granted services.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ExecutionCallback".
+ */
+export interface ExecutionCallback1 {
+  methods: string[];
+  token: string;
+  url: string;
+}
+/**
+ * Where a remote invocation reaches only its caller-granted services.
+ */
+export interface ExecutionCallback2 {
+  methods: string[];
+  token: string;
+  url: string;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentOutput".
+ */
+export interface EnvironmentOutput {
+  content?: string;
+  observation: EnvironmentObservation;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "OutcomeError".
+ */
+export interface OutcomeError {
+  code: string;
+  details?: unknown;
+  message: string;
+  retryable?: boolean;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentResponse".
+ */
+export interface EnvironmentResponse {
+  contract: "environment/v1";
+  receipt: EnvironmentReceipt;
+  sequence: number;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentView".
+ */
+export interface EnvironmentView {
+  availability?: EnvironmentAvailability;
+  configuration: unknown;
+  lifecycle: EnvironmentLifecycle;
+  methods: {
+    [k: string]: EnvironmentMethod | undefined;
+  };
+  observation?: EnvironmentObservation;
+  observed_at_ms?: number;
+  pending_operation?: number;
+  reference: EnvironmentRef;
+  state: EnvironmentState;
+  template: EnvironmentName;
+  tools: ToolDefinition[];
+}
+/**
+ * What the model may be told about a Tool.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ToolDefinition".
+ */
+export interface ToolDefinition {
+  description: string;
+  input_schema: {};
+  name: string;
+  output_schema: {};
+}
+/**
  * One journal record as a client reads it. `(session_id, sequence)` names it; there
  * is no other identifier.
  *
@@ -410,6 +774,10 @@ export interface Event {
     | {
         kind: "tool";
         sequence: number;
+      }
+    | {
+        environment: EnvironmentRef;
+        kind: "environment";
       };
   recorded_at_ms: number;
   sequence: number;
@@ -434,17 +802,6 @@ export interface ExecutionCall {
   method: string;
 }
 /**
- * Where a remote invocation reaches only its caller-granted services.
- *
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "ExecutionCallback".
- */
-export interface ExecutionCallback {
-  methods: string[];
-  token: string;
-  url: string;
-}
-/**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "HostCommand".
  */
@@ -454,6 +811,7 @@ export interface HostCommand {
   operation: HostOperation;
   sequence: number;
   session_id: SessionId;
+  template?: EnvironmentName;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
@@ -518,18 +876,6 @@ export interface ModelRequest {
   tools?: ToolDefinition[];
 }
 /**
- * What the model may be told about a Tool.
- *
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "ToolDefinition".
- */
-export interface ToolDefinition {
-  description: string;
-  input_schema: {};
-  name: string;
-  output_schema: {};
-}
-/**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "HostRegistration".
  */
@@ -548,13 +894,12 @@ export interface HostResult {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "OutcomeError".
+ * via the `definition` "HostServiceRequest".
  */
-export interface OutcomeError {
-  code: string;
-  details?: unknown;
-  message: string;
-  retryable?: boolean;
+export interface HostServiceRequest {
+  call: ExecutionCall;
+  sequence: number;
+  session_id: SessionId;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema

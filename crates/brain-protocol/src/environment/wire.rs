@@ -33,6 +33,15 @@ pub enum Driver {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct Environment {
     pub name: EnvironmentName,
+    /// Required on new admissions; absence only supports retained session journals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<super::EnvironmentLifecycle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<super::EnvironmentTemplate>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub methods: std::collections::BTreeMap<String, super::EnvironmentMethod>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub environments: Vec<super::EnvironmentGrant>,
     #[serde(flatten)]
     pub driver: Driver,
     #[serde(default)]
@@ -42,6 +51,17 @@ pub struct Environment {
 /// One operation on an Environment, named by `(session_id, environment, sequence)`.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct EnvironmentOperation {
+    #[serde(default)]
+    pub configuration: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<super::EnvironmentRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reporter: Option<ExecutionCallback>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<EnvironmentName>,
+    /// Controller services are separate from the hosted invocation's callback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ExecutionCallback>,
     /// The sequence of the journal record that started this operation. With
     /// `session_id` it names the operation: a redelivery carries the same pair, so a
     /// receiver that already answered it can say so.

@@ -163,23 +163,27 @@ fn an_environment_carries_its_driver_beside_its_configuration() {
         )
     };
     assert!(valid(
-        serde_json::json!({"name": "brain", "driver": "brain"})
+        serde_json::json!({"name": "brain", "lifecycle": "automatic", "driver": "brain"})
     ));
     assert!(valid(serde_json::json!({
-        "name": "app", "driver": "host", "host_id": "host_12345678901234567890", "configuration": {}
+        "name": "app", "lifecycle": "automatic", "driver": "host", "host_id": "host_12345678901234567890", "configuration": {}
     })));
     assert!(valid(serde_json::json!({
-        "name": "sandbox", "driver": "http", "url": "https://sandbox.example",
+        "name": "sandbox", "lifecycle": "automatic", "driver": "http", "url": "https://sandbox.example",
         "credential": "k", "configuration": {"region": "eu"}
     })));
     assert!(!valid(
-        serde_json::json!({"name": "sandbox", "driver": "http"})
+        serde_json::json!({"name": "sandbox", "lifecycle": "automatic", "driver": "http"})
     ));
-    assert!(!valid(serde_json::json!({"name": "app", "driver": "host"})));
+    assert!(!valid(
+        serde_json::json!({"name": "app", "lifecycle": "automatic", "driver": "host"})
+    ));
     assert!(!valid(
         serde_json::json!({"name": "x", "driver": "elsewhere"})
     ));
-    assert!(!valid(serde_json::json!({"driver": "brain"})));
+    assert!(!valid(
+        serde_json::json!({"lifecycle": "automatic", "driver": "brain"})
+    ));
 }
 
 #[test]

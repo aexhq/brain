@@ -22,8 +22,21 @@
     "EnvironmentOperation": {
       "description": "One operation on an Environment, named by `(session_id, environment, sequence)`.",
       "properties": {
+        "binding": {
+          "$ref": "#/$defs/EnvironmentRef"
+        },
+        "configuration": {
+          "default": null
+        },
+        "context": {
+          "$ref": "#/$defs/ExecutionCallback",
+          "description": "Controller services are separate from the hosted invocation's callback."
+        },
         "environment": {
           "$ref": "#/$defs/EnvironmentName"
+        },
+        "reporter": {
+          "$ref": "#/$defs/ExecutionCallback"
         },
         "request": {
           "$ref": "#/$defs/EnvironmentRequest"
@@ -36,6 +49,9 @@
         },
         "session_id": {
           "$ref": "#/$defs/SessionId"
+        },
+        "template": {
+          "$ref": "#/$defs/EnvironmentName"
         }
       },
       "required": [
@@ -152,6 +168,24 @@
           "type": "object"
         }
       ]
+    },
+    "EnvironmentRef": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/EnvironmentName"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "sequence"
+      ],
+      "type": "object"
     },
     "EnvironmentRequest": {
       "description": "What Brain asks an Environment to do. An Environment provides resources and learns\nwhat runs in it only when asked to run it: setup carries its configuration;\nexecute carries an opaque implementation and input.",

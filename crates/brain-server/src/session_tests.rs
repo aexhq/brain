@@ -17,7 +17,7 @@ async fn submission_sequence_replays_after_restart_without_another_turn() {
         "agentloop": {"implementation": {"type":"brain_component","entrypoint":"turn","id":"a".repeat(64)}, "configuration":{}, "environment":"brain"},
         "model": {"provider":"openai","name":"gpt-5-mini","api_key":"model-key"},
         "tools": [],
-        "environments": [{"name":"brain","driver":"brain"}]
+        "environments": [{"name":"brain","lifecycle": "automatic", "driver": "brain"}]
     })).unwrap();
     let session = server
         .create_session("create".into(), create)
@@ -143,6 +143,7 @@ fn api_with_loop(root: &std::path::Path, loop_executor: Arc<dyn LoopExecutor>) -
         writer: Writer::spawn(),
         feed: feed.clone(),
         session_runtime: Arc::new(SessionRuntime {
+            environment_control: None,
             tool_executions: Arc::default(),
             limits: brain::Limits {
                 max_model_calls: 4,
@@ -222,8 +223,8 @@ async fn a_session_is_created_set_up_and_deleted_through_its_environments() {
         "model": {"provider": "openai", "name": "gpt-5-mini", "api_key": "model-key"},
         "tools": [],
         "environments": [
-            {"name": "brain", "driver": "brain"},
-            {"name": "sandbox", "driver": "http", "url": "http://127.0.0.1:1", "credential": "sandbox-key"}
+            {"name": "brain", "lifecycle": "automatic", "driver": "brain"},
+            {"name": "sandbox", "lifecycle": "automatic", "driver": "http", "url": "http://127.0.0.1:1", "credential": "sandbox-key"}
         ]
     }))
     .unwrap();
@@ -323,7 +324,7 @@ async fn a_busy_submission_can_retry_its_key_after_restart() {
     let create = serde_json::from_value(serde_json::json!({
         "agentloop": {"implementation": {"type":"brain_component","entrypoint":"turn","id":"a".repeat(64)}, "configuration":{}, "environment":"brain"},
         "model": {"provider":"openai","name":"gpt-5-mini","api_key":"model-key"},
-        "tools": [], "environments": [{"name":"brain","driver":"brain"}]
+        "tools": [], "environments": [{"name":"brain","lifecycle": "automatic", "driver": "brain"}]
     })).unwrap();
     let id = server
         .create_session("create".into(), create)

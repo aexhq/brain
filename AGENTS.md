@@ -15,7 +15,8 @@
 - `hands` and downstream products consume immutable Brain tags or revisions. Brain must not depend
   on a Hands implementation crate or product-specific runtime.
 - Journal every effect before it happens. The local store must durably commit the intent before
-  dispatch. A session's Tool catalogue and placements do not change after create; preserve absent
+  dispatch. A session's Tool catalogue and placement authority do not change after create;
+  live Environment instances may change only within admitted templates and grants. Preserve absent
   usage counters as absent, and record `*_ended` or `*_failed` results before the loop sees the
   result. A record is named by session id and sequence and nothing else. Brain sends an effect once,
   never retries it automatically, and records an unknown outcome when a remote result is uncertain.

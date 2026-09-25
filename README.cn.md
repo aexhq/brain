@@ -5,18 +5,22 @@
   ▀▀  ▀▀     |______/___|__|___|___|_______|__|____|
 </pre>
 
-<p align="center"><strong>运行 AI agent，保存对话与工作进度。</strong></p>
+<p align="center"><strong>精简、可扩展的 agent 引擎。沙箱消失，Brain 仍在。</strong></p>
 
 [快速开始](https://aex.dev/brain/docs/quickstart) · [文档](https://aex.dev/brain/docs) ·
 [官方扩展](https://github.com/aexhq/extensions) · [English](README.md)
 
-Brain 是一个开源的 AI agent 服务器。连接模型和工具，发送消息，即可读取回答。
-Brain 保存对话、工具结果和进度，方便应用之后继续使用或查看。
+Brain 是一个开源的 agent 引擎，让工具运行在应用、浏览器或沙箱中。
+从精简的核心开始，选择 agent loop，再组合自己的工具和环境。
+可以自行部署，也可以使用 [Aex](https://aex.dev) 托管。
 
-- 把应用中的函数交给 agent 调用，例如查询订单或搜索数据。
-- 实时查看输出，事后查看会话历史。
-- 使用现成的 agent loop，也可以编写自己的逻辑。
-- 自行部署 Brain，或使用 [Aex](https://aex.dev) 托管。
+- **精简、可扩展。** 核心负责持久化会话和执行边界；agent 行为、工具和运行环境通过公共接口扩展。
+- **独立的生命周期。** Agentloop、Tool、Env 各司其职。把 loop 和会话历史放在沙箱之外，沙箱故障后仍可保留历史并诊断问题。
+- **可控的执行。** 明确工具在哪里运行。Brain 记录连接故障，Env 可随时报告资源状态。应用显式选择自动或手动配置，并决定是否向模型提供普通的 `env` 工具。
+
+设计受到 [Pi](https://pi.dev/) 的极简扩展理念和
+[Anthropic Managed Agents](https://www.anthropic.com/engineering/managed-agents) 的会话、推理和沙箱分离思路启发。
+Brain 不会自动恢复丢失的文件或重试不确定的操作；检查、重启和资源管理由 Env 实现，权限由应用授予。
 
 > **早期预览。** 1.0 之前 API 可能变化。服务器重启后保留已保存的历史；中断的工作会报告失败，不会自动重试。
 
@@ -33,7 +37,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 在另一个终端安装依赖，并设置环境变量 `OPENAI_API_KEY`：
 
 ```sh
-npm install @aexhq/brain@0.30.0 @aexhq/agentloop-pi@7.1.0 zod@4
+npm install @aexhq/brain@0.32.0 @aexhq/agentloop-pi@7.2.0 zod@4
 ```
 
 将以下内容保存为 `order.mjs`，运行 `node order.mjs`：
@@ -53,6 +57,7 @@ const lookupOrder = tool({
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080", token: "quickstart" });
 try {
   const session = await brain.sessions.create({
+    environmentLifecycle: { default: "automatic" },
     model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
     agentloop: pi({ env: brainEnv({ name: "brain" }) }),
     tools: [lookupOrder()],

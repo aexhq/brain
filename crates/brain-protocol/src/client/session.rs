@@ -14,6 +14,8 @@ pub const SESSION_CONTRACT: &str = "session/v1";
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentloopRef {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub environments: Vec<crate::EnvironmentGrant>,
     pub implementation: serde_json::Value,
     pub configuration: serde_json::Value,
     pub environment: EnvironmentName,
@@ -156,6 +158,7 @@ pub struct Event {
 pub enum EventOrigin {
     Agentloop { sequence: u64 },
     Tool { sequence: u64 },
+    Environment { environment: crate::EnvironmentRef },
 }
 
 /// What a live subscription carries.

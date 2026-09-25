@@ -1,5 +1,8 @@
 use super::*;
-use brain::environment::{EnvironmentAdapter, Services};
+use brain::{
+    SessionStore,
+    environment::{EnvironmentAdapter, Services},
+};
 use brain_protocol::ToolResult;
 
 struct Adapter(EnvironmentReceipt);
@@ -44,21 +47,60 @@ impl ToolServices for Leaf {
 fn dispatch() -> ToolDispatch {
     serde_json::from_value(json!({
         "sequence":1,"session_id":"ses_test", "tool":{"name":"test","description":"Test","input_schema":{},"placements":{"remote":{"implementation":{}}}},
-        "placement":{"implementation":{}}, "environment":{"name":"remote","driver":"http","url":"https://example.com"},
+        "placement":{"implementation":{}}, "environment":{"name":"remote","lifecycle": "automatic", "driver": "http","url":"https://example.com"},
         "invocation":{"name":"test","environment":"remote","call_id":"one","input":{}},"deadline_ms":1000
     })).unwrap()
 }
 
+fn executor(
+    receipt: EnvironmentReceipt,
+) -> (
+    tempfile::TempDir,
+    Arc<brain::LocalSessionStore>,
+    SessionToolExecutor,
+) {
+    let root = tempfile::tempdir().unwrap();
+    let dispatch = dispatch();
+    let config = json!({"agentloop":{"environment":"remote","implementation":{},"configuration":{}},
+        "model":{"provider":"openai","name":"test"},"tools":[dispatch.tool],"environments":[dispatch.environment]});
+    let (telemetry, _) = brain_telemetry::telemetry_channel();
+    let store = brain::LocalSessionStore::create(
+        &root.path().join("session"),
+        dispatch.session_id,
+        &config,
+        brain::Writer::spawn(),
+        Arc::new(brain::Feed::new(telemetry)),
+    )
+    .unwrap();
+    store
+        .append_sync(
+            &[
+                brain::AppendRecord::new(codes::event::SESSION_CREATION_STARTED, config),
+                brain::AppendRecord::new(
+                    codes::event::ENVIRONMENT_SETUP_STARTED,
+                    json!({"environment":"remote"}),
+                ),
+                brain::AppendRecord::new(
+                    codes::event::ENVIRONMENT_SETUP_ENDED,
+                    json!({"sequence":2,"result":{"type":"accepted"}}),
+                ),
+            ],
+            brain::SessionUpdate::default(),
+        )
+        .unwrap();
+    let registry = Arc::new(EnvironmentRegistry::new(Arc::new(Adapter(receipt))));
+    registry.track(store.clone());
+    (root, store, SessionToolExecutor::new(registry))
+}
+
 #[tokio::test]
 async fn environment_errors_reach_tools_without_losing_information() {
-    let executor = SessionToolExecutor::new(Arc::new(EnvironmentRegistry::new(Arc::new(Adapter(
-        EnvironmentReceipt::Failure {
-            code: "rate_limited".into(),
-            message: "wait".into(),
-            retryable: true,
-            details: Some(json!({"retry_after_ms":1000})),
-        },
-    )))));
+    let (_root, _store, executor) = executor(EnvironmentReceipt::Failure {
+        code: "rate_limited".into(),
+        message: "wait".into(),
+        retryable: true,
+        details: Some(json!({"retry_after_ms":1000})),
+    });
     let outcome = executor.execute(dispatch(), Arc::new(Leaf)).await.unwrap();
     let result = ToolResult::from_outcome("one".into(), outcome.unwrap());
     assert!(result.is_error);
@@ -70,11 +112,9 @@ async fn environment_errors_reach_tools_without_losing_information() {
 
 #[tokio::test]
 async fn an_explicit_unknown_receipt_is_a_tool_outcome_not_a_transport_failure() {
-    let executor = SessionToolExecutor::new(Arc::new(EnvironmentRegistry::new(Arc::new(Adapter(
-        EnvironmentReceipt::Unknown {
-            message: "result lost after dispatch".into(),
-        },
-    )))));
+    let (_root, _store, executor) = executor(EnvironmentReceipt::Unknown {
+        message: "result lost after dispatch".into(),
+    });
     assert_eq!(
         executor.execute(dispatch(), Arc::new(Leaf)).await.unwrap(),
         Some(Outcome::Unknown {
@@ -89,9 +129,7 @@ async fn nonterminal_execute_receipts_leave_the_effect_unknown() {
         EnvironmentReceipt::Accepted { on_turn_end: None },
         EnvironmentReceipt::Progress { data: json!({}) },
     ] {
-        let executor = SessionToolExecutor::new(Arc::new(EnvironmentRegistry::new(Arc::new(
-            Adapter(receipt),
-        ))));
+        let (_root, _store, executor) = executor(receipt);
         assert!(matches!(
             executor.execute(dispatch(), Arc::new(Leaf)).await,
             Err(brain::Error::Ambiguous(_))

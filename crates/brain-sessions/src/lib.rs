@@ -1,4 +1,5 @@
 //! Multi-session ownership, recovery, and caller-driven Environment lifecycle.
+mod control;
 mod environment;
 mod service;
 pub use environment::EnvironmentRegistry;

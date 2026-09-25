@@ -31,6 +31,8 @@ pub enum HostOperation {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct HostCommand {
     pub environment: crate::EnvironmentName,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<crate::EnvironmentName>,
     pub session_id: SessionId,
     #[schemars(range(min = 1))]
     pub sequence: u64,
@@ -90,4 +92,13 @@ pub struct HostModelRequest {
     #[schemars(range(min = 1))]
     pub sequence: u64,
     pub request: ModelRequest,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostServiceRequest {
+    pub session_id: SessionId,
+    #[schemars(range(min = 1))]
+    pub sequence: u64,
+    pub call: crate::ExecutionCall,
 }

@@ -50,6 +50,7 @@ interface types {
 // loop propagates it by returning an error from `turn`.
 interface host {
   use types.{turn-error};
+  environments: func(request-json: string) -> result<string, turn-error>;
 
   // A finite EventPage after this sequence. Continue with next_cursor until empty.
   events: func(after: u64) -> result<string, turn-error>;

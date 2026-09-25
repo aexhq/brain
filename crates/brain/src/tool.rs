@@ -11,6 +11,14 @@ pub use execution::{ToolExecutions, ToolGroup, ToolWakeup};
 
 #[async_trait]
 pub trait ToolServices: Send + Sync {
+    async fn environments(
+        &self,
+        _: brain_protocol::EnvironmentControlRequest,
+    ) -> Result<serde_json::Value, Error> {
+        Err(Error::InvalidState(
+            "Environment service is not available".into(),
+        ))
+    }
     async fn model(&self, request: ModelRequest) -> Result<ModelResult, Error>;
     async fn emit(&self, kind: String, payload: serde_json::Value) -> Result<u64, Error>;
     async fn result(&self, output: ToolOutput) -> Result<u64, Error>;

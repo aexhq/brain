@@ -103,6 +103,73 @@ impl ServerApi {
 
 #[async_trait]
 impl BrainApi for ServerApi {
+    async fn environment_event(
+        &self,
+        session: SessionId,
+        environment: brain_protocol::EnvironmentRef,
+        token: String,
+        event: brain_protocol::EnvironmentEvent,
+    ) -> Result<HostEventAck, ApiError> {
+        let expected = self
+            .resources
+            .credentials
+            .observer(&session, &environment)
+            .map_err(api_error)?;
+        if !expected.is_some_and(|expected| {
+            crate::executions::constant_time_equal(
+                &crate::executions::digest(&expected),
+                &crate::executions::digest(&token),
+            )
+        }) {
+            return Err(ApiError::unauthorized(
+                "invalid Environment reporter credential",
+            ));
+        }
+        let sequence = self
+            .sessions
+            .environment_event(session, environment, event)
+            .await?;
+        Ok(HostEventAck { sequence })
+    }
+
+    async fn control_environment(
+        &self,
+        session: SessionId,
+        key: String,
+        request: brain_protocol::EnvironmentControlRequest,
+    ) -> Result<serde_json::Value, ApiError> {
+        let scope = format!("environment_control:{session}");
+        let lock = self.idempotency_lock(&scope, &key)?;
+        let _guard = lock.lock().await;
+        if let Some(saved) = self
+            .resources
+            .idempotency
+            .replay_or_claim(&scope, &key, &request)
+            .map_err(api_error)?
+        {
+            return Ok(saved);
+        }
+        let value = self
+            .sessions
+            .control_environment(session, request.clone())
+            .await?;
+        self.resources
+            .idempotency
+            .put(&scope, &key, &request, &value)
+            .map_err(api_error)?;
+        Ok(value)
+    }
+    async fn host_call(
+        &self,
+        host_id: HostId,
+        token: String,
+        request: brain_protocol::HostServiceRequest,
+    ) -> Result<serde_json::Value, ApiError> {
+        self.resources
+            .hosts
+            .service(&host_id, &token, request)
+            .await
+    }
     async fn register_host(&self) -> Result<HostRegistration, ApiError> {
         self.resources.hosts.register()
     }
@@ -656,7 +723,10 @@ fn loop_error(error: LoopError) -> ApiError {
 
 /// A runtime error names its own API code; nothing here reads the message.
 pub(crate) fn api_error(error: brain::Error) -> ApiError {
-    ApiError::new(error.code(), error.to_string(), error.retryable())
+    ApiError {
+        details: error.details(),
+        ..ApiError::new(error.code(), error.to_string(), error.retryable())
+    }
 }
 
 fn not_found(message: impl Into<String>) -> ApiError {

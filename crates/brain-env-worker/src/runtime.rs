@@ -371,6 +371,12 @@ impl bindings::brain::agentloop::host::Host for HostState {
             .map_err(wit_error)
     }
 
+    async fn environments(&mut self, request_json: String) -> Result<String, wit::TurnError> {
+        self.call(HostCall::Environments { request_json })
+            .await
+            .map_err(wit_error)
+    }
+
     async fn dispatch(&mut self, calls_json: String) -> Result<String, wit::TurnError> {
         self.call(HostCall::Dispatch { calls_json })
             .await
@@ -396,6 +402,17 @@ impl bindings::brain::agentloop::host::Host for HostState {
 }
 
 impl tool_bindings::brain::tool::host::Host for HostState {
+    async fn environments(
+        &mut self,
+        request_json: String,
+    ) -> Result<String, tool_bindings::brain::tool::types::ToolError> {
+        self.call(HostCall::Environments { request_json })
+            .await
+            .map_err(|error| tool_bindings::brain::tool::types::ToolError {
+                code: error.code,
+                message: error.message,
+            })
+    }
     async fn model(
         &mut self,
         request_json: String,

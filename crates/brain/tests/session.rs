@@ -52,6 +52,7 @@ fn request(messages: Vec<Message>) -> ModelRequest {
 
 fn invocation(name: &str, call_id: &str) -> ToolInvocation {
     ToolInvocation {
+        environment_sequence: None,
         call_id: call_id.into(),
         name: name.into(),
         input: serde_json::json!({}),
@@ -63,6 +64,7 @@ fn invocation(name: &str, call_id: &str) -> ToolInvocation {
 fn tool_config(tool_name: &str) -> SessionConfig {
     let mut config = config();
     config.tools = vec![Tool {
+        environments: Vec::new(),
         name: tool_name.into(),
         description: "a tool".into(),
         input_schema: serde_json::json!({"type":"object"}),
@@ -82,6 +84,10 @@ fn tool_config(tool_name: &str) -> SessionConfig {
 fn host_tool_config(tool_name: &str) -> SessionConfig {
     let mut config = config();
     config.environments.push(Environment {
+        lifecycle: Some(brain_protocol::EnvironmentLifecycle::Automatic),
+        template: None,
+        methods: Default::default(),
+        environments: Vec::new(),
         name: EnvironmentName::new("app"),
         driver: Driver::Host {
             host_id: HostId::new("host_12345678901234567890"),
@@ -89,6 +95,7 @@ fn host_tool_config(tool_name: &str) -> SessionConfig {
         configuration: serde_json::json!({}),
     });
     config.tools = vec![Tool {
+        environments: Vec::new(),
         name: tool_name.into(),
         description: "answered by the application".into(),
         input_schema: serde_json::json!({"type":"object"}),
@@ -674,6 +681,7 @@ async fn a_tool_call_record_names_the_tool_and_nothing_else_about_it() {
         serde_json::json!({
             "tool": "bash",
             "environment": "workspace",
+            "environment_sequence": 1,
             "invocation": {"call_id": "call_1", "name": "bash", "environment": "workspace", "input": {}},
             "deadline_ms": 5_000,
         })
@@ -819,6 +827,7 @@ async fn a_tool_in_a_host_env_uses_the_configured_executor() {
             async move {
                 let results = services
                     .dispatch(vec![ToolInvocation {
+                        environment_sequence: None,
                         environment: EnvironmentName::new("app"),
                         ..invocation("pick_file", "call_1")
                     }])
@@ -859,6 +868,7 @@ async fn an_unanswered_host_call_times_out_and_journals_the_cancellation() {
             async move {
                 let results = services
                     .dispatch(vec![ToolInvocation {
+                        environment_sequence: None,
                         environment: EnvironmentName::new("app"),
                         ..invocation("pick_file", "call_1")
                     }])

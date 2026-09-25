@@ -11,6 +11,14 @@ use crate::Error;
 /// loop propagates it by returning an error from the turn.
 #[async_trait]
 pub trait TurnServices: Send + Sync {
+    async fn environments(
+        &self,
+        _: brain_protocol::EnvironmentControlRequest,
+    ) -> Result<serde_json::Value, Error> {
+        Err(Error::InvalidState(
+            "Environment service is not available".into(),
+        ))
+    }
     /// One finite page after a journal sequence. Reading does not advance the activation cursor.
     async fn events(&self, after: u64) -> Result<brain_protocol::EventPage, Error>;
     /// Durably acknowledge the observations processed through this journal sequence.

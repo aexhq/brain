@@ -84,11 +84,39 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
                 "the HTTP adapter was handed an Environment it does not reach".into(),
             ));
         };
-        let credential = self
-            .credentials
-            .environment(&operation.session_id, &environment.name)?;
+        let credential = self.credentials.environment(
+            &operation.session_id,
+            operation.template.as_ref().unwrap_or(&environment.name),
+        )?;
         let mut operation = operation.clone();
+        if let Some(binding) = &operation.binding {
+            let token = self
+                .credentials
+                .register_observer(&operation.session_id, binding)?;
+            operation.reporter = Some(brain_protocol::ExecutionCallback {
+                url: format!(
+                    "{}/v1/sessions/{}/environments/{}/{}/events",
+                    self.public_url.trim_end_matches('/'),
+                    operation.session_id,
+                    binding.name,
+                    binding.sequence
+                ),
+                token: token.to_string(),
+                methods: vec!["emit".into(), "result".into()],
+            });
+        }
         let mut open = None;
+        let mut controller_open = None;
+        if let Some(controller) = services.as_ref().and_then(|services| services.controller()) {
+            let (grant, guard) = self.executions.open_controller(
+                &operation.session_id,
+                operation.sequence,
+                &self.public_url,
+                controller,
+            )?;
+            operation.context = Some(grant);
+            controller_open = Some(guard);
+        }
         let timeout = if let EnvironmentRequest::Execute {
             deadline_ms,
             callback,
@@ -184,6 +212,7 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
             result = receive => result,
             () = cancelled => Err(brain::Error::Cancelled("execution cancelled".into())),
         };
+        drop(controller_open);
         if let Some(services) = services
             && services.methods().contains(&"finish")
         {
@@ -240,6 +269,10 @@ mod tests {
             std::future::pending::<()>().await;
         });
         let environment = Environment {
+            lifecycle: Some(brain_protocol::EnvironmentLifecycle::Automatic),
+            template: None,
+            methods: Default::default(),
+            environments: Vec::new(),
             name: brain_protocol::EnvironmentName::new("large"),
             driver: Driver::Http {
                 url: format!("http://{address}"),
@@ -248,6 +281,11 @@ mod tests {
             configuration: serde_json::json!({}),
         };
         let operation = EnvironmentOperation {
+            template: None,
+            context: None,
+            binding: None,
+            reporter: None,
+            configuration: serde_json::Value::Null,
             sequence: 1,
             environment: environment.name.clone(),
             session_id: brain_protocol::SessionId::new("ses_test"),

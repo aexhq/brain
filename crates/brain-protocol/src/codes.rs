@@ -18,6 +18,7 @@ pub mod event {
     pub const SESSION_ENDED: &str = "session_ended";
     pub const SESSION_SUSPENDED: &str = "session_suspended";
     pub const SESSION_RESUMED: &str = "session_resumed";
+    pub const SESSION_INTERRUPTED: &str = "session_interrupted";
     pub const TURN_STARTED: &str = "turn_started";
     pub const TURN_ENDED: &str = "turn_ended";
     pub const TURN_FAILED: &str = "turn_failed";
@@ -53,6 +54,12 @@ pub mod event {
     pub const ENVIRONMENT_TEARDOWN_FAILED: &str = "environment_teardown_failed";
     pub const ENVIRONMENT_CLOSED: &str = "environment_closed";
     pub const ENVIRONMENT_UNREACHABLE: &str = "environment_unreachable";
+    pub const ENVIRONMENT_DECLARED: &str = "environment_declared";
+    pub const ENVIRONMENT_UPDATED: &str = "environment_updated";
+    pub const ENVIRONMENT_OBSERVATION: &str = "environment_observation";
+    pub const ENVIRONMENT_REPLACE_STARTED: &str = "environment_replace_started";
+    pub const ENVIRONMENT_REPLACE_ENDED: &str = "environment_replace_ended";
+    pub const ENVIRONMENT_REPLACE_FAILED: &str = "environment_replace_failed";
 
     /// The prefixes an effect record is named by; `_started`, `_ended` and `_failed` are
     /// appended by the session.
@@ -64,6 +71,7 @@ pub mod event {
         pub const ENVIRONMENT_CALL: &str = "environment_call";
         pub const ENVIRONMENT_DETACH: &str = "environment_detach";
         pub const ENVIRONMENT_TEARDOWN: &str = "environment_teardown";
+        pub const ENVIRONMENT_REPLACE: &str = "environment_replace";
     }
 
     pub const ALL: &[&str] = &[
@@ -75,6 +83,7 @@ pub mod event {
         SESSION_ENDED,
         SESSION_SUSPENDED,
         SESSION_RESUMED,
+        SESSION_INTERRUPTED,
         TURN_STARTED,
         TURN_ENDED,
         TURN_FAILED,
@@ -110,6 +119,12 @@ pub mod event {
         ENVIRONMENT_TEARDOWN_FAILED,
         ENVIRONMENT_CLOSED,
         ENVIRONMENT_UNREACHABLE,
+        ENVIRONMENT_DECLARED,
+        ENVIRONMENT_UPDATED,
+        ENVIRONMENT_OBSERVATION,
+        ENVIRONMENT_REPLACE_STARTED,
+        ENVIRONMENT_REPLACE_ENDED,
+        ENVIRONMENT_REPLACE_FAILED,
     ];
 }
 

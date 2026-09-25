@@ -443,6 +443,55 @@ fn validate_session_contract(config: &SessionConfig) -> Result<(), Error> {
             "Environment names must be unique".into(),
         ));
     }
+    for environment in &config.environments {
+        if let Some(template) = &environment.template {
+            if template.max_instances == 0 {
+                return Err(Error::InvalidState(
+                    "Environment template max_instances must be positive".into(),
+                ));
+            }
+            jsonschema::validator_for(&template.configuration_schema)
+                .map_err(|error| Error::InvalidState(error.to_string()))?;
+        }
+        for (name, method) in &environment.methods {
+            if !identifier_valid(name) {
+                return Err(Error::InvalidState(
+                    "Environment method name is invalid".into(),
+                ));
+            }
+            jsonschema::validator_for(&method.input_schema)
+                .map_err(|error| Error::InvalidState(error.to_string()))?;
+            if let Some(schema) = &method.output_schema {
+                jsonschema::validator_for(schema)
+                    .map_err(|error| Error::InvalidState(error.to_string()))?;
+            }
+        }
+    }
+    for grant in config
+        .agentloop
+        .environments
+        .iter()
+        .chain(config.tools.iter().flat_map(|tool| &tool.environments))
+        .chain(
+            config
+                .environments
+                .iter()
+                .flat_map(|environment| &environment.environments),
+        )
+    {
+        let target = config.environment(&grant.environment).ok_or_else(|| {
+            Error::InvalidState("Environment grant names an undeclared binding".into())
+        })?;
+        if grant
+            .methods
+            .iter()
+            .any(|name| !target.methods.contains_key(name))
+        {
+            return Err(Error::InvalidState(
+                "Environment grant names an undeclared method".into(),
+            ));
+        }
+    }
     // The one placement rule: everything that runs names an Environment of this session.
     let placed = config
         .tools
@@ -519,6 +568,7 @@ mod tests {
 
     fn tool() -> Tool {
         Tool {
+            environments: Vec::new(),
             name: "search".into(),
             description: "search the workspace".into(),
             input_schema: serde_json::json!({"type":"object"}),
@@ -534,6 +584,10 @@ mod tests {
 
     fn environment(name: &str, driver: Driver) -> Environment {
         Environment {
+            lifecycle: Some(brain_protocol::EnvironmentLifecycle::Automatic),
+            template: None,
+            methods: Default::default(),
+            environments: Vec::new(),
             name: EnvironmentName::new(name),
             driver,
             configuration: serde_json::json!({}),
@@ -545,6 +599,7 @@ mod tests {
     fn config() -> SessionConfig {
         SessionConfig {
             agentloop: AgentloopRef {
+                environments: Vec::new(),
                 configuration: serde_json::json!({}),
                 environment: EnvironmentName::new("workspace"),
                 implementation: serde_json::json!({"type": "brain_component", "entrypoint": "turn", "id": AgentloopId::new(digest())}),

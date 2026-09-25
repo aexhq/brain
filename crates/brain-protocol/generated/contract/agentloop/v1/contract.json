@@ -6,6 +6,12 @@
         "description": {
           "type": "string"
         },
+        "environment_refs": {
+          "items": {
+            "$ref": "#/$defs/EnvironmentRef"
+          },
+          "type": "array"
+        },
         "environments": {
           "items": {
             "$ref": "#/$defs/EnvironmentName"
@@ -170,6 +176,24 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "type": "string"
     },
+    "EnvironmentRef": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/EnvironmentName"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "sequence"
+      ],
+      "type": "object"
+    },
     "Event": {
       "description": "One journal record as a client reads it. `(session_id, sequence)` names it; there\nis no other identifier.",
       "properties": {
@@ -238,6 +262,23 @@
           "required": [
             "kind",
             "sequence"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "environment": {
+              "$ref": "#/$defs/EnvironmentRef"
+            },
+            "kind": {
+              "const": "environment",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "environment"
           ],
           "type": "object"
         }

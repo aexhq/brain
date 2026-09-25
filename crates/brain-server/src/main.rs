@@ -129,6 +129,7 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
     let writer = Writer::spawn_with(&config.limits);
     let feed = Arc::new(Feed::with_limits(telemetry.clone(), &config.limits));
     let session_runtime = Arc::new(SessionRuntime {
+        environment_control: Some(environments.clone()),
         limits: config.limits.clone(),
         loop_executor: Arc::new(EnvironmentLoopExecutor {
             environments: environments.clone(),

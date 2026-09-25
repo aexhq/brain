@@ -18,6 +18,7 @@ use crate::EnvLimits;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HostCall {
+    Environments { request_json: String },
     SetTranscript { messages_json: String },
     KvPut { key: String, value_json: String },
     KvRead { key: String },

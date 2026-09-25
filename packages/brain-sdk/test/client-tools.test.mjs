@@ -96,14 +96,14 @@ test("one host runs the Tools placed in it and commits ctx.emit before its resul
   t.after(() => client.close());
   const app = hostEnv({ name: "app" });
   const session = await client.sessions.create({
-    model,
+    environmentLifecycle: { default: "automatic" }, model,
     agentloop: pi({ env: brainEnv({ name: "brain" }) }),
     tools: [lookup({ env: app })],
   });
   await completed;
   const createRequest = requests.find((request) => new URL(request.url).pathname === "/v1/sessions");
   const body = await createRequest.json();
-  assert.deepEqual(body.environments[1], { name: "app", driver: "host", host_id: "host_12345678901234567890", configuration: {} });
+  assert.deepEqual(body.environments[1], { name: "app", lifecycle: "automatic", driver: "host", host_id: "host_12345678901234567890", configuration: {} });
   assert.deepEqual(body.tools[0].placements.app, { implementation: { type: "host_function", name: "lookup" } });
   assert.equal("implementation" in body.tools[0], false);
   const eventRequest = requests.find((request) => new URL(request.url).pathname.endsWith("/events"));
@@ -137,7 +137,7 @@ test("session creation waits for the host command stream", async (t) => {
     run: async () => null,
   });
   await assert.rejects(client.sessions.create({
-    model,
+    environmentLifecycle: { default: "automatic" }, model,
     agentloop: pi({ env: brainEnv({ name: "brain" }) }),
     tools: [local({ env: hostEnv({ name: "app" }) })],
   }), /offline/u);
@@ -262,7 +262,7 @@ test("a new session shares the host connection after the previous session ends",
     run: async () => null,
   });
   const options = {
-    model,
+    environmentLifecycle: { default: "automatic" }, model,
     agentloop: pi({ env: brainEnv({ name: "brain" }) }),
     tools: [local({ env: hostEnv({ name: "app" }) })],
   };
