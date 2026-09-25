@@ -42,7 +42,7 @@ function fixture(t, { route, run = (_, ctx) => ctx.finish("done") } = {}) {
   const loop = agentloop({ implementation: component(new Uint8Array([1])) });
   const lookup = tool({ name: "lookup", description: "Look up a value.", input: z.object({}), run });
   const options = {
-    environmentLifecycle: { default: "automatic" }, agentloop: loop({ env: brainEnv({ name: "brain" }) }),
+    agentloop: loop({ env: brainEnv({ name: "brain" }) }),
     model: { provider: "openai", name: "gpt-5", apiKey: "fixture-model-token" },
     tools: [lookup({ env: hostEnv({ name: "app" }) })],
   };

@@ -1,5 +1,15 @@
-import { environmentHandler, tool } from "../../dist/index.js";
+import { environmentHandler, tool, type CreateSessionOptions } from "../../dist/index.js";
 import { z } from "zod";
+
+declare const required: Pick<CreateSessionOptions, "model" | "agentloop">;
+const automatic: CreateSessionOptions = required;
+const manual: CreateSessionOptions = { ...required, environment: { lifecycle: { default: "manual" } } };
+const mixed: CreateSessionOptions = { ...required, environment: { lifecycle: { bindings: { workspace: "manual" } } } };
+// @ts-expect-error Lifecycle policies use the supported values.
+const invalid: CreateSessionOptions = { ...required, environment: { lifecycle: { default: "invalid" } } };
+// @ts-expect-error Session environment options are grouped under environment.
+const flat: CreateSessionOptions = { ...required, environmentLifecycle: { default: "automatic" } };
+void [automatic, manual, mixed, invalid, flat];
 
 const handler = environmentHandler({
   options: z.object({ region: z.string() }),

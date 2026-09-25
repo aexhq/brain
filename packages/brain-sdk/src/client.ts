@@ -551,12 +551,13 @@ function compileSession(
   tools: WireTool[],
   hostId?: string,
 ): CreateSessionRequest {
+  const lifecycle = options.environment?.lifecycle;
   const entries: WireEnvironment[] = [...environments].map((environment) => {
     const source = inspectEnvironment(environment);
     const configuration = structuredClone(source.configuration) as WireEnvironment["configuration"];
     const binding = {
       name: source.name,
-      lifecycle: options.environmentLifecycle.bindings?.[source.name] ?? options.environmentLifecycle.default,
+      lifecycle: lifecycle?.bindings?.[source.name] ?? lifecycle?.default ?? "automatic",
       ...(source.environments === undefined ? {} : { environments: structuredClone([...source.environments]) }),
       ...(source.methods === undefined ? {} : { methods: structuredClone(source.methods) }),
       ...(source.template === undefined ? {} : { template: structuredClone(source.template) }),
@@ -576,7 +577,7 @@ function compileSession(
         };
     }
   });
-  for (const name of Object.keys(options.environmentLifecycle.bindings ?? {})) {
+  for (const name of Object.keys(lifecycle?.bindings ?? {})) {
     if (!entries.some(entry => entry.name === name)) throw new TypeError(`Environment lifecycle names an undeclared binding: ${name}`);
   }
   const loop = inspectAgentloop(options.agentloop);
@@ -623,8 +624,17 @@ function compileTools(selectedTools: readonly PlacedTool[], implementations: Rea
 
 function validateSessionOptions(options: CreateSessionOptions): void {
   if (options === null || typeof options !== "object") throw new TypeError("session options are required");
-  if (!["automatic", "manual"].includes(options.environmentLifecycle?.default)) throw new TypeError("environmentLifecycle.default must explicitly select automatic or manual");
-  for (const policy of Object.values(options.environmentLifecycle.bindings ?? {})) {
+  if ("environmentLifecycle" in options) throw new TypeError("use environment.lifecycle instead of environmentLifecycle");
+  for (const [name, value] of [
+    ["environment", options.environment],
+    ["environment.lifecycle", options.environment?.lifecycle],
+    ["environment.lifecycle.bindings", options.environment?.lifecycle?.bindings],
+  ] as const) {
+    if (value !== undefined && (value === null || typeof value !== "object" || Array.isArray(value))) throw new TypeError(`${name} must be an object`);
+  }
+  const lifecycle = options.environment?.lifecycle;
+  if (lifecycle?.default !== undefined && !["automatic", "manual"].includes(lifecycle.default)) throw new TypeError("environment.lifecycle.default must be automatic or manual");
+  for (const policy of Object.values(lifecycle?.bindings ?? {})) {
     if (!["automatic", "manual"].includes(policy)) throw new TypeError("invalid Environment lifecycle policy");
   }
   inspectAgentloop(options.agentloop);

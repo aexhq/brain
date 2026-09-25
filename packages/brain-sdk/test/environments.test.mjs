@@ -4,7 +4,7 @@ import { z } from "zod";
 import { Brain, agentloop, environment, environmentHandler } from "../dist/index.js";
 import { HostToolRegistry } from "../dist/host.js";
 
-test("lifecycle is explicit and grants do not install a management Tool", async () => {
+test("lifecycle defaults to automatic and grants do not install a management Tool", async () => {
   const requests = [];
   const brain = new Brain({ baseUrl: "https://brain.example", fetch: async (_, init) => {
     requests.push(JSON.parse(init.body));
@@ -12,14 +12,47 @@ test("lifecycle is explicit and grants do not install a management Tool", async 
   } });
   const remote = environment({ url: () => "https://env.example" })({ name: "controller" });
   const options = { model: { provider: "openai", name: "test", apiKey: "fixture" }, agentloop: agentloop({ implementation: {} })({ env: remote, environments: [{ environment: "controller", permissions: ["read"], methods: [] }] }) };
-  await assert.rejects(brain.sessions.create(options), /environmentLifecycle/);
-  assert.equal(requests.length, 0);
-  await assert.rejects(brain.sessions.create({ ...options, environmentLifecycle: { default: "automatic", bindings: { typo: "manual" } } }), /undeclared binding/);
-  assert.equal(requests.length, 0);
-  await brain.sessions.create({ ...options, environmentLifecycle: { default: "automatic" } });
+  await brain.sessions.create(options);
   assert.deepEqual(requests[0].tools, []);
   assert.equal(requests[0].environments[0].lifecycle, "automatic");
   assert.deepEqual(requests[0].agentloop.environments[0].permissions, ["read"]);
+});
+
+test("nested lifecycle defaults and binding overrides compile into explicit wire policies", async () => {
+  const requests = [];
+  const brain = new Brain({ baseUrl: "https://brain.example", fetch: async (_, init) => {
+    requests.push(JSON.parse(init.body));
+    return Response.json({ session_id: "session", status: "idle", last_sequence: 1 });
+  } });
+  const remote = environment({ url: () => "https://env.example" });
+  const options = {
+    model: { provider: "openai", name: "test", apiKey: "fixture" },
+    agentloop: agentloop({ implementation: {} })({ env: remote({ name: "controller" }) }),
+    environments: [remote({ name: "workspace" })],
+  };
+  for (const [configuration, expected] of [
+    [{}, ["automatic", "automatic"]],
+    [{ lifecycle: {} }, ["automatic", "automatic"]],
+    [{ lifecycle: { default: "automatic" } }, ["automatic", "automatic"]],
+    [{ lifecycle: { bindings: { workspace: "manual" } } }, ["automatic", "manual"]],
+    [{ lifecycle: { default: "manual" } }, ["manual", "manual"]],
+    [{ lifecycle: { default: "manual", bindings: { controller: "automatic" } } }, ["automatic", "manual"]],
+  ]) {
+    await brain.sessions.create({ ...options, environment: configuration });
+    assert.deepEqual(requests.at(-1).environments.map(binding => binding.lifecycle), expected);
+  }
+  const count = requests.length;
+  for (const configuration of [
+    null, "manual", [], { lifecycle: null }, { lifecycle: "manual" }, { lifecycle: [] },
+    { lifecycle: { default: "invalid" } }, { lifecycle: { default: null } },
+    { lifecycle: { bindings: null } }, { lifecycle: { bindings: [] } },
+    { lifecycle: { bindings: { workspace: "invalid" } } },
+  ]) {
+    await assert.rejects(brain.sessions.create({ ...options, environment: configuration }), /environment|lifecycle/i);
+  }
+  await assert.rejects(brain.sessions.create({ ...options, environment: { lifecycle: { bindings: { typo: "manual" } } } }), /undeclared binding/);
+  await assert.rejects(brain.sessions.create({ ...options, environmentLifecycle: { default: "manual" } }), /use environment\.lifecycle/);
+  assert.equal(requests.length, count);
 });
 
 test("an ordinary custom Tool uses scoped Environment services and loses them at finish", async () => {

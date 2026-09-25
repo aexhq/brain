@@ -18,7 +18,6 @@ In the [quickstart](/brain/docs/quickstart), the loop runs on Brain and the look
 
 ```js
 agentloop: pi({ env: brainEnv({ name: "brain" }) }),
-environmentLifecycle: { default: "automatic" },
 tools: [lookupOrder()],
 ```
 
@@ -36,8 +35,9 @@ profiles granted to your account; see [managed environments](https://github.com/
 
 ## Plan for resource lifetime
 
-Lifecycle is an explicit session choice. Use `automatic` for ordinary setup and cleanup, or
-`manual` when an authorized caller should configure and set up a binding first. Separately,
+Environments use `automatic` lifecycle for ordinary setup and cleanup by default. Set
+`environment.lifecycle` to choose `manual` when an authorized caller should configure and set
+up a binding first. Separately,
 include the ordinary `env` Tool if the model should inspect or manage environments. See
 [Control environments](/brain/docs/guides/environment-control) for the combinations and grants.
 

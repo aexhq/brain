@@ -28,7 +28,7 @@ test("manual HTTP environments keep scoped reporters across Brain restart and re
   const remote = environment({ options: z.strictObject({}), methods: handler.methods,
     url: () => `${f.upstreamUrl}/managed`, credential: () => "managed-token",
   })({ name: "workspace", template: { max_instances: 2, configuration_schema: { type: "object", additionalProperties: false } } });
-  const session = await f.create(t, { environments: [remote], environmentLifecycle: { default: "automatic", bindings: { workspace: "manual" } } });
+  const session = await f.create(t, { environments: [remote], environment: { lifecycle: { bindings: { workspace: "manual" } } } });
   assert.equal(setups, 0);
   const binding = (await session.environments.list()).find(view => view.reference.name === "workspace");
   assert.equal(binding.state, "declared");

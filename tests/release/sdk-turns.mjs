@@ -13,7 +13,7 @@ const diagnostic = agentloop({
 });
 try {
   const session = await brain.sessions.create({
-    environmentLifecycle: { default: "automatic" }, model: {
+    model: {
       provider: "vercel-ai-gateway",
       name: "openai/gpt-5-mini",
       apiKey: "release-smoke-key",

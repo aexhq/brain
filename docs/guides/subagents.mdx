@@ -18,7 +18,6 @@ const delegate = tool({
   input: z.object({ task: z.string() }),
   run: async ({ task }, ctx) => {
     const child = await brain.sessions.create({
-      environmentLifecycle: { default: "automatic" },
       model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
       agentloop: pi({ env: brainEnv({ name: "brain" }) }),
     });

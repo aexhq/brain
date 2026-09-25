@@ -8,11 +8,12 @@ an environment when something fails. Lifecycle policy and management tools are i
 
 ## Choose who starts the environment
 
-Every new session explicitly configures lifecycle policy, including any host created for inline tools:
+Environments use `automatic` lifecycle by default, including the host created for inline tools.
+Omit the setting for ordinary setup, or use `environment.lifecycle` to override named bindings:
 
 ```ts
 const session = await brain.sessions.create({
-  environmentLifecycle: { default: "automatic", bindings: { workspace: "manual" } },
+  environment: { lifecycle: { bindings: { workspace: "manual" } } },
   model,
   agentloop,
   tools,
@@ -23,6 +24,9 @@ const session = await brain.sessions.create({
 until an authorized caller runs setup. Calling a tool before that returns
 `environment_not_ready` without executing the tool. Keep the Agentloop's own environment
 automatic, and place management tools somewhere independent of the environment they manage.
+
+`environment.lifecycle.default` changes the policy for bindings without an override; it defaults
+to `automatic`. For example, `environment: { lifecycle: { default: "manual" } }` makes all bindings manual.
 
 Ending a session detaches environments that were set up; deleting it tears them down.
 The Env decides how those operations affect its resources. Cleanup also applies after manual
