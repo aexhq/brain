@@ -28,7 +28,7 @@ Brain remains a durable session engine with replaceable Agentloop, Tool and Env 
 | Agentloop | Own transcript and KV; select model context, Tool placement and recovery policy. |
 | Tool | Perform its task using its own granted services; report results and finish. |
 | Env | Implement lifecycle effects, execution, provider inspection, resource operations and monitoring. |
-| Application | Choose explicit lifecycle policy, templates, schemas, grants and installed Tools. |
+| Application | Choose lifecycle policy, templates, schemas, grants and installed Tools. |
 | Hosted platform | Select provider offers and enforce customer authorization, quotas and billing. |
 
 The journal remains the only durable session truth. There is no second event queue, generic
@@ -36,8 +36,9 @@ resource ownership tree, cloud SDK in the kernel or automatic recovery policy.
 
 ### Explicit lifecycle and ordinary Tool composition
 
-Every newly created binding has `automatic` or `manual` lifecycle. The SDK requires
-`environmentLifecycle: { default, bindings? }`; this is separate from opaque provider options.
+Every newly created binding has an explicit `automatic` or `manual` lifecycle on the wire.
+The SDK defaults to automatic and accepts overrides through
+`environment: { lifecycle: { default?, bindings? } }`, separate from opaque provider options.
 Automatic bindings run setup at declaration. Manual bindings are discoverable but cannot execute
 Tools until explicitly set up. The Agentloop's bootstrap binding must be automatic.
 
