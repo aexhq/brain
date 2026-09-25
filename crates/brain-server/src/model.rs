@@ -37,6 +37,16 @@ pub fn load_providers_file(
 /// The custody of a session's credentials: its model key and the credential of each
 /// Environment it reaches over HTTP, sealed under the session id and forgotten together.
 pub trait CredentialStore: Send + Sync + 'static {
+    fn observer(
+        &self,
+        session: &SessionId,
+        environment: &brain_protocol::EnvironmentRef,
+    ) -> Result<Option<Zeroizing<String>>, brain::Error>;
+    fn register_observer(
+        &self,
+        session: &SessionId,
+        environment: &brain_protocol::EnvironmentRef,
+    ) -> Result<Zeroizing<String>, brain::Error>;
     fn put_model(
         &self,
         session_id: &SessionId,
@@ -58,6 +68,20 @@ pub trait CredentialStore: Send + Sync + 'static {
 }
 
 impl CredentialStore for crate::metadata::ServerMetadata {
+    fn observer(
+        &self,
+        session: &SessionId,
+        environment: &brain_protocol::EnvironmentRef,
+    ) -> Result<Option<Zeroizing<String>>, brain::Error> {
+        self.observer(session, environment)
+    }
+    fn register_observer(
+        &self,
+        session: &SessionId,
+        environment: &brain_protocol::EnvironmentRef,
+    ) -> Result<Zeroizing<String>, brain::Error> {
+        self.register_observer(session, environment)
+    }
     fn put_model(
         &self,
         session_id: &SessionId,

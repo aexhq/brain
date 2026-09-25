@@ -39,6 +39,7 @@ const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
         resolve_host,
         emit_host_event,
         host_model,
+        host_call,
         create_session,
         list_sessions,
         list_models,
@@ -47,6 +48,8 @@ const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
         delete_session,
         send_message,
         call_environment,
+        control_environment,
+        environment_event,
         events,
         cancel_session,
         end_session,
@@ -155,6 +158,7 @@ fn protected_routes<A: BrainApi>(
         documented::<__path_delete_session, _, _, _>(routed, delete_session::<A>),
         documented::<__path_send_message, _, _, _>(routed, send_message::<A>),
         documented::<__path_call_environment, _, _, _>(routed, call_environment::<A>),
+        documented::<__path_control_environment, _, _, _>(routed, control_environment::<A>),
         documented::<__path_events, _, _, _>(routed, events::<A>),
         documented::<__path_cancel_session, _, _, _>(routed, cancel_session::<A>),
         documented::<__path_end_session, _, _, _>(routed, end_session::<A>),
@@ -175,6 +179,7 @@ fn host_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>, body_limit: u
         documented::<__path_resolve_host, _, _, _>(routed, resolve_host::<A>),
         documented::<__path_emit_host_event, _, _, _>(routed, emit_host_event::<A>),
         documented::<__path_host_model, _, _, _>(routed, host_model::<A>),
+        documented::<__path_host_call, _, _, _>(routed, host_call::<A>),
     ] {
         router = router.route(&path, method);
     }
@@ -190,8 +195,11 @@ fn execution_routes<A: BrainApi>(
     body_limit: usize,
 ) -> Router {
     let (path, method) = documented::<__path_execution_call, _, _, _>(routed, execution_call::<A>);
+    let (events_path, events_method) =
+        documented::<__path_environment_event, _, _, _>(routed, environment_event::<A>);
     Router::new()
         .route(&path, method)
+        .route(&events_path, events_method)
         .layer(DefaultBodyLimit::max(body_limit))
         .with_state(api)
 }
@@ -358,6 +366,29 @@ async fn host_model<A: BrainApi>(
     Json(request): Json<brain_protocol::HostModelRequest>,
 ) -> Result<Json<brain_protocol::ModelResult>, HttpError> {
     api.host_model(host_id, bearer(&headers)?, request)
+        .await
+        .map(Json)
+        .map_err(HttpError)
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/hosts/{host_id}/call",
+    operation_id = "callHostService",
+    params(("host_id" = contract::HostId, Path)),
+    request_body = contract::HostServiceRequest,
+    responses(
+        (status = 200, description = "Scoped extension service result", body = serde_json::Value),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
+async fn host_call<A: BrainApi>(
+    State(api): State<A>,
+    Path(host_id): Path<HostId>,
+    headers: HeaderMap,
+    Json(request): Json<brain_protocol::HostServiceRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    api.host_call(host_id, bearer(&headers)?, request)
         .await
         .map(Json)
         .map_err(HttpError)
@@ -594,6 +625,57 @@ async fn call_environment<A: BrainApi>(
         .await
         .map_err(HttpError)?,
     ))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/{session_id}/environments",
+    operation_id = "controlEnvironment",
+    params(("session_id" = contract::SessionId, Path)),
+    request_body = contract::EnvironmentControlRequest,
+    responses(
+        (status = 200, description = "Environment service result", body = serde_json::Value),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
+async fn control_environment<A: BrainApi>(
+    State(api): State<A>,
+    Path(session): Path<SessionId>,
+    headers: HeaderMap,
+    Json(request): Json<brain_protocol::EnvironmentControlRequest>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    api.control_environment(session, idempotency_key(&headers)?, request)
+        .await
+        .map(Json)
+        .map_err(HttpError)
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/{session_id}/environments/{environment}/{sequence}/events",
+    operation_id = "emitEnvironmentEvent",
+    params(("session_id" = contract::SessionId, Path), ("environment" = contract::EnvironmentName, Path), ("sequence" = u64, Path)),
+    request_body = contract::EnvironmentEvent,
+    responses(
+        (status = 200, description = "Committed Environment event", body = contract::HostEventAck),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
+async fn environment_event<A: BrainApi>(
+    State(api): State<A>,
+    Path((session, name, sequence)): Path<(SessionId, EnvironmentName, u64)>,
+    headers: HeaderMap,
+    Json(event): Json<brain_protocol::EnvironmentEvent>,
+) -> Result<Json<HostEventAck>, HttpError> {
+    api.environment_event(
+        session,
+        brain_protocol::EnvironmentRef { name, sequence },
+        bearer(&headers)?,
+        event,
+    )
+    .await
+    .map(Json)
+    .map_err(HttpError)
 }
 
 #[utoipa::path(

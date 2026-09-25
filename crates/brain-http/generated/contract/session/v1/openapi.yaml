@@ -29,6 +29,10 @@ components:
         configuration: true
         environment:
           $ref: '#/components/schemas/EnvironmentName'
+        environments:
+          items:
+            $ref: '#/components/schemas/EnvironmentGrant'
+          type: array
         implementation: true
       required:
       - implementation
@@ -250,11 +254,30 @@ components:
       properties:
         configuration:
           default: null
+        environments:
+          items:
+            $ref: '#/components/schemas/EnvironmentGrant'
+          type: array
+        lifecycle:
+          $ref: '#/components/schemas/EnvironmentLifecycle'
+          description: Required on new admissions; absence only supports retained session journals.
+        methods:
+          additionalProperties:
+            $ref: '#/components/schemas/EnvironmentMethod'
+          type: object
         name:
           $ref: '#/components/schemas/EnvironmentName'
+        template:
+          $ref: '#/components/schemas/EnvironmentTemplate'
       required:
       - name
       type: object
+    EnvironmentAvailability:
+      enum:
+      - available
+      - unavailable
+      - unknown
+      type: string
     EnvironmentCallRequest:
       additionalProperties: false
       properties:
@@ -269,9 +292,552 @@ components:
       required:
       - output
       type: object
+    EnvironmentCommand:
+      properties:
+        contract:
+          const: environment/v1
+        operation:
+          $ref: '#/components/schemas/EnvironmentOperation'
+      required:
+      - contract
+      - operation
+      type: object
+    EnvironmentControlRequest:
+      description: The same service request in every extension role and transport.
+      oneOf:
+      - additionalProperties: false
+        properties:
+          operation:
+            const: list
+            type: string
+        required:
+        - operation
+        type: object
+      - additionalProperties: false
+        properties:
+          environment:
+            $ref: '#/components/schemas/EnvironmentRef'
+          operation:
+            const: get
+            type: string
+        required:
+        - operation
+        - environment
+        type: object
+      - additionalProperties: false
+        properties:
+          configuration: true
+          name:
+            $ref: '#/components/schemas/EnvironmentName'
+          operation:
+            const: create
+            type: string
+          template:
+            $ref: '#/components/schemas/EnvironmentName'
+        required:
+        - operation
+        - template
+        - name
+        - configuration
+        type: object
+      - additionalProperties: false
+        properties:
+          environment:
+            $ref: '#/components/schemas/EnvironmentRef'
+          operation:
+            const: setup
+            type: string
+        required:
+        - operation
+        - environment
+        type: object
+      - additionalProperties: false
+        properties:
+          configuration: true
+          environment:
+            $ref: '#/components/schemas/EnvironmentRef'
+          operation:
+            const: update
+            type: string
+        required:
+        - operation
+        - environment
+        - configuration
+        type: object
+      - additionalProperties: false
+        properties:
+          environment:
+            $ref: '#/components/schemas/EnvironmentRef'
+          operation:
+            const: delete
+            type: string
+        required:
+        - operation
+        - environment
+        type: object
+      - additionalProperties: false
+        properties:
+          environment:
+            $ref: '#/components/schemas/EnvironmentRef'
+          input: true
+          method:
+            type: string
+          operation:
+            const: call
+            type: string
+        required:
+        - operation
+        - environment
+        - method
+        - input
+        type: object
+    EnvironmentEvent:
+      oneOf:
+      - additionalProperties: false
+        properties:
+          data: true
+          event_type:
+            type: string
+          type:
+            const: event
+            type: string
+        required:
+        - type
+        - event_type
+        - data
+        type: object
+      - additionalProperties: false
+        properties:
+          output:
+            $ref: '#/components/schemas/EnvironmentOutput'
+          type:
+            const: result
+            type: string
+        required:
+        - type
+        - output
+        type: object
+    EnvironmentGrant:
+      additionalProperties: false
+      description: Authority over a declared binding and instances made from its template.
+      properties:
+        environment:
+          $ref: '#/components/schemas/EnvironmentName'
+        methods:
+          default: []
+          items:
+            type: string
+          type: array
+        permissions:
+          items:
+            $ref: '#/components/schemas/EnvironmentPermission'
+          type: array
+      required:
+      - environment
+      - permissions
+      type: object
+    EnvironmentLifecycle:
+      enum:
+      - automatic
+      - manual
+      type: string
+    EnvironmentMethod:
+      additionalProperties: false
+      properties:
+        description:
+          type: string
+        effect:
+          $ref: '#/components/schemas/EnvironmentMethodEffect'
+          default: none
+        input_schema: true
+        output_schema: true
+      required:
+      - description
+      - input_schema
+      type: object
+    EnvironmentMethodEffect:
+      enum:
+      - none
+      - replace
+      type: string
     EnvironmentName:
       pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
       type: string
+    EnvironmentObservation:
+      oneOf:
+      - additionalProperties: false
+        properties:
+          availability:
+            $ref: '#/components/schemas/EnvironmentAvailability'
+          message:
+            type: string
+          scope:
+            const: environment
+            type: string
+        required:
+        - scope
+        - availability
+        - message
+        type: object
+      - additionalProperties: false
+        properties:
+          code:
+            type: string
+          message:
+            type: string
+          resource:
+            type: string
+          scope:
+            const: resource
+            type: string
+        required:
+        - scope
+        - resource
+        - code
+        - message
+        type: object
+      - additionalProperties: false
+        properties:
+          resolution:
+            $ref: '#/components/schemas/EnvironmentResolution'
+          scope:
+            const: operation
+            type: string
+          sequence:
+            format: uint64
+            minimum: 0
+            type: integer
+        required:
+        - scope
+        - sequence
+        - resolution
+        type: object
+    EnvironmentOperation:
+      description: One operation on an Environment, named by `(session_id, environment, sequence)`.
+      properties:
+        binding:
+          $ref: '#/components/schemas/EnvironmentRef'
+        configuration:
+          default: null
+        context:
+          $ref: '#/components/schemas/ExecutionCallback'
+          description: Controller services are separate from the hosted invocation's callback.
+        environment:
+          $ref: '#/components/schemas/EnvironmentName'
+        reporter:
+          $ref: '#/components/schemas/ExecutionCallback'
+        request:
+          $ref: '#/components/schemas/EnvironmentRequest'
+        sequence:
+          description: |-
+            The sequence of the journal record that started this operation. With
+            `session_id` it names the operation: a redelivery carries the same pair, so a
+            receiver that already answered it can say so.
+          format: uint64
+          minimum: 1
+          type: integer
+        session_id:
+          $ref: '#/components/schemas/SessionId'
+        template:
+          $ref: '#/components/schemas/EnvironmentName'
+      required:
+      - sequence
+      - environment
+      - session_id
+      - request
+      type: object
+    EnvironmentOutput:
+      additionalProperties: false
+      properties:
+        content:
+          type: string
+        observation:
+          $ref: '#/components/schemas/EnvironmentObservation'
+      required:
+      - observation
+      type: object
+    EnvironmentPermission:
+      enum:
+      - read
+      - create
+      - setup
+      - update
+      - delete
+      - call
+      type: string
+    EnvironmentReceipt:
+      oneOf:
+      - properties:
+          on_turn_end:
+            description: Setup may register a method Brain calls after each turn, with its start sequence.
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
+            type: string
+          type:
+            const: accepted
+            type: string
+        required:
+        - type
+        type: object
+      - properties:
+          data: true
+          type:
+            const: progress
+            type: string
+        required:
+        - type
+        - data
+        type: object
+      - properties:
+          output: true
+          type:
+            const: result
+            type: string
+        required:
+        - type
+        - output
+        type: object
+      - description: The entrypoint returned; only an explicit finish closes a Tool execution.
+        properties:
+          output: true
+          type:
+            const: returned
+            type: string
+        required:
+        - type
+        type: object
+      - properties:
+          code:
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
+            type: string
+          details: true
+          message:
+            maxLength: 4096
+            type: string
+          retryable:
+            type: boolean
+          type:
+            const: failure
+            type: string
+        required:
+        - type
+        - code
+        - message
+        - retryable
+        type: object
+      - properties:
+          message:
+            maxLength: 4096
+            type: string
+          type:
+            const: unknown
+            type: string
+        required:
+        - type
+        - message
+        type: object
+    EnvironmentRef:
+      additionalProperties: false
+      properties:
+        name:
+          $ref: '#/components/schemas/EnvironmentName'
+        sequence:
+          format: uint64
+          minimum: 0
+          type: integer
+      required:
+      - name
+      - sequence
+      type: object
+    EnvironmentRequest:
+      description: |-
+        What Brain asks an Environment to do. An Environment provides resources and learns
+        what runs in it only when asked to run it: setup carries its configuration;
+        execute carries an opaque implementation and input.
+      oneOf:
+      - properties:
+          configuration: true
+          type:
+            const: setup
+            type: string
+        required:
+        - type
+        - configuration
+        type: object
+      - properties:
+          input: true
+          name:
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
+            type: string
+          type:
+            const: call
+            type: string
+        required:
+        - type
+        - name
+        - input
+        type: object
+      - properties:
+          callback:
+            $ref: '#/components/schemas/ExecutionCallback'
+            description: Sent only during execution, never journaled.
+          deadline_ms:
+            format: uint64
+            minimum: 0
+            type: integer
+          implementation:
+            description: Interpreted only by the Environment; fixes the runtime entrypoint and configuration.
+          input: true
+          type:
+            const: execute
+            type: string
+        required:
+        - type
+        - implementation
+        - input
+        type: object
+      - properties:
+          target_sequence:
+            format: uint64
+            minimum: 1
+            type: integer
+          type:
+            const: cancel
+            type: string
+        required:
+        - type
+        - target_sequence
+        type: object
+      - properties:
+          type:
+            const: detach
+            type: string
+        required:
+        - type
+        type: object
+      - properties:
+          type:
+            const: teardown
+            type: string
+        required:
+        - type
+        type: object
+    EnvironmentResolution:
+      oneOf:
+      - additionalProperties: false
+        properties:
+          status:
+            const: ready
+            type: string
+        required:
+        - status
+        type: object
+      - additionalProperties: false
+        properties:
+          status:
+            const: deleted
+            type: string
+        required:
+        - status
+        type: object
+      - additionalProperties: false
+        properties:
+          status:
+            const: detached
+            type: string
+        required:
+        - status
+        type: object
+      - additionalProperties: false
+        properties:
+          error:
+            $ref: '#/components/schemas/OutcomeError'
+          status:
+            const: failed
+            type: string
+        required:
+        - status
+        - error
+        type: object
+    EnvironmentResponse:
+      properties:
+        contract:
+          const: environment/v1
+        receipt:
+          $ref: '#/components/schemas/EnvironmentReceipt'
+        sequence:
+          format: uint64
+          minimum: 1
+          type: integer
+      required:
+      - contract
+      - sequence
+      - receipt
+      type: object
+    EnvironmentState:
+      enum:
+      - declared
+      - starting
+      - ready
+      - failed
+      - unknown
+      - deleting
+      - deleted
+      - detached
+      type: string
+    EnvironmentTemplate:
+      additionalProperties: false
+      description: Fixed at admission. Provider configuration is validated, never interpreted by Brain.
+      properties:
+        configuration_schema: true
+        max_instances:
+          format: uint
+          minimum: 1
+          type: integer
+      required:
+      - max_instances
+      - configuration_schema
+      type: object
+    EnvironmentView:
+      additionalProperties: false
+      properties:
+        availability:
+          $ref: '#/components/schemas/EnvironmentAvailability'
+        configuration: true
+        lifecycle:
+          $ref: '#/components/schemas/EnvironmentLifecycle'
+        methods:
+          additionalProperties:
+            $ref: '#/components/schemas/EnvironmentMethod'
+          type: object
+        observation:
+          $ref: '#/components/schemas/EnvironmentObservation'
+        observed_at_ms:
+          format: uint64
+          minimum: 0
+          type: integer
+        pending_operation:
+          format: uint64
+          minimum: 0
+          type: integer
+        reference:
+          $ref: '#/components/schemas/EnvironmentRef'
+        state:
+          $ref: '#/components/schemas/EnvironmentState'
+        template:
+          $ref: '#/components/schemas/EnvironmentName'
+        tools:
+          items:
+            $ref: '#/components/schemas/ToolDefinition'
+          type: array
+      required:
+      - reference
+      - template
+      - lifecycle
+      - state
+      - configuration
+      - methods
+      - tools
+      type: object
     Event:
       description: |-
         One journal record as a client reads it. `(session_id, sequence)` names it; there
@@ -325,6 +891,17 @@ components:
         required:
         - kind
         - sequence
+        type: object
+      - additionalProperties: false
+        properties:
+          environment:
+            $ref: '#/components/schemas/EnvironmentRef'
+          kind:
+            const: environment
+            type: string
+        required:
+        - kind
+        - environment
         type: object
     EventPage:
       properties:
@@ -394,6 +971,8 @@ components:
           type: integer
         session_id:
           $ref: '#/components/schemas/SessionId'
+        template:
+          $ref: '#/components/schemas/EnvironmentName'
       required:
       - environment
       - session_id
@@ -504,6 +1083,22 @@ components:
       - session_id
       - sequence
       - update
+      type: object
+    HostServiceRequest:
+      additionalProperties: false
+      properties:
+        call:
+          $ref: '#/components/schemas/ExecutionCall'
+        sequence:
+          format: uint64
+          minimum: 1
+          type: integer
+        session_id:
+          $ref: '#/components/schemas/SessionId'
+      required:
+      - session_id
+      - sequence
+      - call
       type: object
     KvPutRequest:
       additionalProperties: false
@@ -866,6 +1461,10 @@ components:
       properties:
         description:
           type: string
+        environments:
+          items:
+            $ref: '#/components/schemas/EnvironmentGrant'
+          type: array
         input_schema:
           type: object
         name:
@@ -1221,6 +1820,33 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+  /v1/hosts/{host_id}/call:
+    post:
+      operationId: callHostService
+      parameters:
+      - in: path
+        name: host_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/HostId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HostServiceRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Scoped extension service result
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
   /v1/hosts/{host_id}/commands:
     get:
       operationId: hostCommands
@@ -1495,6 +2121,33 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+  /v1/sessions/{session_id}/environments:
+    post:
+      operationId: controlEnvironment
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnvironmentControlRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Environment service result
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
   /v1/sessions/{session_id}/environments/{environment}/calls/{name}:
     post:
       operationId: callEnvironment
@@ -1535,6 +2188,46 @@ paths:
               schema:
                 $ref: '#/components/schemas/EnvironmentCallResult'
           description: Environment method result
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/sessions/{session_id}/environments/{environment}/{sequence}/events:
+    post:
+      operationId: emitEnvironmentEvent
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      - in: path
+        name: environment
+        required: true
+        schema:
+          $ref: '#/components/schemas/EnvironmentName'
+      - in: path
+        name: sequence
+        required: true
+        schema:
+          format: int64
+          minimum: 0
+          type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnvironmentEvent'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostEventAck'
+          description: Committed Environment event
         default:
           content:
             application/json:

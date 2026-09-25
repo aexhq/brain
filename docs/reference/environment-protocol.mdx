@@ -31,6 +31,9 @@ Configuration is recorded and forwarded unread. The Environment name is unique w
 
 The Rust types in `brain-protocol` generate the published Environment schemas. A command has
 `contract: "environment/v1"` and `operation: { session_id, environment, sequence, request }`.
+New operations also carry the pinned `binding` reference, current `configuration`, source
+`template`, operation-scoped `context` and binding-scoped `reporter` capabilities. The template
+selects the originally authorized driver credential; provider configuration cannot replace it.
 The response carries the same contract and sequence and a receipt.
 
 | Request | Responsibility |
@@ -64,9 +67,9 @@ mark the Environment unreachable; a transport failure still does.
 
 An execution may receive `callback: { url, token, methods }`. POST `{ method, input }` to that
 URL with its bearer token. The response is the method's JSON result. Only listed methods are
-granted. A Tool receives `emit`, `result`, `returned`, `finish`, `model`, and `telemetry`;
+granted. A Tool receives `emit`, `result`, `returned`, `finish`, `model`, `environments`, and `telemetry`;
 an Agentloop receives `emit`, `telemetry`, `events`, `acknowledge`, `model`,
-`dispatch`, `set_transcript`, `kv_read`, `kv_put`, and `kv_delete`. Dispatch input is an array of `{ call_id, name, environment, input }`; model
+`dispatch`, `environments`, `set_transcript`, `kv_read`, `kv_put`, and `kv_delete`. Dispatch input is an array of `{ call_id, name, environment, environment_sequence?, input }`; model
 input is `ModelRequest`; events input is a cursor number; emit input is `{ event_type, data }`;
 telemetry input is the diagnostic record. Results are respectively `ToolReturn[]`, ModelResult,
 EventPage, committed sequence, and null.
@@ -85,12 +88,13 @@ observe it. These services belong only to the Agentloop. Turn output is `{ resul
 no transcript or KV snapshot. Deletion appends a journal mutation, preserving earlier records.
 
 The token belongs to one invocation and is revoked on completion or cancellation. It is never
-part of the journal. It grants no lifecycle or general session API access. Cancellation makes
+part of the journal. `environments` accepts the generated `EnvironmentControlRequest` and is
+bounded by that extension's own grants. It grants no general session API access. Cancellation makes
 subsequent calls fail. Never preserve a callback for the next execution.
 
 ## Lifecycle and delivery
 
-Resource lifetime belongs to the Environment's configuration. Session creation calls setup,
+Resource lifetime belongs to the Environment's configuration. Automatic session creation calls setup,
 ending calls detach, and deletion calls teardown. Brain passivating between turns does not end
 the session or release its resources.
 
@@ -107,6 +111,27 @@ and waits for it before completing a graceful drain. A failed
 cleanup does not replace the answer. Like other effects, callbacks are not retried or replayed
 after a restart; a provider deadline still bounds resources if Brain stops before delivery.
 Report resource loss explicitly, without silently allocating replacements.
+
+## Controller services and binding observations
+
+An Env operation receives its own `context` callback with `environments`, `emit` and `result`.
+It uses the Env's grants, independently of the `execute.callback` belonging to a hosted Tool
+or Agentloop. `environmentHandler(...)` exposes this as `ctx.environments`, `ctx.emit` and
+`ctx.emitResult`; the context closes when that operation returns or is cancelled.
+
+`ctx.reporter` may remain with the provider controller. POST `{ type: "event", event_type, data }`
+for diagnostics, or `{ type: "result", output: { observation, content? } }` for actionable facts,
+to `operation.reporter.url` with its bearer token. Brain assigns Environment provenance and
+returns the committed sequence. The reporter survives Brain restart but cannot control the
+session; closed or replaced bindings reject old reports. Pending observations share the existing
+emission limit. Never give a provider controller's capability to untrusted executed code.
+
+Observation scopes are `environment` (availability), `resource` (provider identifier, code and
+message), and `operation` (pending sequence and confirmed resolution). An unknown lifecycle
+operation remains reserved until its correlated resolution. A resource observation does not
+change binding availability. Actionable observations wake the Agentloop through the existing
+watermark and coalescing mechanism; diagnostics alone do not. See
+[Control environments](/brain/docs/guides/environment-control) for grants and templates.
 
 Brain commits each operation before delivery and sends it once. Identify it by session and
 sequence, retain uncertainty when an effect may have occurred, and never automatically retry

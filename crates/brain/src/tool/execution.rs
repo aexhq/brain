@@ -81,6 +81,9 @@ pub struct ToolWakeup {
 }
 
 impl ToolGroup {
+    pub fn observe(&self, sequence: u64) {
+        self.wake(sequence, &AtomicBool::new(false));
+    }
     pub fn accepts(&self, wakeup: &ToolWakeup) -> bool {
         self.generation.load(Ordering::Acquire) == wakeup.generation
     }
@@ -165,6 +168,39 @@ impl ToolGroup {
         }
     }
 
+    pub async fn cancel_environment(&self, environment: &brain_protocol::EnvironmentName) {
+        let calls = self
+            .calls
+            .lock()
+            .expect("Tool execution table poisoned")
+            .values()
+            .filter(|call| &call.dispatch.environment.name == environment)
+            .cloned()
+            .collect::<Vec<_>>();
+        for call in calls {
+            call.cancelled.store(true, Ordering::Release);
+            call.stop.send_replace(true);
+        }
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if !self
+                .calls
+                .lock()
+                .expect("Tool execution table poisoned")
+                .values()
+                .any(|call| {
+                    &call.dispatch.environment.name == environment
+                        && !call.execution_settled.load(Ordering::Acquire)
+                })
+            {
+                return;
+            }
+            changed.await;
+        }
+    }
+
     pub async fn wait(&self) {
         loop {
             let changed = self.changed.notified();
@@ -181,9 +217,8 @@ impl ToolGroup {
         self: &Arc<Self>,
         dispatch: ToolDispatch,
         store: Arc<dyn SessionStore>,
-        executor: Arc<dyn ToolExecutor>,
+        runtime: Arc<crate::SessionRuntime>,
         budget: Arc<EmissionBudget>,
-        telemetry: TelemetryPublisher,
         model: crate::session::model::ModelService,
     ) -> oneshot::Receiver<ToolReturn> {
         let (reply, returned) = oneshot::channel();
@@ -197,14 +232,15 @@ impl ToolGroup {
             output_schema,
             dispatch,
             store,
-            executor,
+            executor: runtime.tool_executor.clone(),
+            environment_control: runtime.environment_control.clone(),
             budget,
-            telemetry,
+            telemetry: runtime.telemetry.clone(),
             model,
             group: Arc::downgrade(self),
             state: Mutex::new(CallState {
                 events: Vec::new(),
-                models: Vec::new(),
+                effects: Vec::new(),
                 returned: Some(reply),
                 finished: false,
                 sequence: 0,
@@ -212,6 +248,7 @@ impl ToolGroup {
             closed,
             stop,
             cancelled: AtomicBool::new(false),
+            execution_settled: AtomicBool::new(false),
         });
         self.calls
             .lock()
@@ -228,10 +265,12 @@ impl ToolGroup {
                 call.cancelled.store(true, Ordering::Release);
                 call.closed.send_replace(true);
             }
-            let models = std::mem::take(&mut call.state.lock().await.models);
-            for model in models {
-                if let Err(error) = model.await {
-                    tracing::error!(%error, "Tool model task failed");
+            call.execution_settled.store(true, Ordering::Release);
+            group.changed.notify_waiters();
+            let effects = std::mem::take(&mut call.state.lock().await.effects);
+            for effect in effects {
+                if let Err(error) = effect.await {
+                    tracing::error!(%error, "Tool service task failed");
                 }
             }
             group
@@ -246,7 +285,7 @@ impl ToolGroup {
 }
 
 struct CallState {
-    models: Vec<tokio::task::JoinHandle<()>>,
+    effects: Vec<tokio::task::JoinHandle<()>>,
     events: Vec<Event>,
     returned: Option<oneshot::Sender<ToolReturn>>,
     finished: bool,
@@ -254,6 +293,7 @@ struct CallState {
 }
 
 struct ToolCall {
+    environment_control: Option<Arc<dyn crate::environment::EnvironmentControl>>,
     output_schema: Option<jsonschema::Validator>,
     dispatch: ToolDispatch,
     store: Arc<dyn SessionStore>,
@@ -266,6 +306,8 @@ struct ToolCall {
     closed: watch::Sender<bool>,
     stop: watch::Sender<bool>,
     cancelled: AtomicBool,
+    // Admitted control effects run in Brain and must not make cross-Env cancellation wait on itself.
+    execution_settled: AtomicBool,
 }
 
 impl ToolCall {
@@ -466,6 +508,34 @@ impl ToolCall {
 
 #[async_trait::async_trait]
 impl ToolServices for ToolCall {
+    async fn environments(
+        &self,
+        request: brain_protocol::EnvironmentControlRequest,
+    ) -> Result<serde_json::Value, Error> {
+        let mut state = self.state.lock().await;
+        Self::ensure_open(&state)?;
+        if self.cancelled() {
+            return Err(Error::Cancelled("Tool execution closed".into()));
+        }
+        let control = self
+            .environment_control
+            .clone()
+            .ok_or_else(|| Error::InvalidState("Environment service is not available".into()))?;
+        let store = self.store.clone();
+        let caller = self.dispatch.environment.name.clone();
+        let grants = self.dispatch.tool.environments.clone();
+        let (reply, answer) = oneshot::channel();
+        state.effects.push(tokio::spawn(async move {
+            let result = control
+                .control(store, Some(&caller), &grants, request)
+                .await;
+            let _ = reply.send(result);
+        }));
+        drop(state);
+        answer
+            .await
+            .map_err(|error| Error::Executor(error.to_string()))?
+    }
     async fn model(&self, mut request: ModelRequest) -> Result<ModelResult, Error> {
         let mut state = self.state.lock().await;
         Self::ensure_open(&state)?;
@@ -478,7 +548,7 @@ impl ToolServices for ToolCall {
         let mut stop = self.stop.subscribe();
         let (reply, answer) = oneshot::channel();
         // A disconnected callback must not abandon a committed model intent.
-        state.models.push(tokio::spawn(async move {
+        state.effects.push(tokio::spawn(async move {
             let result = async {
                 if *closed.borrow() || *stop.borrow() {
                     return Err(Error::Cancelled("Tool execution closed".into()));
@@ -590,7 +660,7 @@ impl ToolServices for ToolCall {
     }
 
     fn cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        self.cancelled.load(Ordering::Acquire) || *self.closed.borrow()
     }
 
     fn telemetry(&self, record: serde_json::Value) {

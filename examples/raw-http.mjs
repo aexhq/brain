@@ -44,7 +44,7 @@ const session = await request("POST", "/v1/sessions", {
   },
   system: "Answer briefly.",
   tools: [],
-  environments: [{ name: "brain", driver: "brain" }],
+  environments: [{ name: "brain", driver: "brain", lifecycle: "automatic" }],
 });
 
 try {

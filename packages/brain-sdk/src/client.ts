@@ -1,5 +1,6 @@
 import { HostPump } from "./client-pump.js";
 import { BrainError } from "./errors.js";
+import { EnvironmentServices } from "./environments.js";
 import { inspectAgentloop, inspectComponent, inspectEnvironment, inspectTool, isComponent, placeDefaultTools, loadHostTool } from "./extensions.js";
 import { HostToolRegistry } from "./host.js";
 import { structuredOutput } from "./structured-output.js";
@@ -216,6 +217,7 @@ export class BrainClient {
       const hostClient = this.withToken(registration.token);
       this.hostClient = hostClient;
       const pump = new HostPump({
+        call: (value) => hostClient.request("POST", `/v1/hosts/${encodeURIComponent(registration.host_id)}/call`, value),
         stream: (signal, onOpen) => hostClient.streamPath(`/v1/hosts/${encodeURIComponent(registration.host_id)}/commands`, signal, onOpen),
         model: (value) => hostClient.request("POST", `/v1/hosts/${encodeURIComponent(registration.host_id)}/model`, value),
         result: (value) => hostClient.request("POST", `/v1/hosts/${encodeURIComponent(registration.host_id)}/results`, value),
@@ -382,13 +384,16 @@ export class Sessions {
 }
 
 export class SessionHandle {
+  readonly environments: EnvironmentServices;
   private activeSends = 0;
   private structuredSend = false;
   constructor(
     private readonly client: BrainClient,
     public state: SessionState,
     private readonly unregisterHost?: () => void,
-  ) {}
+  ) {
+    this.environments = new EnvironmentServices(request => this.client.request("POST", `/v1/sessions/${encodeURIComponent(this.id)}/environments`, request, crypto.randomUUID()));
+  }
   get id(): string { return this.state.id; }
 
   /** Return the committed turn_started event's sequence. Closing this client does not cancel the turn. */
@@ -534,6 +539,7 @@ function collectEnvironments(options: CreateSessionOptions): ReadonlySet<Environ
     result.add(environment);
   };
   add(inspectAgentloop(options.agentloop).environment);
+  for (const environment of options.environments ?? []) add(environment);
   for (const selected of options.tools ?? []) add(inspectTool(selected).environment);
   return result;
 }
@@ -548,14 +554,21 @@ function compileSession(
   const entries: WireEnvironment[] = [...environments].map((environment) => {
     const source = inspectEnvironment(environment);
     const configuration = structuredClone(source.configuration) as WireEnvironment["configuration"];
+    const binding = {
+      name: source.name,
+      lifecycle: options.environmentLifecycle.bindings?.[source.name] ?? options.environmentLifecycle.default,
+      ...(source.environments === undefined ? {} : { environments: structuredClone([...source.environments]) }),
+      ...(source.methods === undefined ? {} : { methods: structuredClone(source.methods) }),
+      ...(source.template === undefined ? {} : { template: structuredClone(source.template) }),
+    };
     switch (source.driver.driver) {
       case "brain":
-        return { name: source.name, driver: "brain", configuration };
+        return { ...binding, driver: "brain", configuration };
       case "host":
-        return { name: source.name, driver: "host", host_id: hostId!, configuration };
+        return { ...binding, driver: "host", host_id: hostId!, configuration };
       case "http":
         return {
-          name: source.name,
+          ...binding,
           driver: "http",
           url: source.driver.url,
           ...(source.driver.credential === undefined ? {} : { credential: source.driver.credential }),
@@ -563,9 +576,13 @@ function compileSession(
         };
     }
   });
+  for (const name of Object.keys(options.environmentLifecycle.bindings ?? {})) {
+    if (!entries.some(entry => entry.name === name)) throw new TypeError(`Environment lifecycle names an undeclared binding: ${name}`);
+  }
   const loop = inspectAgentloop(options.agentloop);
   return {
     agentloop: {
+      ...(loop.environments === undefined ? {} : { environments: structuredClone([...loop.environments]) }),
       implementation: structuredClone(agentloopImplementation),
       configuration: structuredClone(loop.configuration),
       environment: inspectEnvironment(loop.environment).name,
@@ -585,6 +602,7 @@ function compileTools(selectedTools: readonly PlacedTool[], implementations: Rea
   for (const selected of selectedTools) {
     const tool = inspectTool(selected);
     const definition = {
+      ...(tool.environments === undefined ? {} : { environments: structuredClone([...tool.environments]) }),
       name: tool.definition.name, description: tool.definition.description,
       input_schema: structuredClone(tool.definition.inputSchema),
       ...(tool.definition.outputSchema === undefined ? {} : { output_schema: structuredClone(tool.definition.outputSchema) }),
@@ -605,6 +623,10 @@ function compileTools(selectedTools: readonly PlacedTool[], implementations: Rea
 
 function validateSessionOptions(options: CreateSessionOptions): void {
   if (options === null || typeof options !== "object") throw new TypeError("session options are required");
+  if (!["automatic", "manual"].includes(options.environmentLifecycle?.default)) throw new TypeError("environmentLifecycle.default must explicitly select automatic or manual");
+  for (const policy of Object.values(options.environmentLifecycle.bindings ?? {})) {
+    if (!["automatic", "manual"].includes(policy)) throw new TypeError("invalid Environment lifecycle policy");
+  }
   inspectAgentloop(options.agentloop);
   const provider = options.model?.provider;
   if (typeof provider !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(provider)) throw new TypeError("model provider is invalid");

@@ -21,6 +21,7 @@
     "session_ended",
     "session_suspended",
     "session_resumed",
+    "session_interrupted",
     "turn_started",
     "turn_ended",
     "turn_failed",
@@ -55,7 +56,13 @@
     "environment_teardown_ended",
     "environment_teardown_failed",
     "environment_closed",
-    "environment_unreachable"
+    "environment_unreachable",
+    "environment_declared",
+    "environment_updated",
+    "environment_observation",
+    "environment_replace_started",
+    "environment_replace_ended",
+    "environment_replace_failed"
   ],
   "failures": [
     "interrupted",

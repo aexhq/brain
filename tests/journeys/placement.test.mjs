@@ -28,7 +28,7 @@ test("compose separately configured environments and allocate only on first invo
   const events = await collect(session.events());
   assert.equal(events.filter(({ type }) => type === "tool_call_ended").length, 2);
   const started = events.find(({ type }) => type === "tool_call_started");
-  assert.deepEqual(Object.keys(started.data).sort(), ["deadline_ms", "environment", "invocation", "tool"]);
+  assert.deepEqual(Object.keys(started.data).sort(), ["deadline_ms", "environment", "environment_sequence", "invocation", "tool"]);
   const setup = events.find(({ type, data }) => type === "environment_setup_started" && data.environment === "east");
   assert.deepEqual(setup.data.request.configuration, { label: "east workspace" });
   assert.equal("needs" in setup.data.request, false);

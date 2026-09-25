@@ -4,7 +4,7 @@ description: Resource grants, runtime limits and worker configuration.
 ---
 
 An Environment is anything that implements the Environment protocol. A session names each one
-once; Tool placements and the Agentloop refer to those names; Brain sets them up as part of create
+once; Tool placements and the Agentloop refer to those names; explicit lifecycle policy controls setup
 and reaches them for every operation after. Where the code behind the protocol runs is the
 Environment's concern. Brain ships two, and any other is an extension.
 
@@ -77,6 +77,7 @@ The same Environment object places several Tools in one session:
 
 ```ts
 const session = await brain.sessions.create({
+  environmentLifecycle: { default: "automatic" },
   model,
   agentloop: loop({ env: brainEnv({ name: "brain" }) }),
   tools: [read({ env }), write({ env })],
@@ -97,7 +98,8 @@ execution failure; Brain does not retry, change placement, or claim partial effe
 
 ## Lifecycle and delivery
 
-Session creation sets every Environment up before reporting ready. Brain journals each operation
+Session creation sets automatic bindings up before reporting ready. Manual bindings wait for
+an authorized setup operation. Brain journals each operation
 before it sends it, sends it once, and records a terminal receipt or an unknown outcome; it does not
 retry. Ending a session detaches it from its Environments; deleting the session asks each one to
 tear down. An Environment wrapping an externally owned service may implement teardown as releasing

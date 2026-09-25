@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { EnvironmentGrant, EnvironmentMethod, EnvironmentTemplate } from "./environments.js";
 
 import type { HostToolCall, HostToolContract } from "./host.js";
 import type {
@@ -21,6 +22,9 @@ export type EnvironmentDriver =
   | { readonly driver: "http"; readonly url: string; readonly credential?: string };
 
 interface EnvironmentSource {
+  readonly environments?: readonly EnvironmentGrant[];
+  readonly methods?: Readonly<Record<string, EnvironmentMethod>>;
+  readonly template?: EnvironmentTemplate;
   readonly kind: "environment";
   readonly automatic?: boolean;
   readonly name: string;
@@ -29,6 +33,7 @@ interface EnvironmentSource {
 }
 
 interface AgentloopSource {
+  readonly environments?: readonly EnvironmentGrant[];
   readonly kind: "agentloop";
   readonly implementation: Component | Readonly<Record<string, unknown>>;
   readonly configuration: unknown;
@@ -36,6 +41,7 @@ interface AgentloopSource {
 }
 
 interface ToolSource {
+  readonly environments?: readonly EnvironmentGrant[];
   readonly kind: "tool";
   readonly definition: ToolDefinition;
   /** What the Environment interprets: a Component to admit, a descriptor, or nothing
@@ -68,6 +74,7 @@ type Options<OptionsSchema extends Schema | undefined> =
  * instance is reached; Brain reads the URL and the optional credential and carries the
  * configuration unread. */
 export interface EnvironmentContract<OptionsSchema extends Schema | undefined = undefined> {
+  readonly methods?: Readonly<Record<string, EnvironmentMethod>>;
   readonly options?: OptionsSchema;
   readonly url: (options: Options<OptionsSchema>) => string;
   readonly credential?: (options: Options<OptionsSchema>) => string | undefined;
@@ -76,7 +83,7 @@ export interface EnvironmentContract<OptionsSchema extends Schema | undefined = 
 
 /** Every Environment is named at instantiation: the name is unique within a session
  * and is how records refer to it. */
-type Named<OptionsSchema extends Schema | undefined> = { readonly name: string } &
+type Named<OptionsSchema extends Schema | undefined> = { readonly name: string; readonly environments?: readonly EnvironmentGrant[]; readonly template?: EnvironmentTemplate } &
   (OptionsSchema extends Schema ? SchemaInput<OptionsSchema> : Record<never, never>);
 
 export function environment<OptionsSchema extends Schema | undefined = undefined>(
@@ -84,7 +91,7 @@ export function environment<OptionsSchema extends Schema | undefined = undefined
 ): (instance: Named<OptionsSchema>) => Environment {
   if (typeof contract.url !== "function") throw new TypeError("an Environment contract needs a url function");
   return (raw: Named<OptionsSchema>) => {
-    const { name, options } = namedOptions(contract.options, raw);
+    const { name, options, environments, template } = namedOptions(contract.options, raw);
     const url = contract.url(options as never);
     validateUrl(url);
     const credential = contract.credential?.(options as never);
@@ -94,6 +101,9 @@ export function environment<OptionsSchema extends Schema | undefined = undefined
     const configured = contract.configure?.(options as never) ?? options;
     return branded({
       kind: "environment",
+      ...(environments === undefined ? {} : { environments }),
+      ...(template === undefined ? {} : { template }),
+      ...(contract.methods === undefined ? {} : { methods: contract.methods }),
       name,
       driver: { driver: "http", url, ...(credential === undefined ? {} : { credential }) },
       configuration: clone(configured),
@@ -102,6 +112,7 @@ export function environment<OptionsSchema extends Schema | undefined = undefined
 }
 
 export interface BrainEnvOptions {
+  readonly environments?: readonly EnvironmentGrant[];
   readonly name: string;
   /** Server environment variables mounted under `/secrets`, by name. */
   readonly secrets?: readonly string[];
@@ -129,20 +140,21 @@ const brainOptions = z.strictObject({
 /** A fresh Wasmtime instance per invocation, with this Environment's configured grants.
  * The server's policy is the ceiling; omitted access stays denied. */
 export function brainEnv(options: BrainEnvOptions): Environment {
-  const { name, secrets, ...configuration } = brainOptions.parse(options);
+  const { environments, ...raw } = options;
+  const { name, secrets, ...configuration } = brainOptions.parse(raw);
   if (secrets !== undefined) uniqueNames(secrets, "brainEnv secrets", identifierPattern);
   return branded({
-    kind: "environment", name, driver: { driver: "brain" },
+    kind: "environment", name, driver: { driver: "brain" }, ...(environments === undefined ? {} : { environments }),
     configuration: { ...configuration, ...(secrets === undefined ? {} : { secrets }) },
   });
 }
 
 /** This process, registered with Brain as a host: a Tool placed here is a function this
  * process holds, and Brain sends it the call over the connection the client keeps open. */
-export function hostEnv(options: { readonly name: string }): Environment {
+export function hostEnv(options: { readonly name: string; readonly environments?: readonly EnvironmentGrant[] }): Environment {
   if (!isRecord(options)) throw new TypeError("hostEnv needs { name }");
   identifier(options.name, "Environment name");
-  return branded({ kind: "environment", name: options.name, driver: { driver: "host" }, configuration: {} });
+  return branded({ kind: "environment", name: options.name, driver: { driver: "host" }, configuration: {}, environments: options.environments });
 }
 
 const defaultHost = branded<Environment>({
@@ -165,16 +177,17 @@ export interface AgentloopContract<OptionsSchema extends Schema | undefined = un
   readonly implementation: Component | Readonly<Record<string, unknown>> | ((options: Options<OptionsSchema>) => Readonly<Record<string, unknown>>);
 }
 
-type Placement<OptionsSchema extends Schema | undefined> = { readonly env: Environment } &
+type Placement<OptionsSchema extends Schema | undefined> = { readonly env: Environment; readonly environments?: readonly EnvironmentGrant[] } &
   (OptionsSchema extends Schema ? SchemaInput<OptionsSchema> : Record<never, never>);
 
 export function agentloop<OptionsSchema extends Schema | undefined = undefined>(
   contract: AgentloopContract<OptionsSchema>,
 ): (placement: Placement<OptionsSchema>) => PlacedAgentloop {
   return ((raw: unknown) => {
-    const { env, options } = placedOptions(contract.options, raw);
+    const { env, options, environments } = placedOptions(contract.options, raw);
     return branded({
       kind: "agentloop",
+      ...(environments === undefined ? {} : { environments }),
       implementation: typeof contract.implementation === "function" ? clone(contract.implementation(options as never)) : isComponent(contract.implementation) ? contract.implementation : clone(contract.implementation),
       configuration: clone(options),
       environment: env,
@@ -208,7 +221,7 @@ export interface ToolContract<OptionsSchema extends Schema | undefined, InputSch
   readonly implementation?: Component | Readonly<Record<string, unknown>> | ((options: Options<OptionsSchema>) => unknown);
 }
 
-export type ToolPlacement<OptionsSchema extends Schema | undefined> = { readonly env?: Environment } &
+export type ToolPlacement<OptionsSchema extends Schema | undefined> = { readonly env?: Environment; readonly environments?: readonly EnvironmentGrant[] } &
   (OptionsSchema extends Schema ? SchemaInput<OptionsSchema> : Record<never, never>);
 
 export type ToolFactory<OptionsSchema extends Schema | undefined, Input, Output> =
@@ -222,7 +235,7 @@ export function tool<OptionsSchema extends Schema | undefined = undefined, Input
     throw new TypeError("tool needs exactly one of run or implementation");
   }
   const factory = ((raw: unknown) => {
-    const { env, options } = placedOptions(contract.options, raw ?? {}, defaultHost);
+    const { env, options, environments } = placedOptions(contract.options, raw ?? {}, defaultHost);
     if (typeof contract.run === "function") {
       const run = contract.run;
       const hostContract: HostToolContract = {
@@ -233,6 +246,7 @@ export function tool<OptionsSchema extends Schema | undefined = undefined, Input
       };
       return branded({
         kind: "tool",
+        ...(environments === undefined ? {} : { environments }),
         definition,
         implementation: undefined,
         handler: (input: unknown, call: HostToolCall) => run(input as never, { ...call, options } as never),
@@ -246,6 +260,7 @@ export function tool<OptionsSchema extends Schema | undefined = undefined, Input
       : contract.implementation;
     return branded({
       kind: "tool",
+      ...(environments === undefined ? {} : { environments }),
       definition,
       implementation: isComponent(implementation) ? implementation : clone(implementation as Readonly<Record<string, unknown>>),
       configuration: clone(options),
@@ -274,22 +289,22 @@ export function bindTool<Input = unknown, Output = unknown, Options extends obje
   metadata: ToolMetadata,
   implementation: Component | Readonly<Record<string, unknown>>,
   runtime?: { readonly url: URL; readonly export: string },
-): (...args: {} extends Options ? [placement?: Options & { env?: Environment }] : [placement: Options & { env?: Environment }]) => PlacedTool<Input, Output> {
+): (...args: {} extends Options ? [placement?: Options & { env?: Environment; environments?: readonly EnvironmentGrant[] }] : [placement: Options & { env?: Environment; environments?: readonly EnvironmentGrant[] }]) => PlacedTool<Input, Output> {
   identifier(metadata.definition.name, "Tool name");
-  const factory = (raw: Options & { env?: Environment } = {} as Options) => {
+  const factory = (raw: Options & { env?: Environment; environments?: readonly EnvironmentGrant[] } = {} as Options) => {
     if (!isRecord(raw)) throw new TypeError("Tool placement must be an object");
-    const { env = defaultHost, ...options } = raw;
+    const { env = defaultHost, environments, ...options } = raw;
     inspectEnvironment(env);
     if (metadata.optionsSchema === undefined && Object.keys(options).length !== 0) throw new TypeError("this Tool does not accept options");
     const configuration = z.json().parse(options);
     return branded<PlacedTool<Input, Output>>({
-      kind: "tool", definition: clone(metadata.definition), environment: env,
+      kind: "tool", definition: clone(metadata.definition), environment: env, environments,
       configuration, implementation: isComponent(implementation) ? implementation : { ...clone(implementation), configuration },
       ...(runtime === undefined ? {} : { load: async () => {
         const module = await import(runtime.url.href);
         const exported = module[runtime.export];
         if (typeof exported !== "function") throw new TypeError(`package has no Tool export ${runtime.export}`);
-        const loaded = inspectTool(exported({ ...options, env }));
+        const loaded = inspectTool(exported({ ...options, env, environments }));
         if (loaded.handler === undefined) throw new TypeError("packaged executable must define run");
         return loaded;
       } }),
@@ -346,19 +361,19 @@ function parseOptions(schema: Schema | undefined, raw: unknown): unknown {
   return Object.freeze(schema.parse(raw));
 }
 
-function placedOptions(schema: Schema | undefined, raw: unknown, defaultEnvironment?: Environment): { readonly env: Environment; readonly options: unknown } {
+function placedOptions(schema: Schema | undefined, raw: unknown, defaultEnvironment?: Environment): { readonly env: Environment; readonly options: unknown; readonly environments?: readonly EnvironmentGrant[] } {
   if (!isRecord(raw) || (!("env" in raw) && defaultEnvironment === undefined)) throw new TypeError("a placed extension requires { env }");
   const env = (raw.env ?? defaultEnvironment) as Environment;
   inspectEnvironment(env);
-  const { env: _environment, ...options } = raw;
-  return { env, options: parseOptions(schema, options) };
+  const { env: _environment, environments, ...options } = raw;
+  return { env, options: parseOptions(schema, options), environments: clone(environments) as EnvironmentGrant[] | undefined };
 }
 
-function namedOptions(schema: Schema | undefined, raw: unknown): { readonly name: string; readonly options: unknown } {
+function namedOptions(schema: Schema | undefined, raw: unknown): { readonly name: string; readonly options: unknown; readonly environments?: readonly EnvironmentGrant[]; readonly template?: EnvironmentTemplate } {
   if (!isRecord(raw) || !("name" in raw)) throw new TypeError("an Environment requires { name }");
   identifier(raw.name, "Environment name");
-  const { name, ...options } = raw;
-  return { name, options: parseOptions(schema, options) };
+  const { name, environments, template, ...options } = raw;
+  return { name, options: parseOptions(schema, options), environments: clone(environments) as EnvironmentGrant[] | undefined, template: clone(template) as EnvironmentTemplate | undefined };
 }
 
 function toolDefinition(contract: { readonly name: string; readonly description: string; readonly input: Schema; readonly output?: Schema }): ToolDefinition {

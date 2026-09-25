@@ -18,6 +18,7 @@ In the [quickstart](/brain/docs/quickstart), the loop runs on Brain and the look
 
 ```js
 agentloop: pi({ env: brainEnv({ name: "brain" }) }),
+environmentLifecycle: { default: "automatic" },
 tools: [lookupOrder()],
 ```
 
@@ -34,6 +35,16 @@ Standalone Brain can connect to your own environment service. Aex hosting accept
 profiles granted to your account; see [managed environments](https://github.com/aexhq/aex/blob/main/docs/environments.md).
 
 ## Plan for resource lifetime
+
+Lifecycle is an explicit session choice. Use `automatic` for ordinary setup and cleanup, or
+`manual` when an authorized caller should configure and set up a binding first. Separately,
+include the ordinary `env` Tool if the model should inspect or manage environments. See
+[Control environments](/brain/docs/guides/environment-control) for the combinations and grants.
+
+Keep the Agentloop and durable session outside disposable execution environments. When a
+sandbox fails, its tools may stop while the loop remains able to read failures and request
+authorized repair. An Env can also report the loss of an individual browser tab or job without
+marking its entire runtime unavailable.
 
 Your app must stay connected for its `hostEnv` tools to work. Sandbox and browser files follow
 their environment's lifetime, so save important business data in your own storage. Saved session

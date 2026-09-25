@@ -4,10 +4,16 @@ use async_trait::async_trait;
 
 use brain_protocol::{Environment, EnvironmentOperation, EnvironmentReceipt};
 
+mod state;
+pub use state::{descriptor, environments};
+
 /// Invocation-scoped services granted by the caller.
 #[async_trait]
 pub trait ExecutionServices: Send + Sync {
-    fn methods(&self) -> &'static [&'static str];
+    fn methods(&self) -> Vec<&'static str>;
+    fn controller(&self) -> Services {
+        None
+    }
     async fn call(
         &self,
         method: &str,
@@ -21,6 +27,17 @@ pub trait ExecutionServices: Send + Sync {
 }
 
 pub type Services = Option<Arc<dyn ExecutionServices>>;
+
+#[async_trait]
+pub trait EnvironmentControl: Send + Sync {
+    async fn control(
+        &self,
+        store: Arc<dyn crate::SessionStore>,
+        caller: Option<&brain_protocol::EnvironmentName>,
+        grants: &[brain_protocol::EnvironmentGrant],
+        request: brain_protocol::EnvironmentControlRequest,
+    ) -> Result<serde_json::Value, crate::Error>;
+}
 
 /// One Environment as Brain reaches it. Three implementations, one per driver, in the
 /// same shape: `brain.rs`, `host.rs`, `http.rs`.

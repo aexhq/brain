@@ -8,7 +8,7 @@ use sha2::{Digest as _, Sha256};
 
 #[derive(Default)]
 pub struct Executions {
-    open: Mutex<HashMap<(SessionId, u64), Open>>,
+    open: Mutex<HashMap<(SessionId, u64, bool), Open>>,
 }
 
 struct Open {
@@ -19,7 +19,7 @@ struct Open {
 /// Revokes invocation credentials on completion, cancellation, or failure.
 pub struct OpenExecution {
     executions: Arc<Executions>,
-    key: (SessionId, u64),
+    key: (SessionId, u64, bool),
 }
 
 impl Drop for OpenExecution {
@@ -39,12 +39,33 @@ impl Executions {
         public_url: &str,
         services: Arc<dyn ExecutionServices>,
     ) -> Result<(ExecutionCallback, OpenExecution), brain::Error> {
+        self.open_scoped(session_id, sequence, public_url, services, false)
+    }
+
+    pub fn open_controller(
+        self: &Arc<Self>,
+        session_id: &SessionId,
+        sequence: u64,
+        public_url: &str,
+        services: Arc<dyn ExecutionServices>,
+    ) -> Result<(ExecutionCallback, OpenExecution), brain::Error> {
+        self.open_scoped(session_id, sequence, public_url, services, true)
+    }
+
+    fn open_scoped(
+        self: &Arc<Self>,
+        session_id: &SessionId,
+        sequence: u64,
+        public_url: &str,
+        services: Arc<dyn ExecutionServices>,
+        controller: bool,
+    ) -> Result<(ExecutionCallback, OpenExecution), brain::Error> {
         let token = brain::random_id("bex");
         self.open
             .lock()
             .map_err(|_| brain::Error::Executor("open execution table is poisoned".into()))?
             .insert(
-                (session_id.clone(), sequence),
+                (session_id.clone(), sequence, controller),
                 Open {
                     token: digest(&token),
                     services: services.clone(),
@@ -65,7 +86,7 @@ impl Executions {
             },
             OpenExecution {
                 executions: self.clone(),
-                key: (session_id.clone(), sequence),
+                key: (session_id.clone(), sequence, controller),
             },
         ))
     }
@@ -83,8 +104,10 @@ impl Executions {
                 .open
                 .lock()
                 .map_err(|_| brain::Error::Executor("open execution table is poisoned".into()))?;
-            open.get(&(session_id.clone(), sequence))
-                .filter(|open| constant_time_equal(&open.token, &digest(token)))
+            [false, true]
+                .into_iter()
+                .filter_map(|controller| open.get(&(session_id.clone(), sequence, controller)))
+                .find(|open| constant_time_equal(&open.token, &digest(token)))
                 .map(|open| open.services.clone())
                 .ok_or_else(|| brain::Error::NotFound("no such open execution".into()))?
         };
@@ -100,11 +123,11 @@ impl Executions {
     }
 }
 
-fn digest(value: &str) -> [u8; 32] {
+pub(crate) fn digest(value: &str) -> [u8; 32] {
     Sha256::digest(value.as_bytes()).into()
 }
 
-fn constant_time_equal(left: &[u8; 32], right: &[u8; 32]) -> bool {
+pub(crate) fn constant_time_equal(left: &[u8; 32], right: &[u8; 32]) -> bool {
     left.iter()
         .zip(right)
         .fold(0_u8, |difference, (left, right)| {
@@ -126,8 +149,8 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ExecutionServices for Counting {
-        fn methods(&self) -> &'static [&'static str] {
-            &["emit", "telemetry"]
+        fn methods(&self) -> Vec<&'static str> {
+            vec!["emit", "telemetry"]
         }
         async fn call(
             &self,

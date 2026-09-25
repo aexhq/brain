@@ -34,6 +34,11 @@ impl LoopExecutor for EnvironmentLoopExecutor {
         services: Arc<dyn brain::TurnServices>,
     ) -> Result<brain_protocol::TurnOutput, brain::Error> {
         let operation = EnvironmentOperation {
+            template: None,
+            context: None,
+            binding: None,
+            reporter: None,
+            configuration: serde_json::Value::Null,
             sequence,
             environment: environment.name.clone(),
             session_id: session.clone(),
@@ -98,9 +103,14 @@ impl ToolExecutor for SessionToolExecutor {
         services: std::sync::Arc<dyn ToolServices>,
     ) -> Result<Option<Outcome>, brain::Error> {
         let operation = EnvironmentOperation {
+            template: None,
+            context: None,
+            binding: None,
+            reporter: None,
+            configuration: serde_json::Value::Null,
             sequence: dispatch.sequence,
             environment: dispatch.environment.name.clone(),
-            session_id: dispatch.session_id,
+            session_id: dispatch.session_id.clone(),
             request: EnvironmentRequest::Execute {
                 implementation: dispatch.placement.implementation,
                 callback: None,
@@ -143,6 +153,11 @@ impl ToolExecutor for SessionToolExecutor {
 
     async fn cancel(&self, cancellation: ToolCancellation) -> Result<(), brain::Error> {
         let operation = EnvironmentOperation {
+            template: None,
+            context: None,
+            binding: None,
+            reporter: None,
+            configuration: serde_json::Value::Null,
             sequence: cancellation.sequence,
             environment: cancellation.environment.name.clone(),
             session_id: cancellation.session_id,
@@ -172,9 +187,10 @@ pub enum SessionServices {
 
 #[async_trait]
 impl ExecutionServices for SessionServices {
-    fn methods(&self) -> &'static [&'static str] {
+    fn methods(&self) -> Vec<&'static str> {
         match self {
-            Self::Loop(_) => &[
+            Self::Loop(_) => vec![
+                "environments",
                 "events",
                 "acknowledge",
                 "model",
@@ -186,7 +202,15 @@ impl ExecutionServices for SessionServices {
                 "kv_read",
                 "kv_delete",
             ],
-            Self::Tool(_) => &["model", "emit", "result", "returned", "finish", "telemetry"],
+            Self::Tool(_) => vec![
+                "environments",
+                "model",
+                "emit",
+                "result",
+                "returned",
+                "finish",
+                "telemetry",
+            ],
         }
     }
     async fn call(&self, method: &str, input: Value) -> Result<Value, brain::Error> {
@@ -194,6 +218,16 @@ impl ExecutionServices for SessionServices {
             return Err(brain::Error::Cancelled("execution cancelled".into()));
         }
         match (self, method) {
+            (Self::Loop(services), "environments") => {
+                services
+                    .environments(serde_json::from_value(input).map_err(json_error)?)
+                    .await
+            }
+            (Self::Tool(services), "environments") => {
+                services
+                    .environments(serde_json::from_value(input).map_err(json_error)?)
+                    .await
+            }
             (Self::Tool(services), "model") => serde_json::to_value(
                 services
                     .model(serde_json::from_value(input).map_err(json_error)?)

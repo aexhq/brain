@@ -47,14 +47,6 @@ mod tests {
         let (url, calls) = flaky_environment().await;
         let root = tempfile::tempdir().unwrap();
         let (telemetry, _) = brain_telemetry::telemetry_channel();
-        let store = brain::LocalSessionStore::create(
-            &root.path().join("session"),
-            brain_protocol::SessionId::new("ses_owner"),
-            &serde_json::json!({}),
-            brain::Writer::spawn(),
-            Arc::new(brain::Feed::new(telemetry)),
-        )
-        .unwrap();
         let metadata =
             Arc::new(crate::metadata::ServerMetadata::open(&root.path().join("metadata")).unwrap());
         let registry = EnvironmentRegistry::new(Arc::new(HttpEnvironmentAdapter::new(
@@ -65,6 +57,10 @@ mod tests {
             "http://brain.example".into(),
         )));
         let environment = Environment {
+            lifecycle: Some(brain_protocol::EnvironmentLifecycle::Automatic),
+            template: None,
+            methods: Default::default(),
+            environments: Vec::new(),
             name: EnvironmentName::new("sandbox"),
             driver: Driver::Http {
                 url,
@@ -72,6 +68,26 @@ mod tests {
             },
             configuration: serde_json::json!({}),
         };
+        let config = serde_json::json!({"agentloop":{"environment":"sandbox","implementation":{},"configuration":{}},
+            "model":{"provider":"openai","name":"test"},"tools":[],"environments":[environment]});
+        let store = brain::LocalSessionStore::create(
+            &root.path().join("session"),
+            brain_protocol::SessionId::new("ses_owner"),
+            &config,
+            brain::Writer::spawn(),
+            Arc::new(brain::Feed::new(telemetry)),
+        )
+        .unwrap();
+        store
+            .append_sync(
+                &[brain::AppendRecord::new(
+                    codes::event::SESSION_CREATION_STARTED,
+                    config,
+                )],
+                brain::SessionUpdate::default(),
+            )
+            .unwrap();
+        registry.track(store.clone());
         assert!(registry.close(&environment, &*store, false).await.is_err());
         assert!(registry.close(&environment, &*store, false).await.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 1);

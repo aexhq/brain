@@ -339,6 +339,31 @@ impl HostEnvironment {
         serde_json::from_value(value).map_err(|error| ApiError::internal(error.to_string()))
     }
 
+    pub async fn service(
+        &self,
+        host_id: &HostId,
+        token: &str,
+        request: brain_protocol::HostServiceRequest,
+    ) -> Result<serde_json::Value, ApiError> {
+        let services = {
+            let mut state = self.lock()?;
+            let host = authorized(&mut state, host_id, token)?;
+            host.pending
+                .get(&(request.session_id, request.sequence))
+                .map(|pending| pending.services.clone())
+                .ok_or_else(|| ApiError::conflict("the host command is no longer pending"))?
+        };
+        if !services.methods().contains(&request.call.method.as_str()) {
+            return Err(ApiError::invalid_request(
+                "execution service is not granted",
+            ));
+        }
+        services
+            .call(&request.call.method, request.call.input)
+            .await
+            .map_err(crate::service::api_error)
+    }
+
     async fn call(
         &self,
         host_id: &HostId,
@@ -390,6 +415,7 @@ impl HostEnvironment {
         let key = (operation.session_id.clone(), operation.sequence);
         let (event_sender, mut event_receiver) = mpsc::channel(8);
         let command = HostCommand {
+            template: operation.template.clone(),
             environment: operation.environment.clone(),
             session_id: operation.session_id.clone(),
             sequence: operation.sequence,
@@ -473,6 +499,7 @@ impl HostEnvironment {
                 .ok_or_else(|| brain::Error::Executor("the host is not connected".into()))?
         };
         let command = HostCommand {
+            template: operation.template.clone(),
             environment: operation.environment.clone(),
             session_id: operation.session_id.clone(),
             sequence: operation.sequence,
@@ -656,6 +683,10 @@ mod tests {
 
     fn entry(host_id: HostId) -> Environment {
         Environment {
+            lifecycle: Some(brain_protocol::EnvironmentLifecycle::Automatic),
+            template: None,
+            methods: Default::default(),
+            environments: Vec::new(),
             name: EnvironmentName::new("app"),
             driver: Driver::Host { host_id },
             configuration: serde_json::json!({}),
@@ -664,6 +695,11 @@ mod tests {
 
     fn operation(request: EnvironmentRequest) -> EnvironmentOperation {
         EnvironmentOperation {
+            template: None,
+            context: None,
+            binding: None,
+            reporter: None,
+            configuration: serde_json::Value::Null,
             sequence: 7,
             environment: EnvironmentName::new("app"),
             session_id: SessionId::new("ses_12345678901234567890"),

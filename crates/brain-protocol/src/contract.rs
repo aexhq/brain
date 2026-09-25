@@ -31,6 +31,12 @@ pub fn session() -> Value {
             define::<ApiError>(generator);
             define::<CreateSessionRequest>(generator);
             define::<Environment>(generator);
+            define::<EnvironmentCommand>(generator);
+            define::<EnvironmentResponse>(generator);
+            define::<crate::EnvironmentControlRequest>(generator);
+            define::<crate::EnvironmentView>(generator);
+            define::<crate::EnvironmentOutput>(generator);
+            define::<crate::EnvironmentEvent>(generator);
             define::<EnvironmentCallRequest>(generator);
             define::<EnvironmentCallResult>(generator);
             define::<EnvironmentName>(generator);
@@ -44,6 +50,7 @@ pub fn session() -> Value {
             define::<HostRegistration>(generator);
             define::<HostResult>(generator);
             define::<crate::HostModelRequest>(generator);
+            define::<crate::HostServiceRequest>(generator);
             define::<Message>(generator);
             define::<MessageRequest>(generator);
             define::<crate::ModelList>(generator);

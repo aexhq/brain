@@ -5,7 +5,7 @@
   ▀▀  ▀▀     |______/___|__|___|___|_______|__|____|
 </pre>
 
-<p align="center"><strong>Run AI agents. Keep their conversations and progress.</strong></p>
+<p align="center"><strong>A minimal agent engine. A brain that outlives its sandbox.</strong></p>
 
 <p align="center">
   <a href="https://aex.dev/brain/docs/quickstart">Quickstart</a> ·
@@ -14,14 +14,18 @@
   <a href="README.cn.md">中文</a>
 </p>
 
-Brain is an open-source server for AI agents. Connect your model and tools, send a message,
-and read the answer. Brain saves the conversation, tool results and progress so your app can
-return to them later.
+Brain is an open-source engine for agents whose tools run across applications, browsers and
+sandboxes. Start with a small core, choose your agent loop, and add the tools and environments
+your application needs. Run it yourself or use [Aex](https://aex.dev) for hosting.
 
-- Add functions from your application as tools the agent can call.
-- Follow live output and inspect what happened in a session.
-- Use a ready-made agent loop or write your own behavior.
-- Run Brain on your own infrastructure, or use [Aex](https://aex.dev) for hosting.
+- **Minimal and extensible.** The core owns durable sessions and execution boundaries. Agent
+  behavior, tools and runtime integrations are extensions built on public interfaces.
+- **Independent lifetimes.** Agentloop, Tool and Env are separate building blocks. Keep the loop
+  and session history outside a disposable sandbox so a sandbox failure leaves the agent's
+  history available and its loop able to diagnose the failure.
+- **Control over execution.** Place tools where their resources live. Brain records transport
+  failures; environments can report resource failures even while idle. Choose automatic or
+  explicit setup, and optionally give the model an ordinary `env` tool for authorized recovery.
 
 > **Early preview.** APIs may change before 1.0. Saved history survives a server restart;
 > interrupted work is reported as failed and is not automatically retried.
@@ -39,7 +43,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 In another terminal, install the packages:
 
 ```sh
-npm install @aexhq/brain@0.30.0 @aexhq/agentloop-pi@7.1.0 zod@4
+npm install @aexhq/brain@0.32.0 @aexhq/agentloop-pi@7.2.0 zod@4
 ```
 
 Set `OPENAI_API_KEY` in your environment. Save this as `order.mjs`:
@@ -59,6 +63,7 @@ const lookupOrder = tool({
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080", token: "quickstart" });
 try {
   const session = await brain.sessions.create({
+    environmentLifecycle: { default: "automatic" },
     model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
     agentloop: pi({ env: brainEnv({ name: "brain" }) }),
     tools: [lookupOrder()],
@@ -95,9 +100,14 @@ Rust and Python examples with their build steps. Other clients can use the
 
 ## Why Brain?
 
-An agent needs more than a model call: conversations need history, tools need results,
-and applications need to know when work stops. Brain handles that session lifecycle while
-you choose the model, tools and agent behavior.
+The design takes inspiration from [Pi's minimal, extensible harness](https://pi.dev/) and
+[Anthropic's separation of sessions, harnesses and sandboxes](https://www.anthropic.com/engineering/managed-agents).
+Brain makes those boundaries available as an independently runnable engine with replaceable extensions.
+
+Brain preserves committed history and reports uncertain outcomes. It does not restore lost files
+or automatically retry effects. Inspection, restart and resource management belong to the Env;
+the application decides which capabilities the model may use. See
+[environment control](https://aex.dev/brain/docs/guides/environment-control).
 
 For implementation details, see the [design decisions](references/adrs/README.md).
 For source builds and checks, see [Contributing](CONTRIBUTING.md).

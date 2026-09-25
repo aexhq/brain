@@ -118,12 +118,14 @@ async fn inline_state_and_execution_provenance_survive_a_failed_turn_and_reopen(
             services
                 .dispatch(vec![
                     ToolInvocation {
+                        environment_sequence: None,
                         environment: brain_protocol::EnvironmentName::new("workspace"),
                         name: "emit".into(),
                         call_id: "one".into(),
                         input: json!({}),
                     },
                     ToolInvocation {
+                        environment_sequence: None,
                         environment: brain_protocol::EnvironmentName::new("workspace"),
                         name: "emit".into(),
                         call_id: "two".into(),

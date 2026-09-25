@@ -56,6 +56,7 @@ export async function runToolProcess(directory = process.cwd()): Promise<void> {
       emit: (kind, data) => service("emit", { event_type: kind, data }) as Promise<number>,
       update: value => service(value.type, value.outcome ?? null) as Promise<number>,
       model: request => service("model", request) as ReturnType<InvokeFrame["model"]>,
+      environments: request => service("environments", request),
     });
     write({ type: "returned" });
   } catch (error) {

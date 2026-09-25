@@ -11,13 +11,18 @@ use brain_protocol::{
 
 use brain::environment::{EnvironmentAdapter, Services};
 
+#[derive(Clone)]
 pub struct EnvironmentRegistry {
-    adapter: Arc<dyn EnvironmentAdapter>,
+    pub(crate) adapter: Arc<dyn EnvironmentAdapter>,
+    pub(crate) control: Arc<crate::control::Control>,
 }
 
 impl EnvironmentRegistry {
     pub fn new(adapter: Arc<dyn EnvironmentAdapter>) -> Self {
-        Self { adapter }
+        Self {
+            adapter,
+            control: Arc::default(),
+        }
     }
 
     /// Sets up one Environment with its configuration, recorded before delivery.
@@ -26,47 +31,27 @@ impl EnvironmentRegistry {
         creation: &mut CreatingSession,
         environment: &Environment,
     ) -> Result<(), brain::Error> {
-        let kind = codes::event::call::ENVIRONMENT_SETUP;
-        let request = EnvironmentRequest::Setup {
-            configuration: environment.configuration.clone(),
+        use brain_protocol::{
+            EnvironmentControlRequest, EnvironmentGrant, EnvironmentPermission, EnvironmentRef,
         };
-        let sequence = creation.record(
-            &format!("{kind}_started"),
-            serde_json::json!({"environment": environment.name, "request": request}),
-        )?;
-        let operation = EnvironmentOperation {
-            sequence,
-            environment: environment.name.clone(),
-            session_id: creation.session_id().clone(),
-            request,
-        };
-        let sent = self.adapter.execute(environment, &operation, None).await;
-        match sent.and_then(|receipt| {
-            if let EnvironmentReceipt::Accepted {
-                on_turn_end: Some(name),
-            } = &receipt
-                && !crate::service::valid_identifier(name)
-            {
-                return Err(brain::Error::Executor(
-                    "Environment turn-end method name is invalid".into(),
-                ));
-            }
-            terminal(receipt, "setup")
-        }) {
-            Ok(receipt) => creation.record_call_ended(kind, sequence, &receipt),
-            Err(error) => {
-                creation.record_call_failed(kind, sequence, &error)?;
-                if matches!(error, brain::Error::Ambiguous(_)) {
-                    creation.record(
-                        codes::event::ENVIRONMENT_UNREACHABLE,
-                        serde_json::json!({"environment": environment.name, "sequence": sequence}),
-                    )?;
-                }
-                Err(error)
-            }
-        }
+        self.control(
+            self.store(creation.session_id())?,
+            None,
+            &[EnvironmentGrant {
+                environment: environment.name.clone(),
+                permissions: vec![EnvironmentPermission::Setup],
+                methods: Vec::new(),
+            }],
+            EnvironmentControlRequest::Setup {
+                environment: EnvironmentRef {
+                    name: environment.name.clone(),
+                    sequence: 1,
+                },
+            },
+        )
+        .await?;
+        Ok(())
     }
-
     /// One operation on a session's behalf whose record the session already holds: a
     /// Tool invoke or cancel, or a turn.
     pub async fn execute(
@@ -75,7 +60,50 @@ impl EnvironmentRegistry {
         operation: &EnvironmentOperation,
         services: Services,
     ) -> Result<EnvironmentReceipt, brain::Error> {
-        self.adapter.execute(environment, operation, services).await
+        let store = self.store(&operation.session_id)?;
+        let config = brain::session_config(&*store)?;
+        let views = brain::environment::environments(&*store, &config)?;
+        let view = views
+            .get(&operation.environment)
+            .ok_or_else(|| brain::Error::NotFound("Environment is not declared".into()))?;
+        let admitted_sequence = store
+            .records_after(operation.sequence.saturating_sub(1), 1)?
+            .first()
+            .and_then(|record| record.payload["environment_sequence"].as_u64());
+        if matches!(operation.request, EnvironmentRequest::Execute { .. })
+            && (view.state != brain_protocol::EnvironmentState::Ready
+                || admitted_sequence.is_some_and(|sequence| sequence != view.reference.sequence)
+                || matches!(
+                    view.availability,
+                    Some(
+                        brain_protocol::EnvironmentAvailability::Unavailable
+                            | brain_protocol::EnvironmentAvailability::Unknown
+                    )
+                ))
+        {
+            return Ok(EnvironmentReceipt::Failure {
+                code: "environment_not_ready".into(),
+                message: format!(
+                    "Environment `{}` is {:?}; configure and set it up before executing Tools",
+                    operation.environment, view.state
+                ),
+                retryable: false,
+                details: Some(
+                    serde_json::json!({"domain": "environment", "environment": view.reference, "state": view.state}),
+                ),
+            });
+        }
+        let mut operation = operation.clone();
+        operation.template = Some(view.template.clone());
+        operation.binding = Some(view.reference.clone());
+        let result = self.send(environment, &operation, services).await;
+        if let Err(error) = &result {
+            store.append_sync(&[brain::AppendRecord::new(codes::event::ENVIRONMENT_UNREACHABLE,
+                serde_json::json!({"environment": view.reference, "sequence": operation.sequence,
+                    "domain": "transport", "code": error.code(), "message": error.to_string(),
+                    "ambiguous": matches!(error, brain::Error::Ambiguous(_))}))], brain::SessionUpdate::default())?;
+        }
+        result
     }
 
     pub async fn call(
@@ -87,9 +115,14 @@ impl EnvironmentRegistry {
         input: serde_json::Value,
     ) -> Result<EnvironmentCallResult, brain::Error> {
         let config = brain::session_config(store)?;
-        let environment = config.environment(name).ok_or_else(|| {
-            brain::Error::NotFound(format!("Environment `{name}` is not one of this session's"))
-        })?;
+        let views = brain::environment::environments(store, &config)?;
+        let view = views
+            .get(name)
+            .filter(|view| view.state != brain_protocol::EnvironmentState::Deleted)
+            .ok_or_else(|| {
+                brain::Error::NotFound(format!("Environment `{name}` is not one of this session's"))
+            })?;
+        let environment = brain::environment::descriptor(&config, view)?;
         let kind = codes::event::call::ENVIRONMENT_CALL;
         let request = EnvironmentRequest::Call {
             name: method,
@@ -102,12 +135,17 @@ impl EnvironmentRegistry {
             )
             .await?;
         let operation = EnvironmentOperation {
+            template: None,
+            context: None,
+            binding: None,
+            reporter: None,
+            configuration: serde_json::Value::Null,
             sequence,
             environment: name.clone(),
             session_id: session.id().clone(),
             request,
         };
-        let sent = self.adapter.execute(environment, &operation, None).await;
+        let sent = self.send(&environment, &operation, None).await;
         match sent.and_then(|receipt| terminal(receipt, "call")) {
             Ok(EnvironmentReceipt::Result { output }) => {
                 session.record_call_ended(kind, sequence, &output).await?;
@@ -135,7 +173,6 @@ impl EnvironmentRegistry {
         }
     }
 
-    /// Read only admission records; conversation history is not needed to find registrations.
     pub async fn turn_ended(
         &self,
         session: &Session,
@@ -143,9 +180,11 @@ impl EnvironmentRegistry {
         sequence: u64,
     ) -> Result<(), brain::Error> {
         let mut setups = std::collections::HashMap::new();
-        let mut callbacks = Vec::new();
+        let mut callbacks = std::collections::BTreeMap::new();
+        let config = brain::session_config(store)?;
+        let views = brain::environment::environments(store, &config)?;
         let mut after = 0;
-        'admission: loop {
+        loop {
             let records = store.records_after(after, 32)?;
             if records.is_empty() {
                 break;
@@ -153,19 +192,30 @@ impl EnvironmentRegistry {
             for record in records {
                 after = record.sequence;
                 match record.kind.as_str() {
-                    codes::event::SESSION_CREATION_ENDED
-                    | codes::event::SESSION_CREATION_FAILED => break 'admission,
-                    codes::event::ENVIRONMENT_SETUP_STARTED => {
+                    codes::event::ENVIRONMENT_SETUP_STARTED
+                    | codes::event::ENVIRONMENT_REPLACE_STARTED => {
                         if let Some(name) = record.payload["environment"].as_str() {
-                            setups.insert(record.sequence, EnvironmentName::new(name));
+                            let incarnation =
+                                if record.kind == codes::event::ENVIRONMENT_REPLACE_STARTED {
+                                    record.sequence
+                                } else {
+                                    record.payload["environment_sequence"].as_u64().unwrap_or(1)
+                                };
+                            setups
+                                .insert(record.sequence, (EnvironmentName::new(name), incarnation));
                         }
                     }
-                    codes::event::ENVIRONMENT_SETUP_ENDED => {
+                    codes::event::ENVIRONMENT_SETUP_ENDED
+                    | codes::event::ENVIRONMENT_REPLACE_ENDED => {
                         if let Some(name) = record.payload["result"]["on_turn_end"].as_str()
                             && let Some(started) = record.payload["sequence"].as_u64()
-                            && let Some(environment) = setups.remove(&started)
+                            && let Some((environment, incarnation)) = setups.remove(&started)
+                            && views.get(&environment).is_some_and(|view| {
+                                view.reference.sequence == incarnation
+                                    && view.state == brain_protocol::EnvironmentState::Ready
+                            })
                         {
-                            callbacks.push((environment, name.to_owned()));
+                            callbacks.insert(environment, name.to_owned());
                         }
                     }
                     _ => {}
@@ -198,8 +248,17 @@ impl EnvironmentRegistry {
         store: &dyn SessionStore,
     ) -> Result<(), brain::Error> {
         let kind = codes::event::call::ENVIRONMENT_DETACH;
-        for environment in config.environments.iter().rev() {
-            if let Some(attempt) = operation_outcome(store, &environment.name, kind)? {
+        let views = brain::environment::environments(store, config)?;
+        for view in views.values().rev().filter(|view| {
+            !matches!(
+                view.state,
+                brain_protocol::EnvironmentState::Declared
+                    | brain_protocol::EnvironmentState::Deleted
+                    | brain_protocol::EnvironmentState::Detached
+            )
+        }) {
+            let environment = brain::environment::descriptor(config, view)?;
+            if let Some(attempt) = operation_outcome(store, &view.reference, kind)? {
                 if attempt.outcome.is_none() {
                     session
                         .record_call_failed(
@@ -214,16 +273,21 @@ impl EnvironmentRegistry {
             let sequence = session
                 .record(
                     &format!("{kind}_started"),
-                    serde_json::json!({"environment": environment.name, "request": EnvironmentRequest::Detach}),
+                    serde_json::json!({"environment": environment.name, "environment_sequence": view.reference.sequence, "request": EnvironmentRequest::Detach}),
                 )
                 .await?;
             let operation = EnvironmentOperation {
+                template: None,
+                context: None,
+                binding: None,
+                reporter: None,
+                configuration: serde_json::Value::Null,
                 sequence,
                 environment: environment.name.clone(),
                 session_id: session.id().clone(),
                 request: EnvironmentRequest::Detach,
             };
-            let sent = self.adapter.execute(environment, &operation, None).await;
+            let sent = self.send(&environment, &operation, None).await;
             match sent.and_then(|receipt| terminal(receipt, "detach")) {
                 Ok(receipt) => session.record_call_ended(kind, sequence, &receipt).await?,
                 Err(error) => {
@@ -252,7 +316,13 @@ impl EnvironmentRegistry {
         retry_failed: bool,
     ) -> Result<(), brain::Error> {
         let kind = codes::event::call::ENVIRONMENT_TEARDOWN;
-        let previous = operation_outcome(store, &environment.name, kind)?;
+        let config = brain::session_config(store)?;
+        let views = brain::environment::environments(store, &config)?;
+        let reference = &views
+            .get(&environment.name)
+            .ok_or_else(|| brain::Error::NotFound("Environment is not declared".into()))?
+            .reference;
+        let previous = operation_outcome(store, reference, kind)?;
         if previous
             .as_ref()
             .is_some_and(|attempt| attempt.outcome == Some(true))
@@ -273,20 +343,24 @@ impl EnvironmentRegistry {
         let saved = store.append_sync(
             &[brain::AppendRecord::new(
                 codes::event::ENVIRONMENT_TEARDOWN_STARTED,
-                serde_json::json!({"environment": environment.name, "request": EnvironmentRequest::Teardown}),
+                serde_json::json!({"environment": environment.name, "environment_sequence": reference.sequence, "request": EnvironmentRequest::Teardown}),
             )],
             brain::SessionUpdate::default(),
         )?;
         let sequence = saved[0].sequence;
         let operation = EnvironmentOperation {
+            template: None,
+            context: None,
+            binding: None,
+            reporter: None,
+            configuration: serde_json::Value::Null,
             sequence,
             environment: environment.name.clone(),
             session_id: store.session_id().clone(),
             request: EnvironmentRequest::Teardown,
         };
         let result = self
-            .adapter
-            .execute(environment, &operation, None)
+            .send(environment, &operation, None)
             .await
             .and_then(|receipt| terminal(receipt, "teardown"));
         let (kind, payload) = match &result {
@@ -323,7 +397,7 @@ struct Attempt {
 /// The last attempt at `kind` on the named Environment, as the journal tells it.
 fn operation_outcome(
     store: &dyn SessionStore,
-    environment: &EnvironmentName,
+    environment: &brain_protocol::EnvironmentRef,
     kind: &str,
 ) -> Result<Option<Attempt>, brain::Error> {
     let mut after = 0;
@@ -340,7 +414,9 @@ fn operation_outcome(
                     .payload
                     .get("environment")
                     .and_then(serde_json::Value::as_str)
-                    == Some(environment.as_str())
+                    == Some(environment.name.as_str())
+                && record.payload["environment_sequence"].as_u64().unwrap_or(1)
+                    == environment.sequence
             {
                 attempt = Some(Attempt {
                     sequence: record.sequence,
@@ -370,7 +446,17 @@ fn operation_outcome(
 fn terminal(receipt: EnvironmentReceipt, what: &str) -> Result<EnvironmentReceipt, brain::Error> {
     match receipt {
         EnvironmentReceipt::Unknown { message } => Err(brain::Error::Ambiguous(message)),
-        EnvironmentReceipt::Failure { message, .. } => Err(brain::Error::Executor(message)),
+        EnvironmentReceipt::Failure {
+            code,
+            message,
+            retryable,
+            details,
+        } => Err(brain::Error::Environment(brain_protocol::OutcomeError {
+            code,
+            message,
+            retryable,
+            details,
+        })),
         EnvironmentReceipt::Progress { .. } => Err(brain::Error::Executor(format!(
             "Environment returned progress without a terminal {what} receipt"
         ))),

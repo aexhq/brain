@@ -18,6 +18,7 @@ interface types {
 
 interface host {
   use types.{tool-error};
+  environments: func(request-json: string) -> result<string, tool-error>;
 
   // An independent request using this invocation's model authority and lifetime.
   model: func(request-json: string) -> result<string, tool-error>;

@@ -1,11 +1,59 @@
 {
   "$defs": {
+    "EnvironmentGrant": {
+      "additionalProperties": false,
+      "description": "Authority over a declared binding and instances made from its template.",
+      "properties": {
+        "environment": {
+          "$ref": "#/$defs/EnvironmentName"
+        },
+        "methods": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "permissions": {
+          "items": {
+            "$ref": "#/$defs/EnvironmentPermission"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "environment",
+        "permissions"
+      ],
+      "type": "object"
+    },
+    "EnvironmentName": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "type": "string"
+    },
+    "EnvironmentPermission": {
+      "enum": [
+        "read",
+        "create",
+        "setup",
+        "update",
+        "delete",
+        "call"
+      ],
+      "type": "string"
+    },
     "Tool": {
       "additionalProperties": false,
       "description": "A canonical Tool definition with one implementation per authorized Environment.\nBrain validates dispatched inputs and successful outputs against this definition.",
       "properties": {
         "description": {
           "type": "string"
+        },
+        "environments": {
+          "items": {
+            "$ref": "#/$defs/EnvironmentGrant"
+          },
+          "type": "array"
         },
         "input_schema": {
           "type": "object"

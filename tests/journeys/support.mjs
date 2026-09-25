@@ -95,6 +95,7 @@ export function fixture({ providers = {} } = {}) {
     await f.start();
     f.brain = f.client();
     f.options = (extra = {}) => ({
+      environmentLifecycle: { default: "automatic" },
       model: { provider: "vercel-ai-gateway", name: "test/journey", apiKey: "journey-model-token" },
       agentloop: agentloop({ implementation: f.reference })({ env: brainEnv({ name: "brain" }) }),
       ...extra,

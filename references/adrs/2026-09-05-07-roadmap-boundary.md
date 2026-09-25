@@ -8,6 +8,10 @@ Amended by [ADR-044](2026-09-06-03-sessions-and-brain-env.md): explicit selectio
 create-time authorized Tool placements is included. New grants and mutable placement
 definitions remain outside that decision.
 
+The deferral of Environment control and dynamic instances is superseded by
+[ADR-051](2026-09-25-01-environment-events-and-control.md). Its templates retain fixed placement
+authority; arbitrary new grants, runtime code registration and automatic placement remain deferred.
+
 ## Context
 
 The user’s north star includes more capable agent-directed recovery and future hosted platforms, but shipping every policy in the runtime would undermine the minimal MVP.

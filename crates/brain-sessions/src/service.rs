@@ -1,9 +1,8 @@
 use crate::{EnvironmentRegistry, locks::KeyedLocks};
 use brain::{Feed, LocalSessionStore, Session, SessionRuntime, SessionStore, Writer};
 use brain_protocol::{
-    ApiError, Environment, EnvironmentCallRequest, EnvironmentCallResult, EnvironmentName,
-    EventPage, MessageRequest, SessionConfig, SessionId, SessionList, SessionStatus,
-    SessionSummary, codes,
+    ApiError, EnvironmentCallRequest, EnvironmentCallResult, EnvironmentName, EventPage,
+    MessageRequest, SessionConfig, SessionId, SessionList, SessionStatus, SessionSummary, codes,
 };
 use std::{
     collections::HashMap,
@@ -121,6 +120,9 @@ impl MessageAdmission {
 
 impl Sessions {
     pub fn new(resources: SessionResources) -> Result<Self, brain::Error> {
+        resources
+            .environments
+            .bind_executions(&resources.session_runtime.tool_executions);
         std::fs::create_dir_all(&resources.sessions_dir)
             .map_err(|error| brain::Error::Journal(error.to_string()))?;
         Ok(Self {
@@ -156,6 +158,10 @@ impl Sessions {
     /// Refuse new turns and Environment calls while existing work finishes with its services intact.
     pub async fn drain(&self) {
         self.draining.store(true, Ordering::Release);
+        self.resources.environments.on_observation(
+            None,
+            self.resources.session_runtime.limits.max_emitted_bytes,
+        );
         let _finished = self.active.write().await;
     }
 
@@ -263,6 +269,27 @@ impl Sessions {
     }
 
     fn cache_store(&self, store: &Arc<LocalSessionStore>) -> Result<(), ApiError> {
+        self.resources.environments.track(store.clone());
+        let draining = Arc::downgrade(&self.draining);
+        let active = Arc::downgrade(&self.active);
+        let resources = Arc::downgrade(&self.resources);
+        let sessions = Arc::downgrade(&self.sessions);
+        let stores = Arc::downgrade(&self.stores);
+        let store_locks = Arc::downgrade(&self.store_locks);
+        let session_locks = Arc::downgrade(&self.session_locks);
+        let background_turns = Arc::downgrade(&self.background_turns);
+        if !self.draining.load(Ordering::Acquire) {
+            self.resources.environments.on_observation(Some(Arc::new(move |session, sequence| {
+            let (Some(draining), Some(active), Some(resources), Some(sessions), Some(stores), Some(store_locks), Some(session_locks), Some(background_turns)) =
+                (draining.upgrade(), active.upgrade(), resources.upgrade(), sessions.upgrade(), stores.upgrade(), store_locks.upgrade(), session_locks.upgrade(), background_turns.upgrade()) else { return; };
+            let api = Sessions { draining, active, resources, sessions, stores, store_locks, session_locks, background_turns };
+            tokio::spawn(async move {
+                if let Err(error) = api.environment_observed(session, sequence).await {
+                    tracing::warn!(error = %error.message, "Environment observation could not activate its Agentloop");
+                }
+            });
+        })), self.resources.session_runtime.limits.max_emitted_bytes);
+        }
         let mut stores = self
             .stores
             .lock()
@@ -370,17 +397,25 @@ impl Sessions {
         self.session_locks.acquire(session_id.clone())
     }
 
-    async fn cleanup_environments(&self, environments: &[Environment], store: &dyn SessionStore) {
-        for environment in environments.iter().rev() {
+    async fn cleanup_environments(&self, store: &dyn SessionStore) -> Result<(), ApiError> {
+        let config = brain::session_config(store).map_err(api_error)?;
+        let environments = brain::environment::environments(store, &config).map_err(api_error)?;
+        for view in environments
+            .values()
+            .rev()
+            .filter(|view| view.state == brain_protocol::EnvironmentState::Ready)
+        {
+            let environment = brain::environment::descriptor(&config, view).map_err(api_error)?;
             if let Err(error) = self
                 .resources
                 .environments
-                .close(environment, store, false)
+                .close(&environment, store, false)
                 .await
             {
                 tracing::warn!(environment = %environment.name, %error, "failed to clean up Environment after session admission");
             }
         }
+        Ok(())
     }
 
     pub async fn create_session(
@@ -390,6 +425,25 @@ impl Sessions {
         transcript: Vec<brain_protocol::Message>,
     ) -> Result<SessionSummary, ApiError> {
         let _active = self.admit_work().await?;
+        if config
+            .environments
+            .iter()
+            .any(|environment| environment.lifecycle.is_none())
+        {
+            return Err(ApiError::invalid_request(
+                "each Environment requires an explicit lifecycle",
+            ));
+        }
+        if config
+            .environment(&config.agentloop.environment)
+            .is_some_and(|environment| {
+                environment.lifecycle == Some(brain_protocol::EnvironmentLifecycle::Manual)
+            })
+        {
+            return Err(ApiError::invalid_request(
+                "the Agentloop requires an automatically managed bootstrap Environment",
+            ));
+        }
         let session_lock = self.session_lock(&session_id)?;
         let _session_guard = session_lock.lock().await;
         let store_lock = self.store_locks.acquire(session_id.clone())?;
@@ -416,8 +470,17 @@ impl Sessions {
         };
         self.cache_store(&store)?;
         drop(store_guard);
-        let mut ready = Vec::with_capacity(config.environments.len());
         for environment in &config.environments {
+            if environment.lifecycle == Some(brain_protocol::EnvironmentLifecycle::Manual) {
+                continue;
+            }
+            let views = brain::environment::environments(&*store, &config).map_err(api_error)?;
+            if matches!(
+                views[&environment.name].state,
+                brain_protocol::EnvironmentState::Ready | brain_protocol::EnvironmentState::Deleted
+            ) {
+                continue;
+            }
             if let Err(error) = self
                 .resources
                 .environments
@@ -431,16 +494,15 @@ impl Sessions {
                     )
                     .map_err(api_error)?;
                 self.insert_entry(store.clone(), None)?;
-                self.cleanup_environments(&ready, &*store).await;
+                self.cleanup_environments(&*store).await?;
                 return Err(api_error(error));
             }
-            ready.push(environment.clone());
         }
         let session = match creation.complete(config) {
             Ok(session) => session,
             Err(error) => {
                 self.insert_entry(store.clone(), None)?;
-                self.cleanup_environments(&ready, &*store).await;
+                self.cleanup_environments(&*store).await?;
                 return Err(api_error(error));
             }
         };
@@ -586,7 +648,7 @@ impl Sessions {
                 return Ok(());
             }
             let session = self.session(session_id).await?;
-            for sequence in turns {
+            for sequence in turns.into_iter().filter(|sequence| *sequence != 0) {
                 self.resources
                     .environments
                     .turn_ended(&session, store, sequence)
@@ -613,6 +675,103 @@ impl Sessions {
 
     pub async fn get_session(&self, session_id: SessionId) -> Result<SessionSummary, ApiError> {
         self.summary(&session_id).await
+    }
+
+    async fn environment_observed(
+        &self,
+        session_id: SessionId,
+        sequence: u64,
+    ) -> Result<(), ApiError> {
+        let active = self.admit_work().await?;
+        let store = self.store(&session_id).await?;
+        if !matches!(
+            store.session_summary().map_err(api_error)?.status,
+            SessionStatus::Idle | SessionStatus::Running
+        ) {
+            return Ok(());
+        }
+        let mut after = 0;
+        let mut interrupted = false;
+        loop {
+            let records = store.records_after(after, 1000).map_err(api_error)?;
+            if records.is_empty() {
+                break;
+            }
+            for record in records {
+                after = record.sequence;
+                if record.kind == codes::event::TURN_STARTED
+                    && record.payload.get("input").is_some()
+                {
+                    interrupted = false;
+                } else if record.kind == codes::event::SESSION_INTERRUPTED
+                    || (record.kind == codes::event::TURN_FAILED
+                        && matches!(
+                            record.payload["code"].as_str(),
+                            Some("cancelled" | "interrupted")
+                        ))
+                {
+                    interrupted = true;
+                }
+            }
+        }
+        if interrupted {
+            return Ok(());
+        }
+        let tools = self
+            .resources
+            .session_runtime
+            .tool_executions
+            .group(&session_id);
+        tools.observe(sequence);
+        self.follow_tools(session_id, store, tools, 0, active);
+        Ok(())
+    }
+
+    pub async fn environment_event(
+        &self,
+        session: SessionId,
+        environment: brain_protocol::EnvironmentRef,
+        event: brain_protocol::EnvironmentEvent,
+    ) -> Result<u64, ApiError> {
+        let _active = self.admit_work().await?;
+        let store = self.store(&session).await?;
+        self.resources
+            .environments
+            .report(store, &environment, event)
+            .await
+            .map_err(api_error)
+    }
+
+    pub async fn control_environment(
+        &self,
+        session: SessionId,
+        request: brain_protocol::EnvironmentControlRequest,
+    ) -> Result<serde_json::Value, ApiError> {
+        let _active = self.admit_work().await?;
+        let store = self.store(&session).await?;
+        let config = brain::session_config(&*store).map_err(api_error)?;
+        use brain_protocol::EnvironmentPermission as Permission;
+        let grants: Vec<_> = config
+            .environments
+            .iter()
+            .map(|environment| brain_protocol::EnvironmentGrant {
+                environment: environment.name.clone(),
+                permissions: vec![
+                    Permission::Read,
+                    Permission::Create,
+                    Permission::Setup,
+                    Permission::Update,
+                    Permission::Delete,
+                    Permission::Call,
+                ],
+                methods: environment.methods.keys().cloned().collect(),
+            })
+            .collect();
+        self.resources
+            .environments
+            .control(store, None, &grants, request)
+            .await
+            .map_err(api_error)
     }
 
     pub async fn list_sessions(&self) -> Result<SessionList, ApiError> {
@@ -726,6 +885,16 @@ impl Sessions {
     }
 
     pub async fn cancel_session(&self, session_id: SessionId) -> Result<(), ApiError> {
+        self.store(&session_id)
+            .await?
+            .append_sync(
+                &[brain::AppendRecord::new(
+                    codes::event::SESSION_INTERRUPTED,
+                    serde_json::json!({}),
+                )],
+                brain::SessionUpdate::default(),
+            )
+            .map_err(api_error)?;
         let session = self
             .sessions
             .lock()
@@ -790,10 +959,18 @@ impl Sessions {
         tools.interrupt().await;
         tools.wait().await;
         let config = brain::session_config(&*store).map_err(api_error)?;
-        for environment in config.environments.iter().rev() {
+        let views = brain::environment::environments(&*store, &config).map_err(api_error)?;
+        for view in views.values().rev().filter(|view| {
+            !matches!(
+                view.state,
+                brain_protocol::EnvironmentState::Declared
+                    | brain_protocol::EnvironmentState::Deleted
+            )
+        }) {
+            let environment = brain::environment::descriptor(&config, view).map_err(api_error)?;
             self.resources
                 .environments
-                .close(environment, &*store, true)
+                .close(&environment, &*store, true)
                 .await
                 .map_err(api_error)?;
         }
@@ -815,7 +992,10 @@ pub(crate) fn valid_identifier(value: &str) -> bool {
 }
 
 fn api_error(error: brain::Error) -> ApiError {
-    ApiError::new(error.code(), error.to_string(), error.retryable())
+    ApiError {
+        details: error.details(),
+        ..ApiError::new(error.code(), error.to_string(), error.retryable())
+    }
 }
 
 fn not_found(message: impl Into<String>) -> ApiError {

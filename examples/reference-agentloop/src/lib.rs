@@ -59,6 +59,7 @@ impl Guest for Reference {
                         });
                     };
                     Ok(ToolInvocation {
+                        environment_sequence: placements.environment_refs.iter().find(|reference| &reference.name == environment).map(|reference| reference.sequence),
                         environment: environment.clone(),
                         call_id: id.into(),
                         name: name.into(),
@@ -109,6 +110,7 @@ fn observe(
                             | "tool_call_ended"
                             | "environment_closed"
                             | "environment_unreachable"
+                            | "environment_observation"
                     ))
             {
                 let mut data = event.data.clone();

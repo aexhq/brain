@@ -22,6 +22,25 @@ impl Drop for HostConnection {
 
 #[async_trait]
 pub trait BrainApi: Clone + Send + Sync + 'static {
+    async fn environment_event(
+        &self,
+        session: SessionId,
+        environment: brain_protocol::EnvironmentRef,
+        token: String,
+        event: brain_protocol::EnvironmentEvent,
+    ) -> Result<HostEventAck, ApiError>;
+    async fn control_environment(
+        &self,
+        session: SessionId,
+        key: String,
+        request: brain_protocol::EnvironmentControlRequest,
+    ) -> Result<serde_json::Value, ApiError>;
+    async fn host_call(
+        &self,
+        host_id: HostId,
+        token: String,
+        request: brain_protocol::HostServiceRequest,
+    ) -> Result<serde_json::Value, ApiError>;
     async fn register_host(&self) -> Result<HostRegistration, ApiError>;
     async fn connect_host(
         &self,

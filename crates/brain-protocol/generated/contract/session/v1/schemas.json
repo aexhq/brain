@@ -37,6 +37,12 @@
         "environment": {
           "$ref": "#/$defs/EnvironmentName"
         },
+        "environments": {
+          "items": {
+            "$ref": "#/$defs/EnvironmentGrant"
+          },
+          "type": "array"
+        },
         "implementation": true
       },
       "required": [
@@ -325,14 +331,41 @@
         "configuration": {
           "default": null
         },
+        "environments": {
+          "items": {
+            "$ref": "#/$defs/EnvironmentGrant"
+          },
+          "type": "array"
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/EnvironmentLifecycle",
+          "description": "Required on new admissions; absence only supports retained session journals."
+        },
+        "methods": {
+          "additionalProperties": {
+            "$ref": "#/$defs/EnvironmentMethod"
+          },
+          "type": "object"
+        },
         "name": {
           "$ref": "#/$defs/EnvironmentName"
+        },
+        "template": {
+          "$ref": "#/$defs/EnvironmentTemplate"
         }
       },
       "required": [
         "name"
       ],
       "type": "object"
+    },
+    "EnvironmentAvailability": {
+      "enum": [
+        "available",
+        "unavailable",
+        "unknown"
+      ],
+      "type": "string"
     },
     "EnvironmentCallRequest": {
       "additionalProperties": false,
@@ -354,9 +387,799 @@
       ],
       "type": "object"
     },
+    "EnvironmentCommand": {
+      "properties": {
+        "contract": {
+          "const": "environment/v1"
+        },
+        "operation": {
+          "$ref": "#/$defs/EnvironmentOperation"
+        }
+      },
+      "required": [
+        "contract",
+        "operation"
+      ],
+      "type": "object"
+    },
+    "EnvironmentControlRequest": {
+      "description": "The same service request in every extension role and transport.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "environment": {
+              "$ref": "#/$defs/EnvironmentRef"
+            },
+            "operation": {
+              "const": "get",
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "environment"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "configuration": true,
+            "name": {
+              "$ref": "#/$defs/EnvironmentName"
+            },
+            "operation": {
+              "const": "create",
+              "type": "string"
+            },
+            "template": {
+              "$ref": "#/$defs/EnvironmentName"
+            }
+          },
+          "required": [
+            "operation",
+            "template",
+            "name",
+            "configuration"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "environment": {
+              "$ref": "#/$defs/EnvironmentRef"
+            },
+            "operation": {
+              "const": "setup",
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "environment"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "configuration": true,
+            "environment": {
+              "$ref": "#/$defs/EnvironmentRef"
+            },
+            "operation": {
+              "const": "update",
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "environment",
+            "configuration"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "environment": {
+              "$ref": "#/$defs/EnvironmentRef"
+            },
+            "operation": {
+              "const": "delete",
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "environment"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "environment": {
+              "$ref": "#/$defs/EnvironmentRef"
+            },
+            "input": true,
+            "method": {
+              "type": "string"
+            },
+            "operation": {
+              "const": "call",
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "environment",
+            "method",
+            "input"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EnvironmentEvent": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": true,
+            "event_type": {
+              "type": "string"
+            },
+            "type": {
+              "const": "event",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "event_type",
+            "data"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "output": {
+              "$ref": "#/$defs/EnvironmentOutput"
+            },
+            "type": {
+              "const": "result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "output"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EnvironmentGrant": {
+      "additionalProperties": false,
+      "description": "Authority over a declared binding and instances made from its template.",
+      "properties": {
+        "environment": {
+          "$ref": "#/$defs/EnvironmentName"
+        },
+        "methods": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "permissions": {
+          "items": {
+            "$ref": "#/$defs/EnvironmentPermission"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "environment",
+        "permissions"
+      ],
+      "type": "object"
+    },
+    "EnvironmentLifecycle": {
+      "enum": [
+        "automatic",
+        "manual"
+      ],
+      "type": "string"
+    },
+    "EnvironmentMethod": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "effect": {
+          "$ref": "#/$defs/EnvironmentMethodEffect",
+          "default": "none"
+        },
+        "input_schema": true,
+        "output_schema": true
+      },
+      "required": [
+        "description",
+        "input_schema"
+      ],
+      "type": "object"
+    },
+    "EnvironmentMethodEffect": {
+      "enum": [
+        "none",
+        "replace"
+      ],
+      "type": "string"
+    },
     "EnvironmentName": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "type": "string"
+    },
+    "EnvironmentObservation": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "availability": {
+              "$ref": "#/$defs/EnvironmentAvailability"
+            },
+            "message": {
+              "type": "string"
+            },
+            "scope": {
+              "const": "environment",
+              "type": "string"
+            }
+          },
+          "required": [
+            "scope",
+            "availability",
+            "message"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "resource": {
+              "type": "string"
+            },
+            "scope": {
+              "const": "resource",
+              "type": "string"
+            }
+          },
+          "required": [
+            "scope",
+            "resource",
+            "code",
+            "message"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "resolution": {
+              "$ref": "#/$defs/EnvironmentResolution"
+            },
+            "scope": {
+              "const": "operation",
+              "type": "string"
+            },
+            "sequence": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "scope",
+            "sequence",
+            "resolution"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EnvironmentOperation": {
+      "description": "One operation on an Environment, named by `(session_id, environment, sequence)`.",
+      "properties": {
+        "binding": {
+          "$ref": "#/$defs/EnvironmentRef"
+        },
+        "configuration": {
+          "default": null
+        },
+        "context": {
+          "$ref": "#/$defs/ExecutionCallback",
+          "description": "Controller services are separate from the hosted invocation's callback."
+        },
+        "environment": {
+          "$ref": "#/$defs/EnvironmentName"
+        },
+        "reporter": {
+          "$ref": "#/$defs/ExecutionCallback"
+        },
+        "request": {
+          "$ref": "#/$defs/EnvironmentRequest"
+        },
+        "sequence": {
+          "description": "The sequence of the journal record that started this operation. With\n`session_id` it names the operation: a redelivery carries the same pair, so a\nreceiver that already answered it can say so.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "session_id": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "template": {
+          "$ref": "#/$defs/EnvironmentName"
+        }
+      },
+      "required": [
+        "sequence",
+        "environment",
+        "session_id",
+        "request"
+      ],
+      "type": "object"
+    },
+    "EnvironmentOutput": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "observation": {
+          "$ref": "#/$defs/EnvironmentObservation"
+        }
+      },
+      "required": [
+        "observation"
+      ],
+      "type": "object"
+    },
+    "EnvironmentPermission": {
+      "enum": [
+        "read",
+        "create",
+        "setup",
+        "update",
+        "delete",
+        "call"
+      ],
+      "type": "string"
+    },
+    "EnvironmentReceipt": {
+      "oneOf": [
+        {
+          "properties": {
+            "on_turn_end": {
+              "description": "Setup may register a method Brain calls after each turn, with its start sequence.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            "type": {
+              "const": "accepted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "data": true,
+            "type": {
+              "const": "progress",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "data"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "output": true,
+            "type": {
+              "const": "result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "output"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The entrypoint returned; only an explicit finish closes a Tool execution.",
+          "properties": {
+            "output": true,
+            "type": {
+              "const": "returned",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "code": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            "details": true,
+            "message": {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "type": {
+              "const": "failure",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "code",
+            "message",
+            "retryable"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "message": {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            "type": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "message"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EnvironmentRef": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/EnvironmentName"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "sequence"
+      ],
+      "type": "object"
+    },
+    "EnvironmentRequest": {
+      "description": "What Brain asks an Environment to do. An Environment provides resources and learns\nwhat runs in it only when asked to run it: setup carries its configuration;\nexecute carries an opaque implementation and input.",
+      "oneOf": [
+        {
+          "properties": {
+            "configuration": true,
+            "type": {
+              "const": "setup",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "configuration"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "input": true,
+            "name": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            "type": {
+              "const": "call",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "input"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "callback": {
+              "$ref": "#/$defs/ExecutionCallback",
+              "description": "Sent only during execution, never journaled."
+            },
+            "deadline_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "implementation": {
+              "description": "Interpreted only by the Environment; fixes the runtime entrypoint and configuration."
+            },
+            "input": true,
+            "type": {
+              "const": "execute",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "implementation",
+            "input"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "target_sequence": {
+              "format": "uint64",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "type": {
+              "const": "cancel",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "target_sequence"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "detach",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "teardown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EnvironmentResolution": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "ready",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "deleted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "detached",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/OutcomeError"
+            },
+            "status": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "error"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EnvironmentResponse": {
+      "properties": {
+        "contract": {
+          "const": "environment/v1"
+        },
+        "receipt": {
+          "$ref": "#/$defs/EnvironmentReceipt"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "contract",
+        "sequence",
+        "receipt"
+      ],
+      "type": "object"
+    },
+    "EnvironmentState": {
+      "enum": [
+        "declared",
+        "starting",
+        "ready",
+        "failed",
+        "unknown",
+        "deleting",
+        "deleted",
+        "detached"
+      ],
+      "type": "string"
+    },
+    "EnvironmentTemplate": {
+      "additionalProperties": false,
+      "description": "Fixed at admission. Provider configuration is validated, never interpreted by Brain.",
+      "properties": {
+        "configuration_schema": true,
+        "max_instances": {
+          "format": "uint",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_instances",
+        "configuration_schema"
+      ],
+      "type": "object"
+    },
+    "EnvironmentView": {
+      "additionalProperties": false,
+      "properties": {
+        "availability": {
+          "$ref": "#/$defs/EnvironmentAvailability"
+        },
+        "configuration": true,
+        "lifecycle": {
+          "$ref": "#/$defs/EnvironmentLifecycle"
+        },
+        "methods": {
+          "additionalProperties": {
+            "$ref": "#/$defs/EnvironmentMethod"
+          },
+          "type": "object"
+        },
+        "observation": {
+          "$ref": "#/$defs/EnvironmentObservation"
+        },
+        "observed_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pending_operation": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reference": {
+          "$ref": "#/$defs/EnvironmentRef"
+        },
+        "state": {
+          "$ref": "#/$defs/EnvironmentState"
+        },
+        "template": {
+          "$ref": "#/$defs/EnvironmentName"
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/ToolDefinition"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "reference",
+        "template",
+        "lifecycle",
+        "state",
+        "configuration",
+        "methods",
+        "tools"
+      ],
+      "type": "object"
     },
     "Event": {
       "description": "One journal record as a client reads it. `(session_id, sequence)` names it; there\nis no other identifier.",
@@ -426,6 +1249,23 @@
           "required": [
             "kind",
             "sequence"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "environment": {
+              "$ref": "#/$defs/EnvironmentRef"
+            },
+            "kind": {
+              "const": "environment",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "environment"
           ],
           "type": "object"
         }
@@ -522,6 +1362,9 @@
         },
         "session_id": {
           "$ref": "#/$defs/SessionId"
+        },
+        "template": {
+          "$ref": "#/$defs/EnvironmentName"
         }
       },
       "required": [
@@ -674,6 +1517,28 @@
         "session_id",
         "sequence",
         "update"
+      ],
+      "type": "object"
+    },
+    "HostServiceRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "call": {
+          "$ref": "#/$defs/ExecutionCall"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "session_id": {
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "required": [
+        "session_id",
+        "sequence",
+        "call"
       ],
       "type": "object"
     },
@@ -1176,6 +2041,12 @@
       "properties": {
         "description": {
           "type": "string"
+        },
+        "environments": {
+          "items": {
+            "$ref": "#/$defs/EnvironmentGrant"
+          },
+          "type": "array"
         },
         "input_schema": {
           "type": "object"

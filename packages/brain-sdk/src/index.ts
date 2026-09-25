@@ -62,3 +62,8 @@ export type {
   ToolDefinition,
   VercelAiGatewayModel,
 } from "./types.js";
+export { EnvironmentServices } from "./environments.js";
+export { environmentHandler } from "./environment-runtime.js";
+export type { EnvironmentRunContext, EnvironmentReporter, EnvironmentRuntimeContract, EnvironmentMethodContract } from "./environment-runtime.js";
+export type { EnvironmentControlRequest, EnvironmentRef, EnvironmentView, EnvironmentGrant, EnvironmentLifecycle, EnvironmentMethod, EnvironmentObservation, EnvironmentOutput, EnvironmentTemplate } from "./environments.js";
+export type { EnvironmentAvailability, EnvironmentState, EnvironmentPermission, EnvironmentMethodEffect, EnvironmentResolution, EnvironmentCommand, EnvironmentResponse, EnvironmentReceipt } from "./generated/session.js";

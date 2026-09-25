@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { EnvironmentServices } from "./environments.js";
+import type { EnvironmentControlRequest } from "./environments.js";
 import type { Outcome, Schema } from "./types.js";
 import type { ModelRequest, ModelResult, ToolExecutionUpdate } from "./generated/session.js";
 
@@ -16,6 +18,7 @@ export interface ToolResultOptions {
 }
 
 export interface HostToolCall<Output = unknown> {
+  readonly environments: EnvironmentServices;
   readonly sessionId: string;
   /** The sequence of the tool_call_started record. */
   readonly sequence: number;
@@ -35,6 +38,7 @@ export interface HostToolCall<Output = unknown> {
 export type HostToolHandler<Input, Output> = (input: Input, call: HostToolCall) => Output | Outcome<Output> | void | Promise<Output | Outcome<Output> | void>;
 
 export interface InvokeFrame {
+  environments(request: EnvironmentControlRequest): Promise<unknown>;
   readonly sessionId: string;
   readonly environment: string;
   readonly sequence: number;
@@ -174,6 +178,7 @@ export class HostToolRegistry {
                 });
               },
               model: (request) => { ensureOpen(); return frame.model(request); },
+              environments: new EnvironmentServices(request => { ensureOpen(); return frame.environments(request); }),
               emitResult: async (value, options) => {
                 ensureOpen();
                 return enqueue(async () => {

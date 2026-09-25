@@ -10,7 +10,7 @@ const brain = new Brain({
 });
 try {
   const session = await brain.sessions.create({
-    model: { provider: "vercel-ai-gateway", name: process.env.BRAIN_MODEL ?? "openai/gpt-4.1-mini", apiKey },
+    environmentLifecycle: { default: "automatic" }, model: { provider: "vercel-ai-gateway", name: process.env.BRAIN_MODEL ?? "openai/gpt-4.1-mini", apiKey },
     agentloop: example({ env: brainEnv({ name: "brain" }) }),
   });
   try {

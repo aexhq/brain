@@ -37,6 +37,8 @@ pub struct ToolDefinition {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tool {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub environments: Vec<crate::EnvironmentGrant>,
     #[schemars(schema_with = "crate::schema::identifier")]
     pub name: String,
     pub description: String,
@@ -62,6 +64,8 @@ pub struct ActivationTool {
     #[serde(flatten)]
     pub definition: ToolDefinition,
     pub environments: Vec<EnvironmentName>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub environment_refs: Vec<crate::EnvironmentRef>,
 }
 
 impl Tool {
@@ -79,6 +83,8 @@ impl Tool {
 /// in the result; on every Environment wire the call is named by its sequence.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct ToolInvocation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_sequence: Option<u64>,
     pub environment: EnvironmentName,
     pub call_id: String,
     pub name: String,

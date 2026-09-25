@@ -1,6 +1,6 @@
 {
   "name": "@aexhq/brain",
-  "version": "0.31.0",
+  "version": "0.32.0",
   "description": "TypeScript SDK for an independently runnable Brain server",
   "license": "MIT",
   "repository": {
@@ -19,6 +19,10 @@
     "tag": "next"
   },
   "exports": {
+    "./environments": {
+      "types": "./dist/environments.d.ts",
+      "import": "./dist/environments.js"
+    },
     "./package": {
       "types": "./dist/package.d.ts",
       "import": "./dist/package.js"

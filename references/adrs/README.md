@@ -21,6 +21,8 @@ remain in [the contracts](../../contracts), [user docs](../../docs), and
 
 ## Current architecture
 
+- [ADR-051: Coordinate Environment lifecycle and expose the same scoped control service to extensions](2026-09-25-01-environment-events-and-control.md)
+
 - [ADR-049: Default inline Tools to the caller and generate bindings for packaged Tools](2026-09-23-01-tool-authoring-and-packaging.md)
 - [ADR-050: Let Tools present results while one Agentloop owns the conversation](2026-09-23-02-tool-context-and-model-boundary.md)
 
@@ -53,6 +55,7 @@ remain in [the contracts](../../contracts), [user docs](../../docs), and
 
 | Date | Record | Status |
 | --- | --- | --- |
+| 2026-09-25 | [ADR-051: Environment lifecycle, observations and shared control](2026-09-25-01-environment-events-and-control.md) | Accepted |
 | 2026-08-20 | [ADR-001: Make Brain an independent runtime with injected execution ports](2026-08-20-01-standalone.md) | Accepted |
 | 2026-08-21 | [ADR-002: Execute replaceable Agentloops through an isolated step contract](2026-08-21-01-step-loops.md) | Superseded |
 | 2026-08-24 | [ADR-003: Replace the default sandbox with explicit Environment bindings](2026-08-24-01-environment-neutral.md) | Accepted |

@@ -22,13 +22,12 @@ The MVP keeps Tool and Agentloop placements explicit and fixed at session creati
   ([ADR-045, section 5](references/adrs/2026-09-07-01-protocol-freeze.md#5-propagate-cancellation-to-owned-child-sessions))
 - [x] Agentloops running in an Environment reached over HTTP: Brain's turn services as session
   routes with a per-turn token, so a loop can run on another server
-- [ ] Post-MVP official `tool-env` Tool extension: inspect the session's placements and Environment
-  status, expose failures to the Agentloop for model-directed recovery, and request placement
-  changes and supported Environment lifecycle operations such as restart within explicitly
-  granted session authority; journal mutations and their outcomes
-- [ ] Post-MVP mutable placements: committed changes apply to subsequent calls, including within
-  a turn; already-dispatched calls retain their original target. MVP placements are explicit and
-  fixed at session creation
+- [x] Explicit automatic/manual Environment lifecycle, scoped observations and a common control
+  service for Agentloop, Tool and Env extensions; ordinary official `env` Tool
+  ([ADR-051](references/adrs/2026-09-25-01-environment-events-and-control.md))
+- [x] Dynamic named instances within admitted templates; committed changes affect subsequent
+  calls while admitted calls retain their original incarnation and fixed placement authority
+- [ ] Arbitrary runtime registration of new implementations or expanded placement authority
 - [ ] Post-MVP optional Brain-selected placement for Tools without an explicit Environment, within
   caller-granted authority; MVP placement remains explicit
 - [x] Official Agentloop extensions expose Tool failures, Environment status, expiry, and

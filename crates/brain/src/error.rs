@@ -16,6 +16,8 @@ pub enum Error {
     Overloaded(String),
     #[error("executor failed: {0}")]
     Executor(String),
+    #[error("{}", .0.message)]
+    Environment(brain_protocol::OutcomeError),
     #[error("journal failed: {0}")]
     Journal(String),
     #[error("operation outcome is ambiguous: {0}")]
@@ -59,6 +61,7 @@ impl Error {
             Error::Conflict(_) => api::CONFLICT,
             Error::Overloaded(_) => api::OVERLOADED,
             Error::Executor(_) => api::EXECUTOR_FAILED,
+            Error::Environment(error) => &error.code,
             Error::Journal(_) => api::INTERNAL,
             Error::Ambiguous(_) => api::AMBIGUOUS,
             Error::ModelOutput { stop_reason, .. } => match stop_reason {
@@ -80,9 +83,17 @@ impl Error {
         match self {
             Error::Overloaded(_) | Error::Executor(_) => true,
             Error::Loop(error) => error.retryable,
+            Error::Environment(error) => error.retryable,
             // Agentloop may choose a new call for transient provider statuses.
             Error::ProviderStatus { status, .. } => matches!(status, 408 | 429) || *status >= 500,
             _ => false,
+        }
+    }
+
+    pub fn details(&self) -> Option<serde_json::Value> {
+        match self {
+            Self::Environment(error) => error.details.clone(),
+            _ => None,
         }
     }
 }

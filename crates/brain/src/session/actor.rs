@@ -158,6 +158,7 @@ impl SessionActor {
             .into_iter()
             .map(SessionRecord::into_event)
             .collect();
+        let environments = crate::environment::environments(&*self.store, &self.config)?;
         let input = TurnInput {
             input: request.map(|request| request.input),
             transcript: self.folded.transcript.clone(),
@@ -169,9 +170,30 @@ impl SessionActor {
                 .config
                 .tools
                 .iter()
-                .map(|tool| brain_protocol::ActivationTool {
-                    definition: tool.definition(),
-                    environments: tool.placements.keys().cloned().collect(),
+                .map(|tool| {
+                    let environment_refs: Vec<_> = environments
+                        .values()
+                        .filter(|view| {
+                            view.state != brain_protocol::EnvironmentState::Deleted
+                                && tool.placements.contains_key(&view.template)
+                        })
+                        .map(|view| view.reference.clone())
+                        .collect();
+                    brain_protocol::ActivationTool {
+                        definition: tool.definition(),
+                        environments: environment_refs
+                            .iter()
+                            .map(|reference| reference.name.clone())
+                            .collect(),
+                        environment_refs: if environment_refs
+                            .iter()
+                            .any(|reference| reference.sequence != 1)
+                        {
+                            environment_refs
+                        } else {
+                            Vec::new()
+                        },
+                    }
                 })
                 .collect(),
             runtime: RuntimeEnvelope::at(&self.row.session_id, self.row.through_sequence),
@@ -431,6 +453,23 @@ impl TurnHost {
 
 #[async_trait::async_trait]
 impl TurnServices for TurnHost {
+    async fn environments(
+        &self,
+        request: brain_protocol::EnvironmentControlRequest,
+    ) -> Result<serde_json::Value, Error> {
+        let _active = self.admit().await?;
+        self.runtime
+            .environment_control
+            .as_ref()
+            .ok_or_else(|| Error::InvalidState("Environment service is not available".into()))?
+            .control(
+                self.store.clone(),
+                Some(&self.config.agentloop.environment),
+                &self.config.agentloop.environments,
+                request,
+            )
+            .await
+    }
     async fn acknowledge(&self, sequence: u64) -> Result<u64, Error> {
         let _active = self.admit().await?;
         let mut cursor = self.cursor.lock().await;
@@ -584,6 +623,7 @@ impl TurnServices for TurnHost {
         }
         let dispatches = {
             let mut cursor = self.cursor.lock().await;
+            let environments = crate::environment::environments(&*self.store, &self.config)?;
             let mut dispatches = Vec::with_capacity(calls.len());
             let mut started = Vec::with_capacity(calls.len());
             for invocation in calls {
@@ -593,19 +633,25 @@ impl TurnServices for TurnHost {
                         invocation.name
                     ))
                 })?;
-                let environment = self
-                    .config
-                    .environment(&invocation.environment)
-                    .cloned()
-                    .ok_or_else(|| {
-                        Error::InvalidState(format!(
-                            "Tool `{}` names Environment `{}`, which this session does not have",
-                            tool.name, invocation.environment
-                        ))
-                    })?;
+                let view = environments.get(&invocation.environment).ok_or_else(|| {
+                    Error::InvalidState(format!(
+                        "Tool `{}` names Environment `{}`, which this session does not have",
+                        tool.name, invocation.environment
+                    ))
+                })?;
+                if invocation
+                    .environment_sequence
+                    .is_some_and(|sequence| sequence != view.reference.sequence)
+                    || (view.reference.sequence != 1 && invocation.environment_sequence.is_none())
+                {
+                    return Err(Error::InvalidState(
+                        "Tool invocation needs the current Environment reference".into(),
+                    ));
+                }
+                let environment = crate::environment::descriptor(&self.config, view)?;
                 let placement = tool
                     .placements
-                    .get(&invocation.environment)
+                    .get(&view.template)
                     .cloned()
                     .ok_or_else(|| {
                         Error::InvalidState(format!(
@@ -622,13 +668,13 @@ impl TurnServices for TurnHost {
                     invocation,
                     deadline_ms: self.runtime.limits.tool_deadline_ms(),
                 };
-                // A reference, not a copy: the Tool and its Environment live once, in
-                // the configuration recorded at creation.
+                // Pin the incarnation; a replacement cannot redirect an admitted call.
                 started.push(AppendRecord::new(
                     codes::event::TOOL_CALL_STARTED,
                     serde_json::json!({
                         "tool": &dispatch.tool.name,
                         "environment": &dispatch.environment.name,
+                        "environment_sequence": view.reference.sequence,
                         "invocation": &dispatch.invocation,
                         "deadline_ms": dispatch.deadline_ms,
                     }),
@@ -650,9 +696,8 @@ impl TurnServices for TurnHost {
                 self.tools.start(
                     dispatch,
                     self.store.clone(),
-                    self.runtime.tool_executor.clone(),
+                    self.runtime.clone(),
                     self.emissions.clone(),
-                    self.runtime.telemetry.clone(),
                     model,
                 )
             })

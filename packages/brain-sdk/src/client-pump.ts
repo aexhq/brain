@@ -1,8 +1,9 @@
 import type { HostToolRegistry } from "./host.js";
-import type { HostCommand, HostEvent, HostEventAck, HostResult, HostModelRequest, ModelResult } from "./generated/session.js";
+import type { HostCommand, HostEvent, HostEventAck, HostResult, HostModelRequest, HostServiceRequest, ModelResult } from "./generated/session.js";
 import type { SessionStreamEvent } from "./types.js";
 
 export interface HostTransport {
+  call(value: HostServiceRequest): Promise<unknown>;
   stream(signal?: AbortSignal, onOpen?: () => void): AsyncGenerator<SessionStreamEvent>;
   result(value: HostResult): Promise<HostEventAck>;
   emit(value: HostEvent): Promise<HostEventAck>;
@@ -129,12 +130,13 @@ export class HostPump {
     try {
       await registry.run({
       sessionId: command.session_id,
-      environment: command.environment,
+      environment: command.template ?? command.environment,
       sequence: command.sequence,
       name: command.operation.name,
       arguments: command.operation.input,
       ...(command.deadline_at_ms === undefined ? {} : { deadline_at_ms: command.deadline_at_ms }),
       model: request => this.transport.model({ session_id: command.session_id, sequence: command.sequence, request }),
+      environments: request => this.transport.call({ session_id: command.session_id, sequence: command.sequence, call: { method: "environments", input: request } }),
       update: async (value) => (await this.transport.result({
         session_id: command.session_id,
         sequence: command.sequence,

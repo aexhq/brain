@@ -52,6 +52,7 @@ impl Runtime {
                 .map(|store| (store.session_id().clone(), store))
                 .collect();
         let config = Arc::new(SessionRuntime {
+            environment_control: None,
             tool_executions: Arc::default(),
             limits: brain::Limits {
                 max_model_calls,
@@ -181,6 +182,7 @@ pub fn temporary_directory(name: &str) -> PathBuf {
 pub fn config() -> SessionConfig {
     SessionConfig {
         agentloop: AgentloopRef {
+            environments: Vec::new(),
             configuration: serde_json::json!({}),
             environment: EnvironmentName::new("workspace"),
             implementation: serde_json::json!({"type": "brain_component", "entrypoint": "turn", "id": AgentloopId::new("a".repeat(64))}),
@@ -193,6 +195,10 @@ pub fn config() -> SessionConfig {
         response_format: None,
         tools: Vec::new(),
         environments: vec![Environment {
+            lifecycle: Some(brain_protocol::EnvironmentLifecycle::Automatic),
+            template: None,
+            methods: Default::default(),
+            environments: Vec::new(),
             name: EnvironmentName::new("workspace"),
             driver: Driver::Brain {},
             configuration: serde_json::json!({}),

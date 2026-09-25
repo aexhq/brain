@@ -58,6 +58,31 @@ struct Api {
 
 #[async_trait]
 impl BrainApi for Api {
+    async fn environment_event(
+        &self,
+        _: SessionId,
+        _: brain_protocol::EnvironmentRef,
+        _: String,
+        _: brain_protocol::EnvironmentEvent,
+    ) -> Result<HostEventAck, ApiError> {
+        Ok(HostEventAck { sequence: 1 })
+    }
+    async fn control_environment(
+        &self,
+        _: SessionId,
+        _: String,
+        request: brain_protocol::EnvironmentControlRequest,
+    ) -> Result<serde_json::Value, ApiError> {
+        Ok(serde_json::to_value(request).unwrap())
+    }
+    async fn host_call(
+        &self,
+        _: HostId,
+        _: String,
+        request: brain_protocol::HostServiceRequest,
+    ) -> Result<serde_json::Value, ApiError> {
+        Ok(request.call.input)
+    }
     async fn list_models(&self, _: Option<String>) -> Result<brain_protocol::ModelList, ApiError> {
         Ok(brain_protocol::ModelList {
             snapshot_digest: "fixture".into(),
@@ -83,6 +108,7 @@ impl BrainApi for Api {
         let (_disconnect, displaced) = tokio::sync::oneshot::channel();
         sender
             .send(HostCommand {
+                template: None,
                 session_id: SessionId::new("ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
                 sequence: 7,
                 deadline_at_ms: Some(1_787_846_460_000),
@@ -286,7 +312,7 @@ async fn exposes_every_v1_route_with_its_contract_status() {
         "tools": [{"name": "bash", "description": "Run a shell command.", "input_schema": {"type": "object"}, "placements": {"env_1": {"implementation": {"kind": "test"}}}}],
         "environments": [{
             "name": "env_1",
-            "driver": "http",
+            "lifecycle": "automatic", "driver": "http",
             "url": "https://sandbox.internal",
             "credential": "sandbox-key",
             "configuration": {"region": "eu"}
@@ -403,7 +429,7 @@ async fn request_bodies_reject_unknown_fields() {
         "tools": [{"name": "bash", "description": "Run a shell command.", "input_schema": {"type": "object"}, "binding_names": [], "hosting": "resident", "host_id": "host_12345678901234567890", "placements": {"env_1": {"implementation": {"type": "host_function", "name": "bash"}}}}],
         "environments": [{
             "name": "env_1",
-            "driver": "brain"
+            "lifecycle": "automatic", "driver": "brain"
         }]
     });
     let response = router(Api::default(), &HttpLimits::default())
