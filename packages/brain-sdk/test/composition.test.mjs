@@ -4,6 +4,17 @@ import { z } from "zod";
 import { Brain, agentloop, brainEnv, clientBrowser, inspectTool, tool } from "../dist/index.js";
 import { runToolHandler } from "../dist/runtime.js";
 
+test("the default browser transport retains the global fetch receiver", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async function () {
+    assert.equal(this, globalThis);
+    return Response.json({ sessions: [] });
+  };
+  const client = new Brain({ baseUrl: "https://brain.example" });
+  try { assert.deepEqual(await client.sessions.list(), []); }
+  finally { await client.close(); globalThis.fetch = original; }
+});
+
 test("prepare compiles a browser placement without opening a host or executing its handler", async () => {
   const client = new Brain({ baseUrl: "https://brain.example", fetch: () => { throw new Error("unexpected transport"); } });
   const read = tool({ name: "read_selection", description: "Read selection", input: z.object({}),
