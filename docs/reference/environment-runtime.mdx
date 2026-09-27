@@ -105,11 +105,15 @@ tear down. An Environment wrapping an externally owned service may implement tea
 only its own binding.
 
 Environment files and process state follow the Environment. They are not session state; the
-canonical journal survives independently. The caller owns lifecycle policy; the Environment
-implements its mechanisms and has no idle-expiry timer. Resources may be allocated on first
-execution and are retained until caller-requested teardown. The standalone
+saved conversation and recorded results survive independently. Resource lifetime also depends
+on the provider: it may expire idle resources, impose a maximum lifetime or terminate them
+when an execution is cancelled. Read the chosen provider's lifecycle settings before relying
+on its files or processes between calls. Brain's built-in Environment retains its workspace
+until teardown, but each invocation has fresh guest memory; a host Environment follows the
+lifetime of your application process. The standalone
 [lazy Environment](https://github.com/aexhq/brain/blob/main/examples/lazy-environment.mjs) shows that
-mechanism on the execution wire. Environment and Tool failures are committed for the Agentloop before
+resources can be prepared on first use and released on teardown; it does not define every
+provider's expiry policy. Environment and Tool failures are committed for the Agentloop before
 their results return.
 
 

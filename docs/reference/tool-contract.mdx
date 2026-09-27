@@ -1,5 +1,5 @@
 ---
-title: Tool contract
+title: Tool API
 description: Inputs, results, completion, errors and background work.
 ---
 
@@ -9,10 +9,12 @@ Call its factory to configure it: `lookup()` runs in the registering application
 executable reference. [Publish a Tool](/brain/docs/guides/write-a-tool#publish-a-tool-library)
 with the ordinary build and the `brain-tools` helper.
 
-## A function this process holds
+## Application functions
+
+This example assumes your app provides `database.get(key)`, returning `{ value: string }` or null.
 
 ```ts
-import { hostEnv, tool } from "@aexhq/brain";
+import { tool } from "@aexhq/brain";
 import { z } from "zod";
 
 export const lookup = tool({
@@ -30,9 +32,11 @@ export const lookup = tool({
 const placed = lookup({ prefix: "customer:" });
 ```
 
-The function stays in this process and may close over application state; the host env inserts
-nothing around it, so the application owns its isolation and ambient authority. The factory parses
-and freezes options. With no options schema, call `lookup()`. Explicit `hostEnv` names remain available.
+The function runs in your application's process and can use its state, packages and credentials.
+It has the same filesystem permissions and working directory as that process; creating a session
+does not give it a separate workspace. Use an [environment](/brain/docs/concepts/environment) when
+you need separate resources or access. Factory options are parsed and frozen; with no options
+schema, call `lookup()`. Use `lookup({ env: hostEnv({ name: "app" }), ...options })` for a named host.
 
 Tool input JSON Schema describes what Zod accepts before parsing (`io: "input"`): defaulted
 arguments are optional, and the handler receives their parsed defaults and transforms.
@@ -41,16 +45,13 @@ Output schemas describe parsed output. Unrepresentable schemas fail when declari
 
 ### The host
 
-The first session with a Tool in `hostEnv` makes the SDK register this process as a host. It
-authenticates with a scoped host token and keeps `GET /v1/hosts/{host_id}/commands` open as SSE.
-Several sessions and Tools in the same `Brain` client share that connection until
+The SDK keeps a connection open so Brain can call application tools. Several sessions and tools
+in the same `Brain` client share that connection until
 `await brain.close()`. Ending or deleting a session releases its handlers. Put session creation
 inside `try` and close the client in `finally`, including when creation fails.
 
-Brain commits the Tool intent before publishing a command. The command names the session, the
-journal sequence of the call, the absolute deadline, the Tool, and the input. The SDK validates
-input, calls the registered function, validates each output, and posts ordered updates to the
-host result endpoint. Each update receives a committed journal sequence.
+The SDK validates input, calls your function and validates each output. Brain saves ordered
+results before making them available to the loop.
 
 ### Return values and outcomes
 
@@ -65,10 +66,14 @@ the synchronous phase; returning nothing publishes no result. The Tool remains o
 `ctx.emit`, `ctx.emitResult`, and `ctx.finish` calls. Emit before returning to make an observation
 available synchronously. `await ctx.finish(); return;` finishes without another result.
 
-Every Tool must finish explicitly. Forgetting leaves it open until its original deadline,
+Application tools must finish explicitly. Forgetting leaves one open until its original deadline,
 cancellation, or connection loss; an unlimited execution can remain open indefinitely. Normal
 turn completion and actor suspension preserve background Tools. Brain wakes the Agentloop for
 later committed observations, and the loop decides whether to call the model or wait for a user.
+
+The [HTTP tool extension](https://github.com/aexhq/extensions/tree/main/packages/env-http) has a
+different handler convention: return a plain JSON value, and its bridge completes the call.
+It does not support background execution or `ctx.finish` in the HTTP handler.
 
 The top-level `status` values `ok`, `error`, `timeout`, `cancelled` and `unknown` are reserved for
 outcome envelopes. A malformed envelope becomes `invalid_output`. Successful-output validation
@@ -91,7 +96,9 @@ The second `run` argument contains:
 - `emit(kind, data)`: append a durable extension Event;
 - `emitResult(value, { content }?)`: append a validated result, optionally with model-facing text;
 - `finish(value?, { content }?)`: optionally append a result, then commit completion;
-- `model(request)`: call the session's model with independent messages and return its response.
+- `model(request)`: call the session's model with independent messages and return its response;
+- `environments`: authorized `list`, `get`, `create`, `update`, `setup`, `delete` and `call`
+  operations; see [environment control](/brain/docs/guides/environment-control).
 
 Always await `ctx.emit`. Its promise resolves with the committed journal sequence, so an emitted
 progress or audit Event is ordered before the Tool result:
@@ -136,22 +143,16 @@ HTTP Environments call the granted `model` execution service. Native Tools use `
 
 ### Reattaching after restart
 
-Save `await brain.credentials()` in application credential storage. This registers the host if
-needed and returns `{ hostId, token }`, the identity for host commands rather than a provider or
-Aex API key. Close the old client before replacing its connection. After restarting the
-application, pass those credentials as `credentials` to `new Brain(...)`, then call
-`brain.sessions.get(sessionId, { tools: [lookup({ env: app })] })` with the session's `run` Tools.
-Tools placed by default reattach with `lookup()` to their original stored host Environment.
-The supplied Tools must be exactly those the session placed in this host, with identical advertised
-input and output schemas. Reattachment rejects changed contracts before invocation. Keep compatible
-handlers for existing sessions, or create a new session when changing a contract.
+Follow the [application reattachment recipe](/brain/docs/concepts/sessions#reattach-application-tools).
+`brain.sessions.get(id)` alone opens a handle; supplying the original tools restores their handlers
+under saved host credentials. Reattachment requires exactly the original host tools and identical
+advertised input/output schemas. Keep compatible handlers for existing sessions, or create a new
+session when changing a contract.
 
 Native input and output validation awaits Zod `parseAsync`, including defaults and transformations.
 Async checks consume the invocation deadline; expiry or cancellation prevents late results. Already
 expired calls stop before validation or customer code. Schema export still happens during authoring.
-The host command carries an absolute Unix `deadline_at_ms`; Environment requests carry remaining
-`deadline_ms`. Without `tools`, `get`
-only opens a session handle. Brain persists the host identity and token hash; a registration with
+Brain persists the host identity and token hash; a registration with
 sessions placed in it does not expire while disconnected. Restoring a host accepts future commands,
 never replays old ones, and does not restore the application state captured by its functions.
 
@@ -172,19 +173,9 @@ export const inspect = tool({
 const placed = inspect({ env: brainEnv({ name: "reader", filesystem: { workspace: "read" } }), depth: 2 });
 ```
 
-The Component implements
-[`crates/brain-env/wit/tool/tool.wit`](https://github.com/aexhq/brain/blob/main/crates/brain-env/wit/tool/tool.wit).
-Brain admits the raw bytes and names them by their SHA-256. Each invocation contains the Tool
-input, parsed configuration, and deadline. The Component may call its `emit` host import to append
-an extension Event, or its fire-and-forget `telemetry` import for best-effort operational
-diagnostics that never enter the journal or model input. A Tool that wants an identifier for its
-own logging uses the session id and the sequence Brain records for the call.
-
-Build against `brain:tool@0.2.0`, exported as `@aexhq/brain/contracts/tool.wit`.
-`emit-result` takes an Outcome JSON string; `finish` takes an optional Outcome JSON string.
-`returned` ends the synchronous phase while the exported `run` function can keep executing.
-The fresh Wasm Store remains alive until that export returns and cleanup completes. Call `finish`
-before returning for an ordinary synchronous Tool. `deadline-at-ms = 0` means unlimited.
+Use the [Rust or Python authoring examples](/brain/docs/guides/write-a-tool#language-choices)
+to build `inspect.wasm`. Each invocation receives input, parsed options and a deadline. Brain
+uploads the file when creating a session; successful admission is cached on the Component object.
 
 ## A descriptor the Environment interprets
 
@@ -229,3 +220,12 @@ sends it once, and commits each result, return, and finish before the Agentloop 
 Result and extension emissions share the originating activation's `BRAIN_MAX_EMITTED_BYTES`
 budget. Returning or waking a later activation does not renew a Tool's budget or deadline.
 There is no automatic retry.
+
+## Native binding implementers
+
+The optional binding specification is `@aexhq/brain/contracts/tool.wit` (`brain:tool@0.2.0`).
+`emit-result` takes an Outcome JSON string; `finish` takes an optional Outcome JSON string.
+`returned` ends the synchronous phase while exported `run` may keep executing. Call `finish`
+before returning for an ordinary synchronous tool. `deadline-at-ms = 0` means unlimited.
+Native invocation fields do not expose the application's `ctx.sessionId` or `ctx.sequence`.
+Telemetry is best-effort diagnostics and does not enter saved history or model context.

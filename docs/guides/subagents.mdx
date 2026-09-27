@@ -11,18 +11,24 @@ tool that creates that session, sends a task, and returns its result.
 Use the client and imports from the [quickstart](/brain/docs/quickstart). Declare this tool
 after creating `brain` and before creating the parent session:
 
-```js
+```ts
+import { hostEnv } from "@aexhq/brain";
+
 const delegate = tool({
   name: "delegate",
   description: "Ask another agent to work on a self-contained task.",
   input: z.object({ task: z.string() }),
   run: async ({ task }, ctx) => {
     const child = await brain.sessions.create({
-      model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
+      model: { provider: "openai", name: "gpt-5-mini", apiKey },
       agentloop: pi({ env: brainEnv({ name: "brain" }) }),
     });
     try {
+      const after = child.state.lastSequence;
       await child.send(task, { signal: ctx.signal });
+      for await (const event of child.events(after)) {
+        if (event.type === "turn_failed") throw new Error(JSON.stringify(event.data));
+      }
       return ctx.finish(await child.transcript());
     } finally {
       await child.end();

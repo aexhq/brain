@@ -6,6 +6,10 @@ description: Choose automatic setup, optional model diagnostics, or explicit env
 Keep routine setup out of the model's work, while deciding whether it can inspect or repair
 an environment when something fails. Lifecycle policy and management tools are independent.
 
+Start with a working session and provider from [Environments](/brain/docs/concepts/environment).
+The snippets below extend your existing `sessions.create` options; method names and input schemas
+come from the chosen provider.
+
 ## Choose who starts the environment
 
 Environments use `automatic` lifecycle by default, including the host created for inline tools.
@@ -35,7 +39,8 @@ automatic retries, replacement allocation or migration.
 
 ## Optionally give the model control
 
-Import the official Tool explicitly and grant only the operations it needs:
+Install `@aexhq/env` following its [package guide](https://github.com/aexhq/extensions/tree/main/packages/env),
+then import it and grant only the operations it needs:
 
 ```ts
 import { env } from "@aexhq/env";
@@ -58,12 +63,14 @@ Brain has no universal resource API and no built-in `env.inspect` operation.
 
 ## Use the shared service
 
-Agentloop, Tool and Env operation contexts expose the same operations under their own grants.
+Tools and `environmentHandler` operations use `ctx.environments` under their own grants. Packaged
+JavaScript loops use [`host.environments`](/brain/docs/reference/agentloop-contract#environment-control).
 The session owner can use `session.environments` directly:
 
 ```ts
 const views = await session.environments.list();
 const workspace = views.find(view => view.reference.name === "workspace");
+if (!workspace) throw new Error("workspace environment is missing");
 await session.environments.setup(workspace.reference);
 const health = await session.environments.call(workspace.reference, "inspect", {});
 ```
@@ -84,7 +91,7 @@ const extra = await session.environments.create("workspace", "second", { region:
 await session.environments.delete(extra.reference);
 ```
 
-An Agentloop with a `read` grant can refresh `ctx.environments.list()` during a turn to discover
+An Agentloop with a `read` grant can list environments during a turn to discover
 new instances and their authorized tools. Dispatch includes `environment_sequence` from the
 current reference. Already admitted calls keep their original target.
 

@@ -5,12 +5,15 @@
   "scripts": {
     "basic": "node basic-session.mjs",
     "events": "node event-history.mjs",
+    "stream": "node streaming-session.mjs",
+    "submit": "node submitted-turn.mjs",
     "lifecycle": "node session-lifecycle.mjs",
     "http": "node raw-http.mjs",
-    "test": "node --check example-brain.mjs && node --check basic-session.mjs && node --check event-history.mjs && node --check submitted-turn.mjs && node --check session-lifecycle.mjs && node --check raw-http.mjs && node --test lazy-environment.test.mjs loop-environment.test.mjs"
+    "test": "tsc --noEmit --strict --module NodeNext --target ES2023 order.ts && node --check example-brain.mjs && node --check basic-session.mjs && node --check event-history.mjs && node --check streaming-session.mjs && node --check submitted-turn.mjs && node --check session-lifecycle.mjs && node --check raw-http.mjs && node --test lazy-environment.test.mjs loop-environment.test.mjs"
   },
   "dependencies": {
-    "@aexhq/brain": "*",
+    "@aexhq/brain": "0.34.0",
+    "@aexhq/agentloop-pi": "7.2.2",
     "zod": "4.4.3"
   },
   "engines": {

@@ -9,6 +9,7 @@ your application's database connection, a workspace with files, or a browser.
 | Choose | For | What you run |
 | --- | --- | --- |
 | `hostEnv` | Functions using your app's data and dependencies | Your JavaScript or TypeScript process |
+| [HTTP tools](https://github.com/aexhq/extensions/tree/main/packages/env-http) | Functions served by a request handler, independently of the submitting client | An HTTP endpoint and the HTTP environment bridge |
 | `brainEnv` | Ready-made loops and packaged extensions | The Brain server |
 | An environment extension | A browser, sandbox or another runtime | The extension's service |
 
@@ -16,7 +17,7 @@ your application's database connection, a workspace with files, or a browser.
 
 In the [quickstart](/brain/docs/quickstart), the loop runs on Brain and the lookup runs in your app:
 
-```js
+```ts
 agentloop: pi({ env: brainEnv({ name: "brain" }) }),
 tools: [lookupOrder()],
 ```
@@ -24,14 +25,19 @@ tools: [lookupOrder()],
 `name` identifies the environment within that session. Reuse an environment when tools should
 share its workspace or resources. Use separate environments when they need separate access.
 
+Application functions have the process's existing permissions and working directory; a named
+`hostEnv` does not isolate them. Keep that process connected. For short-lived app requests, the
+HTTP tool extension lets Brain call a separately deployed endpoint. Its handlers return plain
+JSON and finish within the request; they do not use `ctx.finish()` or continue in the background.
+
 ## Use a browser or sandbox
 
 The [official extensions](https://github.com/aexhq/extensions) include a Docker workspace,
 browser actions and Modal sandboxes. Follow the chosen package's setup guide; declaring an
 environment in your app does not deploy its service.
 
-Standalone Brain can connect to your own environment service. Aex hosting accepts only managed
-profiles granted to your account; see [managed environments](https://github.com/aexhq/aex/blob/main/docs/environments.md).
+Standalone Brain can connect to your own environment service. For hosted availability and setup,
+see the [Aex docs](/docs).
 
 ## Plan for resource lifetime
 

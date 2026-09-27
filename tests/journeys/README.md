@@ -33,6 +33,7 @@ tests synchronize with actual model/Tool entry rather than guessing execution pr
 After `npm ci && npm run build`:
 
 ```sh
+rustup target add wasm32-wasip2
 cargo build -p brain-server --bin brain -p brain-env-worker --bin brain-env-worker
 cargo build --manifest-path tests/fixtures/diagnostic-agentloop/Cargo.toml --target wasm32-wasip2 --release
 cargo build --manifest-path tests/fixtures/diagnostic-tool/Cargo.toml --target wasm32-wasip2 --release

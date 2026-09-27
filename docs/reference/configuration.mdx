@@ -9,6 +9,9 @@ machine, and the deployment that knows its machine sets the value. Zero on a lim
 except the three queue capacities marked "at least 1". A limit the model provider enforces, such as
 its output token ceiling, is not here: Brain neither sets nor overrides it.
 
+For deployment, remote callbacks, backups and upgrades, start with
+[Operate Brain](/brain/docs/guides/operate).
+
 {/* configuration:start */}
 | Variable | Flag | Default | What it does |
 | --- | --- | --- | --- |
@@ -24,7 +27,7 @@ its output token ceiling, is not here: Brain neither sets nor overrides it.
 | `BRAIN_ANTHROPIC_BASE_URL` | `--anthropic-base-url` | none | Endpoint override for the `anthropic` provider |
 | `BRAIN_PROVIDERS_FILE` | `--providers-file` | none | A JSON file of custom provider definitions merged over the built-in catalog: `{"providers": [{"name", "dialect", "base_url", ...}]}`, each entry in the same shape as a registry `ProviderDef`. A definition here supersedes a catalog provider of the same name |
 | `BRAIN_API_TOKEN` | `--api-token` | none | Bearer token callers must present. Required when listening beyond loopback |
-| `BRAIN_PUBLIC_URL` | `--public-url` | none | Where an Environment on another machine reaches this server, for the turns it runs. Defaults to `http://{listen}` |
+| `BRAIN_PUBLIC_URL` | `--public-url` | none | Base URL reachable by HTTP Environments for invocation-service callbacks and Environment observations. Covers loops, Tools and controllers. Defaults to `http://{listen}`; set an externally reachable address when listening on `0.0.0.0` |
 | `BRAIN_SESSION_IDLE_TTL_SECS` | `--session-idle-ttl-secs` | none | Seconds an idle session keeps its task and memory before it is suspended to disk and rebuilt on its next request. A session may set its own at create; zero means never |
 | `BRAIN_MAX_MODEL_INPUT_BYTES` | `--max-model-input-bytes` | `16777216` | Maximum encoded model request bytes, including retained native state and media |
 | `BRAIN_MAX_MODEL_CALLS` | `--max-model-calls` | `128` | Model calls one turn may make before the next fails with `model_call_limit` |
@@ -69,11 +72,12 @@ Environment routes, endpoints, or credentials of its own.
 
 ## The data directory
 
-Brain owns everything under `BRAIN_DATA_DIR`. Its only format is `brain-data/1`, replaced in place
-during pre-launch development. Start with an empty directory; Brain writes its format marker on
-initialization. There are no legacy layouts, compatibility readers, or migrations. Before this
-pre-launch contract cut, the owner must stop the old server and select an empty data directory
-or explicitly archive/reset its existing data. Brain does not delete or convert old journals.
+Brain owns everything under `BRAIN_DATA_DIR`. Use an empty directory for a new installation;
+Brain writes the `brain-data/1` layout marker on initialization. One server process may own it
+at a time. A matching marker does not establish compatibility with every earlier contract:
+pre-1.0 releases can change retained session and executable formats, and Brain does not
+automatically migrate old data. Follow the [upgrade and restore procedure](/brain/docs/guides/operate#back-up-and-upgrade)
+before changing the runtime on existing data.
 
 ```
 brain-data/
@@ -110,12 +114,18 @@ The image sets `BRAIN_DATA_DIR=/var/lib/brain`, `BRAIN_ENV_WORKER=/usr/local/bin
 and `BRAIN_LISTEN=0.0.0.0:8080`, declares `/var/lib/brain` as a volume, and runs as uid 10001.
 
 ```sh
-docker run --rm -p 8080:8080 -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
+docker run --rm -p 127.0.0.1:8080:8080 \
+  -e BRAIN_API_TOKEN=local-development \
+  -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
 ```
 
-Immutable tags are `ghcr.io/aexhq/brain:sha-<commit>`. Pin those for deployments; `latest` is for
-people.
+This local example uses a development token. For deployment, set a private token and pin the
+tested image digest or `ghcr.io/aexhq/brain:sha-<commit>` tag; `latest` moves between releases.
+See [release matching](/brain/docs/guides/operate#choose-a-release).
 
 ## Health
 
-`GET /health/ready` answers when the server is serving.
+Both health routes are public. `GET /health/live` returns 204 when the standalone server can
+answer requests. `GET /health/ready` returns 204 when the built-in worker pool is ready, or 503
+when it is unavailable. Readiness does not validate model keys, remote Environments or free
+storage space. A successful check is not a guarantee that a particular turn will succeed.

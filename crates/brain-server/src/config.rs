@@ -53,8 +53,9 @@ pub struct ServerConfig {
     /// Bearer token callers must present. Required when listening beyond loopback.
     #[arg(long, env = "BRAIN_API_TOKEN", hide_env_values = true)]
     pub api_token: Option<String>,
-    /// Where an Environment on another machine reaches this server, for the turns it
-    /// runs. Defaults to `http://{listen}`.
+    /// Base URL reachable by HTTP Environments for invocation-service callbacks and
+    /// Environment observations. Covers loops, Tools and controllers. Defaults to
+    /// `http://{listen}`; set an externally reachable address when listening on `0.0.0.0`.
     #[arg(long, env = "BRAIN_PUBLIC_URL")]
     pub public_url: Option<String>,
     /// Seconds an idle session keeps its task and memory before it is suspended to disk

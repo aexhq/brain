@@ -6,12 +6,12 @@ description: Add a function the agent can call, then run it in your app or packa
 Start with a JavaScript or TypeScript function. The example below returns sample order data;
 replace its body with your database or API call.
 
-## JavaScript and TypeScript
+## TypeScript and JavaScript
 
-Complete the [quickstart](/brain/docs/quickstart) first. Save this as `order-tool.mjs` beside
-`order.mjs` (use `.ts` in a TypeScript project):
+Complete the [quickstart](/brain/docs/quickstart) first. Save this as `order-tool.ts` beside
+`order.ts`. The same code works as JavaScript:
 
-```js
+```ts
 import { tool } from "@aexhq/brain";
 import { z } from "zod";
 
@@ -23,22 +23,38 @@ export const lookupOrder = tool({
 });
 ```
 
-Replace the quickstart's inline `lookupOrder` declaration with
-`import { lookupOrder } from "./order-tool.mjs"`. Keep its session configuration:
+<Tabs items={["TypeScript", "JavaScript"]} groupId="language">
+<Tab value="TypeScript">
 
-```js
+Replace the quickstart's inline declaration with `import { lookupOrder } from "./order-tool.js"`.
+Run `npx tsx order.ts`; NodeNext compilation resolves the `.js` import to the TypeScript source.
+
+</Tab>
+<Tab value="JavaScript">
+
+Save the tool as `order-tool.mjs`. Import it with `import { lookupOrder } from "./order-tool.mjs"`
+and run `node order.mjs`.
+
+</Tab>
+</Tabs>
+
+Keep the session's tool placement:
+
+```ts
 tools: [lookupOrder()],
 ```
 
-Run `node order.mjs`. The transcript includes the lookup result and an answer about the order.
-JavaScript needs no build step; TypeScript uses your app's normal build. The tool runs in your
-process and can use its installed packages. Keep that process connected until the tool finishes.
+The transcript includes the lookup result and an answer about the order. The tool runs in your
+process and can use its packages, credentials and working directory. It has no separate session
+workspace. Keep that process connected until the tool finishes; choose
+[HTTP or remote execution](/brain/docs/concepts/environment) when it should run independently.
 
 ## Publish a tool library
 
 Write and export `tool({ ..., run })` using your normal TypeScript or JavaScript build. The
 [runnable package example](https://github.com/aexhq/brain/tree/main/examples/packaged-tools)
-contains a filesystem Tool, a normal `tsc` build, and two package exports. `brain.tools` in its
+contains a filesystem tool, a normal `tsc` build, and two package exports. Clone the repository and
+run these commands from `examples/packaged-tools`, not the repository root. `brain.tools` in its
 `package.json` selects the executable export and factory names. After compilation, `brain-tools`
 generates the public client entry and its types. Build and inspect the release with:
 
@@ -54,10 +70,12 @@ registering app when that runtime supports it. The selected Environment prepares
 dependencies and loads the exact package version; an unavailable package or incompatible placement
 fails explicitly. Neither the Tool author nor its consumer writes an execution descriptor.
 
-Environment implementers can use `@aexhq/brain/runtime` and the `brain-tool-runtime` process bridge.
-Install packages in the isolated runtime, then use its supported loader; do not import customer
-packages into the Environment controller. The bridge supports events, intermediate results,
-return-before-finish, model calls and explicit completion.
+Match the package's Brain SDK version to its consumers. Before publishing, follow the example's
+[fresh consumer check](https://github.com/aexhq/brain/tree/main/examples/packaged-tools#check-a-fresh-consumer)
+to catch incompatible factory and environment types. `readText()` uses the application's current
+working directory and permissions; remote placement follows that provider's workspace rules.
+
+For a service that loads packages itself, see [Write an environment](/brain/docs/guides/write-an-environment).
 
 ## Supply useful model context
 
@@ -143,8 +161,8 @@ The script installs the pinned builder and generates the imports. Copy
 `build/python/python-tool.wasm` into your app as `echo.wasm`.
 This example supports Python computation and Brain callbacks, not Python filesystem or network
 APIs. The server needs `BRAIN_MAX_CORE_INSTANCES=1024`; add that environment variable to the
-quickstart's Docker command. This requires a Brain server you control. On Aex, use a
-[managed Python profile](https://github.com/aexhq/aex/blob/main/docs/environments.md) granted to your account.
+quickstart's Docker command. This requires a Brain server you control. For hosted runtimes, see
+the [Aex docs](/docs).
 Use a [Python environment service](/brain/docs/guides/write-an-environment#python-and-other-languages)
 for OS packages and ordinary file/network access.
 
@@ -152,7 +170,7 @@ for OS packages and ordinary file/network access.
 
 Replace the quickstart's tool declaration and placement with:
 
-```js
+```ts
 import { component } from "@aexhq/brain";
 
 const echo = tool({

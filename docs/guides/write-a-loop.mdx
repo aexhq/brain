@@ -4,7 +4,8 @@ description: Customize model calls, tool use and conversation history, then run 
 ---
 
 An agent loop chooses what the model sees and what happens next. Use a ready-made loop if you
-only need a prompt or different tools. Write your own when you need different context management,
+only need a prompt or different tools; [choose Pi or Codex](/brain/docs/concepts/agent-loop) first.
+Write your own when you need different context management,
 tool sequencing or stopping rules.
 
 ## A minimal JavaScript loop
@@ -80,7 +81,7 @@ const custom = agentloop({
 
 Change `agentloop: pi(...)` to `agentloop: custom({ env: brainEnv({ name: "brain" }) })`,
 remove the `tools` setting, and change the prompt to `"Say hello in one sentence."`.
-Run `node order.mjs`: the transcript contains your message and the model's reply.
+Run `npx tsx order.ts` (or `node order.mjs` for JavaScript): the transcript contains your message and the model's reply.
 Rebuild and create a new session to try each change; existing sessions keep their original loop.
 
 ## Language choices
@@ -161,7 +162,7 @@ the saved count. This example supplies computation and Brain callbacks, not Pyth
 
 ## Add your own behavior
 
-Use the [loop contract](/brain/docs/reference/agentloop-contract) for model calls, tool dispatch
+Use the [loop API](/brain/docs/reference/agentloop-contract) for model calls, tool dispatch
 and saved state. Save conversation changes explicitly; local variables do not survive the next
 activation. Process and acknowledge background events even when there is no new user message.
 

@@ -493,3 +493,53 @@ jobs:
           promoted=$(docker buildx imagetools inspect "$image:latest" --format '{{json .Manifest}}' | jq -er .digest)
           test "$promoted" = "$digest"
           echo "Promoted the tested image to \`$image:latest\` at \`$image@$digest\`." >> "$GITHUB_STEP_SUMMARY"
+
+  publish-release:
+    if: inputs.operation == 'promote'
+    needs: [promote, promote-image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: brain-npm-release-${{ inputs.expected_commit }}
+          path: ${{ runner.temp }}/brain-release
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.stage_run_id }}
+      - name: Publish the tested SDK and image mapping
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          release_dir="$RUNNER_TEMP/brain-release"
+          tag="release/sha-$EXPECTED_COMMIT"
+          test "$(jq -er .source "$release_dir/manifest.json")" = "$EXPECTED_COMMIT"
+          test "$(jq -er .source_sha "$release_dir/brain-image.json")" = "$EXPECTED_COMMIT"
+          versions=$(jq -r '[.packages[] | "\(.name)@\(.version)"] | join(", ")' "$release_dir/manifest.json")
+          image=$(jq -r '"\(.image)@\(.manifest_digest)"' "$release_dir/brain-image.json")
+          printf 'SDK: `%s`\n\nImage: `%s`\n\nThe attached manifests identify the exact packages and image tested together.\n' \
+            "$versions" "$image" > "$RUNNER_TEMP/release-notes.md"
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null 2>&1; then
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+              --title "Brain $versions" --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
+          assets=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          mkdir "$RUNNER_TEMP/existing-release-assets"
+          for filename in manifest.json brain-image.json; do
+            if grep -Fxq "$filename" <<<"$assets"; then
+              gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$filename" \
+                --dir "$RUNNER_TEMP/existing-release-assets"
+              cmp "$release_dir/$filename" "$RUNNER_TEMP/existing-release-assets/$filename"
+            else
+              gh release upload "$tag" "$release_dir/$filename" --repo "$GITHUB_REPOSITORY"
+            fi
+          done
+          if [[ "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" == true ]]; then
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          fi
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"

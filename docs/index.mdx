@@ -1,42 +1,45 @@
 ---
 title: Introduction
-description: Run an AI agent, connect your tools, and keep its conversation and progress.
+description: Choose your agent's behavior and connect work across your systems.
 ---
 
-Brain runs AI agents and saves their conversations, tool results and progress. Your application
-chooses a model, adds tools, and sends messages. You can follow the output as it arrives or come
-back later to read the history.
+## Build your agent the way you want. Working across your systems
 
-Use Brain when you want to keep control of your agent's behavior without building session
-storage, event streaming and lifecycle management yourself. Run the server on your infrastructure;
-[Aex](/docs) provides hosting if you prefer a managed service.
+Brain is an open-source agent runtime with pluggable loops, models, tools and execution
+environments. Use a ready-made loop or write your own context management and tool-calling logic.
+Run tools in your application, browser or remote environment, and interact with the agent through
+one API.
+
+A support agent could use tools you provide to look up an order in your backend, check a delivery
+page in a browser and update a support ticket. Each tool runs where it can access the resources it
+needs. Your application sends messages, follows progress and retrieves results from Brain.
+
+## Run your first agent
+
+The [quickstart](/brain/docs/quickstart) connects a model to an order lookup function in your app.
+You need Docker, Node.js and a model key. Run Brain yourself, or use [Aex hosting](/docs).
+
+| Choose | What you control |
+| --- | --- |
+| [Agent loop](/brain/docs/concepts/agent-loop) | Context management, model calls and tool sequencing |
+| [Model](/brain/docs/concepts/model) | The provider and model used by the session |
+| [Tools](/brain/docs/concepts/tool) | The functions the agent may call |
+| [Environments](/brain/docs/concepts/environment) | Where the loop and each tool run |
+
+A [session](/brain/docs/concepts/sessions) brings these together for one conversation. Start with
+a ready-made loop and application functions; connect browser or workspace extensions as needed.
+
+## Build on it
+
+- [Send messages, stream output and retrieve outcomes](/brain/docs/concepts/sessions).
+- [Write a tool](/brain/docs/guides/write-a-tool) to connect your application.
+- [Write a loop](/brain/docs/guides/write-a-loop) to change the agent's behavior.
+- [Operate Brain](/brain/docs/guides/operate) on your infrastructure.
+
+The application SDK supports TypeScript and JavaScript; other clients can use the
+[HTTP API](/brain/docs/reference/api). Extension guides describe their own supported languages.
 
 <Callout type="warn">
-Brain is in early preview. APIs may change before 1.0. A server restart preserves saved history,
-but interrupted work fails and is not automatically retried.
+Brain is in early preview. APIs may change before 1.0. A server restart preserves saved history
+when storage is intact, but interrupted work fails and is not automatically resumed or retried.
 </Callout>
-
-## Start here
-
-[Run your first agent](/brain/docs/quickstart) with Docker and JavaScript. The example gives
-the agent a function that looks up an order and prints its answer.
-
-## The pieces you choose
-
-| Piece | What it means | Example |
-| --- | --- | --- |
-| [Model](/brain/docs/concepts/model) | The AI that generates responses | Your OpenAI or Anthropic model |
-| [Tool](/brain/docs/concepts/tool) | A function the agent can call | Look up an order or search your data |
-| [Agent loop](/brain/docs/concepts/agent-loop) | The logic that calls the model and tools | Use Pi, Codex, or your own loop |
-| [Environment](/brain/docs/concepts/environment) | Where that code runs | Your app, Brain, or a sandbox |
-
-A [session](/brain/docs/concepts/sessions) brings these together for one conversation.
-Start with a ready-made loop and add your own tools; you can replace more pieces as needed.
-
-## Next tasks
-
-- [Write a tool](/brain/docs/guides/write-a-tool) to connect an API or database.
-- [Write an agent loop](/brain/docs/guides/write-a-loop) to control the conversation.
-- [Choose an environment](/brain/docs/concepts/environment) for code that needs a workspace.
-
-Exact behavior and server settings live in the [reference](/brain/docs/reference/api).

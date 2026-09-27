@@ -7,6 +7,9 @@ An environment lets Brain run code in a service you control, such as a sandbox o
 You usually need only an [existing environment](/brain/docs/concepts/environment).
 Write one when you need a different runtime or resource lifecycle.
 
+This guide assumes you can run an HTTP service and control its deployment. For a request handler
+that only returns a tool result, use the existing [HTTP tool extension](https://github.com/aexhq/extensions/tree/main/packages/env-http).
+
 ## Run the JavaScript example
 
 The [lazy workspace example](https://github.com/aexhq/brain/blob/main/examples/lazy-environment.mjs)
@@ -24,6 +27,7 @@ It listens on `127.0.0.1:8090`. For this local example, run Brain on the same ho
 
 ```sh
 BRAIN_DATA_DIR="$PWD/brain-data" \
+BRAIN_API_TOKEN=quickstart \
 BRAIN_ENV_WORKER="$PWD/target/debug/brain-env-worker" \
 ./target/debug/brain --listen 127.0.0.1:8080
 ```
@@ -35,7 +39,7 @@ binaries. A Docker-hosted Brain cannot reach this service through its own `127.0
 
 In the [quickstart app](/brain/docs/quickstart), import `environment` and replace the order tool with:
 
-```js
+```ts
 import { environment } from "@aexhq/brain";
 
 const workspace = environment({ url: () => "http://127.0.0.1:8090" });
@@ -50,7 +54,6 @@ const echo = tool({
 // tools: [echo({ env: workspace({ name: "workspace" }) })],
 ```
 
-The source-built server above uses no API token; remove `token` from the example client options.
 Send `"Call echo with the message hello."` and run the app. The transcript contains the echoed
 input and a workspace entry count. JavaScript needs no build step; use your normal compiler
 for a TypeScript service.
@@ -61,7 +64,9 @@ Edit the example's `execute` handler to run your own fixed operation. It calls t
 ## Add typed methods and observations
 
 Use `environmentHandler` to validate provider options and named method inputs like a Tool.
-The service authenticates Brain's request, then passes the decoded command to `handler.run()`:
+The service authenticates Brain's request, then passes the decoded command to `handler.run()`.
+This excerpt assumes `provider` is your integration with attach, health, release and resource-loss
+callbacks; it replaces lifecycle handling inside your service:
 
 ```ts
 import { environmentHandler } from "@aexhq/brain";
@@ -89,7 +94,7 @@ const handler = environmentHandler({
 });
 ```
 
-Here `provider` is your own integration. Give its watchers only `ctx.reporter`; keep operation
+Give the provider's watchers only `ctx.reporter`; keep operation
 services in the handler. The reporter can outlive setup and carries no control authority.
 An operation can call another authorized environment through `ctx.environments`. Its grants
 are separate from those of any Tool or Agentloop it hosts. Export `handler.methods` on the
@@ -122,5 +127,4 @@ The local example does not isolate untrusted code. A deployed service must authe
 validate operations, and limit the code's access to files, secrets and the network. The protocol
 reference describes setup, execution, cancellation and cleanup.
 
-Aex hosting accepts only managed profiles granted to your account, not arbitrary environment
-URLs. See [managed environments](https://github.com/aexhq/aex/blob/main/docs/environments.md).
+For supported hosted integrations, see the [Aex docs](/docs).

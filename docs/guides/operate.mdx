@@ -1,0 +1,157 @@
+---
+title: Operate Brain
+description: Deploy a server, connect remote environments, and preserve data during upgrades.
+---
+
+Brain runs as one server with a local data directory. Keep that directory on persistent storage
+and run only one server against it. You need Docker for the commands below; they use a POSIX
+shell. For all flags and environment variables, see [Configuration](/brain/docs/reference/configuration).
+
+## Choose a release
+
+Use the SDK and image tested together by the release workflow. An image tagged
+`ghcr.io/aexhq/brain:sha-<commit>` identifies its source; a digest pins its exact contents.
+`latest` is convenient for the quickstart but moves. `brain --version` currently reports the
+Rust package version, not the image's source revision.
+
+The [latest release](https://github.com/aexhq/brain/releases/latest) lists the promoted SDK
+version and immutable image reference. Its two attached files record the tested pair:
+
+- `manifest.json`: source commit and exact npm package versions and integrity hashes.
+- `brain-image.json`: the same source commit, image name and manifest digest.
+
+Download the current mapping with GitHub CLI:
+
+```sh
+gh release download --repo aexhq/brain \
+  --pattern manifest.json --pattern brain-image.json --dir brain-release
+```
+
+For a particular release, add its `release/sha-<commit>` tag after `download`.
+Compare `manifest.json`'s `source`
+with `brain-image.json`'s `source_sha`, then install the listed SDK version and use
+`<image>@<manifest_digest>`. Retain these files with your deployment configuration. Older
+releases may only have the staging run's `brain-npm-release-<commit>` artifact in the
+[release workflow](https://github.com/aexhq/brain/actions/workflows/npm-publish.yml); those
+artifacts expire after 30 days. If an older mapping is unavailable, obtain it before upgrading
+instead of assuming a moving image matches an older npm version.
+
+## Start the server
+
+Set `BRAIN_IMAGE` to the selected immutable image and supply a private API token:
+
+```sh
+export BRAIN_IMAGE='ghcr.io/aexhq/brain@sha256:REPLACE_WITH_RELEASE_DIGEST'
+export BRAIN_API_TOKEN='REPLACE_WITH_A_PRIVATE_TOKEN'
+docker run -d --name brain --restart unless-stopped \
+  -p 127.0.0.1:8080:8080 -e BRAIN_API_TOKEN \
+  -v brain-data:/var/lib/brain "$BRAIN_IMAGE"
+curl --fail --silent --show-error http://127.0.0.1:8080/health/ready
+```
+
+Readiness returns 204 with no body. It checks the built-in worker pool, not model credentials,
+remote provider health or disk capacity. `/health/live` is a public process check.
+Use `docker logs brain` to inspect startup and execution errors.
+
+Keep the loopback publication for local access or a reverse proxy on the same host. For remote
+clients, terminate HTTPS at your proxy and forward the `Authorization` header. Application
+requests send `Authorization: Bearer <BRAIN_API_TOKEN>`. Give the token only to trusted callers:
+it grants access to the server, not an individual tenant or session.
+
+The repository's `compose.yaml` builds the local source. Before `docker compose up --build -d`,
+set `BRAIN_API_TOKEN` and `BRAIN_DATA_DIR` to an absolute host directory. On Linux, make the
+directory writable by uid/gid 10001, the image's user. To run a published image, set
+`BRAIN_SERVER_IMAGE` to its immutable reference and use `docker compose up --no-build -d`.
+
+## Connect remote environments
+
+There are two addresses to configure:
+
+| Direction | Address |
+| --- | --- |
+| Brain → Environment | The URL in the application's Environment configuration, reachable from Brain. |
+| Environment → Brain | `BRAIN_PUBLIC_URL`, reachable from the Environment, for granted service calls and observations. |
+
+For example, an Environment at `https://tools.example.com` can call a Brain server at
+`https://brain.example.com` when Brain starts with `BRAIN_PUBLIC_URL=https://brain.example.com`.
+This applies to remote loops, tools, controllers and independent Environment reporters.
+The server supplies scoped callback tokens; the Environment does not need the server API token.
+Pass the setting with `-e BRAIN_PUBLIC_URL` in `docker run`, or export it before starting Compose.
+
+`BRAIN_PUBLIC_URL` defaults to the listen address. A container's `0.0.0.0:8080` binds its network
+interfaces but is not an address to advertise to another machine. Likewise, `127.0.0.1` refers
+to the caller's own container or machine. Set a reachable URL and check both directions from
+the actual containers when a callback fails. See the [Environment integration API](/brain/docs/reference/environment-protocol)
+for callback authentication and request shapes.
+
+## Back up and upgrade
+
+Pre-1.0 releases do not promise arbitrary retained-data compatibility. Read the selected
+release's contract changes first. The existing checker covers media/model history and the
+explicit Tool-completion transition; passing it is not a general migration certificate.
+
+1. Stop accepting new work in your application. Wait for accepted turns and background tools
+   to finish, or interrupt them explicitly and inspect their recorded outcomes.
+2. Stop Brain with `docker stop brain`. Do not copy data while a writer is running. A stopped
+   or crashed turn is not automatically resumed by a new server process.
+3. Back up the complete data directory, the selected release mapping, server configuration
+   and any external provider files. The data includes sealed credentials: protect the backup.
+   Remote Environment files and resources need their own provider backup procedure.
+4. Check a copy with the candidate runtime when the transition calls for it. On failure, keep
+   the prior runtime and data together and arrange an explicit migration. Do not delete sessions
+   to make a check pass.
+5. Start the candidate only after its stated compatibility requirements are satisfied. Verify
+   readiness, read an existing session and perform a representative application operation.
+
+For the named volume above, archive after stopping the server:
+
+```sh
+mkdir -p backups
+docker run --rm --user 0 --entrypoint tar \
+  --mount type=volume,src=brain-data,dst=/data,readonly \
+  --mount type=bind,src="$PWD/backups",dst=/backup \
+  "$BRAIN_IMAGE" -C /data -czf /backup/brain-data.tgz .
+```
+
+Restore into a new volume, keeping the original backup intact:
+
+```sh
+docker volume create brain-restored
+docker run --rm --user 0 --entrypoint tar \
+  --mount type=volume,src=brain-restored,dst=/data \
+  --mount type=bind,src="$PWD/backups",dst=/backup,readonly \
+  "$BRAIN_IMAGE" -C /data -xzf /backup/brain-data.tgz
+```
+
+Set `CANDIDATE_IMAGE` to the candidate's immutable image. For current media/model checks:
+
+```sh
+docker run --rm --entrypoint /usr/local/bin/brain-check-media-upgrade \
+  --mount type=volume,src=brain-restored,dst=/var/lib/brain,readonly \
+  "$CANDIDATE_IMAGE" --data-dir /var/lib/brain
+```
+
+Add `--from-chat` when upgrading from the former Chat/inline-media contract. Add
+`--from-tool-return` when moving from the former Tool return contract to explicit completion;
+open retained sessions using that old execution contract are rejected. If custom providers
+were configured, mount their file read-only and pass `--providers-file` with its container
+path. The checker locks the stopped store and inspects it without rewriting records.
+
+To restore service, start the matching prior image with `brain-restored:/var/lib/brain` and the
+saved configuration. Do not run an older image against data already modified by a candidate;
+restore the pre-upgrade backup instead. Host tools also need their original application
+handlers reattached; retained history alone does not restore those processes.
+
+## Troubleshoot a request
+
+| Symptom | Check |
+| --- | --- |
+| Container exits before listening | Supply `BRAIN_API_TOKEN`; check data-directory permissions, format and whether another writer holds it. |
+| 401 from an application route | Send the configured server bearer token. Host and Environment callbacks use their own scoped tokens instead. |
+| 400 mentioning `idempotency-key` | Send a key of 1–256 bytes. Environment control requires it for list/get requests too. Reuse it only for the same request and mode. |
+| Invalid request body or cursor | Read the JSON error's `message`. Malformed JSON, path and query values return 400; invalid JSON fields return 422; incorrect content type returns 415; an oversized body returns 413. |
+| Callback cannot connect | Check the Environment URL from Brain and `BRAIN_PUBLIC_URL` from the Environment, including DNS, TLS and proxy routing. |
+| Request completed but work failed | Read the turn's terminal outcome and recorded error. An idle session or successful HTTP response alone does not establish task success. |
+
+See [Session history](/brain/docs/reference/session-history) for reconnecting, uncertain outcomes
+and recovery boundaries.
