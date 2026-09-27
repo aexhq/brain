@@ -33,7 +33,7 @@ JSON and finish within the request; they do not use `ctx.finish()` or continue i
 
 ## Run a Tool in the user's page
 
-Select `clientBrowser({ name: "editor" })` for a Tool such as reading the current selection.
+With Brain SDK 0.35.1 or later, select `clientBrowser({ name: "editor" })` for a Tool such as reading the current selection.
 It uses the existing host connection. Create the session with `sessions.create()` as usual;
 the SDK opens its command stream and sends results automatically. Closing the page makes its
 Tools unavailable while the stored session remains. A page that only displays session progress
