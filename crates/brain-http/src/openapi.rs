@@ -19,6 +19,44 @@ use utoipa::{
 
 use crate::router::ApiDoc;
 
+pub(crate) struct Security;
+
+impl utoipa::Modify for Security {
+    fn modify(&self, document: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+
+        let components = document.components.get_or_insert_with(Default::default);
+        for (name, description) in [
+            (
+                "serverToken",
+                "The server's BRAIN_API_TOKEN, sent as Authorization: Bearer <token>. Required for application API calls when configured; optional only on a loopback server started without a token.",
+            ),
+            (
+                "hostToken",
+                "The scoped token returned by POST /v1/hosts, sent as Authorization: Bearer <token>. Identifies this registered host; do not substitute the server API token.",
+            ),
+            (
+                "invocationToken",
+                "The invocation-scoped services token Brain supplies to an Environment executing an agent loop, tool or controller. Send it as Authorization: Bearer <token>; valid only for the granted services while that execution is open.",
+            ),
+            (
+                "reporterToken",
+                "The reporter token Brain supplies to an Environment instance, sent as Authorization: Bearer <token>. Scoped to the session, environment name and incarnation sequence in the URL.",
+            ),
+        ] {
+            components.add_security_scheme(
+                name,
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .description(Some(description))
+                        .build(),
+                ),
+            );
+        }
+    }
+}
+
 /// Protocol types as the OpenAPI document names them: references into the session
 /// contract's definitions, which [`openapi`] embeds as the document's components. The
 /// schemas themselves are never restated here; `brain-protocol` renders them once.
@@ -101,21 +139,7 @@ pub fn openapi() -> Value {
     let mut schemas = brain_protocol::contract::session()["$defs"].take();
     rewrite_references(&mut schemas);
     document["components"]["schemas"] = schemas;
-    strip_empty_tags(&mut document);
     document
-}
-
-/// utoipa writes `tags: []` on every operation; the document groups nothing by tag.
-fn strip_empty_tags(value: &mut Value) {
-    if let Value::Object(map) = value {
-        if map
-            .get("tags")
-            .is_some_and(|tags| tags.as_array().is_some_and(Vec::is_empty))
-        {
-            map.remove("tags");
-        }
-        map.values_mut().for_each(strip_empty_tags);
-    }
 }
 
 /// The session contract addresses its definitions as `#/$defs/Name`; inside the
@@ -190,5 +214,47 @@ mod tests {
                 .unwrap_or_else(|| panic!("{reference} is not a component reference"));
             assert!(schemas.contains_key(name), "{reference} names no component");
         }
+    }
+
+    #[test]
+    fn authentication_matches_the_route_callers_and_control_documents_its_key() {
+        let document = openapi();
+        for (path, method, scheme) in [
+            ("/v1/sessions", "post", "serverToken"),
+            ("/v1/hosts", "post", "serverToken"),
+            ("/v1/hosts/{host_id}/commands", "get", "hostToken"),
+            (
+                "/v1/sessions/{session_id}/executions/{sequence}/call",
+                "post",
+                "invocationToken",
+            ),
+            (
+                "/v1/sessions/{session_id}/environments/{environment}/{sequence}/events",
+                "post",
+                "reporterToken",
+            ),
+        ] {
+            assert_eq!(
+                document["paths"][path][method]["security"],
+                serde_json::json!([{scheme: []}])
+            );
+            assert_eq!(
+                document["components"]["securitySchemes"][scheme]["scheme"],
+                "bearer"
+            );
+        }
+        for path in ["/health/live", "/health/ready"] {
+            assert!(document["paths"][path]["get"].get("security").is_none());
+        }
+        let parameters =
+            document["paths"]["/v1/sessions/{session_id}/environments"]["post"]["parameters"]
+                .as_array()
+                .unwrap();
+        let key = parameters
+            .iter()
+            .find(|parameter| parameter["name"] == "Idempotency-Key")
+            .unwrap();
+        assert_eq!(key["in"], "header");
+        assert_eq!(key["required"], true);
     }
 }

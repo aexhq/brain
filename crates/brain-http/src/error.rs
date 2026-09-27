@@ -1,11 +1,72 @@
 use axum::{
     Json,
+    extract::{FromRequest, FromRequestParts, Request},
     http::StatusCode,
+    http::request::Parts,
     response::{IntoResponse, Response},
 };
 use brain_protocol::{ApiError, codes::api};
+use serde::de::DeserializeOwned;
 
 pub struct HttpError(pub ApiError);
+
+pub(crate) struct ApiJson<T>(pub T);
+pub(crate) struct ApiQuery<T>(pub T);
+pub(crate) struct ApiPath<T>(pub T);
+pub(crate) struct ApiBytes(pub axum::body::Bytes);
+
+fn rejection(status: StatusCode, message: String) -> Response {
+    let error = if status.is_server_error() {
+        ApiError::internal(message)
+    } else {
+        ApiError::invalid_request(message)
+    };
+    (status, Json(error)).into_response()
+}
+
+impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for ApiJson<T> {
+    type Rejection = Response;
+
+    async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
+        Json::<T>::from_request(request, state)
+            .await
+            .map(|Json(value)| Self(value))
+            .map_err(|error| rejection(error.status(), error.body_text()))
+    }
+}
+
+impl<T: DeserializeOwned, S: Send + Sync> FromRequestParts<S> for ApiQuery<T> {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        axum::extract::Query::<T>::from_request_parts(parts, state)
+            .await
+            .map(|axum::extract::Query(value)| Self(value))
+            .map_err(|error| rejection(error.status(), error.body_text()))
+    }
+}
+
+impl<T: DeserializeOwned + Send, S: Send + Sync> FromRequestParts<S> for ApiPath<T> {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        axum::extract::Path::<T>::from_request_parts(parts, state)
+            .await
+            .map(|axum::extract::Path(value)| Self(value))
+            .map_err(|error| rejection(error.status(), error.body_text()))
+    }
+}
+
+impl<S: Send + Sync> FromRequest<S> for ApiBytes {
+    type Rejection = Response;
+
+    async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
+        axum::body::Bytes::from_request(request, state)
+            .await
+            .map(Self)
+            .map_err(|error| rejection(error.status(), error.body_text()))
+    }
+}
 
 /// The HTTP status each API error code is answered with. Every code in the catalogue
 /// has a row; an unknown code is a server bug and is answered as one.

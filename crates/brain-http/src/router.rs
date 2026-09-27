@@ -2,8 +2,7 @@ use std::collections::BTreeSet;
 
 use axum::{
     Json, Router,
-    body::Bytes,
-    extract::{DefaultBodyLimit, Path, Query, Request, State},
+    extract::{DefaultBodyLimit, Request, State},
     http::HeaderMap,
     http::StatusCode,
     middleware::{self, Next},
@@ -20,7 +19,8 @@ use utoipa::{OpenApi, openapi::HttpMethod};
 
 use crate::{
     BrainApi, HttpError, HttpLimits,
-    openapi::{Package, contract, operations},
+    error::{ApiBytes, ApiJson, ApiPath as Path, ApiQuery as Query},
+    openapi::{Package, Security, contract, operations},
 };
 
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
@@ -29,7 +29,21 @@ const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
 /// through `routes!`; [`build`] checks that the two agree.
 #[derive(OpenApi)]
 #[openapi(
-    info(title = "Brain HTTP API", version = "1.0.0"),
+    info(
+        title = "Brain HTTP API", version = "1.0.0",
+        description = "Application requests use the configured server bearer token. A server bound only to loopback may omit that token. Host and Environment callbacks always use their own scoped credentials; health checks are public. Request validation errors return ApiError: malformed JSON, paths and queries use HTTP 400; invalid JSON fields use 422; unsupported content types use 415; oversized bodies use 413."
+    ),
+    modifiers(&Security),
+    tags(
+        (name = "Sessions", description = "Create conversations, send messages and manage their lifetime."),
+        (name = "Events", description = "Read recorded progress or follow live output."),
+        (name = "Models", description = "Discover configured models and providers."),
+        (name = "Environments", description = "Manage and call a session's execution environments."),
+        (name = "Components", description = "Upload compiled agent loops and tools."),
+        (name = "Hosts", description = "Connect application processes that execute host tools."),
+        (name = "Environment callbacks", description = "Scoped callbacks for Environment implementers."),
+        (name = "Health", description = "Public server liveness and readiness checks.")
+    ),
     paths(
         admit_agentloop,
         admit_tool,
@@ -257,6 +271,9 @@ fn bearer(headers: &HeaderMap) -> Result<String, HttpError> {
     post,
     path = "/v1/hosts",
     operation_id = "registerHost",
+    summary = "Register an application host",
+    tag = "Hosts",
+    security(("serverToken" = [])),
     responses(
         (status = 200, description = "Registered host", body = contract::HostRegistration),
         (status = "default", description = "Structured error", body = contract::ApiError)
@@ -272,6 +289,9 @@ async fn register_host<A: BrainApi>(
     get,
     path = "/v1/hosts/{host_id}/commands",
     operation_id = "hostCommands",
+    summary = "Receive host commands",
+    tag = "Hosts",
+    security(("hostToken" = [])),
     params(("host_id" = contract::HostId, Path)),
     responses(
         (status = 200, description = "Bounded send-once host command stream", body = String, content_type = "text/event-stream"),
@@ -305,6 +325,9 @@ async fn host_commands<A: BrainApi>(
     post,
     path = "/v1/hosts/{host_id}/results",
     operation_id = "resolveHostCommand",
+    summary = "Complete a host command",
+    tag = "Hosts",
+    security(("hostToken" = [])),
     params(("host_id" = contract::HostId, Path)),
     request_body = contract::HostResult,
     responses(
@@ -316,7 +339,7 @@ async fn resolve_host<A: BrainApi>(
     State(api): State<A>,
     Path(host_id): Path<HostId>,
     headers: HeaderMap,
-    Json(result): Json<HostResult>,
+    ApiJson(result): ApiJson<HostResult>,
 ) -> Result<Json<HostEventAck>, HttpError> {
     api.resolve_host(host_id, bearer(&headers)?, result)
         .await
@@ -328,6 +351,9 @@ async fn resolve_host<A: BrainApi>(
     post,
     path = "/v1/hosts/{host_id}/events",
     operation_id = "emitHostEvent",
+    summary = "Report a host event",
+    tag = "Hosts",
+    security(("hostToken" = [])),
     params(("host_id" = contract::HostId, Path)),
     request_body = contract::HostEvent,
     responses(
@@ -339,7 +365,7 @@ async fn emit_host_event<A: BrainApi>(
     State(api): State<A>,
     Path(host_id): Path<HostId>,
     headers: HeaderMap,
-    Json(event): Json<HostEvent>,
+    ApiJson(event): ApiJson<HostEvent>,
 ) -> Result<Json<HostEventAck>, HttpError> {
     Ok(Json(
         api.emit_host_event(host_id, bearer(&headers)?, event)
@@ -352,6 +378,9 @@ async fn emit_host_event<A: BrainApi>(
     post,
     path = "/v1/hosts/{host_id}/model",
     operation_id = "callHostModel",
+    summary = "Call a model from a host invocation",
+    tag = "Hosts",
+    security(("hostToken" = [])),
     params(("host_id" = contract::HostId, Path)),
     request_body = contract::HostModelRequest,
     responses(
@@ -363,7 +392,7 @@ async fn host_model<A: BrainApi>(
     State(api): State<A>,
     Path(host_id): Path<HostId>,
     headers: HeaderMap,
-    Json(request): Json<brain_protocol::HostModelRequest>,
+    ApiJson(request): ApiJson<brain_protocol::HostModelRequest>,
 ) -> Result<Json<brain_protocol::ModelResult>, HttpError> {
     api.host_model(host_id, bearer(&headers)?, request)
         .await
@@ -375,6 +404,9 @@ async fn host_model<A: BrainApi>(
     post,
     path = "/v1/hosts/{host_id}/call",
     operation_id = "callHostService",
+    summary = "Call a service from a host invocation",
+    tag = "Hosts",
+    security(("hostToken" = [])),
     params(("host_id" = contract::HostId, Path)),
     request_body = contract::HostServiceRequest,
     responses(
@@ -386,7 +418,7 @@ async fn host_call<A: BrainApi>(
     State(api): State<A>,
     Path(host_id): Path<HostId>,
     headers: HeaderMap,
-    Json(request): Json<brain_protocol::HostServiceRequest>,
+    ApiJson(request): ApiJson<brain_protocol::HostServiceRequest>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
     api.host_call(host_id, bearer(&headers)?, request)
         .await
@@ -403,6 +435,9 @@ fn host_sse(command: HostCommand) -> Result<SseEvent, std::convert::Infallible> 
     post,
     path = "/v1/agentloops",
     operation_id = "admitAgentloop",
+    summary = "Upload an agent loop",
+    tag = "Components",
+    security(("serverToken" = [])),
     params(("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
     request_body(content = inline(Package), content_type = "application/octet-stream"),
     responses(
@@ -413,7 +448,7 @@ fn host_sse(command: HostCommand) -> Result<SseEvent, std::convert::Infallible> 
 async fn admit_agentloop<A: BrainApi>(
     State(api): State<A>,
     headers: HeaderMap,
-    body: Bytes,
+    ApiBytes(body): ApiBytes,
 ) -> Result<Json<AgentloopAdmission>, HttpError> {
     if body.is_empty() {
         return Err(invalid("Agentloop package must not be empty"));
@@ -429,6 +464,9 @@ async fn admit_agentloop<A: BrainApi>(
     post,
     path = "/v1/tools",
     operation_id = "admitTool",
+    summary = "Upload a tool",
+    tag = "Components",
+    security(("serverToken" = [])),
     params(("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
     request_body(content = inline(Package), content_type = "application/octet-stream"),
     responses(
@@ -439,7 +477,7 @@ async fn admit_agentloop<A: BrainApi>(
 async fn admit_tool<A: BrainApi>(
     State(api): State<A>,
     headers: HeaderMap,
-    body: Bytes,
+    ApiBytes(body): ApiBytes,
 ) -> Result<Json<ToolAdmission>, HttpError> {
     if body.is_empty() {
         return Err(invalid("Tool Component must not be empty"));
@@ -455,6 +493,9 @@ async fn admit_tool<A: BrainApi>(
     get,
     path = "/v1/agentloops/{id}",
     operation_id = "getAgentloop",
+    summary = "Read agent loop admission",
+    tag = "Components",
+    security(("serverToken" = [])),
     params(("id" = contract::AgentloopId, Path)),
     responses(
         (status = 200, description = "Admission status", body = contract::AgentloopAdmission),
@@ -485,6 +526,9 @@ fn idempotency_key(headers: &HeaderMap) -> Result<String, HttpError> {
     post,
     path = "/v1/sessions",
     operation_id = "createSession",
+    summary = "Create a session",
+    tag = "Sessions",
+    security(("serverToken" = [])),
     params(("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
     request_body = contract::CreateSessionRequest,
     responses(
@@ -495,7 +539,7 @@ fn idempotency_key(headers: &HeaderMap) -> Result<String, HttpError> {
 async fn create_session<A: BrainApi>(
     State(api): State<A>,
     headers: HeaderMap,
-    Json(request): Json<CreateSessionRequest>,
+    ApiJson(request): ApiJson<CreateSessionRequest>,
 ) -> Result<Json<SessionSummary>, HttpError> {
     Ok(Json(
         api.create_session(idempotency_key(&headers)?, request)
@@ -508,6 +552,9 @@ async fn create_session<A: BrainApi>(
     get,
     path = "/v1/sessions/{session_id}",
     operation_id = "getSession",
+    summary = "Read a session",
+    tag = "Sessions",
+    security(("serverToken" = [])),
     params(("session_id" = contract::SessionId, Path)),
     responses(
         (status = 200, description = "Session state", body = contract::SessionSummary),
@@ -523,6 +570,9 @@ async fn get_session<A: BrainApi>(
 
 #[utoipa::path(
     get, path = "/v1/sessions/{session_id}/transcript",
+    summary = "Read the conversation transcript",
+    tag = "Sessions",
+    security(("serverToken" = [])),
     params(("session_id" = String, Path, description = "Session id")),
     responses(
         (status = 200, description = "Committed transcript, including suspended sessions", body = contract::SessionTranscript),
@@ -540,6 +590,9 @@ async fn transcript<A: BrainApi>(
     get,
     path = "/v1/sessions",
     operation_id = "listSessions",
+    summary = "List sessions",
+    tag = "Sessions",
+    security(("serverToken" = [])),
     responses(
         (status = 200, description = "Sessions", body = contract::SessionList),
         (status = "default", description = "Structured error", body = contract::ApiError)
@@ -553,6 +606,9 @@ async fn list_sessions<A: BrainApi>(State(api): State<A>) -> Result<Json<Session
     post,
     path = "/v1/sessions/{session_id}/messages",
     operation_id = "sendMessage",
+    summary = "Send a message",
+    tag = "Sessions",
+    security(("serverToken" = [])),
     params(("session_id" = contract::SessionId, Path), ("Idempotency-Key" = String, Header, min_length = 1, max_length = 256), ("Prefer" = Option<String>, Header, description = "respond-async returns the committed turn_started event sequence; its idempotency scope is separate from synchronous sends")),
     request_body = contract::MessageRequest,
     responses(
@@ -565,7 +621,7 @@ async fn send_message<A: BrainApi>(
     State(api): State<A>,
     Path(session_id): Path<SessionId>,
     headers: HeaderMap,
-    Json(request): Json<MessageRequest>,
+    ApiJson(request): ApiJson<MessageRequest>,
 ) -> Result<Response, HttpError> {
     if let Some(prefer) = headers.get("prefer") {
         if prefer != "respond-async" {
@@ -596,6 +652,9 @@ async fn send_message<A: BrainApi>(
     post,
     path = "/v1/sessions/{session_id}/environments/{environment}/calls/{name}",
     operation_id = "callEnvironment",
+    summary = "Call an environment method",
+    tag = "Environments",
+    security(("serverToken" = [])),
     params(
         ("session_id" = contract::SessionId, Path),
         ("environment" = contract::EnvironmentName, Path),
@@ -612,7 +671,7 @@ async fn call_environment<A: BrainApi>(
     State(api): State<A>,
     Path((session_id, environment, name)): Path<(SessionId, EnvironmentName, String)>,
     headers: HeaderMap,
-    Json(request): Json<EnvironmentCallRequest>,
+    ApiJson(request): ApiJson<EnvironmentCallRequest>,
 ) -> Result<Json<EnvironmentCallResult>, HttpError> {
     Ok(Json(
         api.call_environment(
@@ -631,7 +690,11 @@ async fn call_environment<A: BrainApi>(
     post,
     path = "/v1/sessions/{session_id}/environments",
     operation_id = "controlEnvironment",
-    params(("session_id" = contract::SessionId, Path)),
+    description = "Run an environment-control operation. Every request, including list and get, requires an Idempotency-Key. Reuse the key only when retrying the same request.",
+    summary = "Manage session environments",
+    tag = "Environments",
+    security(("serverToken" = [])),
+    params(("session_id" = contract::SessionId, Path), ("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
     request_body = contract::EnvironmentControlRequest,
     responses(
         (status = 200, description = "Environment service result", body = serde_json::Value),
@@ -642,7 +705,7 @@ async fn control_environment<A: BrainApi>(
     State(api): State<A>,
     Path(session): Path<SessionId>,
     headers: HeaderMap,
-    Json(request): Json<brain_protocol::EnvironmentControlRequest>,
+    ApiJson(request): ApiJson<brain_protocol::EnvironmentControlRequest>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
     api.control_environment(session, idempotency_key(&headers)?, request)
         .await
@@ -654,6 +717,9 @@ async fn control_environment<A: BrainApi>(
     post,
     path = "/v1/sessions/{session_id}/environments/{environment}/{sequence}/events",
     operation_id = "emitEnvironmentEvent",
+    summary = "Report an environment observation",
+    tag = "Environment callbacks",
+    security(("reporterToken" = [])),
     params(("session_id" = contract::SessionId, Path), ("environment" = contract::EnvironmentName, Path), ("sequence" = u64, Path)),
     request_body = contract::EnvironmentEvent,
     responses(
@@ -665,7 +731,7 @@ async fn environment_event<A: BrainApi>(
     State(api): State<A>,
     Path((session, name, sequence)): Path<(SessionId, EnvironmentName, u64)>,
     headers: HeaderMap,
-    Json(event): Json<brain_protocol::EnvironmentEvent>,
+    ApiJson(event): ApiJson<brain_protocol::EnvironmentEvent>,
 ) -> Result<Json<HostEventAck>, HttpError> {
     api.environment_event(
         session,
@@ -682,6 +748,9 @@ async fn environment_event<A: BrainApi>(
     get,
     path = "/v1/sessions/{session_id}/events",
     operation_id = "readSessionEvents",
+    summary = "Read or stream session events",
+    tag = "Events",
+    security(("serverToken" = [])),
     params(("session_id" = contract::SessionId, Path), ("after" = Option<u64>, Query, minimum = 0)),
     responses(
         (
@@ -830,6 +899,9 @@ fn invalid(message: impl Into<String>) -> HttpError {
     post,
     path = "/v1/sessions/{session_id}/cancel",
     operation_id = "cancelSession",
+    summary = "Interrupt session work",
+    tag = "Sessions",
+    security(("serverToken" = [])),
     params(("session_id" = contract::SessionId, Path), ("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
     responses((status = 204, description = "Cancellation requested"), (status = "default", description = "Structured error", body = contract::ApiError))
 )]
@@ -848,6 +920,9 @@ async fn cancel_session<A: BrainApi>(
     post,
     path = "/v1/sessions/{session_id}/end",
     operation_id = "endSession",
+    summary = "End a session",
+    tag = "Sessions",
+    security(("serverToken" = [])),
     params(("session_id" = contract::SessionId, Path), ("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
     responses(
         (status = 200, description = "Ended session", body = contract::SessionSummary),
@@ -870,6 +945,9 @@ async fn end_session<A: BrainApi>(
     delete,
     path = "/v1/sessions/{session_id}",
     operation_id = "deleteSession",
+    summary = "Delete a session",
+    tag = "Sessions",
+    security(("serverToken" = [])),
     params(("session_id" = contract::SessionId, Path), ("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
     responses((status = 204, description = "Deleted"), (status = "default", description = "Structured error", body = contract::ApiError))
 )]
@@ -884,13 +962,14 @@ async fn delete_session<A: BrainApi>(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// The turn routes: Brain's five turn services, for the Environment running a turn
-/// outside this process. Each answers only while that activation is open and only
-/// with its token.
 #[utoipa::path(
     post,
     path = "/v1/sessions/{session_id}/executions/{sequence}/call",
     operation_id = "executionCall",
+    description = "Invoke a service granted to this execution using the invocation bearer token supplied by Brain. The method must be within the grant and the execution must still be open.",
+    summary = "Call a granted execution service",
+    tag = "Environment callbacks",
+    security(("invocationToken" = [])),
     params(("session_id" = contract::SessionId, Path), ("sequence" = u64, Path)),
     request_body = contract::ExecutionCall,
     responses(
@@ -902,7 +981,7 @@ async fn execution_call<A: BrainApi>(
     State(api): State<A>,
     Path((session_id, sequence)): Path<(SessionId, u64)>,
     headers: HeaderMap,
-    Json(call): Json<ExecutionCall>,
+    ApiJson(call): ApiJson<ExecutionCall>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
     api.execution_call(session_id, sequence, bearer(&headers)?, call)
         .await
@@ -914,7 +993,9 @@ async fn execution_call<A: BrainApi>(
     get,
     path = "/health/live",
     operation_id = "live",
-    responses((status = 204, description = "Process is live"))
+    summary = "Check liveness",
+    tag = "Health",
+    responses((status = 204, description = "Process is live"), (status = 503, description = "Process is not live"))
 )]
 async fn live<A: BrainApi>(State(api): State<A>) -> axum::http::StatusCode {
     if api.live().await {
@@ -928,6 +1009,8 @@ async fn live<A: BrainApi>(State(api): State<A>) -> axum::http::StatusCode {
     get,
     path = "/health/ready",
     operation_id = "ready",
+    summary = "Check readiness",
+    tag = "Health",
     responses(
         (status = 204, description = "Process is ready"),
         (status = 503, description = "Required dependency is unavailable")
@@ -949,6 +1032,9 @@ struct ModelQuery {
 
 #[utoipa::path(
     get, path = "/v1/models", operation_id = "listModels",
+    summary = "List models",
+    tag = "Models",
+    security(("serverToken" = [])),
     params(("provider" = Option<String>, Query, description = "Provider identifier")),
     responses(
         (status = 200, description = "Configured model metadata", body = contract::ModelList),

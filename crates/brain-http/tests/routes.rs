@@ -419,6 +419,134 @@ async fn mutating_routes_fail_fast_without_an_idempotency_key() {
 }
 
 #[tokio::test]
+async fn invalid_http_inputs_return_structured_errors_with_validation_context() {
+    for (method, path, body, content_type, status, detail) in [
+        (
+            "POST",
+            "/v1/sessions",
+            Some("{"),
+            Some("application/json"),
+            StatusCode::BAD_REQUEST,
+            "JSON",
+        ),
+        (
+            "POST",
+            "/v1/sessions/ses_test/environments",
+            Some(r#"{"operation":"unknown"}"#),
+            Some("application/json"),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "unknown variant",
+        ),
+        (
+            "POST",
+            "/v1/sessions",
+            Some("{}"),
+            Some("text/plain"),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Content-Type",
+        ),
+        (
+            "GET",
+            "/v1/sessions/ses_test/events?after=invalid",
+            None,
+            None,
+            StatusCode::BAD_REQUEST,
+            "query",
+        ),
+        (
+            "GET",
+            "/v1/models?unknown=true",
+            None,
+            None,
+            StatusCode::BAD_REQUEST,
+            "unknown field",
+        ),
+        (
+            "POST",
+            "/v1/sessions/ses_test/executions/invalid/call",
+            Some("{}"),
+            Some("application/json"),
+            StatusCode::BAD_REQUEST,
+            "u64",
+        ),
+    ] {
+        let response = router(Api::default(), &HttpLimits::default())
+            .oneshot(request(
+                method,
+                path,
+                body.map(|value| value.as_bytes().to_vec()),
+                content_type,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status, "{path}");
+        assert_eq!(response.headers()["content-type"], "application/json");
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let error: ApiError = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(error.code, "invalid_request");
+        assert!(!error.retryable);
+        assert!(error.message.contains(detail), "{path}: {}", error.message);
+    }
+}
+
+#[tokio::test]
+async fn oversized_json_and_component_bodies_keep_the_size_limit_and_error_envelope() {
+    for (path, content_type) in [
+        ("/v1/sessions", "application/json"),
+        ("/v1/agentloops", "application/octet-stream"),
+    ] {
+        let response = router(
+            Api::default(),
+            &HttpLimits {
+                max_request_bytes: 1,
+            },
+        )
+        .oneshot(request(
+            "POST",
+            path,
+            Some(vec![b' '; 2]),
+            Some(content_type),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let error: ApiError = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(error.code, "invalid_request");
+        assert!(!error.message.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn environment_control_requires_a_key_even_for_list() {
+    for key in [None, Some("list-environments")] {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/v1/sessions/ses_test/environments")
+            .header("content-type", "application/json");
+        if let Some(key) = key {
+            request = request.header("idempotency-key", key);
+        }
+        let response = router(Api::default(), &HttpLimits::default())
+            .oneshot(request.body(Body::from(r#"{"operation":"list"}"#)).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            if key.is_some() {
+                StatusCode::OK
+            } else {
+                StatusCode::BAD_REQUEST
+            }
+        );
+    }
+}
+
+#[tokio::test]
 async fn request_bodies_reject_unknown_fields() {
     let digest = "a".repeat(64);
     // `hosting`, `binding_names`, and `host_id` on a tool are deleted fields; a client
