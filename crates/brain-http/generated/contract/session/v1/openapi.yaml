@@ -2068,6 +2068,7 @@ paths:
       tags:
       - Sessions
     post:
+      description: Create a conversation using an admitted agent loop. In this example, replace the component id with the id returned by uploading your loop to POST /v1/agentloops, and replace the model API key. Loop configuration depends on the chosen package; the empty object suits the reference loop.
       operationId: createSession
       parameters:
       - in: header
@@ -2080,6 +2081,24 @@ paths:
       requestBody:
         content:
           application/json:
+            example:
+              agentloop:
+                configuration: {}
+                environment: brain
+                implementation:
+                  entrypoint: turn
+                  id: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                  type: brain_component
+              environments:
+              - configuration: {}
+                driver: brain
+                lifecycle: automatic
+                name: brain
+              model:
+                api_key: YOUR_MODEL_API_KEY
+                name: gpt-4.1-mini
+                provider: openai
+              tools: []
             schema:
               $ref: '#/components/schemas/CreateSessionRequest'
         required: true
