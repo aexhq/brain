@@ -71,9 +71,11 @@ cancellation, or connection loss; an unlimited execution can remain open indefin
 turn completion and actor suspension preserve background Tools. Brain wakes the Agentloop for
 later committed observations, and the loop decides whether to call the model or wait for a user.
 
-The [HTTP tool extension](https://github.com/aexhq/extensions/tree/main/packages/env-http) has a
-different handler convention: return a plain JSON value, and its bridge completes the call.
-It does not support background execution or `ctx.finish` in the HTTP handler.
+The [Application tool extension](https://github.com/aexhq/extensions/tree/main/packages/env-http)
+uses the same declarations and `await ctx.finish(value)` in a bounded HTTP handler. It supports
+configured options, output validation and `ctx.emitResult`, with durable completion acknowledgments.
+It grants no model calls, arbitrary events, Environment control or work beyond the request lifetime.
+Existing `http()` / `httpTool()` placements retain their v1 plain-JSON return convention.
 
 The top-level `status` values `ok`, `error`, `timeout`, `cancelled` and `unknown` are reserved for
 outcome envelopes. A malformed envelope becomes `invalid_output`. Successful-output validation
