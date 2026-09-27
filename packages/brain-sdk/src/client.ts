@@ -63,7 +63,7 @@ export class BrainClient {
     if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1)) throw new TypeError("timeoutMs must be a positive safe integer");
     this.token = options.token;
     this.timeoutMs = options.timeoutMs;
-    this.transport = options.fetch ?? globalThis.fetch;
+    this.transport = options.fetch ?? globalThis.fetch.bind(globalThis);
     if (options.credentials !== undefined) {
       if (!options.credentials.hostId || !options.credentials.token) throw new TypeError("credentials require hostId and token");
       this.registration = { host_id: options.credentials.hostId, token: options.credentials.token };
