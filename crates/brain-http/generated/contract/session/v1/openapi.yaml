@@ -1728,8 +1728,25 @@ components:
       required:
       - message
       type: object
+  securitySchemes:
+    hostToken:
+      description: 'The scoped token returned by POST /v1/hosts, sent as Authorization: Bearer <token>. Identifies this registered host; do not substitute the server API token.'
+      scheme: bearer
+      type: http
+    invocationToken:
+      description: 'The invocation-scoped services token Brain supplies to an Environment executing an agent loop, tool or controller. Send it as Authorization: Bearer <token>; valid only for the granted services while that execution is open.'
+      scheme: bearer
+      type: http
+    reporterToken:
+      description: 'The reporter token Brain supplies to an Environment instance, sent as Authorization: Bearer <token>. Scoped to the session, environment name and incarnation sequence in the URL.'
+      scheme: bearer
+      type: http
+    serverToken:
+      description: 'The server''s BRAIN_API_TOKEN, sent as Authorization: Bearer <token>. Required for application API calls when configured; optional only on a loopback server started without a token.'
+      scheme: bearer
+      type: http
 info:
-  description: Versioned Brain HTTP transport
+  description: 'Application requests use the configured server bearer token. A server bound only to loopback may omit that token. Host and Environment callbacks always use their own scoped credentials; health checks are public. Request validation errors return ApiError: malformed JSON, paths and queries use HTTP 400; invalid JSON fields use 422; unsupported content types use 415; oversized bodies use 413.'
   license:
     identifier: MIT
     name: MIT
@@ -1743,6 +1760,11 @@ paths:
       responses:
         '204':
           description: Process is live
+        '503':
+          description: Process is not live
+      summary: Check liveness
+      tags:
+      - Health
   /health/ready:
     get:
       operationId: ready
@@ -1751,6 +1773,9 @@ paths:
           description: Process is ready
         '503':
           description: Required dependency is unavailable
+      summary: Check readiness
+      tags:
+      - Health
   /v1/agentloops:
     post:
       operationId: admitAgentloop
@@ -1782,6 +1807,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - serverToken: []
+      summary: Upload an agent loop
+      tags:
+      - Components
   /v1/agentloops/{id}:
     get:
       operationId: getAgentloop
@@ -1804,6 +1834,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - serverToken: []
+      summary: Read agent loop admission
+      tags:
+      - Components
   /v1/hosts:
     post:
       operationId: registerHost
@@ -1820,6 +1855,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - serverToken: []
+      summary: Register an application host
+      tags:
+      - Hosts
   /v1/hosts/{host_id}/call:
     post:
       operationId: callHostService
@@ -1847,6 +1887,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - hostToken: []
+      summary: Call a service from a host invocation
+      tags:
+      - Hosts
   /v1/hosts/{host_id}/commands:
     get:
       operationId: hostCommands
@@ -1869,6 +1914,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - hostToken: []
+      summary: Receive host commands
+      tags:
+      - Hosts
   /v1/hosts/{host_id}/events:
     post:
       operationId: emitHostEvent
@@ -1897,6 +1947,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - hostToken: []
+      summary: Report a host event
+      tags:
+      - Hosts
   /v1/hosts/{host_id}/model:
     post:
       operationId: callHostModel
@@ -1925,6 +1980,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - hostToken: []
+      summary: Call a model from a host invocation
+      tags:
+      - Hosts
   /v1/hosts/{host_id}/results:
     post:
       operationId: resolveHostCommand
@@ -1953,6 +2013,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - hostToken: []
+      summary: Complete a host command
+      tags:
+      - Hosts
   /v1/models:
     get:
       operationId: listModels
@@ -1976,6 +2041,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - serverToken: []
+      summary: List models
+      tags:
+      - Models
   /v1/sessions:
     get:
       operationId: listSessions
@@ -1992,6 +2062,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - serverToken: []
+      summary: List sessions
+      tags:
+      - Sessions
     post:
       operationId: createSession
       parameters:
@@ -2021,6 +2096,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - serverToken: []
+      summary: Create a session
+      tags:
+      - Sessions
   /v1/sessions/{session_id}:
     delete:
       operationId: deleteSession
@@ -2046,6 +2126,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - serverToken: []
+      summary: Delete a session
+      tags:
+      - Sessions
     get:
       operationId: getSession
       parameters:
@@ -2067,6 +2152,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - serverToken: []
+      summary: Read a session
+      tags:
+      - Sessions
   /v1/sessions/{session_id}/cancel:
     post:
       operationId: cancelSession
@@ -2092,6 +2182,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - serverToken: []
+      summary: Interrupt session work
+      tags:
+      - Sessions
   /v1/sessions/{session_id}/end:
     post:
       operationId: endSession
@@ -2121,8 +2216,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - serverToken: []
+      summary: End a session
+      tags:
+      - Sessions
   /v1/sessions/{session_id}/environments:
     post:
+      description: Run an environment-control operation. Every request, including list and get, requires an Idempotency-Key. Reuse the key only when retrying the same request.
       operationId: controlEnvironment
       parameters:
       - in: path
@@ -2130,6 +2231,13 @@ paths:
         required: true
         schema:
           $ref: '#/components/schemas/SessionId'
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          maxLength: 256
+          minLength: 1
+          type: string
       requestBody:
         content:
           application/json:
@@ -2148,6 +2256,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - serverToken: []
+      summary: Manage session environments
+      tags:
+      - Environments
   /v1/sessions/{session_id}/environments/{environment}/calls/{name}:
     post:
       operationId: callEnvironment
@@ -2194,6 +2307,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - serverToken: []
+      summary: Call an environment method
+      tags:
+      - Environments
   /v1/sessions/{session_id}/environments/{environment}/{sequence}/events:
     post:
       operationId: emitEnvironmentEvent
@@ -2234,6 +2352,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - reporterToken: []
+      summary: Report an environment observation
+      tags:
+      - Environment callbacks
   /v1/sessions/{session_id}/events:
     get:
       operationId: readSessionEvents
@@ -2266,8 +2389,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - serverToken: []
+      summary: Read or stream session events
+      tags:
+      - Events
   /v1/sessions/{session_id}/executions/{sequence}/call:
     post:
+      description: Invoke a service granted to this execution using the invocation bearer token supplied by Brain. The method must be within the grant and the execution must still be open.
       operationId: executionCall
       parameters:
       - in: path
@@ -2300,10 +2429,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
-      summary: |-
-        The turn routes: Brain's five turn services, for the Environment running a turn
-        outside this process. Each answers only while that activation is open and only
-        with its token.
+      security:
+      - invocationToken: []
+      summary: Call a granted execution service
+      tags:
+      - Environment callbacks
   /v1/sessions/{session_id}/messages:
     post:
       operationId: sendMessage
@@ -2355,6 +2485,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - serverToken: []
+      summary: Send a message
+      tags:
+      - Sessions
   /v1/sessions/{session_id}/transcript:
     get:
       operationId: transcript
@@ -2378,6 +2513,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - serverToken: []
+      summary: Read the conversation transcript
+      tags:
+      - Sessions
   /v1/tools:
     post:
       operationId: admitTool
@@ -2409,3 +2549,25 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
+      security:
+      - serverToken: []
+      summary: Upload a tool
+      tags:
+      - Components
+tags:
+- description: Create conversations, send messages and manage their lifetime.
+  name: Sessions
+- description: Read recorded progress or follow live output.
+  name: Events
+- description: Discover configured models and providers.
+  name: Models
+- description: Manage and call a session's execution environments.
+  name: Environments
+- description: Upload compiled agent loops and tools.
+  name: Components
+- description: Connect application processes that execute host tools.
+  name: Hosts
+- description: Scoped callbacks for Environment implementers.
+  name: Environment callbacks
+- description: Public server liveness and readiness checks.
+  name: Health
