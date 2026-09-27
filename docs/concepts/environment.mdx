@@ -9,6 +9,7 @@ your application's database connection, a workspace with files, or a browser.
 | Choose | For | What you run |
 | --- | --- | --- |
 | `hostEnv` | Functions using your app's data and dependencies | Your JavaScript or TypeScript process |
+| `clientBrowser` | Functions using the user's current page or editor | The user's connected browser tab |
 | [HTTP tools](https://github.com/aexhq/extensions/tree/main/packages/env-http) | Functions served by a request handler, independently of the submitting client | An HTTP endpoint and the HTTP environment bridge |
 | `brainEnv` | Ready-made loops and packaged extensions | The Brain server |
 | An environment extension | A browser, sandbox or another runtime | The extension's service |
@@ -29,6 +30,18 @@ Application functions have the process's existing permissions and working direct
 `hostEnv` does not isolate them. Keep that process connected. For short-lived app requests, the
 HTTP tool extension lets Brain call a separately deployed endpoint. Its handlers return plain
 JSON and finish within the request; they do not use `ctx.finish()` or continue in the background.
+
+## Run a Tool in the user's page
+
+Select `clientBrowser({ name: "editor" })` for a Tool such as reading the current selection.
+It uses the existing host connection. Create the session with `sessions.create()` as usual;
+the SDK opens its command stream and sends results automatically. Closing the page makes its
+Tools unavailable while the stored session remains. A page that only displays session progress
+does not need an execution Environment.
+
+`clientBrowser` runs in the existing tab. The Browser extension below runs a separate automation
+browser. Browser applications also need server-authorized access; the factory does not make
+account or model-provider secrets safe to put in frontend code.
 
 ## Use a browser or sandbox
 

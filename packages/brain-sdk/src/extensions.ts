@@ -157,6 +157,11 @@ export function hostEnv(options: { readonly name: string; readonly environments?
   return branded({ kind: "environment", name: options.name, driver: { driver: "host" }, configuration: {}, environments: options.environments });
 }
 
+/** Execute Tools in the user's connected browser tab through the ordinary host channel. */
+export function clientBrowser(options: Parameters<typeof hostEnv>[0]): Environment {
+  return hostEnv(options);
+}
+
 const defaultHost = branded<Environment>({
   kind: "environment", name: "brain-sdk-host", driver: { driver: "host" },
   configuration: { sdk_default: true }, automatic: true,
