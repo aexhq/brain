@@ -1,56 +1,128 @@
 ---
-title: Sessions
-description: Send messages, read a conversation, follow progress and stop work.
+title: Build with sessions
+description: Send messages, stream progress, retrieve results and reconnect your tools.
 ---
 
-A session is one conversation and the work the agent does for it. It keeps the model and tools
-you selected, the messages, tool results and progress. Save its ID to open it again later.
+A session is one conversation and the work the agent does for it. It keeps the model, loop and
+tools you selected, along with messages and progress. Save its ID to open it later.
 
-The [quickstart](/brain/docs/quickstart) creates a session. The examples below use that
-`brain` client and `session` before ending them.
+Complete the [quickstart](/brain/docs/quickstart) first. These TypeScript/JavaScript excerpts use
+its `brain` and `session`, inside the `try` block before ending them.
 
 ## Send messages and read the answer
 
-```js
+```ts
 await session.send("Where is order A-1001?");
-await session.send("Summarize that in one sentence.");
 const { messages } = await session.transcript();
 console.log(messages);
 ```
 
-Each message starts a turn: the agent can call the model and tools before it finishes.
-`send()` waits for the turn and returns session state. The Agentloop chooses its answer;
-your application decides how to present or validate it.
+Each message starts a turn: the loop can call the model and tools before finishing. `send()`
+waits for that turn and returns session state, not the answer. Read the transcript for messages.
+An idle session can have a failed turn; inspect `turn_failed` events as in the quickstart, or use
+`outcome(sequence)` for a submitted turn. Request errors reject the promise; catch them at your
+application boundary and close the client in `finally`.
 
-## Read progress
+## Stream progress
 
-```js
-for await (const event of session.events()) {
-  console.log(event.sequence, event.type, event.data);
+Start reading before sending. This pattern prints events until the turn ends or fails and closes
+the subscription even if the request fails:
+
+```ts
+const subscription = new AbortController();
+let cursor = session.state.lastSequence;
+const watching = (async () => {
+  for await (const event of session.stream(cursor, subscription.signal)) {
+    console.log(event.type, event.data);
+    if (event.sequence !== undefined) cursor = event.sequence;
+    if (event.type === "turn_failed") throw new Error(JSON.stringify(event.data));
+    if (event.type === "turn_ended") return;
+  }
+  throw new Error("Stream closed before the turn finished");
+})();
+try {
+  await Promise.all([watching, session.send("Explain event streaming in one sentence.")]);
+} finally {
+  subscription.abort();
+  await watching.catch(() => {});
 }
 ```
 
-`events()` reads saved history and finishes. `stream()` follows live output; start it before
-sending a message when you want to display progress as it happens. Save the last event sequence
-and pass it to `events(after)` or `stream(after)` to catch up after reconnecting.
+The [complete streaming example](https://github.com/aexhq/brain/blob/main/examples/streaming-session.mjs)
+uses the quickstart's server, packages and model key. Run it with `node streaming-session.mjs`.
+Aborting a subscription stops listening; it does not cancel the agent's work. To stop the turn,
+call `session.interrupt()`. A `send()` signal requests cancellation of an exclusively owned turn;
+do not send concurrently through another owner of that session.
 
-## Submit work and come back later
+### Reconnect from a cursor
 
-```js
+Save the last processed event's `sequence`. Open `await brain.sessions.get(sessionId)`, then call
+`session.events(cursor)` to read saved events and finish, or `session.stream(cursor)` to catch up
+and continue listening. Neither method automatically reconnects after a broken stream; your app
+opens the next subscription using its saved cursor.
+
+Model deltas are live-only and have no sequence. Reconnection recovers saved events and the
+completed model response, not missed token deltas. See [history](/brain/docs/reference/session-history#reading-events)
+for delivery and deduplication behavior.
+
+## Submit work and retrieve its outcome
+
+```ts
 const sequence = await session.submit("Summarize the conversation.", {
   idempotencyKey: "summary-1",
 });
 console.log({ sessionId: session.id, sequence });
 ```
 
-`submit()` returns once Brain has saved the request. Work on the server can continue after
-the client closes. Tools in `hostEnv` still need their application process connected.
-If you lose the response, repeat the same submission with the same key.
+`submit()` returns once Brain has saved the request. Persist the session ID and sequence. If you
+lose that response, repeat the same request with the same key; do not reuse the key for new work.
+Server-side work can continue after the client closes. Application tools still need their host
+process; use [HTTP or remote tools](/brain/docs/concepts/environment) for independent execution.
 
-In another client, open the session with `await brain.sessions.get(sessionId)`, then read
-its events and transcript. `await session.outcome(sequence)` reports whether that specific turn
-is pending, ended or failed, including its terminal event and any assistant answer. To use application tools after an application restart, follow
-[host reconnection](/brain/docs/reference/tool-contract#reattaching-after-restart).
+Later, open the saved session with a new client:
+
+```ts
+const session = await brain.sessions.get(sessionId);
+const outcome = await session.outcome(sequence);
+if (outcome.status === "failed") {
+  throw new Error(JSON.stringify(outcome.terminal.data));
+}
+if (outcome.status === "ended") {
+  console.log(outcome.answer ?? await session.transcript());
+}
+```
+
+`pending` means check again later. `ended` means the loop finished; individual tool calls or
+background jobs may still have failed or be running. `answer` is present only if the loop emitted
+an assistant answer event. The [complete submission example](https://github.com/aexhq/brain/blob/main/examples/submitted-turn.mjs)
+closes the submitter, polls from another client, checks failure and keeps the transcript.
+
+## Reattach application tools
+
+An open session handle alone does not restore your application's functions. Before stopping the
+original application, save `await brain.credentials()` in your credential store together with the
+session ID, then close that client. These are host credentials, separate from the Brain API token
+and model key; protect them as secrets.
+
+After restarting, restore the same tool definitions and pass the saved credentials:
+
+```ts
+const brain = new Brain({
+  baseUrl: "http://127.0.0.1:8080", token: "quickstart", credentials: savedCredentials,
+});
+try {
+  const session = await brain.sessions.get(sessionId, { tools: [lookupOrder()] });
+  await session.send("Look up order A-1002.");
+  console.log(await session.transcript());
+} finally {
+  await brain.close();
+}
+```
+
+Here `savedCredentials` and `sessionId` come from your storage; `lookupOrder` is the quickstart's
+function. Supply exactly the tools originally placed in that host, with identical schemas and
+environment names. Changed contracts require a new session. Reattachment accepts future calls;
+it does not replay interrupted calls or restore state captured in the old process.
 
 ## Stop, finish or delete
 
@@ -61,9 +133,6 @@ is pending, ended or failed, including its terminal event and any assistant answ
 | `session.delete()` | Delete an ended or failed session and release its environments |
 | `brain.close()` | Close this client's connections; keep stored sessions |
 
-Cancellation does not undo actions a tool has already taken. Brain preserves saved history
-after a server restart, but reports interrupted work as failed. It never automatically replays
-an uncertain action. Keep backups for protection against storage loss.
-
-See [history and recovery](/brain/docs/reference/session-history) for exact event, delivery
-and durability behavior.
+Cancellation does not undo completed external actions. A server restart with storage intact
+preserves saved history but fails interrupted work without automatic retry. See
+[history and recovery](/brain/docs/reference/session-history) for the exact guarantees.

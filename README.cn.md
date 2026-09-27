@@ -5,93 +5,56 @@
   ▀▀  ▀▀     |______/___|__|___|___|_______|__|____|
 </pre>
 
-<p align="center"><strong>精简、可扩展的 agent 引擎。沙箱消失，Brain 仍在。</strong></p>
+<p align="center"><strong>按你的想法构建智能体，跨系统协同工作。</strong></p>
+
+Brain 是一个开源的智能体运行时，支持可插拔的 agent loop、模型、工具和执行环境。
+你可以使用现成的 loop，也可以编写自己的上下文管理和工具调用逻辑。
+工具可以运行在应用、浏览器或远程环境中，应用通过统一的 API 与智能体交互。
 
 [快速开始](https://aex.dev/brain/docs/quickstart) · [文档](https://aex.dev/brain/docs) ·
 [官方扩展](https://github.com/aexhq/extensions) · [English](README.md)
 
-Brain 是一个开源的 agent 引擎，让工具运行在应用、浏览器或沙箱中。
-从精简的核心开始，选择 agent loop，再组合自己的工具和环境。
-可以自行部署，也可以使用 [Aex](https://aex.dev) 托管。
+例如，客服智能体可以通过你提供的工具查询后端订单、在浏览器中查看配送页面，再更新工单。
+每个工具都在能够访问所需资源的位置运行。
 
-- **精简、可扩展。** 核心负责持久化会话和执行边界；agent 行为、工具和运行环境通过公共接口扩展。
-- **独立的生命周期。** Agentloop、Tool、Env 各司其职。把 loop 和会话历史放在沙箱之外，沙箱故障后仍可保留历史并诊断问题。
-- **可控的执行。** 明确工具在哪里运行。Brain 记录连接故障，Env 可随时报告资源状态。应用显式选择自动或手动配置，并决定是否向模型提供普通的 `env` 工具。
-
-设计受到 [Pi](https://pi.dev/) 的极简扩展理念和
-[Anthropic Managed Agents](https://www.anthropic.com/engineering/managed-agents) 的会话、推理和沙箱分离思路启发。
-Brain 不会自动恢复丢失的文件或重试不确定的操作；检查、重启和资源管理由 Env 实现，权限由应用授予。
-
-> **早期预览。** 1.0 之前 API 可能变化。服务器重启后保留已保存的历史；中断的工作会报告失败，不会自动重试。
+- **选择智能体的行为。** 使用现成的 loop，或通过相同的公共接口实现自己的上下文选择、
+  模型调用和工具调度逻辑。
+- **选择执行位置。** 分别指定 loop 和工具在哪里运行。通过受支持的扩展连接应用函数、
+  HTTP 服务、浏览器和远程计算环境。
+- **接入你的应用。** 通过 Brain API 提交任务、查看进度和获取结果。可以自行运行 Brain，
+  也可以使用 [Aex](https://aex.dev/docs) 托管。
 
 ## 快速开始
 
-需要 Docker、Node.js 22 或更新版本，以及 OpenAI API key。启动服务器：
+[快速开始指南](https://aex.dev/brain/docs/quickstart) 用一个应用函数演示订单查询。
+指南包含服务器启动命令、配套依赖、完整的 TypeScript 示例和预期输出。
+需要 Docker、Node.js 22 或更新版本，以及 OpenAI API key。
 
-```sh
-docker run --rm -p 127.0.0.1:8080:8080 \
-  -e BRAIN_LISTEN=0.0.0.0:8080 -e BRAIN_API_TOKEN=quickstart \
-  -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
-```
+| 接下来要做什么 | 指南 |
+| --- | --- |
+| 流式显示回答、提交任务或重新连接 | [会话](https://aex.dev/brain/docs/concepts/sessions) |
+| 接入应用函数或发布工具包 | [工具](https://aex.dev/brain/docs/guides/write-a-tool) |
+| 自定义上下文和工具调用逻辑 | [Agent loop](https://aex.dev/brain/docs/guides/write-a-loop) |
+| 接入浏览器和远程执行环境 | [环境](https://aex.dev/brain/docs/concepts/environment) |
+| 配置服务器 | [配置参考](https://aex.dev/brain/docs/reference/configuration) |
 
-在另一个终端安装依赖，并设置环境变量 `OPENAI_API_KEY`：
+## 什么时候使用 Brain
 
-```sh
-npm install @aexhq/brain@0.34.0 @aexhq/agentloop-pi@7.2.2 zod@4
-```
+Brain 是应用连接的独立服务。如果单个应用进程已经能够管理整个智能体，嵌入式 agent 库可能就足够了。
+使用 Brain 时，你可以在统一的会话 API 背后选择 loop 和各个工具的执行位置。
 
-将以下内容保存为 `order.mjs`，运行 `node order.mjs`：
+沙箱是隔离的代码执行环境，适合需要这种能力的工具；使用 Brain 并不要求沙箱。
+普通应用函数可以直接作为工具。当 loop 在工具的沙箱之外运行时，它可以收到环境故障事件，
+并自行决定如何处理。其他框架和托管服务也提供扩展能力与持久化会话；Brain 提供可独立运行的引擎，
+并通过公共接口让你替换智能体行为和执行集成。
 
-```js
-import { Brain, brainEnv, tool } from "@aexhq/brain";
-import { pi } from "@aexhq/agentloop-pi";
-import { z } from "zod";
+> **早期预览。** 1.0 之前 API 可能变化。存储完好时，已提交的历史记录可在服务器重启后保留；
+> 被中断的工作会标记为失败，不会自动恢复或重试。保留会话历史不代表能恢复环境中丢失的文件或进程。
 
-const lookupOrder = tool({
-  name: "lookup_order",
-  description: "Look up an order by id.",
-  input: z.object({ id: z.string() }),
-  run: ({ id }, ctx) => ctx.finish({ id, status: "shipped" }),
-});
+应用 SDK 支持 TypeScript 和 JavaScript。其他客户端可以使用
+[HTTP API](https://aex.dev/brain/docs/reference/api)；扩展指南分别说明支持的语言和运行条件。
 
-const brain = new Brain({ baseUrl: "http://127.0.0.1:8080", token: "quickstart" });
-try {
-  const session = await brain.sessions.create({
-    model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
-    agentloop: pi({ env: brainEnv({ name: "brain" }) }),
-    tools: [lookupOrder()],
-  });
-  try {
-    await session.send("Look up order A-1001. Has it shipped?");
-    console.log(JSON.stringify(await session.transcript(), null, 2));
-    console.log("Session:", session.id);
-  } finally {
-    await session.end();
-  }
-} finally {
-  await brain.close();
-}
-```
+[贡献指南](CONTRIBUTING.md) · [设计决策](references/adrs/README.md) ·
+[性能测试](BENCHMARKS.md) · [安全策略](SECURITY.md) · [MIT 许可证](LICENSE)
 
-输出包含订单查询结果，以及订单 A-1001 已发货的回答。示例工具返回固定数据；可以替换为真实查询。
-查询函数在你的 Node 进程中运行，agent 需要调用它时，请保持该进程在线。
-
-## 下一步
-
-- [会话](https://aex.dev/brain/docs/concepts/sessions)：继续对话、查看历史、停止任务。
-- [编写工具](https://aex.dev/brain/docs/guides/write-a-tool)：连接自己的 API 或数据库。
-- [编写 agent loop](https://aex.dev/brain/docs/guides/write-a-loop)：控制模型和工具的调用逻辑。
-- [选择执行环境](https://aex.dev/brain/docs/concepts/environment)：使用应用进程、浏览器或沙箱。
-
-客户端 SDK 支持 JavaScript 和 TypeScript。扩展指南提供 JavaScript、Rust 和 Python 示例及构建步骤；
-其他客户端可使用 [HTTP API](https://aex.dev/brain/docs/reference/api)。
-
-Brain 管理会话历史、事件和生命周期，让你专注于模型、工具和 agent 行为。
-源码构建见 [Contributing](CONTRIBUTING.md)，实现原理见[设计记录](references/adrs/README.md)。
-
-[MIT 许可证](LICENSE)。问题反馈：[GitHub Issues](https://github.com/aexhq/brain/issues)
-或 [support@aex.dev](mailto:support@aex.dev)。
-
-短时请求可用 `session.submit()` 获取已持久化的回合序号，再通过另一个客户端调用
-`session.outcome(sequence)` 读取该回合的结果。
-[完整示例](https://github.com/aexhq/brain/blob/main/examples/submitted-turn.mjs)。
+[提交问题](https://github.com/aexhq/brain/issues)，或联系 [support@aex.dev](mailto:support@aex.dev)。

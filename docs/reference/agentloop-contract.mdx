@@ -1,145 +1,137 @@
 ---
-title: Agent loop contract
-description: Host services, saved state and event handling for loop authors.
+title: Agent loop API
+description: Read context, call models and tools, and save decisions between activations.
 ---
 
-Brain does not compile Agentloop source. Write the loop in any language that can produce a
-WebAssembly Component implementing Brain's WIT world, build it with that language's toolchain, and
-give the resulting bytes to `component(...)`.
+A custom loop decides what the model sees, which tools run and when a turn finishes. Brain
+supplies saved conversation and events, executes requested calls, and saves your loop's changes.
+Start with [Write an agent loop](/brain/docs/guides/write-a-loop); use this page for exact behavior.
 
-## Contract
+## What a run receives
 
-The source of truth is
-[`crates/brain-env/wit/agentloop/agentloop.wit`](https://github.com/aexhq/brain/blob/main/crates/brain-env/wit/agentloop/agentloop.wit).
-The Component exports `turn` and imports these Brain services:
+Brain calls your exported `turn(input)` for a user message or an actionable background tool or
+environment observation. Only one activation runs at a time per session. In the packaged
+JavaScript example, parse these fields with `JSON.parse`:
 
-- `events(after)` reads a finite `EventPage`; continue from `next_cursor` for more history;
-- `acknowledge(through)` durably advances the processed-through sequence;
-- `model` performs a model call;
-- `dispatch` invokes Tools and returns their synchronous observations as `ToolReturn[]`;
-- `emit` appends an extension Event and returns its committed sequence;
-- `set-transcript` durably replaces the saved conversation with the supplied messages;
-- `kv-read(key)` returns an optional JSON string, distinguishing absence from stored null;
-- `kv-put(key, value-json)` durably creates or replaces one value;
-- `kv-delete(key)` durably removes a key; deleting an absent key is a no-op;
-- `telemetry` publishes best-effort operational telemetry.
+| Field | Value after parsing |
+| --- | --- |
+| `input.inputJson` | `{ message, media? }`, or `null` for a background activation |
+| `input.transcriptJson` | Saved model messages |
+| `input.kvJson` | Saved loop state, keyed by name |
+| `input.eventsJson` | New committed events, in sequence order |
+| `input.configurationJson` | Options supplied through the loop factory |
+| `input.toolsJson` | Tool definitions and their authorized environments |
 
-JSON strings on the WIT boundary use the generated session contract, also packaged as
-`@aexhq/brain/contracts/session.json`. It includes `ModelRequest`, `ModelResult`, `ToolReturn`, `ToolResult`, and `EventPage`. An activation receives
-optional user input, the current transcript, Agentloop kv, committed Events after its processed marker,
-configuration, system prompt, Tool definitions with authorized Environment names, and a deterministic logical-time/seed envelope.
-It returns only an optional result. Old transcript/kv fields in turn output are rejected.
+`input.system` is the system prompt as plain text. `input.runtime` supplies logical time and a
+deterministic seed. Return `{ resultJson: undefined }` or a JSON-encoded optional result.
+Returning does not save local variables, update the transcript or acknowledge events.
 
-Use `brain:agentloop@0.2.0`. Event-triggered activations omit user input (`input-json` is `null`
-on WIT); do not synthesize a user message. There is one activation at a time per session.
-Read `kv["brain.last_activation"]` as the processed marker and advance it through `acknowledge`,
-not ordinary KV writes. Reading or returning does not acknowledge anything. Save selected
-transcript/state changes first, then acknowledge every considered event, including dismissed ones.
-The marker cannot move backwards or beyond committed history. Each acknowledgement returns
-the sequence of its durable marker write.
+## Call Brain services
 
-Each `ToolReturn` contains `call_id`, the original call `sequence`, ordered `events`, and `finished`.
-It can contain zero or multiple results. `tool_result_emitted.data.result` is a `ToolResult`;
-`tool_call_ended.data.outcome` describes completion. A successful empty finish is a boundary,
-not a null result. Present running status when needed and suppress already-presented events when
-draining history. A later observation is ordinary context, not another provider reply to the same
-Tool call. The official loops call the model for later results/completion and dismiss progress;
-custom loops can instead retain history until another user message.
+These are the synchronous JavaScript bindings used by the authoring guide:
 
-Await state services at the point the change should become durable. Each write returns its
-committed sequence; later failure preserves completed writes. Separate writes are not a transaction.
-Bindings expose `ctx.kv.read/put/delete`; the initial KV snapshot is a transport detail, not a
-second mutable author API. KV deletion changes the projection, never earlier journal records.
-Model calls record their actual request and result without changing the saved conversation, so an
-auxiliary classification or summary request cannot replace it accidentally. Save the selected
-conversation explicitly. Neither guest memory nor an unsubmitted local mutation survives activation.
-
-Keep native model blocks unchanged when retaining their context. Common image/PDF blocks and
-Tool-result media supply native model inputs through HTTPS URLs. The loop selects media from Tool
-output and preserves required media blocks in auxiliary summarization requests. URL text alone does
-not supply visual content. Brain does not host or refresh these files.
-See [Model](/brain/docs/concepts/model) for adapter compatibility and format reset.
-
-## Place the Component
-
-```ts
-import { agentloop, brainEnv, component } from "@aexhq/brain";
-import { z } from "zod";
-
-export const assistant = agentloop({
-  options: z.object({ compactAt: z.number().min(0).max(1) }),
-  implementation: component(new URL("./assistant.wasm", import.meta.url)),
-});
-
-const loop = assistant({ env: brainEnv({ name: "brain" }), compactAt: 0.8 });
+```js
+import * as host from "brain:agentloop/host@0.2.0";
 ```
 
-`component(...)` also accepts `Uint8Array`, which is useful when bytes come from an object store or
-another bundler:
+| Operation | Result and use |
+| --- | --- |
+| `host.model(requestJson)` | JSON model result; asks the session's model with your chosen messages |
+| `host.dispatch(callsJson)` | JSON array of tool returns, in call order |
+| `host.events(after)` | JSON event page; continue from `next_cursor` for more history |
+| `host.emit(kind, payloadJson)` | Committed sequence of your application-visible event |
+| `host.setTranscript(messagesJson)` | Committed sequence of the saved conversation change |
+| `host.kvRead(key)` | JSON value string, or `undefined` if absent |
+| `host.kvPut(key, valueJson)` | Committed sequence of one state write |
+| `host.kvDelete(key)` | Committed sequence; deleting an absent key is a no-op |
+| `host.acknowledge(through)` | Committed sequence of the processed-events marker |
+| `host.environments(requestJson)` | JSON response to an authorized environment operation |
+| `host.telemetry(recordJson)` | Best-effort diagnostics; not saved conversation history |
 
-```ts
-import { readFile } from "node:fs/promises";
+Sequence arguments and results use JavaScript `bigint`. Convert JSON event sequences with
+`BigInt(event.sequence)` before passing them to these bindings.
 
-const bytes = new Uint8Array(await readFile("assistant.wasm"));
-const assistant = agentloop({ implementation: component(bytes) });
+### Model calls
+
+```js
+const messages = JSON.parse(input.transcriptJson);
+const reply = JSON.parse(host.model(JSON.stringify({
+  messages, system: input.system, tools: [],
+})));
+messages.push(reply.message);
+host.setTranscript(JSON.stringify(messages));
 ```
 
-For `brainEnv`, the client admits raw bytes through `POST /v1/agentloops` and constructs
-`{ type: "brain_component", entrypoint: "turn", id }`. Admission is cached for that Component
-object. An HTTP Environment instead takes its own opaque implementation descriptor, such as
-`agentloop({ implementation: { type: "reference_agentloop" } })`. It requires no local admission
-and receives invocation-scoped callback grants when executed. See
-[Write an Environment](/brain/docs/guides/write-an-environment).
+This is an excerpt inside `turn`, after you have added any new user message. Model calls record
+their request and result but do not change the saved transcript. Save only the replies you want
+in the conversation; auxiliary summaries or classifications can remain separate.
 
-`ModelRequest.tools` contains full model-facing definitions. It does not grant execution authority.
-Dispatch always names both the canonical Tool and an authorized Environment. When multiple
-placements exist, implement an explicit selection policy or show the model a selector and unwrap
-its arguments before dispatch. The reference loop requires a single placement per Tool.
+Keep native model blocks unchanged when retaining context. Images and PDFs need their media
+blocks, not merely URL text. Brain does not host or refresh those files. See
+[models](/brain/docs/concepts/model) for format and provider compatibility.
 
-## Effect semantics
+### Tool calls
 
-The loop can request effects but does not perform Brain's model or Tool I/O itself. Brain durably
-commits the intent, sends it once, and commits observations before returning them. A Tool's return
-ends its synchronous phase; explicit finish ends its whole execution. Background results wake the
-loop without changing the stored model transcript automatically.
-Propagate host-service errors unless the loop has an explicit policy for presenting them to the
-model or user. Let the model or caller explicitly choose another attempt after seeing the failure or unknown
-outcome. Brain never makes that choice automatically.
+Each call names a tool and one authorized environment:
 
-## Test it
+```js
+const returns = JSON.parse(host.dispatch(JSON.stringify([{
+  call_id: "lookup-1", name: "lookup_order", environment: "app", input: { id: "A-1001" },
+}])));
+```
 
-Test policy outside Brain with fake host imports, then run the compiled Component through the real
-brain-env worker pool. Include cases for parallel Tool calls, unknown outcomes, cancellation, invalid JSON,
-restart between turns, and a fresh Wasm instance on every activation.
+Use names from `input.toolsJson`; the example assumes the app placed `lookup_order` in `app`.
+Each return contains `call_id`, the original call `sequence`, ordered `events`, and `finished`.
+Read `tool_result_emitted.data.result` for a result and `tool_call_ended.data.outcome` for completion.
+There may be several results or none. A successful empty finish is a completion boundary, not a
+null result. Inspect failures and uncertainty before presenting output as success.
 
-## Standalone reference
+A return releases the synchronous caller; the tool may keep running. Later results can activate
+the loop without user input. Decide whether to call the model or wait for another message, and
+avoid presenting the same observation twice. Model-facing tool definitions do not grant execution
+authority. With several placements, your loop must choose one; dynamically created environments
+also require their current `environment_sequence`.
 
-[`examples/reference-agentloop`](https://github.com/aexhq/brain/tree/main/examples/reference-agentloop)
-builds a usable model-driving Component using only Brain's public types and WIT. It reads failure
-observations into the transcript, dispatches requested Tools, and returns errors to the model.
-It has no Aex dependency. Build with `cargo build --manifest-path examples/reference-agentloop/Cargo.toml --target wasm32-wasip2 --release`.
+### Environment control
 
-Read imports are available during an activation. Collect observations before producing new effects
-so the loop does not chase its own Events indefinitely, then save state and acknowledge the processed
-prefix. Suspension leaves history readable; pending Tool observations can open a fresh activation.
-Brain coalesces wakeups for five milliseconds from the first pending commit. Commits and live
-acknowledgements remain immediate. Old activation services are fenced before final state capture.
+`host.environments` accepts the operations described in
+[environment control](/brain/docs/guides/environment-control), under the loop's grants. For example,
+`JSON.parse(host.environments('{"operation":"list"}'))` returns visible environment views.
+Tool and environment-handler contexts expose `ctx.environments`; this packaged loop binding uses
+`host.environments`. There is no additional universal loop `ctx` SDK.
 
-Admission is explicit when desired: call `await brain.admit(placedLoop)` and
-`await brain.admitTool(toolComponent)` before creation. Reuse those Component objects when placing
-extensions; they cache successful admission. Brain retains compiled and prelinked templates,
-never one session's credentials or heap.
+## Save state before acknowledging events
 
+Save transcript and key/value changes before calling `host.acknowledge(through)`. Acknowledge
+deliberately ignored events too. The processed marker, `brain.last_activation`, cannot move
+backwards or beyond committed history; update it through `acknowledge`, not a normal KV write.
 
-## Packaged Python
+Each write is saved independently before returning. A later failure preserves earlier writes;
+separate writes are not a transaction. Stored JSON `null` is distinct from an absent key.
+Local memory does not survive the next activation.
 
-`tools/build-python-fixtures.sh <output-directory>` uses pinned `componentize-py` to build the
-Python Agentloop and Tool in `tests/fixtures/python`. They run in the same worker pool as Rust
-Components and call Brain host services. Set `BRAIN_MAX_CORE_INSTANCES=1024` for these fixtures;
-the default eight instances cannot hold their interpreter and generated adapters.
+## Failure and cancellation
 
-These small examples use `--stub-wasi`: they demonstrate Python computation and Brain callbacks,
-and do not provide Python filesystem or network APIs. A package that needs WASI must link only
-the worker's supported interfaces and be placed in an Environment with the corresponding grants. Brain does not install
-Python or pip packages at runtime. Every execution has a fresh interpreter; persist Agentloop
-state through `kv-put` and `kv-delete` and retain files only in an explicitly granted Environment workspace.
+Brain records requested effects before dispatch and records observations before returning them.
+It sends each effect once and never automatically retries an uncertain action. Let the model or
+caller explicitly decide another attempt after inspecting a failure.
+
+Propagate service errors unless your loop has a deliberate handling policy. Cancellation or a
+reached budget makes service calls fail with `cancelled` or `decision_limit`; cancellation does
+not undo external actions. Background tools retain their original deadlines and budgets.
+
+Test a second message, background activation, failed tool and cancellation as well as the first
+answer. The [Rust reference loop](https://github.com/aexhq/brain/tree/main/examples/reference-agentloop)
+shows a complete model-and-tool policy; the authoring guide supplies build commands.
+
+## Other bindings
+
+Rust and Python entry points and build requirements are in the
+[language examples](/brain/docs/guides/write-a-loop#language-choices). An HTTP-hosted loop uses
+the [Environment callback API](/brain/docs/reference/environment-protocol#invocation-services).
+Names and asynchronous behavior differ between bindings.
+
+For authors of new language or runtime adapters, the packaged binding specification is
+`@aexhq/brain/contracts/agentloop.wit` (`brain:agentloop@0.2.0`), and JSON payload schemas are in
+`@aexhq/brain/contracts/session.json`. Ordinary loop authors can use the operations above without
+reading those specifications.

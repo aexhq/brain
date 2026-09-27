@@ -4,13 +4,14 @@ description: Choose a model and connect your provider account.
 ---
 
 Bring a model-provider key and choose a model when you create the session. Your provider bills
-model usage to that key.
+model usage to that key. This fragment extends the [quickstart](/brain/docs/quickstart), which
+checks `OPENAI_API_KEY` before assigning it to `apiKey`:
 
-```js
+```ts
 model: {
   provider: "openai",
   name: "gpt-5-mini",
-  apiKey: process.env.OPENAI_API_KEY,
+  apiKey,
 },
 ```
 
@@ -34,7 +35,7 @@ the provider and your account.
 
 Choose a model that supports the input, then pass an accessible HTTPS URL:
 
-```js
+```ts
 await session.send({
   message: "Describe this image.",
   media: [{ type: "image", url: "https://your-app.example/image.png" }],
@@ -42,8 +43,7 @@ await session.send({
 ```
 
 Replace the example URL with your own file and keep it accessible while the conversation needs
-it. Aex can [upload attachments](https://github.com/aexhq/aex/blob/main/docs/attachments.md)
-for you. Standalone Brain does not host files.
+it. Standalone Brain does not host files; hosted conveniences are covered by the [Aex docs](/docs).
 
 See [model compatibility](/brain/docs/reference/models) for PDF formats, provider protocols
 and exact request behavior.

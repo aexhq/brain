@@ -5,7 +5,7 @@ so a change that would be a breaking change later is usually just a change today
 
 ## Setup
 
-You need Rust 1.97 and Node 22 or newer.
+You need Rust 1.97.1 and Node 22 or newer.
 
 ```sh
 cargo build --workspace
@@ -14,18 +14,21 @@ npm ci
 
 ## Verification
 
-Everything CI runs, in the order it will fail:
+Run the local checks before opening a pull request:
 
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo test --workspace --all-targets
 npm ci
+npm audit --audit-level=high
+npm run gen
 npm test
 npm run package-smoke
 ```
 
-CI additionally runs real loop worker and HTTP lifecycle integration tests, the locked Python
+Check that generation leaves no uncommitted changes in the generated contracts, SDK types or
+configuration reference. CI also runs real loop worker and HTTP lifecycle integration tests, the locked Python
 Environment preparation test, and an image smoke test. Run the Python check with
 `BRAIN_TEST_UV=/path/to/uv node --test examples/python-environment.test.mjs`; CI installs uv 0.8.15. Performance probes are optional diagnostics during pre-launch iteration. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
@@ -90,8 +93,9 @@ The API reference is not written by hand. It is generated from
 at site build time, so it
 cannot drift from the contract.
 
-Code in the documentation comes from real files in [`examples/`](examples), which `npm test` checks.
-Do not paste a snippet into a page — reference the example.
+Keep complete runnable programs in [`examples/`](examples). Task excerpts can show the relevant
+code with a link to the full program and explicit prerequisites. Reuse the canonical setup rather
+than maintaining another complete program. Follow the [writing guide](references/documentation.md).
 
 ## Conventions
 

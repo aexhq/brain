@@ -1,4 +1,4 @@
 {
-  "title": "Concepts",
-  "pages": ["sessions", "agent-loop", "model", "tool", "environment"]
+  "title": "Build an application",
+  "pages": ["sessions", "tool", "environment", "model", "agent-loop"]
 }

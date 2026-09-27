@@ -3,9 +3,9 @@ title: Environment protocol
 description: HTTP operations, callbacks and resource lifecycle.
 ---
 
-An Environment extension has a factory that describes how to reach it and an implementation
-that answers `environment/v1`. Use `brainEnv` for packaged Wasm Components or `hostEnv` for
-JavaScript functions in a browser or application process.
+This reference is for authors of environment services: HTTP endpoints that run code or manage
+resources for Brain. Start with [Write an environment](/brain/docs/guides/write-an-environment).
+To use an existing provider, follow [Choose an environment](/brain/docs/concepts/environment).
 
 ## Factory
 
@@ -21,15 +21,17 @@ export const sandbox = environment({
 });
 
 const env = sandbox({ name: "sandbox", url: "https://sandbox.example",
-  token: process.env.SANDBOX_TOKEN, image: "node:22" });
+  token: "your-service-token", image: "node:22" });
 ```
 
-Brain posts to `{url}/v1/operations`. Credentials are sealed by the server and never journaled.
+Load the real service token from your credential store. Brain posts to `{url}/v1/operations`.
+The service must authenticate requests; the factory alone does not enforce authentication.
+Credentials are sealed by the server and never journaled.
 Configuration is recorded and forwarded unread. The Environment name is unique within its session.
 
 ## Operations
 
-The Rust types in `brain-protocol` generate the published Environment schemas. A command has
+A command has
 `contract: "environment/v1"` and `operation: { session_id, environment, sequence, request }`.
 New operations also carry the pinned `binding` reference, current `configuration`, source
 `template`, operation-scoped `context` and binding-scoped `reporter` capabilities. The template
@@ -83,8 +85,9 @@ edit model messages. Event-triggered Agentloop input omits the user input field.
 `set_transcript` takes a message array. `kv_put` takes `{ key, value }`; `kv_delete` takes
 an identifier string. Mutations return the committed sequence. `kv_read` takes an identifier
 string and returns `{}` for absence or `{ value }` for a stored value, including JSON null.
-The author binding exposes these as `ctx.kv.read/put/delete`; reads after an awaited mutation
-observe it. These services belong only to the Agentloop. Turn output is `{ result? }`, with
+Reads after an awaited mutation observe it. These services belong only to the Agentloop.
+The packaged JavaScript loop uses the [loop API](/brain/docs/reference/agentloop-contract)
+names `host.kvRead`, `host.kvPut` and `host.kvDelete`. Turn output is `{ result? }`, with
 no transcript or KV snapshot. Deletion appends a journal mutation, preserving earlier records.
 
 The token belongs to one invocation and is revoked on completion or cancellation. It is never
@@ -135,8 +138,8 @@ watermark and coalescing mechanism; diagnostics alone do not. See
 
 Brain commits each operation before delivery and sends it once. Identify it by session and
 sequence, retain uncertainty when an effect may have occurred, and never automatically retry
-an unknown execution. Retained files belong to `(session_id, environment)`; invocation state
-and callback credentials belong only to the current call.
+an unknown execution. The provider defines the scope and lifetime of retained files;
+invocation state and callback credentials belong only to the current call.
 
 The [lazy workspace example](https://github.com/aexhq/brain/blob/main/examples/lazy-environment.mjs)
 tests concurrent first allocation and caller-controlled cleanup. The

@@ -6,17 +6,20 @@ description: Run sessions inside a Rust service you already own.
 Use the server when you want a process to talk to. Use the crate when another Rust service already
 owns startup, configuration, and deployment, and you want sessions inside it.
 
-The crate is one session at a time. Your service opens the sessions directory, builds the
-runtime every session shares, and starts each session with both:
+Each `Session` represents one conversation. Your service can manage multiple sessions sharing
+one runtime. This Rust excerpt assumes you have configured the session directory, telemetry and
+the loop, model and tool executors described below:
 
 ```rust
-// One writer thread and one live feed for the whole process.
+use std::sync::Arc;
+
+let limits = brain::Limits::default();
 let writer = brain::Writer::spawn_with(&limits);
 let feed = Arc::new(brain::Feed::with_limits(telemetry.clone(), &limits));
 
-// Every limit has a default; a deployment overrides the fields it knows better.
-let limits = brain::Limits::default();
 let runtime = Arc::new(brain::SessionRuntime {
+    environment_control: None,
+    tool_executions: Arc::default(),
     limits: limits.clone(),
     loop_executor,
     model_executor,
@@ -25,8 +28,6 @@ let runtime = Arc::new(brain::SessionRuntime {
     telemetry,
 });
 
-// A new session: its own directory under `sessions/`, its genesis record, then the
-// Environments you set up, then the configuration that was actually granted.
 let store = brain::LocalSessionStore::create(
     &sessions_dir.join(session_id.as_str()),
     session_id,
@@ -56,8 +57,9 @@ composition. One local writer is supported; cross-server ownership belongs to th
 
 ## You supply the ports
 
-`loop_executor`, `model_executor`, and `tool_executor` are the same seams the server fills in. Fill
-them differently and you get a different deployment without forking the runtime. The loop executor
+Supply `loop_executor`, `model_executor`, and `tool_executor` implementations for your deployment.
+Set `environment_control` when your host supports resource operations; `None` leaves them unavailable.
+The loop executor
 receives the Agentloop, the Environment entry it is placed in, and the session's `TurnServices`,
 and runs the loop against them; the server's executor resolves the entry to its Environment
 adapter, and yours could run a trusted loop in-process. The model executor receives the session id

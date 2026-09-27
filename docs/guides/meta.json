@@ -1,11 +1,12 @@
 {
-  "title": "Guides",
+  "title": "Customize and operate",
   "pages": [
     "write-a-tool",
+    "subagents",
+    "environment-control",
     "write-a-loop",
     "write-an-environment",
-    "environment-control",
-    "subagents",
-    "embed"
+    "embed",
+    "operate"
   ]
 }
