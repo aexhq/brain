@@ -12,8 +12,8 @@
     "test": "tsc --noEmit --strict --module NodeNext --target ES2023 order.ts && node --check example-brain.mjs && node --check basic-session.mjs && node --check event-history.mjs && node --check streaming-session.mjs && node --check submitted-turn.mjs && node --check session-lifecycle.mjs && node --check raw-http.mjs && node --test lazy-environment.test.mjs loop-environment.test.mjs"
   },
   "dependencies": {
-    "@aexhq/brain": "0.34.0",
-    "@aexhq/agentloop-pi": "7.2.2",
+    "@aexhq/brain": "0.34.1",
+    "@aexhq/agentloop-pi": "7.2.3",
     "zod": "4.4.3"
   },
   "engines": {
