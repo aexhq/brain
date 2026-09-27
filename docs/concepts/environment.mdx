@@ -10,7 +10,7 @@ your application's database connection, a workspace with files, or a browser.
 | --- | --- | --- |
 | `hostEnv` | Functions using your app's data and dependencies | Your JavaScript or TypeScript process |
 | `clientBrowser` | Functions using the user's current page or editor | The user's connected browser tab |
-| [HTTP tools](https://github.com/aexhq/extensions/tree/main/packages/env-http) | Functions served by a request handler, independently of the submitting client | An HTTP endpoint and the HTTP environment bridge |
+| [Application tools](https://github.com/aexhq/extensions/tree/main/packages/env-http) | Functions in your deployed backend, independently of the submitting client | An authenticated HTTPS handler and the HTTP environment bridge |
 | `brainEnv` | Ready-made loops and packaged extensions | The Brain server |
 | An environment extension | A browser, sandbox or another runtime | The extension's service |
 
@@ -28,8 +28,9 @@ share its workspace or resources. Use separate environments when they need separ
 
 Application functions have the process's existing permissions and working directory; a named
 `hostEnv` does not isolate them. Keep that process connected. For short-lived app requests, the
-HTTP tool extension lets Brain call a separately deployed endpoint. Its handlers return plain
-JSON and finish within the request; they do not use `ctx.finish()` or continue in the background.
+Application tool extension lets Brain call a separately deployed endpoint. Reuse ordinary Tool
+declarations and finish with `await ctx.finish(value)` within the request. The extension handles
+delivery and completion; it does not keep application work alive after the request ends.
 
 ## Run a Tool in the user's page
 
