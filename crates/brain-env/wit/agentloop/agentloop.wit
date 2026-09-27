@@ -1,14 +1,14 @@
 package brain:agentloop@0.2.0;
 
-// An agentloop runs one whole turn. Brain calls `turn` once per user message with the
-// transcript as it stands, the loop's kv, and every event recorded since the loop
-// last ran; inside the call the loop asks Brain to call the model, dispatch tools,
+// Brain calls `turn` for a user message or actionable background observations with
+// the current transcript, the loop's kv, and events after its processed-through marker.
+// Inside the call the loop asks Brain to call the model, dispatch tools,
 // save transcript and kv, emit events and publish telemetry as often as it likes.
 // State writes commit before returning; turn completion returns only its result.
 //
 // Every payload is JSON in a string, in the shapes `contracts/session/v1` defines:
 // the transcript is a list of neutral messages, a model request is a ModelRequest,
-// a dispatch is a list of ToolInvocation and answers with a list of ToolResult.
+// a dispatch is a list of ToolInvocation and answers with a list of ToolReturn.
 
 interface types {
   record runtime-envelope {
@@ -17,13 +17,13 @@ interface types {
   }
 
   record turn-input {
-    // JSON of the user-input record: {"message": string}.
+    // JSON of the user-input record, or null for a background activation.
     input-json: string,
     // JSON array of the neutral messages the transcript holds now.
     transcript-json: string,
     // JSON object: the loop's kv, one JSON value per key.
     kv-json: string,
-    // JSON array of the events recorded since the loop's last activation, oldest first.
+    // JSON array of events after the processed-through marker, oldest first.
     events-json: string,
     configuration-json: string,
     // The system prompt the session was created with.
@@ -64,7 +64,7 @@ interface host {
   // One model call. `request-json` is a ModelRequest; the answer is a ModelResult.
   model: func(request-json: string) -> result<string, turn-error>;
   // One or many tool calls, run together. `calls-json` is a list of ToolInvocation;
-  // the answer is a list of ToolResult in the same order. Calling this once per call
+  // the answer is a list of ToolReturn in the same order. Calling this once per call
   // is sequential dispatch.
   dispatch: func(calls-json: string) -> result<string, turn-error>;
   // The loop's own event on the session's feed. Brain's lifecycle and effect kinds
