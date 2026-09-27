@@ -527,10 +527,22 @@ fn idempotency_key(headers: &HeaderMap) -> Result<String, HttpError> {
     path = "/v1/sessions",
     operation_id = "createSession",
     summary = "Create a session",
+    description = "Create a conversation using an admitted agent loop. In this example, replace the component id with the id returned by uploading your loop to POST /v1/agentloops, and replace the model API key. Loop configuration depends on the chosen package; the empty object suits the reference loop.",
     tag = "Sessions",
     security(("serverToken" = [])),
     params(("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
-    request_body = contract::CreateSessionRequest,
+    request_body(content = contract::CreateSessionRequest, example = json!({
+        "agentloop": {
+            "implementation": {
+                "type": "brain_component", "entrypoint": "turn",
+                "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "configuration": {}, "environment": "brain"
+        },
+        "model": {"provider": "openai", "name": "gpt-4.1-mini", "api_key": "YOUR_MODEL_API_KEY"},
+        "tools": [],
+        "environments": [{"name": "brain", "driver": "brain", "lifecycle": "automatic", "configuration": {}}]
+    })),
     responses(
         (status = 200, description = "Created session", body = contract::SessionSummary),
         (status = "default", description = "Structured error", body = contract::ApiError)

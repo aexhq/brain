@@ -58,6 +58,22 @@ clients, terminate HTTPS at your proxy and forward the `Authorization` header. A
 requests send `Authorization: Bearer <BRAIN_API_TOKEN>`. Give the token only to trusted callers:
 it grants access to the server, not an individual tenant or session.
 
+Choose your own server address when copying API reference examples. For the local server above:
+
+```sh
+export BRAIN_URL='http://127.0.0.1:8080'
+curl --fail --silent --show-error \
+  -H "Authorization: Bearer $BRAIN_API_TOKEN" "$BRAIN_URL/v1/sessions"
+```
+
+To read a session's recorded events, set `SESSION_ID` to its returned id:
+
+```sh
+curl --fail --silent --show-error \
+  -H "Authorization: Bearer $BRAIN_API_TOKEN" \
+  "$BRAIN_URL/v1/sessions/$SESSION_ID/events?after=0"
+```
+
 The repository's `compose.yaml` builds the local source. Before `docker compose up --build -d`,
 set `BRAIN_API_TOKEN` and `BRAIN_DATA_DIR` to an absolute host directory. On Linux, make the
 directory writable by uid/gid 10001, the image's user. To run a published image, set
