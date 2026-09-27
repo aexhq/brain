@@ -4,6 +4,7 @@ export {
   agentloop,
   bindTool,
   brainEnv,
+  clientBrowser,
   component,
   environment,
   hostEnv,

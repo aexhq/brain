@@ -281,8 +281,27 @@ export class Sessions {
   constructor(private readonly client: BrainClient) {}
 
   async create(options: CreateSessionOptions, operation: OperationOptions = {}): Promise<SessionHandle> {
-    validateSessionOptions(options);
     const key = keyOf(operation);
+    const prepared = await this.compose(options);
+    const host = prepared.hosted ? await this.client.register() : undefined;
+    const request = prepared.request(host?.hostId);
+    const session = await this.client.request<WireSession>("POST", "/v1/sessions", request, key);
+    host?.pump.register(session.session_id, prepared.registry);
+    return new SessionHandle(this.client, toSessionState(session),
+      host === undefined ? undefined : () => host.unregister(session.session_id));
+  }
+
+  /** Admit Components and compile a request for a separately authorized host, without creating a session. */
+  async prepare(options: CreateSessionOptions, hostId?: string): Promise<CreateSessionRequest> {
+    const prepared = await this.compose(options);
+    if (prepared.hosted && (typeof hostId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(hostId))) {
+      throw new TypeError("preparing host Tools requires a hostId");
+    }
+    return prepared.request(hostId);
+  }
+
+  private async compose(options: CreateSessionOptions) {
+    validateSessionOptions(options);
     const loop = inspectAgentloop(options.agentloop);
     const explicit = [loop.environment, ...(options.tools ?? []).map(placed => inspectTool(placed).environment)]
       .map(inspectEnvironment).filter(env => !env.automatic).map(env => env.name);
@@ -323,15 +342,7 @@ export class Sessions {
       if (tool.handler !== undefined && tool.contract !== undefined) registry.register(inspectEnvironment(tool.environment).name, tool.contract, tool.handler);
     }
     const hosted = [...environments.keys()].some((environment) => inspectEnvironment(environment).driver.driver === "host");
-    const host = hosted ? await this.client.register() : undefined;
-    const request = compileSession(options, implementation, environments, compiledTools, host?.hostId);
-    const session = await this.client.request<WireSession>("POST", "/v1/sessions", request, key);
-    host?.pump.register(session.session_id, registry);
-    return new SessionHandle(
-      this.client,
-      toSessionState(session),
-      host === undefined ? undefined : () => host.unregister(session.session_id),
-    );
+    return { hosted, registry, request: (hostId?: string) => compileSession(options, implementation, environments, compiledTools, hostId) };
   }
 
   /** Reopens a session. With `tools`, the functions this host holds are attached again:

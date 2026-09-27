@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { inspectTool } from "./extensions.js";
 import { HostToolRegistry, type InvokeFrame } from "./host.js";
+export type { InvokeFrame } from "./host.js";
 
 const packageName = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u;
 export const nodePackage = z.strictObject({
@@ -49,7 +50,17 @@ export async function loadTool(implementation: unknown, directory: string): Prom
 /** Execute the ordinary Tool lifecycle through the Environment's invocation services. */
 export async function runTool(implementation: unknown, directory: string, frame: Omit<InvokeFrame, "name">): Promise<void> {
   const tool = await loadTool(implementation, directory);
+  await runToolHandler(tool, frame);
+}
+
+/** Run an already-declared Tool with the same completion contract as a packaged Tool. */
+export async function runToolHandler(tool: ReturnType<typeof inspectTool>, frame: Omit<InvokeFrame, "name">, signal?: AbortSignal): Promise<void> {
+  if (tool.handler === undefined || tool.contract === undefined) throw new TypeError("Tool needs a native run handler");
+  signal?.throwIfAborted();
   const registry = new HostToolRegistry();
-  registry.register(frame.environment, tool.contract!, tool.handler!);
-  await registry.run({ ...frame, name: tool.definition.name });
+  registry.register(frame.environment, tool.contract, tool.handler);
+  const cancel = () => registry.cancel(frame.sequence);
+  signal?.addEventListener("abort", cancel, { once: true });
+  try { await registry.run({ ...frame, name: tool.definition.name }); }
+  finally { signal?.removeEventListener("abort", cancel); }
 }
