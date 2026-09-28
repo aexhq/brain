@@ -12,6 +12,6 @@
     "build": "tsc --module NodeNext --target ES2023 --strict --declaration --outDir dist runtime.ts && brain-tools",
     "prepack": "npm run build"
   },
-  "dependencies": { "@aexhq/brain": "0.35.1", "zod": "4.4.3" },
+  "dependencies": { "@aexhq/brain": "0.36.0", "zod": "4.4.3" },
   "devDependencies": { "typescript": "^5.9.2", "@types/node": "^24.3.0" }
 }

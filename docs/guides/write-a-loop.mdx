@@ -72,17 +72,21 @@ shows TypeScript bundling with esbuild.
 In the [quickstart](/brain/docs/quickstart), replace the Pi import with this declaration:
 
 ```js
-import { agentloop, component } from "@aexhq/brain";
+import { agentloop, brainEnv, component } from "@aexhq/brain";
 
 const custom = agentloop({
   implementation: component(new URL("./loop.wasm", import.meta.url)),
 });
 ```
 
-Change `agentloop: pi(...)` to `agentloop: custom({ env: brainEnv({ name: "brain" }) })`,
+Change `agentloop: pi()` to `agentloop: custom({ env: brainEnv({ name: "brain" }) })`,
 remove the `tools` setting, and change the prompt to `"Say hello in one sentence."`.
 Run `npx tsx order.ts` (or `node order.mjs` for JavaScript): the transcript contains your message and the model's reply.
 Rebuild and create a new session to try each change; existing sessions keep their original loop.
+
+A published factory can supply an Environment default, as Pi does, while letting callers
+override it. Keep the underlying `agentloop()` declaration and Component object outside
+the factory so repeated calls reuse the same admitted code.
 
 ## Language choices
 

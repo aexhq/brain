@@ -19,22 +19,25 @@ your application's database connection, a workspace with files, or a browser.
 In the [quickstart](/brain/docs/quickstart), the loop runs on Brain and the lookup runs in your app:
 
 ```ts
-agentloop: pi({ env: brainEnv({ name: "brain" }) }),
+agentloop: pi(),
 tools: [lookupOrder()],
 ```
 
+For explicit placement, pass `{ env: brainEnv({ name: "brain" }) }` to Pi.
 `name` identifies the environment within that session. Reuse an environment when tools should
 share its workspace or resources. Use separate environments when they need separate access.
 
 Application functions have the process's existing permissions and working directory; a named
-`hostEnv` does not isolate them. Keep that process connected. For short-lived app requests, the
+`hostEnv` does not isolate them. Keep that process alive while its tools are needed;
+[session connection settings](/brain/docs/concepts/sessions#let-an-idle-client-disconnect) control
+when idle tools disconnect and how later work reconnects. For short-lived app requests, the
 Application tool extension lets Brain call a separately deployed endpoint. Reuse ordinary Tool
 declarations and finish with `await ctx.finish(value)` within the request. The extension handles
 delivery and completion; it does not keep application work alive after the request ends.
 
 ## Run a Tool in the user's page
 
-With Brain SDK 0.35.1 or later, select `clientBrowser({ name: "editor" })` for a Tool such as reading the current selection.
+Select `clientBrowser({ name: "editor" })` for a Tool such as reading the current selection.
 It uses the existing host connection. Create the session with `sessions.create()` as usual;
 the SDK opens its command stream and sends results automatically. Closing the page makes its
 Tools unavailable while the stored session remains. A page that only displays session progress
