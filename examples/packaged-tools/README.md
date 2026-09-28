@@ -23,7 +23,7 @@ and the matching SDK version:
 ```sh
 npm init -y
 npm pkg set type=module
-npm install /path/to/brain-example-files-1.0.0.tgz @aexhq/brain@0.34.1
+npm install /path/to/brain-example-files-1.0.0.tgz @aexhq/brain@0.35.1
 npm install --save-dev typescript@5.9.2 @types/node@22
 ```
 
