@@ -50,6 +50,7 @@ const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
         get_agentloop,
         register_host,
         host_commands,
+        suspend_host,
         resolve_host,
         emit_host_event,
         host_model,
@@ -190,6 +191,7 @@ fn host_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>, body_limit: u
     let mut router = Router::new();
     for (path, method) in [
         documented::<__path_host_commands, _, _, _>(routed, host_commands::<A>),
+        documented::<__path_suspend_host, _, _, _>(routed, suspend_host::<A>),
         documented::<__path_resolve_host, _, _, _>(routed, resolve_host::<A>),
         documented::<__path_emit_host_event, _, _, _>(routed, emit_host_event::<A>),
         documented::<__path_host_model, _, _, _>(routed, host_model::<A>),
@@ -307,15 +309,23 @@ async fn host_commands<A: BrainApi>(
         .connect_host(host_id, bearer(&headers)?)
         .await
         .map_err(HttpError)?;
-    let stream = futures_util::stream::unfold(Some(connection), |connection| async move {
-        let mut connection = connection?;
+    let stream = futures_util::stream::unfold(Some((connection, true)), |state| async move {
+        let (mut connection, initial) = state?;
+        if initial {
+            let frame = activity_sse(&connection.activity.borrow_and_update());
+            return Some((frame, Some((connection, false))));
+        }
         tokio::select! {
             biased;
             command = connection.commands.recv() => command.map(|command| {
-                let frame = host_sse(command);
-                (frame, Some(connection))
+                (host_sse(command), Some((connection, false)))
             }),
             _ = &mut connection.displaced => None,
+            changed = connection.activity.changed() => {
+                changed.ok()?;
+                let frame = activity_sse(&connection.activity.borrow_and_update());
+                Some((frame, Some((connection, false))))
+            }
         }
     });
     Ok(Sse::new(stream).into_response())
@@ -421,6 +431,46 @@ async fn host_call<A: BrainApi>(
     ApiJson(request): ApiJson<brain_protocol::HostServiceRequest>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
     api.host_call(host_id, bearer(&headers)?, request)
+        .await
+        .map(Json)
+        .map_err(HttpError)
+}
+
+fn activity_sse(
+    activity: &brain_protocol::HostActivity,
+) -> Result<SseEvent, std::convert::Infallible> {
+    Ok(SseEvent::default()
+        .event("activity")
+        .json_data(activity)
+        .expect("Host activity is serializable"))
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/hosts/{host_id}/suspend",
+    operation_id = "suspendHost",
+    summary = "Suspend the current host connection if its sessions have drained",
+    tag = "Hosts",
+    security(("hostToken" = [])),
+    params(("host_id" = contract::HostId, Path)),
+    request_body = contract::HostSuspendRequest,
+    responses(
+        (status = 200, description = "Whether the idle connection was suspended", body = contract::HostSuspendResult),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
+async fn suspend_host<A: BrainApi>(
+    State(api): State<A>,
+    Path(host_id): Path<HostId>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<brain_protocol::HostSuspendRequest>,
+) -> Result<Json<brain_protocol::HostSuspendResult>, HttpError> {
+    if request.connection == 0 {
+        return Err(HttpError(brain_protocol::ApiError::invalid_request(
+            "connection must be positive",
+        )));
+    }
+    api.suspend_host(host_id, bearer(&headers)?, request)
         .await
         .map(Json)
         .map_err(HttpError)

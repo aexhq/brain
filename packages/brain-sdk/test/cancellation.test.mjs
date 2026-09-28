@@ -18,7 +18,7 @@ test("owned turn cancellation waits for admission and sends one cancellation", a
     finished.resolve(Response.json({ session_id: "child", status: "idle", last_sequence: 5 }));
     return new Response(null, { status: 204 });
   } });
-  const session = new SessionHandle(client, { id: "child", status: "idle", lastSequence: 1 });
+  const session = new SessionHandle(client, { id: "child", status: "idle", lastSequence: 1 }, operation => operation());
   const parent = new AbortController();
   const sending = session.send("work", { signal: parent.signal });
   parent.abort();
@@ -32,6 +32,6 @@ test("owned turn cancellation waits for admission and sends one cancellation", a
 
 test("an already cancelled owner cannot start child work", async () => {
   const client = new Brain({ baseUrl: "https://brain.example", fetch: () => { throw new Error("must not dispatch"); } });
-  const session = new SessionHandle(client, { id: "child", status: "idle", lastSequence: 1 });
+  const session = new SessionHandle(client, { id: "child", status: "idle", lastSequence: 1 }, operation => operation());
   await assert.rejects(session.send("work", { signal: AbortSignal.abort() }), { name: "AbortError" });
 });

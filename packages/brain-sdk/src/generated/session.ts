@@ -802,6 +802,16 @@ export interface ExecutionCall {
   method: string;
 }
 /**
+ * Connection-scoped transport activity; this is not a journal Event.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "HostActivity".
+ */
+export interface HostActivity {
+  connection: number;
+  idle: boolean;
+}
+/**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "HostCommand".
  */
@@ -900,6 +910,20 @@ export interface HostServiceRequest {
   call: ExecutionCall;
   sequence: number;
   session_id: SessionId;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "HostSuspendRequest".
+ */
+export interface HostSuspendRequest {
+  connection: number;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "HostSuspendResult".
+ */
+export interface HostSuspendResult {
+  suspended: boolean;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema

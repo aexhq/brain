@@ -102,3 +102,24 @@ pub struct HostServiceRequest {
     pub sequence: u64,
     pub call: crate::ExecutionCall,
 }
+
+/// Connection-scoped transport activity; this is not a journal Event.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostActivity {
+    #[schemars(range(min = 1))]
+    pub connection: u64,
+    pub idle: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostSuspendRequest {
+    #[schemars(range(min = 1))]
+    pub connection: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub struct HostSuspendResult {
+    pub suspended: bool,
+}

@@ -73,6 +73,10 @@ impl ServerApi {
     pub fn new(resources: ServerResources) -> Result<Self, brain::Error> {
         let sessions = brain_sessions::Sessions::new(brain_sessions::SessionResources {
             sessions_dir: resources.sessions_dir.clone(),
+            activity: Some({
+                let hosts = resources.hosts.clone();
+                Arc::new(move |session, active| hosts.observe_activity(session, active))
+            }),
             writer: resources.writer.clone(),
             feed: resources.feed.clone(),
             session_runtime: resources.session_runtime.clone(),
@@ -180,6 +184,17 @@ impl BrainApi for ServerApi {
         token: String,
     ) -> Result<brain_http::HostConnection, ApiError> {
         self.resources.hosts.connect(&host_id, &token)
+    }
+
+    async fn suspend_host(
+        &self,
+        host_id: HostId,
+        token: String,
+        request: brain_protocol::HostSuspendRequest,
+    ) -> Result<brain_protocol::HostSuspendResult, ApiError> {
+        self.resources
+            .hosts
+            .suspend(&host_id, &token, request.connection)
     }
 
     async fn resolve_host(

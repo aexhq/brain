@@ -102,6 +102,8 @@ pub(crate) mod contract {
         HostEvent,
         HostEventAck,
         HostRegistration,
+        HostSuspendRequest,
+        HostSuspendResult,
         HostResult,
         HostModelRequest,
         HostServiceRequest,

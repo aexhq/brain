@@ -7,7 +7,7 @@ A session is one conversation and the work the agent does for it. It keeps the m
 tools you selected, along with messages and progress. Save its ID to open it later.
 
 Complete the [quickstart](/brain/docs/quickstart) first. These TypeScript/JavaScript excerpts use
-its `brain` and `session`, inside the `try` block before ending them.
+its `brain` and `session`. Keep the client alive to send more messages.
 
 ## Send messages and read the answer
 
@@ -21,7 +21,7 @@ Each message starts a turn: the loop can call the model and tools before finishi
 waits for that turn and returns session state, not the answer. Read the transcript for messages.
 An idle session can have a failed turn; inspect `turn_failed` events as in the quickstart, or use
 `outcome(sequence)` for a submitted turn. Request errors reject the promise; catch them at your
-application boundary and close the client in `finally`.
+application boundary. Close the client when your application is finished with it.
 
 ## Stream progress
 
@@ -96,6 +96,29 @@ if (outcome.status === "ended") {
 background jobs may still have failed or be running. `answer` is present only if the loop emitted
 an assistant answer event. The [complete submission example](https://github.com/aexhq/brain/blob/main/examples/submitted-turn.mjs)
 closes the submitter, polls from another client, checks failure and keeps the transcript.
+
+## Let an idle client disconnect
+
+The SDK releases its shared tool connection after five seconds without active turns,
+unfinished tools or their follow-up work. Session handles, callbacks and history remain
+available. A later `send()`, `submit()` or Environment operation through the same live
+client reconnects before starting work. Reading history does not open the tool connection.
+
+Configure the timeout when creating the client:
+
+```ts
+const brain = new Brain({
+  baseUrl: "http://127.0.0.1:8080", token: "quickstart",
+  connectionIdleTimeoutMs: 5_000,
+});
+```
+
+Use `connectionIdleTimeoutMs: 0` when other callers or future autonomous events must
+be able to invoke this client's tools. A disconnected browser cannot be woken by another
+caller. Closing the tab or process loses its callbacks; restore them as described below.
+The timeout does not end sessions or dispose of Environments. Event subscriptions remain
+open until you stop iteration or abort their signal. Explicit `brain.close()` disposes of
+the client permanently and later operations reject.
 
 ## Reattach application tools
 

@@ -17,6 +17,8 @@ export interface BrainOptions {
   baseUrl: string;
   token?: string;
   timeoutMs?: number;
+  /** Idle tool connection timeout. Defaults to 5000 ms; 0 keeps it connected. */
+  connectionIdleTimeoutMs?: number;
   fetch?: typeof globalThis.fetch;
   /** A host registration to resume, from `credentials()` of an earlier client. */
   credentials?: HostCredentials;
@@ -24,6 +26,8 @@ export interface BrainOptions {
 
 /** What identifies this process as a host across clients and restarts. */
 export interface HostCredentials { readonly hostId: string; readonly token: string }
+
+type WithHost = <T>(operation: () => Promise<T>) => Promise<T>;
 
 interface Host {
   readonly hostId: string;
@@ -39,6 +43,7 @@ export class BrainClient {
   readonly sessions: Sessions;
   private readonly token?: string;
   private readonly timeoutMs?: number;
+  private readonly connectionIdleTimeoutMs: number;
   private readonly transport: typeof globalThis.fetch;
   private readonly agentloops = new WeakMap<object, Promise<string>>();
   private readonly tools = new WeakMap<object, Promise<string>>();
@@ -61,6 +66,9 @@ export class BrainClient {
     }
     if (options.token !== undefined && options.token.trim() === "") throw new TypeError("token cannot be empty");
     if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1)) throw new TypeError("timeoutMs must be a positive safe integer");
+    const connectionIdleTimeoutMs = options.connectionIdleTimeoutMs === undefined ? 5000 : options.connectionIdleTimeoutMs;
+    if (!Number.isInteger(connectionIdleTimeoutMs) || connectionIdleTimeoutMs < 0 || connectionIdleTimeoutMs > 2_147_483_647) throw new TypeError("connectionIdleTimeoutMs must be an integer from 0 to 2147483647");
+    this.connectionIdleTimeoutMs = connectionIdleTimeoutMs;
     this.token = options.token;
     this.timeoutMs = options.timeoutMs;
     this.transport = options.fetch ?? globalThis.fetch.bind(globalThis);
@@ -68,13 +76,13 @@ export class BrainClient {
       if (!options.credentials.hostId || !options.credentials.token) throw new TypeError("credentials require hostId and token");
       this.registration = { host_id: options.credentials.hostId, token: options.credentials.token };
     }
-    this.sessions = new Sessions(this);
+    this.sessions = new Sessions(this, operation => this.withHost(operation));
     Object.freeze(this.sessions);
   }
 
   withToken(token: string): BrainClient {
     this.controller.signal.throwIfAborted();
-    return new BrainClient({ baseUrl: this.baseUrl, token, timeoutMs: this.timeoutMs, fetch: this.transport });
+    return new BrainClient({ baseUrl: this.baseUrl, token, timeoutMs: this.timeoutMs, connectionIdleTimeoutMs: this.connectionIdleTimeoutMs, fetch: this.transport });
   }
 
   /** Release this client's I/O and local handlers without ending its stored sessions. */
@@ -216,12 +224,13 @@ export class BrainClient {
       const hostClient = this.withToken(registration.token);
       this.hostClient = hostClient;
       const pump = new HostPump({
+        suspend: (value) => hostClient.request("POST", `/v1/hosts/${encodeURIComponent(registration.host_id)}/suspend`, value),
         call: (value) => hostClient.request("POST", `/v1/hosts/${encodeURIComponent(registration.host_id)}/call`, value),
         stream: (signal, onOpen) => hostClient.streamPath(`/v1/hosts/${encodeURIComponent(registration.host_id)}/commands`, signal, onOpen),
         model: (value) => hostClient.request("POST", `/v1/hosts/${encodeURIComponent(registration.host_id)}/model`, value),
         result: (value) => hostClient.request("POST", `/v1/hosts/${encodeURIComponent(registration.host_id)}/results`, value),
         emit: (value) => hostClient.request<{ sequence: number }>("POST", `/v1/hosts/${encodeURIComponent(registration.host_id)}/events`, value),
-      });
+      }, this.connectionIdleTimeoutMs);
       const stop = () => pump.stop();
       this.controller.signal.addEventListener("abort", stop, { once: true });
       void pump.closed.then(async () => {
@@ -230,7 +239,8 @@ export class BrainClient {
         if (this.hostClient === hostClient) this.hostClient = undefined;
         if (this.host === opening) this.host = undefined;
       });
-      await pump.start();
+      try { await pump.start(); }
+      catch (error) { pump.stop(); throw error; }
       this.controller.signal.throwIfAborted();
       return {
         hostId: registration.host_id,
@@ -241,6 +251,12 @@ export class BrainClient {
     this.host = opening;
     opening.catch(() => { if (this.host === opening) this.host = undefined; });
     return opening;
+  }
+
+  private async withHost<T>(operation: () => Promise<T>): Promise<T> {
+    this.controller.signal.throwIfAborted();
+    const host = await this.host;
+    return host === undefined ? operation() : host.pump.use(operation);
   }
 
   /** This host's registration, to hand a later client so it can resume the sessions
@@ -278,17 +294,19 @@ export class BrainClient {
 }
 
 export class Sessions {
-  constructor(private readonly client: BrainClient) {}
+  constructor(private readonly client: BrainClient, private readonly execute: WithHost) {}
 
   async create(options: CreateSessionOptions, operation: OperationOptions = {}): Promise<SessionHandle> {
     const key = keyOf(operation);
     const prepared = await this.compose(options);
     const host = prepared.hosted ? await this.client.register() : undefined;
-    const request = prepared.request(host?.hostId);
-    const session = await this.client.request<WireSession>("POST", "/v1/sessions", request, key);
-    host?.pump.register(session.session_id, prepared.registry);
-    return new SessionHandle(this.client, toSessionState(session),
-      host === undefined ? undefined : () => host.unregister(session.session_id));
+    return this.execute(async () => {
+      const request = prepared.request(host?.hostId);
+      const session = await this.client.request<WireSession>("POST", "/v1/sessions", request, key);
+      host?.pump.register(session.session_id, prepared.registry);
+      return new SessionHandle(this.client, toSessionState(session), this.execute,
+        host === undefined ? undefined : () => host.unregister(session.session_id));
+    });
   }
 
   /** Admit Components and compile a request for a separately authorized host, without creating a session. */
@@ -349,7 +367,7 @@ export class Sessions {
    * they must be exactly the Tools the session placed in this host. */
   async get(sessionId: string, options: { tools?: readonly PlacedTool[] } = {}): Promise<SessionHandle> {
     const session = await this.client.request<WireSession>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}`);
-    const handle = new SessionHandle(this.client, toSessionState(session));
+    const handle = new SessionHandle(this.client, toSessionState(session), this.execute);
     if (options.tools === undefined) return handle;
     options = { ...options, tools: await Promise.all(options.tools.map(loadHostTool)) };
     let tools = options.tools!.map((placed) => {
@@ -358,33 +376,35 @@ export class Sessions {
       return tool;
     });
     const host = await this.client.register();
-    for await (const event of handle.events()) {
-      if (event.type !== "session_creation_ended") continue;
-      const configuration = (event.data as { configuration: { tools: WireTool[]; environments: { name: string; driver: string; host_id?: string; configuration?: { sdk_default?: boolean } }[] } }).configuration;
-      if (tools.some(tool => inspectEnvironment(tool.environment).automatic)) {
-        const original = configuration.environments.find(env => env.driver === "host" && env.host_id === host.hostId && env.configuration?.sdk_default === true);
-        if (original === undefined) throw new TypeError("session has no default Tool binding for this host");
-        tools = placeDefaultTools(options.tools!, original.name).map(inspectTool);
-      }
-      const here = configuration.environments.filter((environment) => environment.driver === "host" && environment.host_id === host.hostId).map((environment) => environment.name);
-      const placed = configuration.tools.flatMap((tool) => Object.keys(tool.placements).filter((environment) => here.includes(environment)).map((environment) => `${tool.name}\0${environment}`)).sort();
-      const supplied = tools.map((tool) => `${tool.definition.name}\0${inspectEnvironment(tool.environment).name}`).sort();
-      if (placed.length === 0 || JSON.stringify(placed) !== JSON.stringify(supplied)) {
-        throw new TypeError("the Tools supplied must be exactly those the session placed in this host");
-      }
-      for (const tool of tools) {
-        const original = configuration.tools.find(candidate => candidate.name === tool.definition.name)!;
-        if (!sameJson(original.input_schema, tool.definition.inputSchema)
-          || !sameJson(original.output_schema, tool.definition.outputSchema)) {
-          throw new TypeError(`Tool ${tool.definition.name} has a different advertised contract; use compatible handlers or create a new session`);
+    return host.pump.use(async () => {
+      for await (const event of handle.events()) {
+        if (event.type !== "session_creation_ended") continue;
+        const configuration = (event.data as { configuration: { tools: WireTool[]; environments: { name: string; driver: string; host_id?: string; configuration?: { sdk_default?: boolean } }[] } }).configuration;
+        if (tools.some(tool => inspectEnvironment(tool.environment).automatic)) {
+          const original = configuration.environments.find(env => env.driver === "host" && env.host_id === host.hostId && env.configuration?.sdk_default === true);
+          if (original === undefined) throw new TypeError("session has no default Tool binding for this host");
+          tools = placeDefaultTools(options.tools!, original.name).map(inspectTool);
         }
+        const here = configuration.environments.filter((environment) => environment.driver === "host" && environment.host_id === host.hostId).map((environment) => environment.name);
+        const placed = configuration.tools.flatMap((tool) => Object.keys(tool.placements).filter((environment) => here.includes(environment)).map((environment) => `${tool.name}\0${environment}`)).sort();
+        const supplied = tools.map((tool) => `${tool.definition.name}\0${inspectEnvironment(tool.environment).name}`).sort();
+        if (placed.length === 0 || JSON.stringify(placed) !== JSON.stringify(supplied)) {
+          throw new TypeError("the Tools supplied must be exactly those the session placed in this host");
+        }
+        for (const tool of tools) {
+          const original = configuration.tools.find(candidate => candidate.name === tool.definition.name)!;
+          if (!sameJson(original.input_schema, tool.definition.inputSchema)
+            || !sameJson(original.output_schema, tool.definition.outputSchema)) {
+            throw new TypeError(`Tool ${tool.definition.name} has a different advertised contract; use compatible handlers or create a new session`);
+          }
+        }
+        const registry = new HostToolRegistry();
+        for (const tool of tools) registry.register(inspectEnvironment(tool.environment).name, tool.contract!, tool.handler!);
+        host.pump.register(sessionId, registry);
+        return new SessionHandle(this.client, toSessionState(session), this.execute, () => host.unregister(sessionId));
       }
-      const registry = new HostToolRegistry();
-      for (const tool of tools) registry.register(inspectEnvironment(tool.environment).name, tool.contract!, tool.handler!);
-      host.pump.register(sessionId, registry);
-      return new SessionHandle(this.client, toSessionState(session), () => host.unregister(sessionId));
-    }
-    throw new TypeError("session has no completed creation record");
+      throw new TypeError("session has no completed creation record");
+    });
   }
 
   async list(): Promise<SessionState[]> {
@@ -398,9 +418,10 @@ export class SessionHandle {
   constructor(
     private readonly client: BrainClient,
     public state: SessionState,
+    private readonly execute: WithHost,
     private readonly unregisterHost?: () => void,
   ) {
-    this.environments = new EnvironmentServices(request => this.client.request("POST", `/v1/sessions/${encodeURIComponent(this.id)}/environments`, request, crypto.randomUUID()));
+    this.environments = new EnvironmentServices(request => this.execute(() => this.client.request("POST", `/v1/sessions/${encodeURIComponent(this.id)}/environments`, request, crypto.randomUUID())));
   }
   get id(): string { return this.state.id; }
 
@@ -409,8 +430,8 @@ export class SessionHandle {
     const normalized = typeof input === "string" ? { message: input } : input;
     if (typeof normalized?.message !== "string" || normalized.message === "") throw new TypeError("submit needs a non-empty message");
     if ("output" in operation) throw new TypeError("submit does not accept output options");
-    return this.client.request("POST", `/v1/sessions/${encodeURIComponent(this.id)}/messages`,
-      { input: normalized }, keyOf(operation), "application/json", undefined, { prefer: "respond-async" });
+    return this.execute(() => this.client.request("POST", `/v1/sessions/${encodeURIComponent(this.id)}/messages`,
+      { input: normalized }, keyOf(operation), "application/json", undefined, { prefer: "respond-async" }));
   }
 
   async send(input: UserInput | string, operation: SendOptions = {}): Promise<SessionState> {
@@ -419,7 +440,7 @@ export class SessionHandle {
     if ("output" in operation) throw new TypeError("send does not accept output options");
     operation.signal?.throwIfAborted();
     const after = this.state.lastSequence;
-    const pending = this.client.request<WireSession>("POST", `/v1/sessions/${encodeURIComponent(this.id)}/messages`, { input: normalized }, keyOf(operation));
+    const pending = this.execute(() => this.client.request<WireSession>("POST", `/v1/sessions/${encodeURIComponent(this.id)}/messages`, { input: normalized }, keyOf(operation)));
     if (operation.signal === undefined) return (this.state = toSessionState(await pending));
     const watching = new AbortController();
     let completed = false;

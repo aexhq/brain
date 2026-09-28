@@ -587,6 +587,7 @@ fn api(root: &std::path::Path) -> Sessions {
     let (telemetry, _) = brain_telemetry::telemetry_channel();
     let feed = Arc::new(Feed::new(telemetry.clone()));
     Sessions::new(SessionResources {
+        activity: None,
         sessions_dir: root.join("sessions"),
         writer: Writer::spawn(),
         feed: feed.clone(),

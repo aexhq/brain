@@ -17,8 +17,9 @@ use brain_protocol::{
     EnvironmentRequest, HostCommand, HostEvent, HostEventAck, HostId, HostOperation,
     HostRegistration, HostResult, SessionId, ToolExecutionUpdate,
 };
+use brain_protocol::{HostActivity, HostSuspendResult};
 use sha2::{Digest as _, Sha256};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use brain::environment::{EnvironmentAdapter, Services, unsupported};
 
@@ -32,6 +33,7 @@ struct State {
     closed: bool,
     log: File,
     hosts: HashMap<HostId, Host>,
+    activity: HashMap<SessionId, usize>,
 }
 
 struct Host {
@@ -40,6 +42,7 @@ struct Host {
     token: [u8; 32],
     disconnected_at: Instant,
     connection: u64,
+    activity: Option<watch::Sender<HostActivity>>,
     commands: Option<mpsc::Sender<HostCommand>>,
     disconnect: Option<oneshot::Sender<()>>,
     pending: HashMap<(SessionId, u64), PendingCall>,
@@ -66,12 +69,34 @@ enum RegistrationRecord {
     },
 }
 
+fn host_idle(host: &Host, activity: &HashMap<SessionId, usize>) -> bool {
+    host.pending.is_empty()
+        && host
+            .sessions
+            .iter()
+            .all(|(session, _)| !activity.contains_key(session))
+}
+
+fn refresh_activity(state: &State) {
+    for host in state.hosts.values() {
+        if let Some(sender) = &host.activity {
+            let idle = host_idle(host, &state.activity);
+            sender.send_if_modified(|value| {
+                let changed = value.idle != idle;
+                value.idle = idle;
+                changed
+            });
+        }
+    }
+}
+
 fn registered(token: [u8; 32]) -> Host {
     Host {
         token,
         sessions: HashSet::new(),
         disconnected_at: Instant::now(),
         connection: 0,
+        activity: None,
         commands: None,
         disconnect: None,
         pending: HashMap::new(),
@@ -132,6 +157,7 @@ impl HostEnvironment {
                 log,
                 hosts,
                 closed: false,
+                activity: HashMap::new(),
             })),
             limits: limits.clone(),
         })
@@ -168,6 +194,7 @@ impl HostEnvironment {
             .expect("registration checked")
             .sessions
             .insert((session_id.clone(), environment.clone()));
+        refresh_activity(&state);
         Ok(())
     }
 
@@ -193,6 +220,7 @@ impl HostEnvironment {
             host.sessions
                 .remove(&(session_id.clone(), environment.clone()));
         }
+        refresh_activity(&state);
         Ok(())
     }
 
@@ -254,6 +282,10 @@ impl HostEnvironment {
         if state.closed {
             return Err(ApiError::overloaded("Brain has drained its active work"));
         }
+        let idle = state
+            .hosts
+            .get(host_id)
+            .is_some_and(|host| host_idle(host, &state.activity));
         let host = authorized(&mut state, host_id, token)?;
         let (sender, receiver) = mpsc::channel(self.limits.max_host_commands.max(1));
         let (disconnect, displaced) = oneshot::channel();
@@ -262,16 +294,69 @@ impl HostEnvironment {
         }
         host.connection = host.connection.saturating_add(1);
         let connection = host.connection;
+        let (activity, observations) = watch::channel(HostActivity { connection, idle });
+        host.activity = Some(activity);
         host.commands = Some(sender);
         let hosts = self.clone();
         let closing_host = host_id.clone();
         Ok(brain_http::HostConnection {
+            activity: observations,
             commands: receiver,
             displaced,
             on_close: Some(Box::new(move || {
                 hosts.close_connection(&closing_host, connection);
             })),
         })
+    }
+
+    pub fn observe_activity(&self, session: &SessionId, active: bool) {
+        let mut state = self.inner.lock().expect("host state poisoned");
+        if active {
+            *state.activity.entry(session.clone()).or_default() += 1;
+        } else {
+            let count = state
+                .activity
+                .get_mut(session)
+                .expect("activity was admitted");
+            *count -= 1;
+            if *count == 0 {
+                state.activity.remove(session);
+            }
+        }
+        refresh_activity(&state);
+    }
+
+    pub fn suspend(
+        &self,
+        host_id: &HostId,
+        token: &str,
+        connection: u64,
+    ) -> Result<HostSuspendResult, ApiError> {
+        // Admission and cutover hold this same lock, including queued observations.
+        let mut state = self.lock()?;
+        let idle = state
+            .hosts
+            .get(host_id)
+            .is_some_and(|host| host_idle(host, &state.activity));
+        let host = authorized(&mut state, host_id, token)?;
+        if host.connection != connection || host.commands.is_none() {
+            return Err(ApiError::conflict("host connection is no longer current"));
+        }
+        if !idle
+            || host
+                .commands
+                .as_ref()
+                .is_some_and(|sender| sender.capacity() != sender.max_capacity())
+        {
+            return Ok(HostSuspendResult { suspended: false });
+        }
+        host.commands = None;
+        host.activity = None;
+        host.disconnected_at = Instant::now();
+        if let Some(disconnect) = host.disconnect.take() {
+            let _ = disconnect.send(());
+        }
+        Ok(HostSuspendResult { suspended: true })
     }
 
     pub async fn resolve(
@@ -445,6 +530,7 @@ impl HostEnvironment {
                     services: services.clone(),
                 },
             );
+            refresh_activity(&state);
             sender
         };
         let mut pending = Pending {
@@ -521,6 +607,7 @@ impl HostEnvironment {
             && let Some(host) = state.hosts.get_mut(host_id)
         {
             host.pending.remove(key);
+            refresh_activity(&state);
         }
     }
 
@@ -529,6 +616,7 @@ impl HostEnvironment {
         state.closed = true;
         for host in state.hosts.values_mut() {
             host.commands = None;
+            host.activity = None;
             if let Some(disconnect) = host.disconnect.take() {
                 let _ = disconnect.send(());
             }
@@ -541,6 +629,7 @@ impl HostEnvironment {
             && host.connection == connection
         {
             host.commands = None;
+            host.activity = None;
             host.disconnect = None;
             host.disconnected_at = Instant::now();
         }
@@ -999,6 +1088,114 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, brain::Error::Executor(_)));
+    }
+
+    #[test]
+    fn suspension_checks_admitted_work_and_preserves_replacement_connections() {
+        let hosts = test_hosts();
+        let registration = hosts.register().unwrap();
+        let first_session = SessionId::new("ses_first");
+        let second_session = SessionId::new("ses_second");
+        hosts.observe_activity(&first_session, true);
+        hosts
+            .bind_session(
+                &first_session,
+                &EnvironmentName::new("app"),
+                &registration.host_id,
+            )
+            .unwrap();
+        hosts
+            .bind_session(
+                &second_session,
+                &EnvironmentName::new("app"),
+                &registration.host_id,
+            )
+            .unwrap();
+        let first = hosts
+            .connect(&registration.host_id, &registration.token)
+            .unwrap();
+        let generation = first.activity.borrow().connection;
+        assert!(!first.activity.borrow().idle);
+        assert!(
+            !hosts
+                .suspend(&registration.host_id, &registration.token, generation)
+                .unwrap()
+                .suspended
+        );
+        hosts.observe_activity(&second_session, true);
+        hosts.observe_activity(&first_session, false);
+        assert!(!first.activity.borrow().idle);
+        hosts.observe_activity(&second_session, false);
+        assert!(first.activity.borrow().idle);
+        // A previously delivered idle snapshot cannot authorize newer work.
+        hosts.observe_activity(&first_session, true);
+        assert!(
+            !hosts
+                .suspend(&registration.host_id, &registration.token, generation)
+                .unwrap()
+                .suspended
+        );
+        assert!(hosts.is_connected(&registration.host_id).unwrap());
+        hosts.observe_activity(&first_session, false);
+        assert!(
+            hosts
+                .suspend(&registration.host_id, &registration.token, generation)
+                .unwrap()
+                .suspended
+        );
+        assert!(!hosts.is_connected(&registration.host_id).unwrap());
+        let replacement = hosts
+            .connect(&registration.host_id, &registration.token)
+            .unwrap();
+        assert!(
+            hosts
+                .suspend(&registration.host_id, &registration.token, generation)
+                .is_err()
+        );
+        drop(first);
+        assert!(hosts.is_connected(&registration.host_id).unwrap());
+        assert!(replacement.activity.borrow().idle);
+    }
+
+    #[tokio::test]
+    async fn suspension_cannot_drop_a_queued_or_unfinished_tool() {
+        let hosts = test_hosts();
+        let registration = hosts.register().unwrap();
+        let mut connection = hosts
+            .connect(&registration.host_id, &registration.token)
+            .unwrap();
+        let generation = connection.activity.borrow().connection;
+        let executing = tokio::spawn({
+            let hosts = hosts.clone();
+            let environment = entry(registration.host_id.clone());
+            async move {
+                hosts
+                    .execute(
+                        &environment,
+                        &invoke(),
+                        Some(Arc::new(brain_sessions::SessionServices::Tool(Arc::new(
+                            NoEvents::default(),
+                        )))),
+                    )
+                    .await
+            }
+        });
+        connection.commands.recv().await.unwrap();
+        assert!(
+            !hosts
+                .suspend(&registration.host_id, &registration.token, generation)
+                .unwrap()
+                .suspended
+        );
+        assert!(hosts.is_connected(&registration.host_id).unwrap());
+        executing.abort();
+        assert!(executing.await.unwrap_err().is_cancelled());
+        assert!(
+            hosts
+                .suspend(&registration.host_id, &registration.token, generation)
+                .unwrap()
+                .suspended
+        );
     }
 
     #[test]

@@ -15,8 +15,29 @@ use std::{
 };
 use tokio::sync::Mutex;
 
+pub type ActivityObserver = Arc<dyn Fn(&SessionId, bool) + Send + Sync>;
+
+struct ActivityGuard {
+    session: SessionId,
+    observer: Option<ActivityObserver>,
+}
+
+impl Drop for ActivityGuard {
+    fn drop(&mut self) {
+        if let Some(observer) = &self.observer {
+            observer(&self.session, false);
+        }
+    }
+}
+
+struct Work {
+    _drain: tokio::sync::OwnedRwLockReadGuard<()>,
+    _activity: ActivityGuard,
+}
+
 pub struct SessionResources {
     pub sessions_dir: PathBuf,
+    pub activity: Option<ActivityObserver>,
     pub writer: Arc<Writer>,
     pub feed: Arc<Feed>,
     pub session_runtime: Arc<SessionRuntime>,
@@ -49,7 +70,7 @@ pub struct MessageAdmission {
     api: Sessions,
     session_id: SessionId,
     request: MessageRequest,
-    active: tokio::sync::OwnedRwLockReadGuard<()>,
+    active: Work,
     guard: tokio::sync::OwnedMutexGuard<()>,
     session: Session,
     store: Arc<LocalSessionStore>,
@@ -165,7 +186,18 @@ impl Sessions {
         let _finished = self.active.write().await;
     }
 
-    async fn admit_work(&self) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, ApiError> {
+    fn observe_activity(&self, session: &SessionId) -> ActivityGuard {
+        let observer = self.resources.activity.clone();
+        if let Some(observer) = &observer {
+            observer(session, true);
+        }
+        ActivityGuard {
+            session: session.clone(),
+            observer,
+        }
+    }
+
+    async fn admit_work(&self, session: &SessionId) -> Result<Work, ApiError> {
         if self.draining.load(Ordering::Acquire) {
             return Err(ApiError::overloaded("Brain is draining active work"));
         }
@@ -173,7 +205,10 @@ impl Sessions {
         if self.draining.load(Ordering::Acquire) {
             return Err(ApiError::overloaded("Brain is draining active work"));
         }
-        Ok(guard)
+        Ok(Work {
+            _drain: guard,
+            _activity: self.observe_activity(session),
+        })
     }
 
     pub async fn suspend_idle(&self) {
@@ -283,7 +318,9 @@ impl Sessions {
             let (Some(draining), Some(active), Some(resources), Some(sessions), Some(stores), Some(store_locks), Some(session_locks), Some(background_turns)) =
                 (draining.upgrade(), active.upgrade(), resources.upgrade(), sessions.upgrade(), stores.upgrade(), store_locks.upgrade(), session_locks.upgrade(), background_turns.upgrade()) else { return; };
             let api = Sessions { draining, active, resources, sessions, stores, store_locks, session_locks, background_turns };
+            let queued = api.observe_activity(&session);
             tokio::spawn(async move {
+                let _queued = queued;
                 if let Err(error) = api.environment_observed(session, sequence).await {
                     tracing::warn!(error = %error.message, "Environment observation could not activate its Agentloop");
                 }
@@ -424,7 +461,7 @@ impl Sessions {
         config: SessionConfig,
         transcript: Vec<brain_protocol::Message>,
     ) -> Result<SessionSummary, ApiError> {
-        let _active = self.admit_work().await?;
+        let _active = self.admit_work(&session_id).await?;
         if config
             .environments
             .iter()
@@ -534,7 +571,7 @@ impl Sessions {
         wait_for_session: bool,
     ) -> Result<MessageAdmission, ApiError> {
         Session::validate_message(&request).map_err(api_error)?;
-        let active = self.admit_work().await?;
+        let active = self.admit_work(&session_id).await?;
         let lock = self.session_lock(&session_id)?;
         let guard = if wait_for_session {
             lock.lock_owned().await
@@ -567,7 +604,7 @@ impl Sessions {
         store: Arc<LocalSessionStore>,
         tools: Arc<brain::ToolGroup>,
         sequence: u64,
-        active: tokio::sync::OwnedRwLockReadGuard<()>,
+        active: Work,
     ) {
         let mut background = self
             .background_turns
@@ -682,7 +719,7 @@ impl Sessions {
         session_id: SessionId,
         sequence: u64,
     ) -> Result<(), ApiError> {
-        let active = self.admit_work().await?;
+        let active = self.admit_work(&session_id).await?;
         let store = self.store(&session_id).await?;
         if !matches!(
             store.session_summary().map_err(api_error)?.status,
@@ -733,7 +770,7 @@ impl Sessions {
         environment: brain_protocol::EnvironmentRef,
         event: brain_protocol::EnvironmentEvent,
     ) -> Result<u64, ApiError> {
-        let _active = self.admit_work().await?;
+        let _active = self.admit_work(&session).await?;
         let store = self.store(&session).await?;
         self.resources
             .environments
@@ -747,7 +784,7 @@ impl Sessions {
         session: SessionId,
         request: brain_protocol::EnvironmentControlRequest,
     ) -> Result<serde_json::Value, ApiError> {
-        let _active = self.admit_work().await?;
+        let _active = self.admit_work(&session).await?;
         let store = self.store(&session).await?;
         let config = brain::session_config(&*store).map_err(api_error)?;
         use brain_protocol::EnvironmentPermission as Permission;
@@ -865,7 +902,7 @@ impl Sessions {
         name: String,
         request: EnvironmentCallRequest,
     ) -> Result<EnvironmentCallResult, ApiError> {
-        let _active = self.admit_work().await?;
+        let _active = self.admit_work(&session_id).await?;
         if !valid_identifier(&name) {
             return Err(ApiError::invalid_request(
                 "Environment method name is invalid",
@@ -885,6 +922,7 @@ impl Sessions {
     }
 
     pub async fn cancel_session(&self, session_id: SessionId) -> Result<(), ApiError> {
+        let _activity = self.observe_activity(&session_id);
         self.store(&session_id)
             .await?
             .append_sync(
@@ -916,6 +954,7 @@ impl Sessions {
     }
 
     pub async fn end_session(&self, session_id: SessionId) -> Result<SessionSummary, ApiError> {
+        let _activity = self.observe_activity(&session_id);
         let lock = self.session_lock(&session_id)?;
         let _guard = lock.lock().await;
         let store = self.store(&session_id).await?;
@@ -947,6 +986,7 @@ impl Sessions {
     }
 
     pub async fn delete_session(&self, session_id: SessionId) -> Result<(), ApiError> {
+        let _activity = self.observe_activity(&session_id);
         let lock = self.session_lock(&session_id)?;
         let _guard = lock.lock().await;
         let store = self.store(&session_id).await?;

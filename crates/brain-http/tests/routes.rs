@@ -121,9 +121,27 @@ impl BrainApi for Api {
             .await
             .unwrap();
         Ok(HostConnection {
+            activity: tokio::sync::watch::channel(brain_protocol::HostActivity {
+                connection: 1,
+                idle: false,
+            })
+            .1,
             commands: receiver,
             displaced,
             on_close: None,
+        })
+    }
+    async fn suspend_host(
+        &self,
+        host: HostId,
+        token: String,
+        request: brain_protocol::HostSuspendRequest,
+    ) -> Result<brain_protocol::HostSuspendResult, ApiError> {
+        if host.as_str() != "host_12345678901234567890" || token != "host-token" {
+            return Err(ApiError::unauthorized("invalid host credential"));
+        }
+        Ok(brain_protocol::HostSuspendResult {
+            suspended: request.connection == 1,
         })
     }
     async fn resolve_host(
@@ -810,6 +828,50 @@ async fn the_host_token_opens_exactly_the_host_surface() {
         .unwrap();
     assert_eq!(wrong_key.status(), StatusCode::UNAUTHORIZED);
 
+    for (host, token, body, expected) in [
+        (
+            "host_12345678901234567890",
+            "host-token",
+            r#"{"connection":1}"#,
+            StatusCode::OK,
+        ),
+        (
+            "host_12345678901234567890",
+            "secret",
+            r#"{"connection":1}"#,
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "host_99999999999999999999",
+            "host-token",
+            r#"{"connection":1}"#,
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "host_12345678901234567890",
+            "host-token",
+            r#"{"connection":0}"#,
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "host_12345678901234567890",
+            "host-token",
+            r#"{"connection":1,"unknown":true}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ] {
+        let response = build()
+            .oneshot(authed(
+                &format!("/v1/hosts/{host}/suspend"),
+                "POST",
+                token,
+                Some(body),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
+
     let rest_of_api = build()
         .oneshot(authed("/v1/sessions", "GET", "host-token", None))
         .await
@@ -879,6 +941,8 @@ async fn the_host_stream_carries_typed_commands() {
         .await
         .unwrap();
     let body = String::from_utf8(body.to_vec()).unwrap();
+    assert!(body.starts_with("event: activity\n"));
+    assert!(body.contains(r#""connection":1,"idle":false"#));
     assert!(
         body.contains("event: command"),
         "command event missing: {body}"
