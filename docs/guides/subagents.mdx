@@ -21,7 +21,7 @@ const delegate = tool({
   run: async ({ task }, ctx) => {
     const child = await brain.sessions.create({
       model: { provider: "openai", name: "gpt-5-mini", apiKey },
-      agentloop: pi({ env: brainEnv({ name: "brain" }) }),
+      agentloop: pi(),
     });
     try {
       const after = child.state.lastSequence;

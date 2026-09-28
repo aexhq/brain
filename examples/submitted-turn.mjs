@@ -1,4 +1,4 @@
-import { Brain, brainEnv } from "@aexhq/brain";
+import { Brain } from "@aexhq/brain";
 import { pi } from "@aexhq/agentloop-pi";
 
 const options = {
@@ -12,7 +12,7 @@ let id, sequence;
 try {
   const session = await submitter.sessions.create({
     model: { provider: "openai", name: "gpt-5-mini", apiKey },
-    agentloop: pi({ env: brainEnv({ name: "brain" }) }),
+    agentloop: pi(),
   });
   id = session.id;
   sequence = await session.submit("Reply with READY.", { idempotencyKey: crypto.randomUUID() });

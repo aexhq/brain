@@ -12,12 +12,13 @@ your own.
 The [quickstart](/brain/docs/quickstart) uses Pi:
 
 ```ts
-import { brainEnv } from "@aexhq/brain";
 import { pi } from "@aexhq/agentloop-pi";
 
-const loop = pi({ env: brainEnv({ name: "brain" }) });
+const loop = pi();
 ```
 
+Pi uses `brainEnv({ name: "brain" })` by default. Pass options such as
+`pi({ contextWindow: 64_000 })`, or supply `{ env }` to choose another Environment.
 Pass `loop` as `agentloop` when creating a session. Pi handles model calls, parallel tool calls,
 and summarizing older conversation when the context fills up. The
 [Codex loop](https://github.com/aexhq/extensions/tree/main/packages/loop-codex) is another option.

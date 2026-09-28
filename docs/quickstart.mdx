@@ -28,7 +28,7 @@ mkdir brain-example
 cd brain-example
 npm init -y
 npm pkg set type=module
-npm install @aexhq/brain@0.35.1 @aexhq/agentloop-pi@7.2.4 zod@4.4.3
+npm install @aexhq/brain@0.36.0 @aexhq/agentloop-pi@7.3.0 zod@4.4.3
 ```
 
 <Tabs items={["TypeScript", "JavaScript"]} groupId="language">
@@ -62,7 +62,7 @@ Save as `order.ts`. This is the complete [order example](https://github.com/aexh
 its source also runs unchanged as JavaScript. The input schema supplies the tool's argument types.
 
 ```ts
-import { Brain, brainEnv, tool } from "@aexhq/brain";
+import { Brain, tool } from "@aexhq/brain";
 import { pi } from "@aexhq/agentloop-pi";
 import { z } from "zod";
 
@@ -77,26 +77,22 @@ const lookupOrder = tool({
 });
 
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080", token: "quickstart" });
-try {
-  const session = await brain.sessions.create({
-    model: { provider: "openai", name: "gpt-5-mini", apiKey },
-    agentloop: pi({ env: brainEnv({ name: "brain" }) }),
-    tools: [lookupOrder()],
-  });
-  try {
-    const after = session.state.lastSequence;
-    await session.send("Look up order A-1001. Has it shipped?");
-    for await (const event of session.events(after)) {
-      if (event.type === "turn_failed") throw new Error(JSON.stringify(event.data));
-    }
-    console.log(JSON.stringify(await session.transcript(), null, 2));
-    console.log("Session:", session.id);
-  } finally {
-    await session.end();
+brain.sessions.create({
+  model: { provider: "openai", name: "gpt-5-mini", apiKey },
+  agentloop: pi(),
+  tools: [lookupOrder()],
+}).then(async session => {
+  const after = session.state.lastSequence;
+  await session.send("Look up order A-1001. Has it shipped?");
+  for await (const event of session.events(after)) {
+    if (event.type === "turn_failed") throw new Error(JSON.stringify(event.data));
   }
-} finally {
-  await brain.close();
-}
+  console.log(JSON.stringify(await session.transcript(), null, 2));
+  console.log("Session:", session.id);
+}).catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
 ```
 
 ## 4. Run it
@@ -122,10 +118,16 @@ node order.mjs
 The transcript includes a `lookup_order` result and an answer saying order A-1001 has shipped.
 The wording depends on the model. Replace the sample return value with your own backend lookup.
 
-The loop runs on the Brain server; the lookup runs in this application's process (`hostEnv`).
-Keep the process connected while its tools are needed. `ctx.finish(value)` returns a tool result
-and completes the call. The example checks for a failed turn, ends the conversation and closes
-the client; its history remains available. Add another `send()` before `end()` to keep chatting.
+Pi runs on the Brain server by default; the lookup runs in this application's process.
+`ctx.finish(value)` returns a tool result and completes the call. After five idle seconds,
+the client releases its tool connection so this script can exit. The session and history remain.
+Add another `send()` in the callback to keep chatting. A later send through the same live client
+reconnects before starting work.
+
+Use `connectionIdleTimeoutMs: 0` on `new Brain(...)` when other callers or future autonomous
+events must reach these tools. Event subscriptions stay open until you stop them.
+Explicit `brain.close()` permanently disposes of the client; `session.end()` finishes the
+conversation and `session.delete()` removes its history. See [sessions](/brain/docs/concepts/sessions).
 
 ## Next steps
 
