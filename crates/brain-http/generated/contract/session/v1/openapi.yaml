@@ -955,6 +955,20 @@ components:
       enum:
       - application/pdf
       type: string
+    HostActivity:
+      additionalProperties: false
+      description: Connection-scoped transport activity; this is not a journal Event.
+      properties:
+        connection:
+          format: uint64
+          minimum: 1
+          type: integer
+        idle:
+          type: boolean
+      required:
+      - connection
+      - idle
+      type: object
     HostCommand:
       properties:
         deadline_at_ms:
@@ -1099,6 +1113,23 @@ components:
       - session_id
       - sequence
       - call
+      type: object
+    HostSuspendRequest:
+      additionalProperties: false
+      properties:
+        connection:
+          format: uint64
+          minimum: 1
+          type: integer
+      required:
+      - connection
+      type: object
+    HostSuspendResult:
+      properties:
+        suspended:
+          type: boolean
+      required:
+      - suspended
       type: object
     KvPutRequest:
       additionalProperties: false
@@ -2016,6 +2047,39 @@ paths:
       security:
       - hostToken: []
       summary: Complete a host command
+      tags:
+      - Hosts
+  /v1/hosts/{host_id}/suspend:
+    post:
+      operationId: suspendHost
+      parameters:
+      - in: path
+        name: host_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/HostId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HostSuspendRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostSuspendResult'
+          description: Whether the idle connection was suspended
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+      security:
+      - hostToken: []
+      summary: Suspend the current host connection if its sessions have drained
       tags:
       - Hosts
   /v1/models:

@@ -7,6 +7,7 @@ use brain_protocol::{
 };
 
 pub struct HostConnection {
+    pub activity: tokio::sync::watch::Receiver<brain_protocol::HostActivity>,
     pub commands: tokio::sync::mpsc::Receiver<HostCommand>,
     pub displaced: tokio::sync::oneshot::Receiver<()>,
     pub on_close: Option<Box<dyn FnOnce() + Send + Sync>>,
@@ -47,6 +48,12 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
         host_id: HostId,
         token: String,
     ) -> Result<HostConnection, ApiError>;
+    async fn suspend_host(
+        &self,
+        host_id: HostId,
+        token: String,
+        request: brain_protocol::HostSuspendRequest,
+    ) -> Result<brain_protocol::HostSuspendResult, ApiError>;
     async fn resolve_host(
         &self,
         host_id: HostId,
@@ -130,7 +137,7 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
     /// Opened *before* the page a stream starts with, so a record appended between the
     /// two arrives here instead of being lost in the gap; the caller drops what the page
     /// already carried, by sequence. Falling behind loses records rather than holding up
-    /// a turn — the journal is the record, and `after` reads it back.
+    /// a turn â€” the journal is the record, and `after` reads it back.
     fn subscribe(
         &self,
         session_id: &SessionId,

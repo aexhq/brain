@@ -20,17 +20,24 @@ const f = fixture({ providers: {
     if (op.request.type === "execute") {
       const { input, callback } = op.request;
       if (input.input) {
-        const environment = input.tools[0].environments[0];
+        const environment = input.tools.find(tool => tool.name === "work").environments[0];
         returns.set(op.session_id, await call(callback, "dispatch", [
           { call_id: "background", environment, name: "work", input: { background: true } },
         ]));
         await call(callback, "set_transcript", [{ role: "user", content: [{ type: "text", text: "loop-selected" }] }]);
       }
       let after = input.kv["brain.last_activation"] ?? 0;
+      let followed = input.kv.followed;
       for (;;) {
         const page = await call(callback, "events", after);
         if (!page.events.length) break;
         for (const event of page.events) if (event.event_type === "tool_call_ended") {
+          const followup = input.tools.find(tool => tool.name === "followup");
+          if (followup && !followed) {
+            followed = true;
+            await call(callback, "kv_put", { key: "followed", value: true });
+            await call(callback, "dispatch", [{ call_id: "followup", environment: followup.environments[0], name: "followup", input: {} }]);
+          }
           await call(callback, "kv_put", { key: "observed_finish", value: event.sequence });
         }
         after = page.next_cursor;
@@ -59,12 +66,13 @@ for (const placement of ["host", "http", "native"]) {
     const session = await f.create(t, {
       agentloop: agentloop({ implementation: { type: "observer" } })({ env: f.provider("observer") }),
       tools: [work({ env })],
-    });
+    }, placement === "host" ? f.client({ connectionIdleTimeoutMs: 20 }) : f.brain);
     await session.send("start");
     const [returned] = returns.get(session.id);
     assert.equal(returned.finished, false);
     assert.equal(returned.events.filter(event => event.event_type === "tool_result_emitted").length, 0);
     if (placement === "host") {
+      await new Promise(resolve => setTimeout(resolve, 80));
       await context.emitResult({ value: "later" });
       await context.finish();
       await assert.rejects(context.emitResult("too late"), /finished/u);
@@ -87,3 +95,28 @@ for (const placement of ["host", "http", "native"]) {
     assert.equal(f.modelRequests.length, 0);
   });
 }
+
+test("remote background completion can invoke a client Tool after the initiating request returns", { timeout: 30_000 }, async t => {
+  let suspensions = 0;
+  const invoked = Promise.withResolvers();
+  const client = f.client({ connectionIdleTimeoutMs: 20, fetch: async (url, options) => {
+    const response = await fetch(url, options);
+    if (new URL(url).pathname.endsWith("/suspend") && (await response.clone().json()).suspended) suspensions++;
+    return response;
+  } });
+  const work = tool({ name: "work", description: "Remote background work", input: z.object({ background: z.boolean() }), implementation: { type: "background" } });
+  const followup = tool({ name: "followup", description: "Call the retained client", input: z.object({}), run: async (_, ctx) => {
+    await ctx.finish("retained callback");
+    invoked.resolve();
+  } });
+  const session = await f.create(t, {
+    agentloop: agentloop({ implementation: { type: "observer" } })({ env: f.provider("observer") }),
+    tools: [work({ env: f.provider("remote") }), followup()],
+  }, client);
+  await session.send("start remote work");
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(suspensions, 0);
+  await call(grants.get(session.id), "result", { status: "ok", value: "later" });
+  await call(grants.get(session.id), "finish", null);
+  await invoked.promise;
+});

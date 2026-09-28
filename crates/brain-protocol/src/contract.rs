@@ -44,6 +44,9 @@ pub fn session() -> Value {
             define::<crate::ExecutionCall>(generator);
             define::<crate::ExecutionCallback>(generator);
             define::<HostCommand>(generator);
+            define::<crate::HostActivity>(generator);
+            define::<crate::HostSuspendRequest>(generator);
+            define::<crate::HostSuspendResult>(generator);
             define::<HostEvent>(generator);
             define::<HostEventAck>(generator);
             define::<HostId>(generator);

@@ -1342,6 +1342,25 @@
       ],
       "type": "string"
     },
+    "HostActivity": {
+      "additionalProperties": false,
+      "description": "Connection-scoped transport activity; this is not a journal Event.",
+      "properties": {
+        "connection": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "idle": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "connection",
+        "idle"
+      ],
+      "type": "object"
+    },
     "HostCommand": {
       "properties": {
         "deadline_at_ms": {
@@ -1539,6 +1558,31 @@
         "session_id",
         "sequence",
         "call"
+      ],
+      "type": "object"
+    },
+    "HostSuspendRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "connection": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "connection"
+      ],
+      "type": "object"
+    },
+    "HostSuspendResult": {
+      "properties": {
+        "suspended": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "suspended"
       ],
       "type": "object"
     },

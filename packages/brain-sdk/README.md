@@ -26,7 +26,11 @@ running environment.
 failure. Client timeouts do not cancel accepted work. See [Sessions](https://aex.dev/brain/docs/concepts/sessions)
 for outcome handling, errors and reconnecting.
 
-`brain.close()` releases client connections, `session.interrupt()` stops work, `session.end()` finishes
+The shared tool connection suspends after five seconds of inactivity and reconnects before
+the same live client starts more work. Set `connectionIdleTimeoutMs: 0` to keep tools
+available to other callers or future autonomous events. Event subscriptions stay caller-owned.
+
+`brain.close()` permanently releases client connections, `session.interrupt()` stops work, `session.end()` finishes
 the conversation, and `session.delete()` removes its history.
 
 Prompt-based typed answers belong to Aex's SDK. Brain sends reject `output` options; provider-native
