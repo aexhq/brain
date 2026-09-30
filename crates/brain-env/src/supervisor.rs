@@ -1,7 +1,9 @@
 use std::process::Stdio;
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
-use brain_protocol::{AgentloopId, ToolId, TurnError, TurnInput, TurnOutput};
+use brain_protocol::{
+    AgentloopId, BrainPreparation, ProgramId, ToolId, TurnError, TurnInput, TurnOutput,
+};
 use tokio::sync::{Mutex, Semaphore};
 
 use crate::{
@@ -154,6 +156,114 @@ impl WorkerPool {
         self.workers[0].tool_status(digest).await
     }
 
+    pub async fn admit_program(&self, source: String) -> Result<ProgramId, LoopError> {
+        let _admission = self.admission.lock().await;
+        let (worker, _permit) = self.select(false)?;
+        if source.is_empty() || source.len() > ceiling(worker.limits.max_package_bytes) {
+            return Err("program must be nonempty and within the package limit".into());
+        }
+        let mut state = worker.state.lock().await;
+        worker.ensure_worker(&mut state).await?;
+        let digest = WorkerClient::new(&worker.socket, &worker.limits)
+            .load_program(source.clone())
+            .await?;
+        persist_component(&worker.packages, "program", &digest, source.as_bytes()).await?;
+        let id = ProgramId::new(digest);
+        state.programs.insert(id.clone());
+        Ok(id)
+    }
+
+    pub async fn program_status(&self, id: &ProgramId) -> Result<bool, LoopError> {
+        tokio::fs::try_exists(component_path(
+            &self.workers[0].packages,
+            "program",
+            id.as_str(),
+        ))
+        .await
+        .map_err(|error| LoopError::Failed(error.to_string()))
+    }
+
+    pub async fn prepare(&self, preparation: &BrainPreparation) -> Result<(), LoopError> {
+        preparation.validate()?;
+        let _admission = self.admission.lock().await;
+        if self.workers[0].permits.is_closed() {
+            return Err("brain-env is shut down".into());
+        }
+        for worker in &self.workers {
+            let mut state = worker.state.lock().await;
+            worker.ensure_worker(&mut state).await?;
+            worker.load(&mut state, preparation).await?;
+            for id in &preparation.agentloops {
+                if !state.required.agentloops.contains(id) {
+                    state.required.agentloops.push(id.clone());
+                }
+            }
+            for id in &preparation.tools {
+                if !state.required.tools.contains(id) {
+                    state.required.tools.push(id.clone());
+                }
+            }
+            for id in &preparation.programs {
+                if !state.required.programs.contains(id) {
+                    state.required.programs.push(id.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn execute(
+        &self,
+        code: crate::WorkerCode,
+        environment: NativeEnvironment,
+        input: serde_json::Value,
+        bridge: &dyn TurnBridge,
+    ) -> Result<serde_json::Value, LoopError> {
+        let mut preparation = BrainPreparation::default();
+        match code.kind {
+            crate::ComponentKind::Agentloop => {
+                preparation.agentloops.push(AgentloopId::new(&code.digest))
+            }
+            crate::ComponentKind::Tool => preparation.tools.push(ToolId::new(&code.digest)),
+        }
+        if let Some(id) = &code.program {
+            preparation.programs.push(ProgramId::new(id));
+        }
+        preparation.validate()?;
+        let (worker, _permit) = self.select(!bridge.can_dispatch())?;
+        let incarnation = {
+            let mut state = worker.state.lock().await;
+            worker
+                .ensure_worker(&mut state)
+                .await
+                .map_err(preparation_error)?;
+            worker
+                .load(&mut state, &preparation)
+                .await
+                .map_err(preparation_error)?;
+            state.incarnation
+        };
+        let outcome = WorkerClient::new(&worker.socket, &worker.limits)
+            .execute(code, environment, input, bridge)
+            .await;
+        if matches!(&outcome, Err(LoopError::Failed(message)) if message == "brain-env-worker stopped answering")
+        {
+            let mut state = worker.state.lock().await;
+            if state.incarnation == incarnation {
+                worker.stop_worker(&mut state).await;
+            }
+        }
+        if let Ok(output) = &outcome
+            && serde_json::to_vec(output)
+                .map_err(|error| error.to_string())?
+                .len()
+                > ceiling(worker.limits.max_execution_output_bytes)
+        {
+            return Err("execution output exceeds the configured limit".into());
+        }
+        outcome
+    }
+
     pub async fn turn(
         &self,
         digest: AgentloopId,
@@ -161,8 +271,19 @@ impl WorkerPool {
         input: TurnInput,
         bridge: &dyn TurnBridge,
     ) -> Result<TurnOutput, LoopError> {
-        let (worker, _permit) = self.select(!bridge.can_dispatch())?;
-        worker.turn(digest, environment, input, bridge).await
+        let output = self
+            .execute(
+                crate::WorkerCode {
+                    kind: crate::ComponentKind::Agentloop,
+                    digest: digest.to_string(),
+                    program: None,
+                },
+                environment,
+                serde_json::to_value(input).map_err(|error| error.to_string())?,
+                bridge,
+            )
+            .await?;
+        serde_json::from_value(output).map_err(|error| LoopError::Failed(error.to_string()))
     }
 
     pub async fn tool(
@@ -172,8 +293,17 @@ impl WorkerPool {
         input: NativeToolInput,
         bridge: &dyn TurnBridge,
     ) -> Result<serde_json::Value, LoopError> {
-        let (worker, _permit) = self.select(!bridge.can_dispatch())?;
-        worker.tool(digest, environment, input, bridge).await
+        self.execute(
+            crate::WorkerCode {
+                kind: crate::ComponentKind::Tool,
+                digest: digest.to_string(),
+                program: None,
+            },
+            environment,
+            serde_json::to_value(input).map_err(|error| error.to_string())?,
+            bridge,
+        )
+        .await
     }
 }
 
@@ -192,6 +322,8 @@ struct WorkerState {
     incarnation: u64,
     agentloops: HashSet<AgentloopId>,
     tools: HashSet<ToolId>,
+    programs: HashSet<ProgramId>,
+    required: BrainPreparation,
     child: Option<tokio::process::Child>,
 }
 
@@ -273,98 +405,50 @@ impl WorkerSlot {
         Ok(())
     }
 
-    /// Runs one turn with exactly the grants in `environment`. The bridge answers the
-    /// guest's host calls for as long as the turn runs; a worker that stops answering
-    /// between them is restarted.
-    pub async fn turn(
+    async fn load(
         &self,
-        digest: AgentloopId,
-        environment: NativeEnvironment,
-        input: TurnInput,
-        bridge: &dyn TurnBridge,
-    ) -> Result<TurnOutput, LoopError> {
-        // Everything that needs the worker's identity happens under the lock; the turn
-        // itself does not. Holding it across the call would serialise every session in
-        // the process onto one turn at a time, whatever the permits allowed.
-        let incarnation = {
-            let mut state = self.state.lock().await;
-            self.ensure_worker(&mut state).await?;
-            if !state.agentloops.contains(&digest) {
-                let package =
-                    tokio::fs::read(component_path(&self.packages, "agentloop", digest.as_str()))
-                        .await
-                        .map_err(|_| "Agentloop digest is not admitted".to_owned())?;
-                let admitted = WorkerClient::new(&self.socket, &self.limits)
-                    .admit(&package)
-                    .await?;
-                if admitted != digest {
-                    return Err("persisted Agentloop package changed digest".into());
-                }
-                state.agentloops.insert(digest.clone());
-            }
-            state.incarnation
-        };
+        state: &mut WorkerState,
+        preparation: &BrainPreparation,
+    ) -> Result<(), String> {
         let client = WorkerClient::new(&self.socket, &self.limits);
-        let outcome = client.turn(digest, environment, input, bridge).await;
-        match outcome {
-            Ok(output) => {
-                let output_bytes =
-                    serde_json::to_vec(&output).map_err(|error| error.to_string())?;
-                if output_bytes.len() > ceiling(self.limits.max_execution_output_bytes) {
-                    return Err("Agentloop turn output exceeds the configured limit".into());
-                }
-                Ok(output)
+        for id in &preparation.agentloops {
+            if state.agentloops.contains(id) {
+                continue;
             }
-            Err(LoopError::Failed(message)) if message == "brain-env-worker stopped answering" => {
-                // A failed health probe applies to the worker, not just this invocation.
-                let mut state = self.state.lock().await;
-                if state.incarnation == incarnation {
-                    self.stop_worker(&mut state).await;
-                }
-                Err(LoopError::Failed(message))
+            let bytes = tokio::fs::read(component_path(&self.packages, "agentloop", id.as_str()))
+                .await
+                .map_err(|error| format!("Agentloop {id} is unavailable: {error}"))?;
+            if client.admit(&bytes).await? != *id {
+                return Err("persisted Agentloop package changed digest".into());
             }
-            Err(error) => Err(error),
+            state.agentloops.insert(id.clone());
         }
-    }
-
-    pub async fn tool(
-        &self,
-        digest: ToolId,
-        environment: NativeEnvironment,
-        input: NativeToolInput,
-        bridge: &dyn TurnBridge,
-    ) -> Result<serde_json::Value, LoopError> {
-        let incarnation = {
-            let mut state = self.state.lock().await;
-            self.ensure_worker(&mut state).await?;
-            if !state.tools.contains(&digest) {
-                let component =
-                    tokio::fs::read(component_path(&self.packages, "tool", digest.as_str()))
-                        .await
-                        .map_err(|_| "Tool digest is not admitted".to_owned())?;
-                let admitted = WorkerClient::new(&self.socket, &self.limits)
-                    .admit_tool(&component)
-                    .await?;
-                if admitted != digest {
-                    return Err("persisted Tool Component changed digest".into());
-                }
-                state.tools.insert(digest.clone());
+        for id in &preparation.tools {
+            if state.tools.contains(id) {
+                continue;
             }
-            state.incarnation
-        };
-        let outcome = WorkerClient::new(&self.socket, &self.limits)
-            .tool(digest, environment, input, bridge)
-            .await;
-        match outcome {
-            Err(LoopError::Failed(message)) if message == "brain-env-worker stopped answering" => {
-                let mut state = self.state.lock().await;
-                if state.incarnation == incarnation {
-                    self.stop_worker(&mut state).await;
-                }
-                Err(LoopError::Failed(message))
+            let bytes = tokio::fs::read(component_path(&self.packages, "tool", id.as_str()))
+                .await
+                .map_err(|error| format!("Tool {id} is unavailable: {error}"))?;
+            if client.admit_tool(&bytes).await? != *id {
+                return Err("persisted Tool Component changed digest".into());
             }
-            outcome => outcome,
+            state.tools.insert(id.clone());
         }
+        for id in &preparation.programs {
+            if state.programs.contains(id) {
+                continue;
+            }
+            let source =
+                tokio::fs::read_to_string(component_path(&self.packages, "program", id.as_str()))
+                    .await
+                    .map_err(|error| format!("program {id} is unavailable: {error}"))?;
+            if client.load_program(source).await? != id.as_str() {
+                return Err("persisted program changed digest".into());
+            }
+            state.programs.insert(id.clone());
+        }
+        Ok(())
     }
 
     async fn ensure_worker(&self, state: &mut WorkerState) -> Result<(), String> {
@@ -407,6 +491,7 @@ impl WorkerSlot {
             state.incarnation = state.incarnation.wrapping_add(1);
             state.agentloops.clear();
             state.tools.clear();
+            state.programs.clear();
             let client = WorkerClient::new(&self.socket, &self.limits);
             let ready = async {
                 loop {
@@ -429,6 +514,8 @@ impl WorkerSlot {
                 .await
                 .map_err(|_| "brain-env-worker did not become ready".to_owned())??;
         }
+        let required = state.required.clone();
+        self.load(state, &required).await?;
         Ok(())
     }
 
@@ -439,6 +526,7 @@ impl WorkerSlot {
         }
         state.agentloops.clear();
         state.tools.clear();
+        state.programs.clear();
         let _ = crate::socket::unlink(&self.socket);
     }
 }
@@ -553,7 +641,15 @@ async fn persist_component(
 }
 
 fn component_path(directory: &std::path::Path, kind: &str, digest: &str) -> PathBuf {
-    directory.join(format!("{kind}-{digest}.wasm"))
+    let extension = if kind == "program" { "source" } else { "wasm" };
+    directory.join(format!("{kind}-{digest}.{extension}"))
+}
+
+fn preparation_error(message: String) -> LoopError {
+    LoopError::Turn(TurnError::new(
+        brain_protocol::codes::failure::PREPARATION_FAILED,
+        message,
+    ))
 }
 
 #[cfg(test)]

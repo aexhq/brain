@@ -25,6 +25,11 @@ name = "in_process"
 path = "tests/in_process.rs"
 required-features = ["integration-tests"]
 
+[[test]]
+name = "preparation"
+path = "tests/preparation.rs"
+required-features = ["integration-tests"]
+
 [dependencies]
 brain-env = { workspace = true }
 brain-protocol = { workspace = true }

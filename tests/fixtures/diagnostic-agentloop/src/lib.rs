@@ -7,6 +7,13 @@ struct Diagnostic;
 
 impl Guest for Diagnostic {
     fn turn(input: TurnInput) -> Result<TurnOutput, TurnError> {
+        if serde_json::from_str::<serde_json::Value>(&input.input_json).map_err(error)?["message"]
+            == serde_json::json!("program-envelope")
+        {
+            return Ok(TurnOutput {
+                result_json: Some(input.configuration_json),
+            });
+        }
         let page: serde_json::Value =
             serde_json::from_str(&brain::agentloop::host::events(0)?).map_err(error)?;
         if let Some(sequence) = page["next_cursor"].as_u64() {

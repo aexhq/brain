@@ -721,7 +721,7 @@ fn from_wit_output(output: wit::TurnOutput) -> Result<TurnOutput, String> {
     })
 }
 
-fn hex_digest(bytes: &[u8]) -> String {
+pub(crate) fn hex_digest(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut output = String::with_capacity(64);
     for byte in digest {

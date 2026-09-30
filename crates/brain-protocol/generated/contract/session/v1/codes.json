@@ -1,5 +1,6 @@
 {
   "api": [
+    "preparation_failed",
     "invalid_request",
     "unauthorized",
     "not_found",
@@ -65,6 +66,7 @@
     "environment_replace_failed"
   ],
   "failures": [
+    "preparation_failed",
     "interrupted",
     "cancelled",
     "timeout",

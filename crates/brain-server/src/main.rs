@@ -61,6 +61,16 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         .start()
         .await
         .map_err(|error| anyhow::anyhow!(error))?;
+    if let Some(path) = &config.env_preparation {
+        let preparation =
+            serde_json::from_slice::<brain_env::PreparationConfig>(&tokio::fs::read(path).await?)?;
+        loops
+            .prepare_files(
+                &preparation,
+                path.parent().unwrap_or_else(|| std::path::Path::new(".")),
+            )
+            .await?;
+    }
     // Credentials are durable before the session's creation record is committed.
     let credentials = Arc::new(brain_server::metadata::ServerMetadata::open(
         &brain_server::metadata::metadata_directory(&config.data_dir),

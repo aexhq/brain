@@ -9,6 +9,8 @@ mod client;
 mod environment;
 pub use environment::{BrainEnvironment, NativePolicy};
 mod limits;
+mod preparation;
+pub use preparation::PreparationConfig;
 mod socket;
 mod supervisor;
 mod wire;
@@ -18,6 +20,6 @@ pub use limits::{EnvLimits, WorkerArgs, ceiling};
 pub use socket::{Listener, listen};
 pub use supervisor::{LoopError, WorkerPool};
 pub use wire::{
-    Access, ComponentKind, HostCall, NativeEnvironment, NativeToolInput, WorkerRequest,
+    Access, ComponentKind, HostCall, NativeEnvironment, NativeToolInput, WorkerCode, WorkerRequest,
     WorkerResponse, Workspace, max_request_bytes, network_covers, read_frame, write_frame,
 };

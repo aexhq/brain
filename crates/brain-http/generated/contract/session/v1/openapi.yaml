@@ -56,6 +56,26 @@ components:
       - message
       - retryable
       type: object
+    BrainPreparation:
+      additionalProperties: false
+      description: Reusable artifacts to load on the built-in Environment's execution workers.
+      properties:
+        agentloops:
+          default: []
+          items:
+            $ref: '#/components/schemas/AgentloopId'
+          type: array
+        programs:
+          default: []
+          items:
+            $ref: '#/components/schemas/ProgramId'
+          type: array
+        tools:
+          default: []
+          items:
+            $ref: '#/components/schemas/ToolId'
+          type: array
+      type: object
     ContentBlock:
       oneOf:
       - additionalProperties: false
@@ -1409,6 +1429,20 @@ components:
       - code
       - message
       type: object
+    ProgramAdmission:
+      additionalProperties: false
+      properties:
+        id:
+          $ref: '#/components/schemas/ProgramId'
+        status:
+          $ref: '#/components/schemas/AdmissionStatus'
+      required:
+      - id
+      - status
+      type: object
+    ProgramId:
+      pattern: ^[0-9a-f]{64}$
+      type: string
     Role:
       enum:
       - user
@@ -1870,6 +1904,30 @@ paths:
       summary: Read agent loop admission
       tags:
       - Components
+  /v1/brain-env/prepare:
+    post:
+      description: Waits until the declared artifacts are loaded on eligible workers. Preparation is retained for this server process, restored after worker replacement, and independent of session lifetime. Repeating the request checks current resources again. It grants no session authority.
+      operationId: prepareBrainEnv
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BrainPreparation'
+        required: true
+      responses:
+        '204':
+          description: Preparation completed
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+      security:
+      - serverToken: []
+      summary: Prepare reusable code on the built-in Environment workers
+      tags:
+      - Environments
   /v1/hosts:
     post:
       operationId: registerHost
@@ -2110,6 +2168,61 @@ paths:
       summary: List models
       tags:
       - Models
+  /v1/programs:
+    post:
+      operationId: admitProgram
+      requestBody:
+        content:
+          application/octet-stream:
+            schema:
+              format: binary
+              type: string
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProgramAdmission'
+          description: Program admitted
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+      security:
+      - serverToken: []
+      summary: Store UTF-8 program source for a compatible runtime
+      tags:
+      - Components
+  /v1/programs/{id}:
+    get:
+      operationId: getProgram
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          $ref: '#/components/schemas/ProgramId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProgramAdmission'
+          description: Admission status
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+      security:
+      - serverToken: []
+      summary: Read program admission
+      tags:
+      - Components
   /v1/sessions:
     get:
       operationId: listSessions
@@ -2635,6 +2748,33 @@ paths:
       security:
       - serverToken: []
       summary: Upload a tool
+      tags:
+      - Components
+  /v1/tools/{id}:
+    get:
+      operationId: getTool
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          $ref: '#/components/schemas/ToolId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolAdmission'
+          description: Admission status
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+      security:
+      - serverToken: []
+      summary: Read Tool admission
       tags:
       - Components
 tags:

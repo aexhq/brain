@@ -124,3 +124,5 @@ remain in [the contracts](../../contracts), [user docs](../../docs), and
 - [ADR-027: Suspend idle session actors after an idle TTL](2026-09-04-05-idle-ttl.md) → [ADR-037: Release execution at turn boundaries and prepare artifacts before creation](2026-09-05-06-ephemeral.md)
 
 The external-only persistence proposal in [ADR-006: Make external event listeners the only session persistence](2026-08-26-02-external-history.md) is distinct from today’s ephemeral execution with a durable local journal.
+
+- [ADR-054: Keep preparation in Environment configuration and loaders](2026-09-29-01-environment-registration-and-execution.md) -- accepted 2026-09-29; revised 2026-09-30.

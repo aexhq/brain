@@ -75,6 +75,34 @@
       ],
       "type": "object"
     },
+    "BrainPreparation": {
+      "additionalProperties": false,
+      "description": "Reusable artifacts to load on the built-in Environment's execution workers.",
+      "properties": {
+        "agentloops": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AgentloopId"
+          },
+          "type": "array"
+        },
+        "programs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ProgramId"
+          },
+          "type": "array"
+        },
+        "tools": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ToolId"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "ContentBlock": {
       "oneOf": [
         {
@@ -1978,6 +2006,26 @@
         "message"
       ],
       "type": "object"
+    },
+    "ProgramAdmission": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ProgramId"
+        },
+        "status": {
+          "$ref": "#/$defs/AdmissionStatus"
+        }
+      },
+      "required": [
+        "id",
+        "status"
+      ],
+      "type": "object"
+    },
+    "ProgramId": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
     },
     "Role": {
       "enum": [

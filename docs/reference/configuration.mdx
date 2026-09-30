@@ -19,6 +19,7 @@ For deployment, remote callbacks, backups and upgrades, start with
 | `BRAIN_DATA_DIR` | `--data-dir` | `brain-data` | Where journals, admitted Components, and local state live |
 | `BRAIN_ENV_WORKER` | `--env-worker` | `brain-env-worker` | Path to the loop worker executable |
 | `BRAIN_ENV_WORKERS` | `--env-workers` | `2` | OS worker processes in the built-in Environment pool |
+| `BRAIN_ENV_PREPARATION` | `--env-preparation` | none | JSON file of Components and program sources to prepare before serving execution |
 | `BRAIN_ENV_NETWORK_ALLOW` | `--env-network-allow` | none | Origins the brain env may grant through Environment configuration: exact, or `https://*.example.com` for a family of hosts |
 | `BRAIN_ENV_SECRET_ALLOW` | `--env-secret-allow` | none | Process environment variable names the brain env may mount under `/secrets` |
 | `BRAIN_ENV_FILESYSTEM_ALLOW` | `--env-filesystem-allow` | none | Filesystem roots the brain env may grant: `scratch` or `workspace` |

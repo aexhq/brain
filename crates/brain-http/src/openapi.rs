@@ -88,6 +88,10 @@ pub(crate) mod contract {
     }
 
     referenced!(
+        BrainPreparation,
+        ProgramAdmission,
+        ProgramId,
+        ToolId,
         AgentloopAdmission,
         AgentloopId,
         ApiError,

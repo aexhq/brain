@@ -76,6 +76,7 @@ pub fn status_for(code: &str) -> StatusCode {
         api::UNAUTHORIZED => StatusCode::UNAUTHORIZED,
         api::NOT_FOUND => StatusCode::NOT_FOUND,
         api::CONFLICT => StatusCode::CONFLICT,
+        api::PREPARATION_FAILED => StatusCode::CONFLICT,
         api::OVERLOADED => StatusCode::SERVICE_UNAVAILABLE,
         api::AMBIGUOUS
         | api::EXECUTOR_FAILED

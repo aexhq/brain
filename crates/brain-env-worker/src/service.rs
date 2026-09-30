@@ -1,4 +1,4 @@
-//! One bounded Wasmtime worker. It caches compiled Components only; every invocation
+//! One bounded Wasmtime worker. It retains prepared code; every invocation
 //! receives a fresh Store and instance.
 
 use std::{
@@ -24,6 +24,7 @@ pub struct WorkerService {
     engine: Arc<AdmissionEngine>,
     agentloops: RwLock<HashMap<String, Arc<AdmittedAgentloop>>>,
     tools: RwLock<HashMap<String, Arc<AdmittedTool>>>,
+    programs: RwLock<HashMap<String, Arc<str>>>,
     running: Semaphore,
     running_leaf: Semaphore,
 }
@@ -66,6 +67,7 @@ impl WorkerService {
             engine: Arc::new(AdmissionEngine::new(limits, allowed_imports)?),
             agentloops: RwLock::new(HashMap::new()),
             tools: RwLock::new(HashMap::new()),
+            programs: RwLock::new(HashMap::new()),
             running,
             running_leaf,
         })
@@ -95,11 +97,32 @@ impl WorkerService {
                 let response = self.admit(kind, component_base64).await;
                 let _ = crate::worker_write(stream, &response, &limits).await;
             }
+            WorkerRequest::LoadProgram { source } => {
+                let response = if source.is_empty()
+                    || source.len() > brain_env::ceiling(limits.max_package_bytes)
+                {
+                    failed(
+                        "admission_failed",
+                        "program must be nonempty and within the package limit".into(),
+                    )
+                } else {
+                    let digest = crate::runtime::hex_digest(source.as_bytes());
+                    match self.programs.write() {
+                        Ok(mut programs) => {
+                            programs
+                                .entry(digest.clone())
+                                .or_insert_with(|| Arc::from(source));
+                            WorkerResponse::Admitted { digest }
+                        }
+                        Err(_) => failed("admission_failed", "the worker lost its state".into()),
+                    }
+                };
+                let _ = crate::worker_write(stream, &response, &limits).await;
+            }
             WorkerRequest::Execute {
-                kind,
-                digest,
+                code,
                 environment,
-                input,
+                mut input,
                 can_dispatch,
             } => {
                 let capacity = if can_dispatch {
@@ -119,9 +142,42 @@ impl WorkerService {
                     .await;
                     return;
                 };
-                match kind {
+                if let Some(program) = code.program {
+                    let source = self
+                        .programs
+                        .read()
+                        .ok()
+                        .and_then(|programs| programs.get(&program).cloned());
+                    let Some(source) = source else {
+                        let _ = crate::worker_write(
+                            stream,
+                            &failed(
+                                "not_admitted",
+                                "program is not loaded in this worker".into(),
+                            ),
+                            &limits,
+                        )
+                        .await;
+                        return;
+                    };
+                    let Some(input) = input.as_object_mut() else {
+                        let _ = crate::worker_write(
+                            stream,
+                            &failed("invalid_input", "execution input must be an object".into()),
+                            &limits,
+                        )
+                        .await;
+                        return;
+                    };
+                    let configuration = input.remove("configuration").unwrap_or_default();
+                    input.insert(
+                        "configuration".into(),
+                        serde_json::json!({"source": &*source, "configuration": configuration}),
+                    );
+                }
+                match code.kind {
                     ComponentKind::Agentloop => match serde_json::from_value(input) {
-                        Ok(input) => self.turn(stream, &digest, environment, input).await,
+                        Ok(input) => self.turn(stream, &code.digest, environment, input).await,
                         Err(error) => {
                             let _ = crate::worker_write(
                                 stream,
@@ -132,7 +188,7 @@ impl WorkerService {
                         }
                     },
                     ComponentKind::Tool => match serde_json::from_value(input) {
-                        Ok(input) => self.tool(stream, &digest, environment, input).await,
+                        Ok(input) => self.tool(stream, &code.digest, environment, input).await,
                         Err(error) => {
                             let _ = crate::worker_write(
                                 stream,
@@ -422,9 +478,12 @@ mod tests {
         write_frame(
             &mut client,
             &WorkerRequest::Execute {
-                kind: ComponentKind::Agentloop,
+                code: brain_env::WorkerCode {
+                    kind: ComponentKind::Agentloop,
+                    digest: "agl_missing".into(),
+                    program: None,
+                },
                 can_dispatch: true,
-                digest: "agl_missing".into(),
                 environment: NativeEnvironment::default(),
                 input: serde_json::to_value(input()).unwrap(),
             },

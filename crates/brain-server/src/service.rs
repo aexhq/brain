@@ -107,6 +107,81 @@ impl ServerApi {
 
 #[async_trait]
 impl BrainApi for ServerApi {
+    async fn prepare_brain_env(
+        &self,
+        request: brain_protocol::BrainPreparation,
+    ) -> Result<(), ApiError> {
+        request.validate().map_err(ApiError::invalid_request)?;
+        self.resources
+            .loops
+            .prepare(&request)
+            .await
+            .map_err(|error| {
+                ApiError::new(
+                    brain_protocol::codes::api::PREPARATION_FAILED,
+                    error.to_string(),
+                    false,
+                )
+            })
+    }
+
+    async fn admit_program(
+        &self,
+        source: String,
+    ) -> Result<brain_protocol::ProgramAdmission, ApiError> {
+        let id = self
+            .resources
+            .loops
+            .admit_program(source)
+            .await
+            .map_err(loop_error)?;
+        Ok(brain_protocol::ProgramAdmission {
+            id,
+            status: AdmissionStatus::Admitted,
+        })
+    }
+
+    async fn get_program(
+        &self,
+        id: brain_protocol::ProgramId,
+    ) -> Result<brain_protocol::ProgramAdmission, ApiError> {
+        if !brain_protocol::ids::is_sha256(id.as_str()) {
+            return Err(ApiError::invalid_request("invalid program id"));
+        }
+        if !self
+            .resources
+            .loops
+            .program_status(&id)
+            .await
+            .map_err(loop_error)?
+        {
+            return Err(not_found("program is not admitted"));
+        }
+        Ok(brain_protocol::ProgramAdmission {
+            id,
+            status: AdmissionStatus::Admitted,
+        })
+    }
+
+    async fn get_tool(&self, id: brain_protocol::ToolId) -> Result<ToolAdmission, ApiError> {
+        if !brain_protocol::ids::is_sha256(id.as_str()) {
+            return Err(ApiError::invalid_request("invalid Tool id"));
+        }
+        if !self
+            .resources
+            .loops
+            .tool_status(&id)
+            .await
+            .map_err(loop_error)?
+        {
+            return Err(not_found("Tool is not admitted"));
+        }
+        Ok(ToolAdmission {
+            id,
+            status: ToolAdmissionStatus::Admitted,
+            error: None,
+        })
+    }
     async fn environment_event(
         &self,
         session: SessionId,

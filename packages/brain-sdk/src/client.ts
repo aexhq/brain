@@ -1,14 +1,14 @@
 import { HostPump } from "./client-pump.js";
 import { BrainError } from "./errors.js";
 import { EnvironmentServices } from "./environments.js";
-import { inspectAgentloop, inspectComponent, inspectEnvironment, inspectTool, isComponent, placeDefaultTools, loadHostTool } from "./extensions.js";
+import { inspectAgentloop, inspectComponent, inspectProgram, inspectPlaced, withImplementation, isProgram, inspectEnvironment, inspectTool, isComponent, placeDefaultTools, loadHostTool } from "./extensions.js";
 import { HostToolRegistry } from "./host.js";
 import type {
-  AgentloopAdmission, CreateSessionRequest, Environment as WireEnvironment, EventPage, HostRegistration,
+  AgentloopAdmission, BrainPreparation, ProgramAdmission, CreateSessionRequest, Environment as WireEnvironment, EventPage, HostRegistration,
   SessionList, SessionSummary as WireSession, SessionTranscript, Tool as WireTool, ToolAdmission,
 } from "./generated/session.js";
 import type {
-  Component, CreateSessionOptions, Environment, OperationOptions, PlacedAgentloop, PlacedTool,
+  Component, Program, CreateSessionOptions, Environment, OperationOptions, PlacedAgentloop, PlacedTool,
   SessionEvent, SessionState, SessionStreamEvent, UserInput, SendOptions,
   TurnOutcome,
 } from "./types.js";
@@ -47,6 +47,7 @@ export class BrainClient {
   private readonly transport: typeof globalThis.fetch;
   private readonly agentloops = new WeakMap<object, Promise<string>>();
   private readonly tools = new WeakMap<object, Promise<string>>();
+  private readonly programs = new WeakMap<object, Promise<string>>();
   private readonly controller = new AbortController();
   private readonly requests = new Set<Promise<unknown>>();
   private readonly readers = new Set<ReadableStreamDefaultReader<Uint8Array>>();
@@ -200,6 +201,40 @@ export class BrainClient {
     }
   }
 
+  /** Prepare a built-in Environment implementation and return its reusable placed binding. */
+  async prepare<T extends PlacedAgentloop | PlacedTool>(extension: T): Promise<T> {
+    const source = inspectPlaced(extension);
+    if (inspectEnvironment(source.environment).driver.driver !== "brain") throw new TypeError("prepare needs an implementation placed in brainEnv");
+    const implementation = await resolveImplementation(this, source);
+    const entrypoint = source.kind === "agentloop" ? "turn" : "run";
+    if (implementation.entrypoint !== entrypoint || !["brain_component", "brain_program"].includes(String(implementation.type))) {
+      throw new TypeError("unsupported brainEnv implementation");
+    }
+    const runtime = implementation.type === "brain_program" ? implementation.runtime : implementation.id;
+    const request: BrainPreparation = {
+      agentloops: entrypoint === "turn" ? [runtime as string] : [],
+      tools: entrypoint === "run" ? [runtime as string] : [],
+      programs: implementation.type === "brain_program" ? [implementation.id as string] : [],
+    };
+    await this.prepareEnvironment(request);
+    return withImplementation(extension, implementation);
+  }
+
+  /** Load admitted artifacts without creating a session or changing its authority. */
+  async prepareEnvironment(request: BrainPreparation): Promise<void> {
+    await this.request("POST", "/v1/brain-env/prepare", request);
+  }
+
+  async admitProgram(value: Program, entrypoint: "turn" | "run"): Promise<Record<string, unknown>> {
+    const source = inspectProgram(value);
+    const runtime = typeof source.runtime === "string" ? source.runtime : await this.admitComponent(source.runtime,
+      entrypoint === "turn" ? this.agentloops : this.tools,
+      entrypoint === "turn" ? "/v1/agentloops" : "/v1/tools",
+      entrypoint === "turn" ? "Agentloop" : "Tool", true);
+    const id = await this.admitComponent(value, this.programs, "/v1/programs", "Program", true);
+    return { type: "brain_program", entrypoint, id, runtime };
+  }
+
   async admit(extension: PlacedAgentloop): Promise<string> {
     const source = inspectAgentloop(extension);
     if (inspectEnvironment(source.environment).driver.driver !== "brain" || !isComponent(source.implementation)) throw new TypeError("admission needs a Component placed in brainEnv");
@@ -266,9 +301,9 @@ export class BrainClient {
     return Object.freeze({ hostId: this.registration!.host_id, token: this.registration!.token });
   }
 
-  private async admitComponent(value: Component, cache: WeakMap<object, Promise<string>>, path: string, subject: string): Promise<string> {
+  private async admitComponent(value: Component | Program, cache: WeakMap<object, Promise<string>>, path: string, subject: string, lookup = false): Promise<string> {
     this.controller.signal.throwIfAborted();
-    const source = inspectComponent(value);
+    const source = isProgram(value) ? inspectProgram(value) : inspectComponent(value);
     const cached = cache.get(value);
     if (cached !== undefined) return cached;
     const admission = (async () => {
@@ -282,15 +317,40 @@ export class BrainClient {
               return new Uint8Array(await response.arrayBuffer());
             });
       if (bytes.byteLength === 0) throw new TypeError(`${subject} Component cannot be empty`);
-      const idempotencyKey = `${subject.toLowerCase()}-${await sha256(bytes)}`;
-      const result = await this.request<AgentloopAdmission | ToolAdmission>("POST", path, bytes, idempotencyKey, "application/octet-stream");
-      if (result.status !== "admitted") throw new BrainError(400, `${subject.toLowerCase()}_rejected`, result.error?.message ?? `${subject} was rejected`, false, result.error && "details" in result.error ? result.error.details : undefined);
+      const digest = await sha256(bytes);
+      if (lookup) {
+        try {
+          const existing = await this.request<AgentloopAdmission | ToolAdmission | ProgramAdmission>("GET", `${path}/${digest}`);
+          if (existing.status === "admitted") return existing.id;
+        } catch (error) {
+          if (!(error instanceof BrainError) || error.status !== 404 || error.code !== "not_found") throw error;
+        }
+      }
+      const idempotencyKey = `${subject.toLowerCase()}-${digest}`;
+      const result = await this.request<AgentloopAdmission | ToolAdmission | ProgramAdmission>("POST", path, bytes, idempotencyKey, "application/octet-stream");
+      if (result.status !== "admitted") {
+        const error = "error" in result ? result.error : undefined;
+        throw new BrainError(400, `${subject.toLowerCase()}_rejected`, error?.message ?? `${subject} was rejected`, false, error && "details" in error ? error.details : undefined);
+      }
       return result.id;
     })();
     cache.set(value, admission);
     admission.catch(() => cache.delete(value));
     return admission;
   }
+}
+
+async function resolveImplementation(client: BrainClient, source: ReturnType<typeof inspectPlaced>): Promise<Record<string, unknown>> {
+  const value = source.implementation;
+  if (value === undefined) throw new TypeError("implementation is required");
+  const entrypoint = source.kind === "agentloop" ? "turn" : "run";
+  if ((isComponent(value) || isProgram(value)) && inspectEnvironment(source.environment).driver.driver !== "brain") {
+    throw new TypeError("a remote implementation needs its Environment's descriptor");
+  }
+  const implementation = isProgram(value) ? await client.admitProgram(value, entrypoint)
+    : isComponent(value) ? { type: "brain_component", entrypoint, id: await (entrypoint === "turn" ? client.admitAgentloop(value) : client.admitTool(value)) }
+    : structuredClone(value);
+  return source.kind === "tool" && (isComponent(value) || isProgram(value)) ? { ...implementation, configuration: structuredClone(source.configuration) } : implementation;
 }
 
 export class Sessions {
@@ -333,26 +393,12 @@ export class Sessions {
       if (tool.handler !== undefined && !placedIn) throw new TypeError(`Tool ${tool.definition.name} has run and must be placed in a hostEnv`);
       if (tool.handler === undefined && placedIn) throw new TypeError(`Tool ${tool.definition.name} is placed in a hostEnv and must have run`);
     }
-    const loopDriver = inspectEnvironment(loop.environment).driver.driver;
-    if (isComponent(loop.implementation) && loopDriver !== "brain") throw new TypeError("a remote Agentloop needs its Environment's implementation descriptor");
-    const implementation = isComponent(loop.implementation)
-      ? { type: "brain_component", entrypoint: "turn", id: await this.client.admitAgentloop(loop.implementation) }
-      : structuredClone(loop.implementation);
+    const implementation = await resolveImplementation(this.client, loop);
     const implementations = new Map<PlacedTool, unknown>();
     for (const [placed, tool] of tools) {
-      if (tool.implementation === undefined) {
-        implementations.set(placed, { type: "host_function", name: tool.definition.name });
-        continue;
-      }
-      if (isComponent(tool.implementation) && inspectEnvironment(tool.environment).driver.driver !== "brain") throw new TypeError("a remote Tool needs its Environment's implementation descriptor");
-      implementations.set(placed, !isComponent(tool.implementation)
-        ? structuredClone(tool.implementation)
-        : {
-            type: "brain_component",
-            entrypoint: "run",
-            id: await this.client.admitTool(tool.implementation as Component),
-            configuration: structuredClone(tool.configuration),
-          });
+      implementations.set(placed, tool.implementation === undefined
+        ? { type: "host_function", name: tool.definition.name }
+        : await resolveImplementation(this.client, tool));
     }
     const compiledTools = compileTools(options.tools ?? [], implementations);
     const registry = new HostToolRegistry();

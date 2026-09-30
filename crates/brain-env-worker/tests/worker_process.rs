@@ -313,6 +313,11 @@ async fn a_worker_crash_does_not_replay_or_stop_its_sibling_and_shutdown_reaps_b
         .admit(tokio::fs::read(package_path()).await.unwrap())
         .await
         .unwrap();
+    let preparation = brain_protocol::BrainPreparation {
+        agentloops: vec![digest.clone()],
+        ..Default::default()
+    };
+    pool.prepare(&preparation).await.unwrap();
     let bridge = Arc::new(Held {
         entered: tokio::sync::Barrier::new(3),
         release: tokio::sync::Notify::new(),
@@ -353,6 +358,21 @@ async fn a_worker_crash_does_not_replay_or_stop_its_sibling_and_shutdown_reaps_b
         kv: Mutex::new(Default::default()),
         cancelled: AtomicBool::new(false),
     };
+    for index in 0..2 {
+        let worker = brain_env::WorkerClient::new(
+            root.join(format!("run/{index}/brain-env-worker.sock")),
+            &EnvLimits::default(),
+        );
+        worker
+            .turn(
+                digest.clone(),
+                environment(),
+                input("prepared after replacement"),
+                &bridge,
+            )
+            .await
+            .unwrap();
+    }
     for _ in 0..2 {
         pool.turn(digest.clone(), environment(), input("fresh"), &bridge)
             .await

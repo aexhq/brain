@@ -3,7 +3,7 @@ import type { EnvironmentGrant, EnvironmentMethod, EnvironmentTemplate } from ".
 
 import type { HostToolCall, HostToolContract } from "./host.js";
 import type {
-  Component, Environment, Outcome, PlacedAgentloop, PlacedTool, Schema, SchemaInput, SchemaOutput,
+  Component, Program, Environment, Outcome, PlacedAgentloop, PlacedTool, Schema, SchemaInput, SchemaOutput,
   ToolDefinition,
 } from "./types.js";
 
@@ -35,7 +35,7 @@ interface EnvironmentSource {
 interface AgentloopSource {
   readonly environments?: readonly EnvironmentGrant[];
   readonly kind: "agentloop";
-  readonly implementation: Component | Readonly<Record<string, unknown>>;
+  readonly implementation: Component | Program | Readonly<Record<string, unknown>>;
   readonly configuration: unknown;
   readonly environment: Environment;
 }
@@ -46,7 +46,7 @@ interface ToolSource {
   readonly definition: ToolDefinition;
   /** What the Environment interprets: a Component to admit, a descriptor, or nothing
    * when the Tool is a function this process holds. */
-  readonly implementation: Component | Readonly<Record<string, unknown>> | undefined;
+  readonly implementation: Component | Program | Readonly<Record<string, unknown>> | undefined;
   readonly handler?: (input: unknown, call: HostToolCall) => unknown;
   readonly contract?: HostToolContract;
   readonly load?: () => Promise<ToolSource>;
@@ -54,7 +54,13 @@ interface ToolSource {
   readonly environment: Environment;
 }
 
-type ExtensionSource = ComponentSource | EnvironmentSource | AgentloopSource | ToolSource;
+interface ProgramSource {
+  readonly kind: "program";
+  readonly runtime: Component | string;
+  readonly artifact: URL | Uint8Array;
+}
+
+type ExtensionSource = ProgramSource | ComponentSource | EnvironmentSource | AgentloopSource | ToolSource;
 type Branded = object & { readonly [source]?: ExtensionSource };
 
 export function component(artifact: URL | Uint8Array): Component {
@@ -65,6 +71,33 @@ export function component(artifact: URL | Uint8Array): Component {
     throw new TypeError("component bytes cannot be empty");
   }
   return branded({ kind: "component", artifact });
+}
+
+export function program(options: { readonly runtime: Component | string; readonly source: URL | Uint8Array }): Program {
+  if (typeof options.runtime === "string") {
+    if (!/^[0-9a-f]{64}$/u.test(options.runtime)) throw new TypeError("program runtime must be a Component or its SHA-256 id");
+  } else { inspectComponent(options.runtime); }
+  component(options.source);
+  return branded({ kind: "program", runtime: options.runtime, artifact: options.source });
+}
+
+export function inspectProgram(value: Program): ProgramSource {
+  return inspect(value, "program");
+}
+
+export function isProgram(value: unknown): value is Program {
+  return typeof value === "object" && value !== null && (value as Branded)[source]?.kind === "program";
+}
+
+export function inspectPlaced(value: PlacedAgentloop | PlacedTool): AgentloopSource | ToolSource {
+  const kind = (value as Branded)?.[source]?.kind;
+  if (kind === "agentloop") return inspectAgentloop(value as PlacedAgentloop);
+  if (kind === "tool") return inspectTool(value as PlacedTool);
+  throw new TypeError("prepare needs a placed Agentloop or Tool");
+}
+
+export function withImplementation<T extends PlacedAgentloop | PlacedTool>(value: T, implementation: Readonly<Record<string, unknown>>): T {
+  return branded({ ...inspectPlaced(value), implementation });
 }
 
 type Options<OptionsSchema extends Schema | undefined> =
@@ -179,7 +212,7 @@ export function placeDefaultTools(tools: readonly PlacedTool[], name: string): P
 
 export interface AgentloopContract<OptionsSchema extends Schema | undefined = undefined> {
   readonly options?: OptionsSchema;
-  readonly implementation: Component | Readonly<Record<string, unknown>> | ((options: Options<OptionsSchema>) => Readonly<Record<string, unknown>>);
+  readonly implementation: Component | Program | Readonly<Record<string, unknown>> | ((options: Options<OptionsSchema>) => Readonly<Record<string, unknown>>);
 }
 
 type Placement<OptionsSchema extends Schema | undefined> = { readonly env: Environment; readonly environments?: readonly EnvironmentGrant[] } &
@@ -193,7 +226,7 @@ export function agentloop<OptionsSchema extends Schema | undefined = undefined>(
     return branded({
       kind: "agentloop",
       ...(environments === undefined ? {} : { environments }),
-      implementation: typeof contract.implementation === "function" ? clone(contract.implementation(options as never)) : isComponent(contract.implementation) ? contract.implementation : clone(contract.implementation),
+      implementation: typeof contract.implementation === "function" ? clone(contract.implementation(options as never)) : (isComponent(contract.implementation) || isProgram(contract.implementation)) ? contract.implementation : clone(contract.implementation),
       configuration: clone(options),
       environment: env,
     });
@@ -223,7 +256,7 @@ export interface ToolContract<OptionsSchema extends Schema | undefined, InputSch
     input: SchemaOutput<InputSchema>,
     context: ToolRunContext<Options<OptionsSchema>, OutputSchema extends Schema ? SchemaInput<OutputSchema> : unknown>,
   ) => ToolReturn<OutputSchema> | Promise<ToolReturn<OutputSchema>>;
-  readonly implementation?: Component | Readonly<Record<string, unknown>> | ((options: Options<OptionsSchema>) => unknown);
+  readonly implementation?: Component | Program | Readonly<Record<string, unknown>> | ((options: Options<OptionsSchema>) => unknown);
 }
 
 export type ToolPlacement<OptionsSchema extends Schema | undefined> = { readonly env?: Environment; readonly environments?: readonly EnvironmentGrant[] } &
@@ -267,7 +300,7 @@ export function tool<OptionsSchema extends Schema | undefined = undefined, Input
       kind: "tool",
       ...(environments === undefined ? {} : { environments }),
       definition,
-      implementation: isComponent(implementation) ? implementation : clone(implementation as Readonly<Record<string, unknown>>),
+      implementation: (isComponent(implementation) || isProgram(implementation)) ? implementation : clone(implementation as Readonly<Record<string, unknown>>),
       configuration: clone(options),
       environment: env,
     });
@@ -292,7 +325,7 @@ export function toolMetadata(factory: unknown): ToolMetadata {
 /** Language bindings supply JSON Schema metadata and their Environment's code reference. */
 export function bindTool<Input = unknown, Output = unknown, Options extends object = Record<never, never>>(
   metadata: ToolMetadata,
-  implementation: Component | Readonly<Record<string, unknown>>,
+  implementation: Component | Program | Readonly<Record<string, unknown>>,
   runtime?: { readonly url: URL; readonly export: string },
 ): (...args: {} extends Options ? [placement?: Options & { env?: Environment; environments?: readonly EnvironmentGrant[] }] : [placement: Options & { env?: Environment; environments?: readonly EnvironmentGrant[] }]) => PlacedTool<Input, Output> {
   identifier(metadata.definition.name, "Tool name");
@@ -304,7 +337,7 @@ export function bindTool<Input = unknown, Output = unknown, Options extends obje
     const configuration = z.json().parse(options);
     return branded<PlacedTool<Input, Output>>({
       kind: "tool", definition: clone(metadata.definition), environment: env, environments,
-      configuration, implementation: isComponent(implementation) ? implementation : { ...clone(implementation), configuration },
+      configuration, implementation: (isComponent(implementation) || isProgram(implementation)) ? implementation : { ...clone(implementation), configuration },
       ...(runtime === undefined ? {} : { load: async () => {
         const module = await import(runtime.url.href);
         const exported = module[runtime.export];

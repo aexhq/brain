@@ -42,9 +42,12 @@ pub enum WorkerRequest {
         kind: ComponentKind,
         component_base64: String,
     },
+    LoadProgram {
+        source: String,
+    },
     Execute {
-        kind: ComponentKind,
-        digest: String,
+        #[serde(flatten)]
+        code: WorkerCode,
         environment: NativeEnvironment,
         input: serde_json::Value,
         can_dispatch: bool,
@@ -57,6 +60,14 @@ pub enum WorkerRequest {
     /// Stop the turn on this connection: pending host calls fail with `cancelled`, and so
     /// does the guest's next one.
     Cancel,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WorkerCode {
+    pub kind: ComponentKind,
+    pub digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
 }
 
 /// What one invocation is granted: its Environment configuration, bounded
@@ -201,7 +212,9 @@ pub async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
 pub fn max_request_bytes(request: &WorkerRequest, limits: &EnvLimits) -> usize {
     match request {
         WorkerRequest::Ping | WorkerRequest::Cancel => 1_024,
-        WorkerRequest::Admit { .. } => limits.max_request_frame_bytes(),
+        WorkerRequest::Admit { .. } | WorkerRequest::LoadProgram { .. } => {
+            limits.max_request_frame_bytes()
+        }
         WorkerRequest::Execute { .. } | WorkerRequest::HostResult { .. } => {
             limits.max_turn_frame_bytes()
         }

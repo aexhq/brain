@@ -20,6 +20,9 @@ pub struct ServerConfig {
     /// OS worker processes in the built-in Environment pool.
     #[arg(long, env = "BRAIN_ENV_WORKERS", default_value = "2")]
     pub env_workers: std::num::NonZeroUsize,
+    /// JSON file of Components and program sources to prepare before serving execution.
+    #[arg(long, env = "BRAIN_ENV_PREPARATION")]
+    pub env_preparation: Option<PathBuf>,
     /// Origins the brain env may grant through Environment configuration: exact, or
     /// `https://*.example.com` for a family of hosts.
     #[arg(long, env = "BRAIN_ENV_NETWORK_ALLOW", value_delimiter = ',')]

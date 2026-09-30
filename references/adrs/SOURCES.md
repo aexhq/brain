@@ -380,3 +380,29 @@ Local source: `~/.claude/projects/C--Users-luowe-workspace-aex-workspace/18c350f
 - 2026-09-06, user message: User confirms all four open positions, adding one shared environment-reading component and that model limits are not Brain's to configure.
 
 Used by: [ADR-043: Make every limit a deployment default injected at server start](2026-09-06-02-deployment-limits.md).
+
+<a id="session-01a0ecd4-f869-7ef3-af99-24034b62c721"></a>
+
+### Codex `01a0ecd4-f869-7ef3-af99-24034b62c721`
+
+Local source: `~/.codex/sessions/2026/09/29/rollout-2026-09-29T12-02-55-01a0ecd4-f869-7ef3-af99-24034b62c721.jsonl`.
+
+- 2026-09-29T11:44:51.528Z, user message, JSONL line 168: User requests simple, intuitive, effective, and efficient high-level ideas.
+- 2026-09-29T12:03:29.407Z, user message, JSONL line 180: User requests separate registration and execution so upfront preparation, session use, and on-demand loading share one mechanism.
+- 2026-09-29T12:20:43.376Z, user message, JSONL line 199: User accepts the lifecycle and requests an ADR following the code design principles.
+
+Used by: [ADR-054: Keep preparation in Environment configuration and loaders](2026-09-29-01-environment-registration-and-execution.md).
+
+<a id="session-01a0f0aa-589a-7e12-a8a9-c7a9f05d2c0b"></a>
+
+### Codex `01a0f0aa-589a-7e12-a8a9-c7a9f05d2c0b`
+
+Local source: `~/.codex/sessions/2026/09/30/rollout-2026-09-30T05-54-50-01a0f0aa-589a-7e12-a8a9-c7a9f05d2c0b.jsonl`.
+
+- 2026-09-30T08:10:57.122Z, user message, JSONL line 100: User separates preparation lifetime from session close/reopen, requires explicit caller control, and places conveniences in Aex.
+- 2026-09-30T08:38:30.424Z, user message, JSONL line 141: User accepts checking preparation and preparing when missing or invalidated, with that convenience at Aex level.
+- 2026-09-30T09:16:29.738Z, user message, JSONL line 221: User requires Tool reuse across sessions without rigid lifetime coupling.
+- 2026-09-30T10:20:43.192Z, user message, JSONL line 266: User requests an Environment-owned configuration and preparation design, including built-in Environment setup at server startup, asynchronously through Aex, or through explicit application configuration.
+- 2026-09-30T11:03:42.306Z, user message, JSONL line 386: User approves the reviewed design and requests revision of ADR-054.
+
+Used by: [ADR-054: Keep preparation in Environment configuration and loaders](2026-09-29-01-environment-registration-and-execution.md), revised 2026-09-30.
