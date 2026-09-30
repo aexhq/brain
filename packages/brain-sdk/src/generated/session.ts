@@ -23,6 +23,16 @@ export type EnvironmentName = string;
 export type EnvironmentPermission = "read" | "create" | "setup" | "update" | "delete" | "call";
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ProgramId".
+ */
+export type ProgramId = string;
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ToolId".
+ */
+export type ToolId = string;
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "ContentBlock".
  */
 export type ContentBlock =
@@ -453,11 +463,6 @@ export type Outcome =
 export type SessionStatus = "creating" | "idle" | "running" | "ending" | "ended" | "failed";
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "ToolId".
- */
-export type ToolId = string;
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "ToolAdmissionStatus".
  */
 export type ToolAdmissionStatus = "admitted" | "rejected";
@@ -507,6 +512,17 @@ export interface EnvironmentGrant {
   environment: EnvironmentName;
   methods?: string[];
   permissions: EnvironmentPermission[];
+}
+/**
+ * Reusable artifacts to load on the built-in Environment's execution workers.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "BrainPreparation".
+ */
+export interface BrainPreparation {
+  agentloops?: AgentloopId[];
+  programs?: ProgramId[];
+  tools?: ToolId[];
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
@@ -1024,6 +1040,14 @@ export interface Usage {
    * Inclusive input, including cache reads and writes. Raw input remains dialect-specific.
    */
   total_input_tokens?: number;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ProgramAdmission".
+ */
+export interface ProgramAdmission {
+  id: ProgramId;
+  status: AdmissionStatus;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema

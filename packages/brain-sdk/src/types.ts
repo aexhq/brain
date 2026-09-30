@@ -2,6 +2,7 @@ import type { z } from "zod";
 import type { EventOrigin, Outcome as WireOutcome, Media as WireMedia } from "./generated/session.js";
 
 declare const componentBrand: unique symbol;
+declare const programBrand: unique symbol;
 declare const agentloopBrand: unique symbol;
 declare const environmentBrand: unique symbol;
 declare const toolBrand: unique symbol;
@@ -12,6 +13,8 @@ export type SchemaOutput<Value extends Schema> = z.output<Value>;
 
 /** Prebuilt WebAssembly Component bytes. Brain never compiles application source. */
 export interface Component { readonly [componentBrand]: true }
+/** UTF-8 program source paired with a compatible reusable Component runtime. */
+export interface Program { readonly [programBrand]: true }
 /** One named Environment of a session: the brain env, the host env, or one reached over HTTP. */
 export interface Environment { readonly [environmentBrand]: true }
 /** An Agentloop placed in the Environment that runs it. */

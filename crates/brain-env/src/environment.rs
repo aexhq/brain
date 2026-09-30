@@ -1,6 +1,6 @@
 //! Brain's native Environment adapter; guests run in managed worker processes.
 //! Each invocation receives its Environment's configured grants, bounded by the
-//! deployment policy. Components bring their own code; this runtime installs nothing.
+//! deployment policy. Prepared code is shared independently of session resources.
 
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
@@ -11,8 +11,7 @@ use crate::{
 use async_trait::async_trait;
 use brain::environment::ExecutionServices;
 use brain_protocol::{
-    Environment, EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, SessionId, ToolId,
-    TurnError,
+    Environment, EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, SessionId, TurnError,
 };
 
 use brain::environment::{EnvironmentAdapter, Services, unsupported};
@@ -153,23 +152,52 @@ impl BrainEnvironment {
             unreachable!()
         };
         #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Component {
-            #[serde(rename = "type")]
-            kind: String,
-            entrypoint: String,
-            id: String,
-            #[serde(default)]
-            configuration: serde_json::Value,
+        #[serde(tag = "type", deny_unknown_fields)]
+        enum Implementation {
+            #[serde(rename = "brain_component")]
+            Component {
+                entrypoint: Entrypoint,
+                id: String,
+                #[serde(default)]
+                configuration: serde_json::Value,
+            },
+            #[serde(rename = "brain_program")]
+            Program {
+                entrypoint: Entrypoint,
+                id: String,
+                runtime: String,
+                #[serde(default)]
+                configuration: serde_json::Value,
+            },
         }
-        let component: Component = serde_json::from_value(implementation.clone())
-            .map_err(|e| brain::Error::InvalidState(e.to_string()))?;
-        if component.kind != "brain_component" {
-            return Ok(unsupported("run this implementation"));
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum Entrypoint {
+            Turn,
+            Run,
         }
-        if !sha256_valid(&component.id) {
+        let implementation: Implementation = serde_json::from_value(implementation.clone())
+            .map_err(|error| brain::Error::InvalidState(error.to_string()))?;
+        let (entrypoint, digest, program, configuration) = match implementation {
+            Implementation::Component {
+                entrypoint,
+                id,
+                configuration,
+            } => (entrypoint, id, None, configuration),
+            Implementation::Program {
+                entrypoint,
+                id,
+                runtime,
+                configuration,
+            } => (entrypoint, runtime, Some(id), configuration),
+        };
+        if !brain_protocol::ids::is_sha256(&digest)
+            || program
+                .as_deref()
+                .is_some_and(|id| !brain_protocol::ids::is_sha256(id))
+        {
             return Err(brain::Error::InvalidState(
-                "Component id must be a lowercase SHA-256 digest".into(),
+                "artifact id must be a lowercase SHA-256 digest".into(),
             ));
         }
         let grants = self
@@ -180,40 +208,41 @@ impl BrainEnvironment {
             )
             .await?;
         let bridge = ServicesBridge(services);
-        let result = match component.entrypoint.as_str() {
-            "turn" => {
-                let input = serde_json::from_value(input.clone())
-                    .map_err(|e| brain::Error::InvalidState(e.to_string()))?;
-                self.pool
-                    .turn(
-                        brain_protocol::AgentloopId::new(component.id),
-                        grants,
-                        input,
-                        &bridge,
-                    )
-                    .await
-                    .and_then(|value| {
-                        serde_json::to_value(value).map_err(|e| LoopError::Failed(e.to_string()))
-                    })
+        let (kind, input) = match entrypoint {
+            Entrypoint::Turn => {
+                let input: brain_protocol::TurnInput = serde_json::from_value(input.clone())
+                    .map_err(|error| brain::Error::InvalidState(error.to_string()))?;
+                (
+                    crate::ComponentKind::Agentloop,
+                    serde_json::to_value(input)
+                        .map_err(|error| brain::Error::InvalidState(error.to_string()))?,
+                )
             }
-            "run" => {
-                self.pool
-                    .tool(
-                        ToolId::new(component.id),
-                        grants,
-                        NativeToolInput {
-                            input: input.clone(),
-                            configuration: component.configuration,
-                            deadline_at_ms: deadline_ms
-                                .map(|ms| wall_clock_ms().saturating_add(ms))
-                                .unwrap_or(0),
-                        },
-                        &bridge,
-                    )
-                    .await
-            }
-            _ => return Ok(unsupported("run this entrypoint")),
+            Entrypoint::Run => (
+                crate::ComponentKind::Tool,
+                serde_json::to_value(NativeToolInput {
+                    input: input.clone(),
+                    configuration,
+                    deadline_at_ms: deadline_ms
+                        .map(|ms| wall_clock_ms().saturating_add(ms))
+                        .unwrap_or(0),
+                })
+                .map_err(|error| brain::Error::InvalidState(error.to_string()))?,
+            ),
         };
+        let result = self
+            .pool
+            .execute(
+                crate::WorkerCode {
+                    kind,
+                    digest,
+                    program,
+                },
+                grants,
+                input,
+                &bridge,
+            )
+            .await;
         match result {
             Ok(output) => Ok(EnvironmentReceipt::Result { output }),
             Err(LoopError::Turn(error)) => Ok(EnvironmentReceipt::Failure {
@@ -381,24 +410,19 @@ fn bridge_error(code: &str, error: impl std::fmt::Display) -> TurnError {
     TurnError::new(code, error.to_string())
 }
 
-fn sha256_valid(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
     fn a_digest_is_exactly_sixty_four_lowercase_hex_characters() {
-        assert!(sha256_valid(&"a".repeat(64)));
-        assert!(sha256_valid(&"0123456789abcdef".repeat(4)));
-        assert!(!sha256_valid(&"a".repeat(63)));
-        assert!(!sha256_valid(&"a".repeat(65)));
-        assert!(!sha256_valid(&"A".repeat(64)));
-        assert!(!sha256_valid(&"g".repeat(64)));
-        assert!(!sha256_valid(""));
+        assert!(brain_protocol::ids::is_sha256(&"a".repeat(64)));
+        assert!(brain_protocol::ids::is_sha256(
+            &"0123456789abcdef".repeat(4)
+        ));
+        assert!(!brain_protocol::ids::is_sha256(&"a".repeat(63)));
+        assert!(!brain_protocol::ids::is_sha256(&"a".repeat(65)));
+        assert!(!brain_protocol::ids::is_sha256(&"A".repeat(64)));
+        assert!(!brain_protocol::ids::is_sha256(&"g".repeat(64)));
+        assert!(!brain_protocol::ids::is_sha256(""));
     }
 
     use super::*;

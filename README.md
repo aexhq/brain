@@ -64,3 +64,7 @@ runtime choices.
 [Benchmarks](BENCHMARKS.md) · [Security](SECURITY.md) · [MIT license](LICENSE)
 
 [Report an issue](https://github.com/aexhq/brain/issues) or contact [support@aex.dev](mailto:support@aex.dev).
+
+Prepare reusable Agentloop and Tool code before creating sessions with `await brain.prepare(placed)`.
+[Environment preparation](https://aex.dev/brain/docs/reference/environment-runtime#prepare-before-creating-sessions)
+explains startup configuration, shared runtimes and reuse across sessions.

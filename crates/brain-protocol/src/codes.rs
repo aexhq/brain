@@ -130,6 +130,7 @@ pub mod event {
 
 /// Why a turn, an effect, or a session creation failed.
 pub mod failure {
+    pub const PREPARATION_FAILED: &str = "preparation_failed";
     pub const INTERRUPTED: &str = "interrupted";
     pub const CANCELLED: &str = "cancelled";
     pub const TIMEOUT: &str = "timeout";
@@ -143,6 +144,7 @@ pub mod failure {
     pub const INVALID_TRANSCRIPT: &str = "invalid_transcript";
 
     pub const ALL: &[&str] = &[
+        PREPARATION_FAILED,
         INTERRUPTED,
         CANCELLED,
         TIMEOUT,
@@ -159,6 +161,7 @@ pub mod failure {
 
 /// What an API response can fail with.
 pub mod api {
+    pub const PREPARATION_FAILED: &str = "preparation_failed";
     pub const INVALID_REQUEST: &str = "invalid_request";
     pub const UNAUTHORIZED: &str = "unauthorized";
     pub const NOT_FOUND: &str = "not_found";
@@ -172,6 +175,7 @@ pub mod api {
     pub const INTERNAL: &str = "internal";
 
     pub const ALL: &[&str] = &[
+        PREPARATION_FAILED,
         INVALID_REQUEST,
         UNAUTHORIZED,
         NOT_FOUND,

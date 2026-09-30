@@ -11,8 +11,9 @@ Environment's concern. Brain ships two, and any other is an extension.
 ## The brain env
 
 `brainEnv({ name })` is Brain's own Environment, managed by the server in a separate pool of OS worker processes. A Tool placed here is a
-Component admitted through `POST /v1/tools`; the Agentloop is one admitted through
-`POST /v1/agentloops`. Each invocation receives this Environment's configured grants,
+Component admitted through `POST /v1/tools`, or a program paired with a compatible runtime
+Component. Agentloop runtimes use `POST /v1/agentloops`; program sources use `POST /v1/programs`.
+Each invocation receives this Environment's configured grants,
 bounded by the deployment's allow-lists:
 
 - `filesystem.workspace` is `"read"` or `"write"` for the session and Environment's retained
@@ -41,6 +42,71 @@ no OS packages or interpreters.
 
 By default each invocation receives 10 billion Wasmtime fuel units for guest computation; model, Tool,
 HTTP, and filesystem waits consume no fuel. `BRAIN_MAX_TURN_SECS` still bounds the whole turn.
+
+## Prepare before creating sessions
+
+Move reusable loading work out of the first request with `await brain.prepare(placed)`.
+The returned Agentloop or Tool retains its placement and configuration and can be reused by
+several sessions or clients connected to the same server:
+
+```ts
+import { Brain, brainEnv } from "@aexhq/brain";
+import { pi } from "@aexhq/agentloop-pi";
+
+const brain = new Brain({ baseUrl: "http://localhost:8080", token: process.env.BRAIN_API_TOKEN });
+const loop = await brain.prepare(pi({ env: brainEnv({ name: "brain" }) }));
+const first = await brain.sessions.create({ model, agentloop: loop });
+const second = await brain.sessions.create({ model, agentloop: loop });
+```
+
+Imports and factories perform no I/O. `prepare` admits any missing artifacts and loads them on
+all eligible workers before resolving. It works without a session, grants no execution authority,
+and rejects placements outside `brainEnv`. Brain also loads on first execution when explicit
+preparation is omitted. Preparing again checks current readiness; it does not replay a turn.
+
+For artifacts already admitted, `brain.prepareEnvironment({ agentloops: [runtimeId],
+programs: [programId], tools: [] })` calls `POST /v1/brain-env/prepare` directly. IDs are immutable
+SHA-256 content addresses. `GET /v1/agentloops/{id}`, `/v1/tools/{id}`, and `/v1/programs/{id}`
+report admission, not worker readiness. Preparation errors use `preparation_failed`.
+
+To prepare during deployment, set `BRAIN_ENV_PREPARATION` to a JSON file:
+
+```json
+{
+  "agentloops": ["./runtime.component.wasm"],
+  "programs": ["./loop.program.js"],
+  "tools": []
+}
+```
+
+Paths are relative to that file. Startup admits and prepares these artifacts before serving.
+Unknown fields, unavailable files, invalid components and worker failures stop startup.
+
+Prepared code stays available for the server pool's lifetime, independently of session close,
+end, deletion or reopen. A replacement worker restores immutable preparation before executing;
+a full server restart restores startup configuration and loads other retained artifacts as
+needed. Applications can repeat explicit preparation after a restart. This does not restore
+mutable workspaces or replay interrupted executions. Each invocation still has fresh guest
+memory, and preparation does not guarantee free execution capacity or zero initialization cost.
+
+## Programs and reusable runtimes
+
+`program({ runtime, source })` packages a small UTF-8 source artifact separately from a compatible
+Wasm runtime. `runtime` is a `component(...)` or an admitted runtime digest; `source` is a URL or
+`Uint8Array`. Use the result as an Agentloop's or Tool's `implementation`, just like a Component.
+The SDK checks admission before uploading either artifact, including from a fresh client.
+
+The resolved implementation is `{ type: "brain_program", entrypoint: "turn" | "run", id,
+runtime }`, with optional Tool `configuration`. The runtime uses the existing Agentloop or Tool
+WIT entrypoint. The worker supplies `{ source, configuration }` as its configuration: `source`
+is the admitted UTF-8 text and `configuration` is the invocation's original configuration.
+The source is loaded inside the worker and is not copied into the session configuration or journal.
+Runtime authors own source syntax, import support and validation; source admission validates
+UTF-8 and size, not language compatibility. Parsing and guest initialization may still happen
+at invocation time.
+
+Pi and Codex packages use this interface with the same JavaScript runtime and separate program
+bundles. Ordinary Wasm Components keep their existing descriptor and WIT contract.
 
 ## The host env
 

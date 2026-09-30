@@ -27,6 +27,8 @@ pub fn session() -> Value {
         "Brain Session API v1",
         |generator| {
             define::<AgentloopAdmission>(generator);
+            define::<crate::BrainPreparation>(generator);
+            define::<crate::ProgramAdmission>(generator);
             define::<AgentloopId>(generator);
             define::<ApiError>(generator);
             define::<CreateSessionRequest>(generator);

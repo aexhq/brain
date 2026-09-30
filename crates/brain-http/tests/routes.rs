@@ -14,6 +14,59 @@ use brain_protocol::{
 use tower::ServiceExt;
 
 #[tokio::test]
+async fn preparation_is_authenticated_and_rejects_invalid_configuration() {
+    for (token, body, expected) in [
+        (None, "{}", StatusCode::UNAUTHORIZED),
+        (Some("secret"), "{}", StatusCode::NO_CONTENT),
+        (
+            Some("secret"),
+            r#"{"agentloops":["../outside"]}"#,
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            Some("secret"),
+            r#"{"session_id":"synthetic"}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ] {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/v1/brain-env/prepare")
+            .header("content-type", "application/json");
+        if let Some(token) = token {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        let response = router_with_bearer(Api::default(), "secret".into(), &HttpLimits::default())
+            .oneshot(request.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
+}
+
+#[tokio::test]
+async fn program_admission_accepts_only_nonempty_utf8() {
+    for (body, expected) in [
+        (Vec::new(), StatusCode::BAD_REQUEST),
+        (vec![255], StatusCode::BAD_REQUEST),
+        (b"export function turn() {}".to_vec(), StatusCode::OK),
+    ] {
+        let response = router(Api::default(), &HttpLimits::default())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/programs")
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
+}
+
+#[tokio::test]
 async fn async_message_returns_a_sequence_and_rejects_unknown_preferences() {
     for (prefer, status) in [
         ("respond-async", StatusCode::ACCEPTED),
@@ -58,6 +111,27 @@ struct Api {
 
 #[async_trait]
 impl BrainApi for Api {
+    async fn prepare_brain_env(
+        &self,
+        request: brain_protocol::BrainPreparation,
+    ) -> Result<(), ApiError> {
+        request.validate().map_err(ApiError::invalid_request)
+    }
+    async fn admit_program(&self, _: String) -> Result<brain_protocol::ProgramAdmission, ApiError> {
+        Ok(brain_protocol::ProgramAdmission {
+            id: brain_protocol::ProgramId::new("c".repeat(64)),
+            status: AdmissionStatus::Admitted,
+        })
+    }
+    async fn get_program(
+        &self,
+        _: brain_protocol::ProgramId,
+    ) -> Result<brain_protocol::ProgramAdmission, ApiError> {
+        self.admit_program(String::new()).await
+    }
+    async fn get_tool(&self, _: ToolId) -> Result<ToolAdmission, ApiError> {
+        self.admit_tool(String::new(), Vec::new()).await
+    }
     async fn environment_event(
         &self,
         _: SessionId,

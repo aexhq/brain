@@ -48,3 +48,11 @@ id_type!(EnvironmentName, IDENTIFIER_PATTERN);
 id_type!(HostId, "^host_[A-Za-z0-9]{20,32}$");
 id_type!(AgentloopId, SHA256_PATTERN);
 id_type!(ToolId, SHA256_PATTERN);
+id_type!(ProgramId, SHA256_PATTERN);
+
+pub fn is_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}

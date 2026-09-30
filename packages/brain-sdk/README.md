@@ -36,3 +36,7 @@ the conversation, and `session.delete()` removes its history.
 Prompt-based typed answers belong to Aex's SDK. Brain sends reject `output` options; provider-native
 model formats and Tool schemas remain available. Existing callers can follow the
 [typed-answer migration](https://aex.dev/docs#structured-output).
+
+Prepare reusable Agentloop and Tool code before creating sessions with `await brain.prepare(placed)`.
+[Environment preparation](https://aex.dev/brain/docs/reference/environment-runtime#prepare-before-creating-sessions)
+explains startup configuration, shared runtimes and reuse across sessions.

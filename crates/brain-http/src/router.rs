@@ -45,6 +45,10 @@ const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
         (name = "Health", description = "Public server liveness and readiness checks.")
     ),
     paths(
+        prepare_brain_env,
+        admit_program,
+        get_program,
+        get_tool,
         admit_agentloop,
         admit_tool,
         get_agentloop,
@@ -161,6 +165,10 @@ fn protected_routes<A: BrainApi>(
 ) -> Router {
     let mut router = Router::new();
     for (path, method) in [
+        documented::<__path_prepare_brain_env, _, _, _>(routed, prepare_brain_env::<A>),
+        documented::<__path_admit_program, _, _, _>(routed, admit_program::<A>),
+        documented::<__path_get_program, _, _, _>(routed, get_program::<A>),
+        documented::<__path_get_tool, _, _, _>(routed, get_tool::<A>),
         documented::<__path_admit_agentloop, _, _, _>(routed, admit_agentloop::<A>),
         documented::<__path_admit_tool, _, _, _>(routed, admit_tool::<A>),
         documented::<__path_get_agentloop, _, _, _>(routed, get_agentloop::<A>),
@@ -557,6 +565,73 @@ async fn get_agentloop<A: BrainApi>(
     Path(id): Path<AgentloopId>,
 ) -> Result<Json<AgentloopAdmission>, HttpError> {
     Ok(Json(api.get_agentloop(id).await.map_err(HttpError)?))
+}
+
+#[utoipa::path(
+    post, path = "/v1/brain-env/prepare", operation_id = "prepareBrainEnv",
+    summary = "Prepare reusable code on the built-in Environment workers",
+    description = "Waits until the declared artifacts are loaded on eligible workers. Preparation is retained for this server process, restored after worker replacement, and independent of session lifetime. Repeating the request checks current resources again. It grants no session authority.",
+    tag = "Environments", security(("serverToken" = [])), request_body = contract::BrainPreparation,
+    responses((status = 204, description = "Preparation completed"), (status = "default", description = "Structured error", body = contract::ApiError))
+)]
+async fn prepare_brain_env<A: BrainApi>(
+    State(api): State<A>,
+    ApiJson(request): ApiJson<brain_protocol::BrainPreparation>,
+) -> Result<StatusCode, HttpError> {
+    request.validate().map_err(invalid)?;
+    api.prepare_brain_env(request).await.map_err(HttpError)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post, path = "/v1/programs", operation_id = "admitProgram",
+    summary = "Store UTF-8 program source for a compatible runtime",
+    tag = "Components", security(("serverToken" = [])),
+    request_body(content = inline(Package), content_type = "application/octet-stream"),
+    responses((status = 200, description = "Program admitted", body = contract::ProgramAdmission), (status = "default", description = "Structured error", body = contract::ApiError))
+)]
+async fn admit_program<A: BrainApi>(
+    State(api): State<A>,
+    ApiBytes(body): ApiBytes,
+) -> Result<Json<brain_protocol::ProgramAdmission>, HttpError> {
+    if body.is_empty() {
+        return Err(invalid("program source must not be empty"));
+    }
+    let source =
+        String::from_utf8(body.to_vec()).map_err(|_| invalid("program source must be UTF-8"))?;
+    api.admit_program(source).await.map(Json).map_err(HttpError)
+}
+
+#[utoipa::path(
+    get, path = "/v1/programs/{id}", operation_id = "getProgram",
+    summary = "Read program admission", tag = "Components", security(("serverToken" = [])),
+    params(("id" = contract::ProgramId, Path)),
+    responses((status = 200, description = "Admission status", body = contract::ProgramAdmission), (status = "default", description = "Structured error", body = contract::ApiError))
+)]
+async fn get_program<A: BrainApi>(
+    State(api): State<A>,
+    Path(id): Path<brain_protocol::ProgramId>,
+) -> Result<Json<brain_protocol::ProgramAdmission>, HttpError> {
+    if !brain_protocol::ids::is_sha256(id.as_str()) {
+        return Err(invalid("invalid program id"));
+    }
+    api.get_program(id).await.map(Json).map_err(HttpError)
+}
+
+#[utoipa::path(
+    get, path = "/v1/tools/{id}", operation_id = "getTool",
+    summary = "Read Tool admission", tag = "Components", security(("serverToken" = [])),
+    params(("id" = contract::ToolId, Path)),
+    responses((status = 200, description = "Admission status", body = contract::ToolAdmission), (status = "default", description = "Structured error", body = contract::ApiError))
+)]
+async fn get_tool<A: BrainApi>(
+    State(api): State<A>,
+    Path(id): Path<brain_protocol::ToolId>,
+) -> Result<Json<ToolAdmission>, HttpError> {
+    if !brain_protocol::ids::is_sha256(id.as_str()) {
+        return Err(invalid("invalid Tool id"));
+    }
+    api.get_tool(id).await.map(Json).map_err(HttpError)
 }
 
 fn idempotency_key(headers: &HeaderMap) -> Result<String, HttpError> {

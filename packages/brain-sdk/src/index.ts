@@ -6,6 +6,8 @@ export {
   brainEnv,
   clientBrowser,
   component,
+  program,
+  inspectProgram,
   environment,
   hostEnv,
   inspectAgentloop,
@@ -28,10 +30,11 @@ export type {
 } from "./extensions.js";
 export type { HostToolCall, ToolResultOptions } from "./host.js";
 export { BrainError } from "./errors.js";
-export type { EventPage, ModelList, ModelProvider, ModelDef, ModelRequest, ModelResult, SessionTranscript, ToolResult } from "./generated/session.js";
+export type { BrainPreparation, ProgramAdmission, EventPage, ModelList, ModelProvider, ModelDef, ModelRequest, ModelResult, SessionTranscript, ToolResult } from "./generated/session.js";
 export type {
   AgentloopAdmission,
   Component,
+  Program,
   CreateSessionOptions,
   CustomProviderModel,
   Environment,

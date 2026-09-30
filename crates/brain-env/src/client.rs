@@ -68,8 +68,11 @@ mod tests {
         let output = tokio::time::timeout(
             Duration::from_secs(20),
             client.execute(
-                ComponentKind::Tool,
-                "quiet".into(),
+                crate::WorkerCode {
+                    kind: ComponentKind::Tool,
+                    digest: "quiet".into(),
+                    program: None,
+                },
                 NativeEnvironment::default(),
                 serde_json::json!({}),
                 &Quiet,
@@ -108,8 +111,11 @@ mod tests {
         let result = tokio::time::timeout(
             Duration::from_secs(15),
             client.execute(
-                ComponentKind::Tool,
-                "stalled".into(),
+                crate::WorkerCode {
+                    kind: ComponentKind::Tool,
+                    digest: "stalled".into(),
+                    program: None,
+                },
                 NativeEnvironment::default(),
                 serde_json::json!({}),
                 &Quiet,
@@ -174,6 +180,14 @@ impl WorkerClient {
             .map(ToolId::new)
     }
 
+    pub async fn load_program(&self, source: String) -> Result<String, String> {
+        match self.call(WorkerRequest::LoadProgram { source }).await? {
+            WorkerResponse::Admitted { digest } => Ok(digest),
+            WorkerResponse::Error { code, message } => Err(format!("{code}: {message}")),
+            response => Err(format!("unexpected worker response: {response:?}")),
+        }
+    }
+
     async fn admit_as(&self, package: &[u8], kind: ComponentKind) -> Result<String, String> {
         use base64::Engine as _;
         let component_base64 = base64::engine::general_purpose::STANDARD.encode(package);
@@ -198,8 +212,11 @@ impl WorkerClient {
         bridge: &dyn TurnBridge,
     ) -> Result<serde_json::Value, LoopError> {
         self.execute(
-            ComponentKind::Tool,
-            digest.as_str().into(),
+            crate::WorkerCode {
+                kind: ComponentKind::Tool,
+                digest: digest.to_string(),
+                program: None,
+            },
             environment,
             serde_json::to_value(input).map_err(|e| e.to_string())?,
             bridge,
@@ -216,8 +233,11 @@ impl WorkerClient {
     ) -> Result<TurnOutput, LoopError> {
         let output = self
             .execute(
-                ComponentKind::Agentloop,
-                digest.as_str().into(),
+                crate::WorkerCode {
+                    kind: ComponentKind::Agentloop,
+                    digest: digest.to_string(),
+                    program: None,
+                },
                 environment,
                 serde_json::to_value(input).map_err(|e| e.to_string())?,
                 bridge,
@@ -228,10 +248,9 @@ impl WorkerClient {
 
     /// Worker health is independent of invocation progress. Cancellation uses the
     /// same connection without dropping a partially read response frame.
-    async fn execute(
+    pub(crate) async fn execute(
         &self,
-        kind: ComponentKind,
-        digest: String,
+        code: crate::WorkerCode,
         environment: NativeEnvironment,
         input: serde_json::Value,
         bridge: &dyn TurnBridge,
@@ -242,8 +261,7 @@ impl WorkerClient {
         write_frame(
             &mut stream,
             &WorkerRequest::Execute {
-                kind,
-                digest,
+                code,
                 environment,
                 input,
                 can_dispatch: bridge.can_dispatch(),
