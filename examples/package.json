@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@aexhq/brain": "0.38.0",
-    "@aexhq/agentloop-pi": "8.0.0",
+    "@aexhq/agentloop-pi": "9.0.0",
     "zod": "4.4.3"
   },
   "engines": {
