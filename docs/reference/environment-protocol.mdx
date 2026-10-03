@@ -87,7 +87,7 @@ an identifier string. Mutations return the committed sequence. `kv_read` takes a
 string and returns `{}` for absence or `{ value }` for a stored value, including JSON null.
 Reads after an awaited mutation observe it. These services belong only to the Agentloop.
 The packaged JavaScript loop uses the [loop API](/brain/docs/reference/agentloop-contract)
-names `host.kvRead`, `host.kvPut` and `host.kvDelete`. Turn output is `{ result? }`, with
+names `ctx.kv.get`, `ctx.kv.set` and `ctx.kv.delete`. Turn output is `{ result? }`, with
 no transcript or KV snapshot. Deletion appends a journal mutation, preserving earlier records.
 
 The token belongs to one invocation and is revoked on completion or cancellation. It is never
