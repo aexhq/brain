@@ -354,7 +354,6 @@ impl TurnBridge for ServicesBridge {
             HostCall::KvRead { key } => ("kv_read", serde_json::json!(key)),
             HostCall::KvDelete { key } => ("kv_delete", serde_json::json!(key)),
             HostCall::Events { after } => ("events", serde_json::json!(after)),
-            HostCall::Acknowledge { through } => ("acknowledge", serde_json::json!(through)),
             HostCall::ToolResult { outcome_json } => ("result", parse(&outcome_json)?),
             HostCall::ToolReturned { outcome_json } => (
                 "returned",

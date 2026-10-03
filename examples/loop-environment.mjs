@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { createAgentloopContext } from "@aexhq/brain/runtime";
 import { pathToFileURL } from "node:url";
 
 const accepted = () => ({ type: "accepted" });
@@ -20,17 +21,13 @@ export function loopEnvironment({ fetch = globalThis.fetch } = {}) {
     return response.json();
   };
   async function turn(callback, input) {
-    const kv = {
-      read: async (key) => (await call(callback, "kv_read", key)).value,
-      put: (key, value) => call(callback, "kv_put", { key, value }),
-      delete: (key) => call(callback, "kv_delete", key),
-    };
-    let after = input.kv["brain.last_activation"] ?? 0;
-    const transcript = [...input.transcript];
+    const ctx = createAgentloopContext(input, (method, body) => call(callback, method, body));
+    let after = await ctx.kv.get("observed") ?? 0;
+    const transcript = [...ctx.transcript];
     const observe = async (present) => {
       const before = transcript.length;
       for (;;) {
-        const page = await call(callback, "events", after);
+        const page = await ctx.readEvents(after);
         if (page.events.length === 0) break;
         if (present) for (const event of page.events) {
           if (["tool_result_emitted", "tool_call_ended"].includes(event.event_type)) {
@@ -39,19 +36,19 @@ export function loopEnvironment({ fetch = globalThis.fetch } = {}) {
         }
         after = page.next_cursor;
       }
-      if (transcript.length !== before) await call(callback, "set_transcript", transcript);
-      await call(callback, "acknowledge", after);
+      if (transcript.length !== before) await ctx.setTranscript(transcript);
+      await ctx.kv.set("observed", after);
     };
     await observe(true);
-    if (!input.input && transcript.length === input.transcript.length) return {};
-    const turns = (await kv.read("turns") ?? 0) + 1;
-    if (input.input) transcript.push({ role: "user", content: [{ type: "text", text: input.input.message }, ...(input.input.media ?? [])] });
-    await call(callback, "set_transcript", transcript);
-    await call(callback, "emit", { event_type: "remote_note", data: { turns: turns } });
-    const result = await call(callback, "model", { messages: transcript });
+    if (!ctx.input && transcript.length === ctx.transcript.length) return {};
+    const turns = (await ctx.kv.get("turns") ?? 0) + 1;
+    if (ctx.input) transcript.push({ role: "user", content: [{ type: "text", text: ctx.input.message }, ...(ctx.input.media ?? [])] });
+    await ctx.setTranscript(transcript);
+    await ctx.emit("remote_note", { turns });
+    const result = await ctx.model({ messages: transcript });
     transcript.push(result.message);
-    await call(callback, "set_transcript", transcript);
-    await kv.put("turns", turns);
+    await ctx.setTranscript(transcript);
+    await ctx.kv.set("turns", turns);
     await observe(false);
     return { result: { stop_reason: result.stop_reason } };
   }

@@ -1,4 +1,6 @@
 import { createRequire } from "node:module";
+export { createAgentloopContext } from "./agentloop-context.js";
+export type { AgentloopContext, AgentloopHandler } from "./agentloop-context.js";
 import { readFile } from "node:fs/promises";
 import { join, resolve, relative } from "node:path";
 import { pathToFileURL } from "node:url";

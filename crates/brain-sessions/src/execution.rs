@@ -192,7 +192,6 @@ impl ExecutionServices for SessionServices {
             Self::Loop(_) => vec![
                 "environments",
                 "events",
-                "acknowledge",
                 "model",
                 "dispatch",
                 "emit",
@@ -234,11 +233,6 @@ impl ExecutionServices for SessionServices {
                     .await?,
             )
             .map_err(json_error),
-            (Self::Loop(services), "acknowledge") => Ok(json!(
-                services
-                    .acknowledge(serde_json::from_value(input).map_err(json_error)?)
-                    .await?
-            )),
             (Self::Tool(services), "result") => Ok(json!(
                 services
                     .result(serde_json::from_value(input).map_err(json_error)?)

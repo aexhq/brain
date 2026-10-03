@@ -14,11 +14,7 @@ impl Guest for Diagnostic {
                 result_json: Some(input.configuration_json),
             });
         }
-        let page: serde_json::Value =
-            serde_json::from_str(&brain::agentloop::host::events(0)?).map_err(error)?;
-        if let Some(sequence) = page["next_cursor"].as_u64() {
-            brain::agentloop::host::acknowledge(sequence)?;
-        }
+        brain::agentloop::host::events(0)?;
         let mut kv = serde_json::json!({
             "memory": brain::agentloop::host::kv_read("memory")?
                 .map(|value| serde_json::from_str::<serde_json::Value>(&value)).transpose().map_err(error)?

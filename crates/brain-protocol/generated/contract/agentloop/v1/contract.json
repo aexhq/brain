@@ -389,7 +389,7 @@
       "properties": {
         "configuration": true,
         "events": {
-          "description": "Every record on the session's feed since the loop last ran, oldest first, so a\nloop sees what happened to its environments and tools between turns.",
+          "description": "A finite batch after the last successfully completed delivery, oldest first.",
           "items": {
             "$ref": "#/$defs/Event"
           },
@@ -402,7 +402,7 @@
         },
         "kv": {
           "additionalProperties": true,
-          "description": "The loop's kv (a key-value map it keeps between turns), as it last returned it.",
+          "description": "Saved loop state. Author bindings expose it through KV services.",
           "type": "object"
         },
         "runtime": {

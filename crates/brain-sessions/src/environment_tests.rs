@@ -104,8 +104,7 @@ async fn cross_environment_deletions_settle_without_waiting_on_each_others_contr
                     serde_json::from_value(json!({"name":"right","environment":"right","call_id":"right","input":"left"})).unwrap(),
                 ]).await?;
             }
-            let page = services.events(0).await?;
-            services.acknowledge(page.next_cursor).await?;
+            services.events(0).await?;
             Ok(TurnOutput::default())
         }
     }
@@ -228,7 +227,7 @@ impl LoopExecutor for Observer {
             through = page.next_cursor;
             self.events.lock().unwrap().extend(page.events);
         }
-        services.acknowledge(through).await?;
+
         Ok(TurnOutput::default())
     }
 }

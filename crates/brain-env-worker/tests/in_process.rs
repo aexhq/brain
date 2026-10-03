@@ -52,8 +52,7 @@ impl GuestHost for Answering {
             .to_string()),
             HostCall::Dispatch { .. } => Ok("[]".into()),
             HostCall::Emit { .. } => Ok("7".into()),
-            HostCall::Acknowledge { .. }
-            | HostCall::ToolResult { .. }
+            HostCall::ToolResult { .. }
             | HostCall::ToolReturned { .. }
             | HostCall::ToolFinish { .. } => Ok("7".into()),
             HostCall::Telemetry { .. } => Ok(String::new()),

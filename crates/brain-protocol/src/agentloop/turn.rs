@@ -39,10 +39,9 @@ pub struct TurnInput {
     pub input: Option<UserInput>,
     /// The transcript as it stands: what the next model call would see.
     pub transcript: Vec<Message>,
-    /// The loop's kv (a key-value map it keeps between turns), as it last returned it.
+    /// Saved loop state. Author bindings expose it through KV services.
     pub kv: BTreeMap<String, serde_json::Value>,
-    /// Every record on the session's feed since the loop last ran, oldest first, so a
-    /// loop sees what happened to its environments and tools between turns.
+    /// A finite batch after the last successfully completed delivery, oldest first.
     #[schemars(length(max = 1000))]
     pub events: Vec<Event>,
     pub configuration: serde_json::Value,

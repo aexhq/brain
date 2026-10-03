@@ -123,7 +123,7 @@ async fn the_journal_folds_to_the_final_transcript_after_the_turn() {
         CALLS * 2,
         "every filler message and every answer folds back out of the journal"
     );
-    assert!(!folded.kv.contains_key(brain::LAST_ACTIVATION_KEY));
+    assert!(store.processed_through().unwrap() > 0);
     drop(store);
     let _ = fs::remove_dir_all(data_dir);
 }

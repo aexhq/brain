@@ -106,6 +106,15 @@ struct State {
 
 impl State {
     fn observe_effect(&mut self, sequence: u64, kind: &str, payload: &serde_json::Value) {
+        if kind == codes::event::TURN_ENDED
+            && let Some(through) = payload
+                .get("events_through")
+                .and_then(serde_json::Value::as_u64)
+        {
+            self.folded
+                .kv
+                .insert(crate::session::LAST_ACTIVATION_KEY.into(), through.into());
+        }
         if let Some(kind) = kind.strip_suffix("_started") {
             if matches!(
                 kind,

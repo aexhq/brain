@@ -86,8 +86,7 @@ impl TurnBridge for RecordingBridge {
                     .push(format!("emit {kind} {payload_json}"));
                 Ok("7".into())
             }
-            HostCall::Acknowledge { .. }
-            | HostCall::ToolResult { .. }
+            HostCall::ToolResult { .. }
             | HostCall::ToolReturned { .. }
             | HostCall::ToolFinish { .. } => Ok("7".into()),
             HostCall::Telemetry { record_json } => {
@@ -166,10 +165,6 @@ async fn reference_loop_reads_interruptions_and_hands_tool_failures_to_the_model
                 }
                 HostCall::Events { after } => {
                     serde_json::json!({"events": [], "next_cursor": after})
-                }
-                HostCall::Acknowledge { through } => {
-                    self.kv.lock().unwrap()["brain.last_activation"] = through.into();
-                    serde_json::json!(7)
                 }
                 HostCall::Model { request_json } => {
                     let request: brain_protocol::ModelRequest =
@@ -250,7 +245,7 @@ async fn reference_loop_reads_interruptions_and_hands_tool_failures_to_the_model
         .await
         .unwrap();
     assert_eq!(model.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(model.kv.lock().unwrap()["brain.last_activation"], 3);
+    assert_eq!(model.kv.lock().unwrap()["observed"], 3);
     assert_eq!(model.transcript.lock().unwrap().len(), 5);
 }
 
@@ -269,7 +264,7 @@ async fn a_worker_crash_does_not_replay_or_stop_its_sibling_and_shutdown_reaps_b
     impl TurnBridge for Held {
         async fn call(&self, call: HostCall) -> Result<String, TurnError> {
             match call {
-                HostCall::KvPut { .. } | HostCall::Acknowledge { .. } => Ok("7".into()),
+                HostCall::KvPut { .. } => Ok("7".into()),
                 HostCall::KvRead { .. } => Ok("{}".into()),
                 HostCall::Events { after } => {
                     Ok(serde_json::json!({"events": [], "next_cursor": after}).to_string())
@@ -402,7 +397,7 @@ async fn saturated_parent_turns_can_all_invoke_native_tools() {
         }
         async fn call(&self, call: HostCall) -> Result<String, TurnError> {
             match call {
-                HostCall::KvPut { .. } | HostCall::Acknowledge { .. } => Ok("7".into()),
+                HostCall::KvPut { .. } => Ok("7".into()),
                 HostCall::KvRead { .. } => Ok("{}".into()),
                 HostCall::Events { after } => {
                     Ok(serde_json::json!({"events": [], "next_cursor": after}).to_string())

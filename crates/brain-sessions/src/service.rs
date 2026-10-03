@@ -662,8 +662,17 @@ impl Sessions {
                     .get_mut(session_id)
                     .expect("background turn is registered")
                     .push(turn.sequence);
-                if let Err(error) = turn.wait().await {
-                    tracing::warn!(%session_id, %error, "Agentloop failed while processing Tool observations");
+                match turn.wait().await {
+                    Ok(_)
+                        if tools.accepts(&wakeup)
+                            && store.processed_through().map_err(api_error)? < wakeup.through =>
+                    {
+                        tools.observe(wakeup.through);
+                    }
+                    Err(error) => {
+                        tracing::warn!(%session_id, %error, "Agentloop failed while processing Tool observations")
+                    }
+                    _ => {}
                 }
                 self.passivate_unretained(session_id).await?;
             }
