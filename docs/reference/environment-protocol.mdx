@@ -70,7 +70,7 @@ mark the Environment unreachable; a transport failure still does.
 An execution may receive `callback: { url, token, methods }`. POST `{ method, input }` to that
 URL with its bearer token. The response is the method's JSON result. Only listed methods are
 granted. A Tool receives `emit`, `result`, `returned`, `finish`, `model`, `environments`, and `telemetry`;
-an Agentloop receives `emit`, `telemetry`, `events`, `acknowledge`, `model`,
+an Agentloop receives `emit`, `telemetry`, `events`, `model`,
 `dispatch`, `environments`, `set_transcript`, `kv_read`, `kv_put`, and `kv_delete`. Dispatch input is an array of `{ call_id, name, environment, environment_sequence?, input }`; model
 input is `ModelRequest`; events input is a cursor number; emit input is `{ event_type, data }`;
 telemetry input is the diagnostic record. Results are respectively `ToolReturn[]`, ModelResult,
@@ -78,8 +78,8 @@ EventPage, committed sequence, and null.
 
 Tool `result` takes an Outcome; `returned` and `finish` take an optional Outcome (JSON null
 means no new result). Each returns its committed sequence. Finish orders after earlier admitted
-emissions and closes further emission authority. `acknowledge` takes the loop's processed-through
-sequence and durably advances `brain.last_activation`. Journal observations never automatically
+emissions and closes further emission authority. Successful Agentloop return completes its delivered event batch. Failure or cancellation
+leaves that batch pending; saved writes remain durable. Journal observations never automatically
 edit model messages. Event-triggered Agentloop input omits the user input field.
 
 `set_transcript` takes a message array. `kv_put` takes `{ key, value }`; `kv_delete` takes

@@ -1,5 +1,32 @@
 components:
   schemas:
+    ActivationTool:
+      description: Definitions and logical choices made available to an Agentloop, without executable descriptors.
+      properties:
+        description:
+          type: string
+        environment_refs:
+          items:
+            $ref: '#/components/schemas/EnvironmentRef'
+          type: array
+        environments:
+          items:
+            $ref: '#/components/schemas/EnvironmentName'
+          type: array
+        input_schema:
+          type: object
+        name:
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
+          type: string
+        output_schema:
+          type: object
+      required:
+      - name
+      - description
+      - input_schema
+      - output_schema
+      - environments
+      type: object
     AdmissionStatus:
       enum:
       - admitted
@@ -1449,6 +1476,25 @@ components:
       - assistant
       - developer
       type: string
+    RuntimeEnvelope:
+      properties:
+        deterministic_seed:
+          items:
+            format: uint8
+            maximum: 255
+            minimum: 0
+            type: integer
+          maxItems: 32
+          minItems: 32
+          type: array
+        logical_time_ms:
+          format: uint64
+          minimum: 0
+          type: integer
+      required:
+      - logical_time_ms
+      - deterministic_seed
+      type: object
     SessionId:
       pattern: ^ses_[A-Za-z0-9]{20,32}$
       type: string
@@ -1622,6 +1668,28 @@ components:
     ToolId:
       pattern: ^[0-9a-f]{64}$
       type: string
+    ToolInvocation:
+      description: |-
+        One call as the Agentloop makes it. `call_id` is the loop's own correlation, echoed
+        in the result; on every Environment wire the call is named by its sequence.
+      properties:
+        call_id:
+          type: string
+        environment:
+          $ref: '#/components/schemas/EnvironmentName'
+        environment_sequence:
+          format: uint64
+          minimum: 0
+          type: integer
+        input: true
+        name:
+          type: string
+      required:
+      - environment
+      - call_id
+      - name
+      - input
+      type: object
     ToolOutput:
       description: A Tool observation with an optional presentation for the Agentloop.
       oneOf:
@@ -1744,6 +1812,51 @@ components:
       required:
       - code
       - message
+      type: object
+    TurnInput:
+      description: What Brain hands the loop for one turn.
+      properties:
+        configuration: true
+        events:
+          description: A finite batch after the last successfully completed delivery, oldest first.
+          items:
+            $ref: '#/components/schemas/Event'
+          maxItems: 1000
+          type: array
+        input:
+          $ref: '#/components/schemas/UserInput'
+          description: Absent when committed Tool observations activate the loop without a user message.
+        kv:
+          additionalProperties: true
+          description: Saved loop state. Author bindings expose it through KV services.
+          type: object
+        runtime:
+          $ref: '#/components/schemas/RuntimeEnvelope'
+        system:
+          description: |-
+            The system prompt the session was created with. Used on every model call unless
+            the loop sends its own.
+          type: string
+        tools:
+          description: |-
+            The tools the session was created with: offered whole on every model call unless
+            the loop names a subset. Brain admitted and provisioned exactly these.
+          items:
+            $ref: '#/components/schemas/ActivationTool'
+          type: array
+        transcript:
+          description: 'The transcript as it stands: what the next model call would see.'
+          items:
+            $ref: '#/components/schemas/Message'
+          type: array
+      required:
+      - transcript
+      - kv
+      - events
+      - configuration
+      - system
+      - tools
+      - runtime
       type: object
     Usage:
       description: |-

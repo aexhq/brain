@@ -319,13 +319,6 @@ fn bounded_http_options(options: Option<RequestOptions>, limits: &EnvLimits) -> 
 }
 
 impl bindings::brain::agentloop::host::Host for HostState {
-    async fn acknowledge(&mut self, through: u64) -> Result<u64, wit::TurnError> {
-        let output = self
-            .call(HostCall::Acknowledge { through })
-            .await
-            .map_err(wit_error)?;
-        serde_json::from_str(&output).map_err(|error| wit_error(host_failure(error)))
-    }
     async fn set_transcript(&mut self, messages_json: String) -> Result<u64, wit::TurnError> {
         let answer = self
             .call(HostCall::SetTranscript { messages_json })

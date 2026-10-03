@@ -942,7 +942,7 @@ async fn the_transcript_folds_back_from_its_deltas() {
     let folded = runtime.store(handle.id()).fold().unwrap();
     assert_eq!(folded.transcript.len(), 4);
     assert_eq!(folded.kv["memory"], serde_json::json!({"turns": 1}));
-    assert!(!folded.kv.contains_key(brain::LAST_ACTIVATION_KEY));
+    assert!(folded.kv[brain::LAST_ACTIVATION_KEY].as_u64().unwrap() > 0);
     drop(handle);
     settle(runtime, data_dir).await;
 }
@@ -1029,9 +1029,6 @@ async fn events_since_the_last_activation_reach_the_loop() {
                     .iter()
                     .map(|event| event.event_type.clone())
                     .collect();
-                if let Some(last) = input.events.last() {
-                    services.acknowledge(last.sequence).await?;
-                }
                 done(&*services, input.transcript).await
             }
         })
@@ -1206,9 +1203,6 @@ async fn a_bounded_event_page_does_not_skip_the_rest() {
                         .filter(|event| event.event_type == "queued")
                         .filter_map(|event| event.data["index"].as_u64()),
                 );
-                if let Some(last) = input.events.last() {
-                    services.acknowledge(last.sequence).await?;
-                }
                 done(&*services, input.transcript).await
             }
         })

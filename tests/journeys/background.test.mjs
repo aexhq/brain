@@ -42,7 +42,7 @@ const f = fixture({ providers: {
         }
         after = page.next_cursor;
       }
-      await call(callback, "acknowledge", after);
+
       receipt = { type: "result", output: {} };
     }
     return { contract: "environment/v1", sequence: op.sequence, receipt };

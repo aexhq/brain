@@ -13,7 +13,7 @@ impl Guest for Reference {
         let mut transcript: Vec<Message> = decode(&input.transcript_json)?;
         let kv: BTreeMap<String, serde_json::Value> = decode(&input.kv_json)?;
         let mut after = kv
-            .get("brain.last_activation")
+            .get("observed")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
         let actionable = observe(&mut transcript, &mut after, &BTreeSet::new())?;
@@ -129,7 +129,8 @@ fn observe(
         *after = page.next_cursor;
     }
     brain::agentloop::host::set_transcript(&encode(transcript)?)?;
-    brain::agentloop::host::acknowledge(*after)?;
+
+    brain::agentloop::host::kv_put("observed", &encode(after)?)?;
     Ok(actionable)
 }
 

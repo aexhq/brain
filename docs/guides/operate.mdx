@@ -149,7 +149,10 @@ docker run --rm --entrypoint /usr/local/bin/brain-check-media-upgrade \
 
 Add `--from-chat` when upgrading from the former Chat/inline-media contract. Add
 `--from-tool-return` when moving from the former Tool return contract to explicit completion;
-open retained sessions using that old execution contract are rejected. If custom providers
+open retained sessions using that old execution contract are rejected. Add
+`--from-agentloop-acknowledge` when upgrading to automatic Agentloop event completion;
+open sessions bound to the previous immutable loop contract must keep their matching runtime.
+Rebuild custom loops against the new WIT before creating sessions. If custom providers
 were configured, mount their file read-only and pass `--providers-file` with its container
 path. The checker locks the stopped store and inspects it without rewriting records.
 

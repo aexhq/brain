@@ -14,28 +14,20 @@ Start in the [quickstart app](/brain/docs/quickstart) with Node.js 22 or newer. 
 `loop.mjs`. It calls the model once per message and saves the conversation; it does not call tools.
 
 ```js
-import * as host from "brain:agentloop/host@0.2.0";
+import { defineAgentloop } from "@aexhq/brain/agentloop";
 
-export function turn(input) {
-  const user = JSON.parse(input.inputJson);
-  if (user === null) {
-    const last = JSON.parse(input.eventsJson).at(-1);
-    if (last) host.acknowledge(BigInt(last.sequence));
-    return { resultJson: undefined };
-  }
-  const messages = JSON.parse(input.transcriptJson);
+export const turn = defineAgentloop(async ctx => {
+  if (!ctx.input) return;
+  const messages = ctx.transcript;
   messages.push({
     role: "user",
-    content: [{ type: "text", text: user.message }, ...(user.media ?? [])],
+    content: [{ type: "text", text: ctx.input.message }, ...(ctx.input.media ?? [])],
   });
-  host.setTranscript(JSON.stringify(messages));
-  const reply = JSON.parse(host.model(JSON.stringify({
-    messages, system: input.system, tools: [],
-  })));
+  await ctx.setTranscript(messages);
+  const reply = await ctx.model({ messages, system: ctx.system, tools: [] });
   messages.push(reply.message);
-  host.acknowledge(host.setTranscript(JSON.stringify(messages)));
-  return { resultJson: undefined };
-}
+  await ctx.setTranscript(messages);
+});
 ```
 
 ## Build it
@@ -43,28 +35,32 @@ export function turn(input) {
 Install the builder:
 
 ```sh
-npm install --save-dev @bytecodealliance/componentize-js@0.19.3 @bytecodealliance/jco@1.17.9
+npm install --save-dev esbuild@0.25.9 @bytecodealliance/componentize-js@0.19.3 @bytecodealliance/jco@1.17.9
 ```
 
 Save as `build-loop.mjs`:
 
 ```js
+import { build } from "esbuild";
 import { componentize } from "@bytecodealliance/componentize-js";
 import { writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-const { component } = await componentize({
-  sourcePath: "loop.mjs",
+const [entry = "loop.mjs", output = "loop.wasm"] = process.argv.slice(2);
+const bundled = await build({
+  entryPoints: [entry], bundle: true, format: "esm", platform: "neutral", write: false,
+  external: ["brain:agentloop/host@0.2.0"],
+});
+const { component } = await componentize(bundled.outputFiles[0].text, {
   witPath: fileURLToPath(import.meta.resolve("@aexhq/brain/contracts/agentloop.wit")),
   worldName: "agentloop",
   disableFeatures: ["stdio", "random", "clocks", "http", "fetch-event"],
 });
-await writeFile("loop.wasm", component);
+await writeFile(output, component);
 ```
 
 Run `node build-loop.mjs`. The resulting `loop.wasm` is the file you give Brain.
-For TypeScript, compile your source to this JavaScript entry file first; Brain receives the
-same built file. The [official loop build](https://github.com/aexhq/extensions/blob/main/tools/build-agentloop.mjs)
+For TypeScript, run `node build-loop.mjs loop.ts`; the builder bundles your source and the context adapter. The [official loop build](https://github.com/aexhq/extensions/blob/main/tools/build-agentloop.mjs)
 shows TypeScript bundling with esbuild.
 
 ## Use your built loop
@@ -92,7 +88,7 @@ the factory so repeated calls reuse the same admitted code.
 
 | Language | Working source | Build |
 | --- | --- | --- |
-| JavaScript / TypeScript | The example above; compile TypeScript to JavaScript first | `node build-loop.mjs` |
+| JavaScript / TypeScript | The example above | `node build-loop.mjs loop.mjs` or `node build-loop.mjs loop.ts` |
 | Rust | Reference loop below | Cargo with `wasm32-wasip2` |
 | Python | Minimal stateful loop below | `tools/build-python-fixtures.sh` |
 | A language in your own service | [HTTP loop example](https://github.com/aexhq/brain/blob/main/examples/loop-environment.mjs) | Your environment's deployment tools |
@@ -148,7 +144,6 @@ class WitWorld(WitWorld):
         calls = kv.get("calls", 0) + 1
         host.kv_put("calls", json.dumps(calls))
         sequence = host.emit("python_ran", json.dumps({"calls": calls}))
-        host.acknowledge(sequence)
         return TurnOutput(json.dumps({"sequence": sequence, "calls": calls}))
 ```
 
@@ -168,7 +163,8 @@ the saved count. This example supplies computation and Brain callbacks, not Pyth
 
 Use the [loop API](/brain/docs/reference/agentloop-contract) for model calls, tool dispatch
 and saved state. Save conversation changes explicitly; local variables do not survive the next
-activation. Process and acknowledge background events even when there is no new user message.
+activation. Successful return completes the delivered event batch, including deliberately ignored
+events. Use `ctx.kv.get/set/delete` for any progress or skipped observations your loop needs to remember.
 
 For a complete JavaScript loop with tool dispatch and context management, use
 [Pi's source](https://github.com/aexhq/extensions/tree/main/packages/loop-pi) as a starting point.

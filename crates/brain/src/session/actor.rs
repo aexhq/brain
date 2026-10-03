@@ -32,7 +32,7 @@ use crate::{
     },
 };
 
-/// The durable sequence through which the Agentloop explicitly acknowledged observations.
+/// The event prefix delivered to the last successfully completed activation.
 pub const LAST_ACTIVATION_KEY: &str = "brain.last_activation";
 
 /// Records handed to a loop as "what happened since you last ran". More than this and
@@ -154,6 +154,7 @@ impl SessionActor {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
         let event_records = self.store.records_after(since, EVENTS_PER_TURN)?;
+        let delivered_through = event_records.last().map_or(since, |record| record.sequence);
         let events = event_records
             .into_iter()
             .map(SessionRecord::into_event)
@@ -225,6 +226,7 @@ impl SessionActor {
             model_calls: Arc::new(AtomicUsize::new(0)),
             cursor: Arc::new(Mutex::new(Cursor {
                 through_sequence: self.row.through_sequence,
+                delivered_through,
                 transcript: std::mem::take(&mut self.folded.transcript),
                 kv: std::mem::take(&mut self.folded.kv),
             })),
@@ -269,6 +271,7 @@ impl SessionActor {
             let mut cursor = host.cursor.lock().await;
             Cursor {
                 through_sequence: cursor.through_sequence,
+                delivered_through: cursor.delivered_through,
                 transcript: std::mem::take(&mut cursor.transcript),
                 kv: std::mem::take(&mut cursor.kv),
             }
@@ -285,7 +288,7 @@ impl SessionActor {
             outcome => outcome,
         };
         match outcome {
-            Ok(output) => self.finish_turn(output).await,
+            Ok(output) => self.finish_turn(output, cursor.delivered_through).await,
             Err(error) => {
                 self.tools.interrupt().await;
                 let failure = failure_of(&error);
@@ -311,20 +314,26 @@ impl SessionActor {
     }
 
     /// Close the turn without overwriting state saved by its services.
-    async fn finish_turn(&mut self, output: TurnOutput) -> Result<SessionSummary, Error> {
-        self.commit(
-            vec![AppendRecord::new(
+    async fn finish_turn(
+        &mut self,
+        output: TurnOutput,
+        delivered_through: u64,
+    ) -> Result<SessionSummary, Error> {
+        let summary = self.close_turn(vec![
+            AppendRecord::new(
                 codes::event::ACTIVATION_ENDED,
                 serde_json::json!({}),
-            )],
-            None,
-        )
-        .await?;
-        self.close_turn(vec![AppendRecord::new(
-            codes::event::TURN_ENDED,
-            serde_json::json!({"result": output.result}),
-        )])
-        .await
+            ),
+            AppendRecord::new(
+                codes::event::TURN_ENDED,
+                serde_json::json!({"result": output.result, "events_through": delivered_through}),
+            ),
+        ]).await?;
+        self.folded.kv.insert(
+            LAST_ACTIVATION_KEY.into(),
+            serde_json::json!(delivered_through),
+        );
+        Ok(summary)
     }
 
     /// Commits a turn's terminal records and returns the session to Idle.
@@ -390,6 +399,7 @@ impl SessionActor {
 /// actor and the services the loop calls.
 struct Cursor {
     through_sequence: u64,
+    delivered_through: u64,
     /// The transcript as last recorded, so the next delta is against it.
     transcript: Vec<Message>,
     kv: BTreeMap<String, serde_json::Value>,
@@ -470,35 +480,6 @@ impl TurnServices for TurnHost {
             )
             .await
     }
-    async fn acknowledge(&self, sequence: u64) -> Result<u64, Error> {
-        let _active = self.admit().await?;
-        let mut cursor = self.cursor.lock().await;
-        let processed = cursor
-            .kv
-            .get(LAST_ACTIVATION_KEY)
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-        if sequence < processed || sequence > self.store.session_row()?.through_sequence {
-            return Err(Error::InvalidState(
-                "processed sequence must advance within committed history".into(),
-            ));
-        }
-        if sequence > processed {
-            cursor.through_sequence = append_journal(
-                self.store.clone(),
-                vec![JournalEntry::KvSet {
-                    key: LAST_ACTIVATION_KEY.into(),
-                    value: serde_json::json!(sequence),
-                }],
-            )
-            .await?;
-            cursor
-                .kv
-                .insert(LAST_ACTIVATION_KEY.into(), serde_json::json!(sequence));
-        }
-        Ok(cursor.through_sequence)
-    }
-
     async fn set_transcript(&self, messages: Vec<Message>) -> Result<u64, Error> {
         let _active = self.admit().await?;
         let mut cursor = self.cursor.lock().await;
@@ -558,7 +539,13 @@ impl TurnServices for TurnHost {
             tokio::task::spawn_blocking(move || store.records_after(after, EVENTS_PER_TURN))
                 .await
                 .map_err(|error| Error::Journal(error.to_string()))??;
-        Ok(crate::event_page(records, after))
+        let page = crate::event_page(records, after);
+        let mut cursor = self.cursor.lock().await;
+        // Historical reads may start anywhere; only a contiguous delivered prefix is complete.
+        if after <= cursor.delivered_through {
+            cursor.delivered_through = cursor.delivered_through.max(page.next_cursor);
+        }
+        Ok(page)
     }
 
     async fn model(&self, mut request: ModelRequest) -> Result<ModelResult, Error> {

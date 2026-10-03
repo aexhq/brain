@@ -14,6 +14,15 @@ mod environments;
 
 #[tokio::test]
 async fn background_completion_wakes_a_passivated_loop_once_and_never_edits_its_transcript() {
+    complete_background_batches(false).await;
+}
+
+#[tokio::test]
+async fn background_completion_delivers_every_page_without_author_acknowledgement() {
+    complete_background_batches(true).await;
+}
+
+async fn complete_background_batches(many: bool) {
     use brain::{ToolExecutor, ToolServices, TurnServices};
 
     #[derive(Default)]
@@ -36,6 +45,7 @@ async fn background_completion_wakes_a_passivated_loop_once_and_never_edits_its_
     }
     #[derive(Default)]
     struct Observer {
+        batches_only: bool,
         activations: std::sync::atomic::AtomicUsize,
         observations: StdMutex<Vec<brain_protocol::Event>>,
     }
@@ -72,6 +82,10 @@ async fn background_completion_wakes_a_passivated_loop_once_and_never_edits_its_
                     vec![Message::user_text("chosen by the loop")]
                 );
             }
+            if self.batches_only {
+                self.observations.lock().unwrap().extend(input.events);
+                return Ok(TurnOutput::default());
+            }
             let mut through = input
                 .kv
                 .get(brain::LAST_ACTIVATION_KEY)
@@ -85,14 +99,17 @@ async fn background_completion_wakes_a_passivated_loop_once_and_never_edits_its_
                 through = page.next_cursor;
                 self.observations.lock().unwrap().extend(page.events);
             }
-            services.acknowledge(through).await?;
+
             Ok(TurnOutput::default())
         }
     }
     let root = root("background-events");
     let mut api = api(&root);
     let background = Arc::new(Background::default());
-    let observer = Arc::new(Observer::default());
+    let observer = Arc::new(Observer {
+        batches_only: many,
+        ..Observer::default()
+    });
     let runtime =
         Arc::get_mut(&mut Arc::get_mut(&mut api.resources).unwrap().session_runtime).unwrap();
     runtime.tool_executor = background.clone();
@@ -141,6 +158,19 @@ async fn background_completion_wakes_a_passivated_loop_once_and_never_edits_its_
     .await
     .unwrap();
     let service = background.service.lock().unwrap().take().unwrap();
+    let guard = api.session_lock(&id).unwrap().lock_owned().await;
+    let extra = if many { 1_100 } else { 0 };
+    for index in 0..extra {
+        service
+            .result(
+                Outcome::Ok {
+                    value: serde_json::json!(index),
+                }
+                .into(),
+            )
+            .await
+            .unwrap();
+    }
     let finish = service
         .finish(Some(
             Outcome::Ok {
@@ -150,10 +180,14 @@ async fn background_completion_wakes_a_passivated_loop_once_and_never_edits_its_
         ))
         .await
         .unwrap();
+    drop(guard);
     tokio::time::timeout(Duration::from_secs(2), api.drain())
         .await
         .unwrap();
-    assert_eq!(observer.activations.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        observer.activations.load(Ordering::SeqCst),
+        if many { 3 } else { 2 }
+    );
     assert!(store.processed_through().unwrap() >= finish);
     let observed = observer.observations.lock().unwrap();
     assert_eq!(
@@ -161,7 +195,7 @@ async fn background_completion_wakes_a_passivated_loop_once_and_never_edits_its_
             .iter()
             .filter(|event| event.event_type == "tool_result_emitted")
             .count(),
-        1
+        extra + 1
     );
     assert_eq!(
         observed

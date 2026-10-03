@@ -63,6 +63,8 @@ pub fn session() -> Value {
             define::<crate::ModelResult>(generator);
             define::<crate::ToolResult>(generator);
             define::<crate::ToolReturn>(generator);
+            define::<crate::ToolInvocation>(generator);
+            define::<TurnInput>(generator);
             define::<Outcome>(generator);
             define::<Tool>(generator);
             define::<ToolAdmission>(generator);

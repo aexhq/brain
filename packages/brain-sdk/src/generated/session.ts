@@ -3,6 +3,11 @@
 
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentName".
+ */
+export type EnvironmentName = string;
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "AdmissionStatus".
  */
 export type AdmissionStatus = "admitted" | "rejected";
@@ -11,11 +16,6 @@ export type AdmissionStatus = "admitted" | "rejected";
  * via the `definition` "AgentloopId".
  */
 export type AgentloopId = string;
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "EnvironmentName".
- */
-export type EnvironmentName = string;
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "EnvironmentPermission".
@@ -471,6 +471,28 @@ export interface BrainSessionAPIV1 {
   contract: "session/v1";
 }
 /**
+ * Definitions and logical choices made available to an Agentloop, without executable descriptors.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ActivationTool".
+ */
+export interface ActivationTool {
+  description: string;
+  environment_refs?: EnvironmentRef[];
+  environments: EnvironmentName[];
+  input_schema: {};
+  name: string;
+  output_schema: {};
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentRef".
+ */
+export interface EnvironmentRef {
+  name: EnvironmentName;
+  sequence: number;
+}
+/**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "AgentloopAdmission".
  */
@@ -675,14 +697,6 @@ export interface EnvironmentOperation {
   sequence: number;
   session_id: SessionId;
   template?: EnvironmentName;
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "EnvironmentRef".
- */
-export interface EnvironmentRef {
-  name: EnvironmentName;
-  sequence: number;
 }
 /**
  * Controller services are separate from the hosted invocation's callback.
@@ -1051,6 +1065,51 @@ export interface ProgramAdmission {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "RuntimeEnvelope".
+ */
+export interface RuntimeEnvelope {
+  /**
+   * @minItems 32
+   * @maxItems 32
+   */
+  deterministic_seed: [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number
+  ];
+  logical_time_ms: number;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "SessionList".
  */
 export interface SessionList {
@@ -1102,6 +1161,20 @@ export interface TurnError {
   retryable?: boolean;
 }
 /**
+ * One call as the Agentloop makes it. `call_id` is the loop's own correlation, echoed
+ * in the result; on every Environment wire the call is named by its sequence.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ToolInvocation".
+ */
+export interface ToolInvocation {
+  call_id: string;
+  environment: EnvironmentName;
+  environment_sequence?: number;
+  input: unknown;
+  name: string;
+}
+/**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "ToolResult".
  */
@@ -1136,4 +1209,48 @@ export interface ToolReturn {
 export interface TurnEmitRequest {
   data: unknown;
   event_type: string;
+}
+/**
+ * What Brain hands the loop for one turn.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "TurnInput".
+ */
+export interface TurnInput {
+  configuration: unknown;
+  /**
+   * A finite batch after the last successfully completed delivery, oldest first.
+   *
+   * @maxItems 1000
+   */
+  events: Event[];
+  input?: UserInput1;
+  /**
+   * Saved loop state. Author bindings expose it through KV services.
+   */
+  kv: {
+    [k: string]: unknown | undefined;
+  };
+  runtime: RuntimeEnvelope;
+  /**
+   * The system prompt the session was created with. Used on every model call unless
+   * the loop sends its own.
+   */
+  system: string;
+  /**
+   * The tools the session was created with: offered whole on every model call unless
+   * the loop names a subset. Brain admitted and provisioned exactly these.
+   */
+  tools: ActivationTool[];
+  /**
+   * The transcript as it stands: what the next model call would see.
+   */
+  transcript: Message[];
+}
+/**
+ * What an application hands a session on `send`.
+ */
+export interface UserInput1 {
+  media?: Media[];
+  message: string;
 }

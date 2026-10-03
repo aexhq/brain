@@ -18,6 +18,9 @@ struct Args {
     /// Old executable contracts cannot resume under explicit Tool completion semantics.
     #[arg(long)]
     from_tool_return: bool,
+    /// Old Agentloops import the removed explicit acknowledgement service.
+    #[arg(long)]
+    from_agentloop_acknowledge: bool,
     #[arg(long)]
     providers_file: Option<PathBuf>,
 }
@@ -116,7 +119,7 @@ fn main() -> anyhow::Result<()> {
             path.file_name().unwrap().to_string_lossy()
         );
         anyhow::ensure!(
-            !args.from_tool_return || closed,
+            !(args.from_tool_return || args.from_agentloop_acknowledge) || closed,
             "retained session {} still uses the previous execution contract; keep its matching runtime and migrate explicitly",
             path.file_name().unwrap().to_string_lossy()
         );

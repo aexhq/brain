@@ -67,7 +67,7 @@ fn runtime(
         tools,
     )
 }
-async fn acknowledge_all(services: &dyn TurnServices) -> Result<u64, Error> {
+async fn read_all(services: &dyn TurnServices) -> Result<u64, Error> {
     let mut through = 0;
     loop {
         let page = services.events(through).await?;
@@ -76,7 +76,6 @@ async fn acknowledge_all(services: &dyn TurnServices) -> Result<u64, Error> {
         }
         through = page.next_cursor;
     }
-    services.acknowledge(through).await?;
     Ok(through)
 }
 
@@ -107,7 +106,7 @@ async fn background_results_survive_turn_return_and_completion_is_an_ordered_eve
                 services
                     .set_transcript(vec![Message::user_text("loop-selected")])
                     .await?;
-                acknowledge_all(&*services).await?;
+                read_all(&*services).await?;
                 *retained.lock().unwrap() = Some(services);
                 Ok(TurnOutput::default())
             }
@@ -126,7 +125,7 @@ async fn background_results_survive_turn_return_and_completion_is_an_ordered_eve
     let before = store.session_summary().unwrap().last_sequence;
     assert!(old_loop.emit("stale".into(), json!({})).await.is_err());
     assert!(old_loop.set_transcript(vec![]).await.is_err());
-    assert!(old_loop.acknowledge(before).await.is_err());
+    assert!(old_loop.events(before).await.is_err());
     assert_eq!(store.session_summary().unwrap().last_sequence, before);
     drop(session);
 
@@ -260,15 +259,19 @@ async fn the_original_deadline_still_bounds_a_tool_after_return() {
 }
 
 #[tokio::test]
-async fn acknowledgements_are_explicit_monotonic_and_cannot_run_ahead_of_history() {
+async fn successful_return_completes_only_the_delivered_event_batch_and_survives_reopen() {
+    let delivered = Arc::new(Mutex::new(0));
     let runtime = runtime(
-        scripted(|input, services| async move {
-            let last = input.events.last().unwrap().sequence;
-            let committed = services.acknowledge(last).await?;
-            assert!(services.acknowledge(last - 1).await.is_err());
-            assert!(services.acknowledge(u64::MAX).await.is_err());
-            assert_eq!(services.acknowledge(last).await?, committed);
-            Ok(TurnOutput::default())
+        scripted({
+            let delivered = delivered.clone();
+            move |input, services| {
+                let delivered = delivered.clone();
+                async move {
+                    *delivered.lock().unwrap() = input.events.last().unwrap().sequence;
+                    services.emit("later_observation".into(), json!({})).await?;
+                    Ok(TurnOutput::default())
+                }
+            }
         }),
         Arc::new(Background::default()),
         0,
@@ -279,7 +282,125 @@ async fn acknowledgements_are_explicit_monotonic_and_cannot_run_ahead_of_history
         .await
         .unwrap();
     let store = runtime.store(session.id());
-    let through = store.processed_through().unwrap();
-    assert!(through > 0);
-    assert!(through < store.session_summary().unwrap().last_sequence);
+    assert_eq!(
+        store.processed_through().unwrap(),
+        *delivered.lock().unwrap()
+    );
+    assert!(
+        store
+            .records_after(store.processed_through().unwrap(), 100)
+            .unwrap()
+            .iter()
+            .any(|record| record.kind == "later_observation")
+    );
+    let reopened = brain::LocalSessionStore::open(
+        store.directory(),
+        runtime.writer.clone(),
+        runtime.feed.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        reopened.processed_through().unwrap(),
+        *delivered.lock().unwrap()
+    );
+}
+
+#[tokio::test]
+async fn failed_or_cancelled_activations_preserve_writes_without_completing_events() {
+    for cancelled in [false, true] {
+        let runtime = runtime(
+            scripted(move |_, services| async move {
+                services
+                    .set_transcript(vec![Message::user_text("saved")])
+                    .await?;
+                read_all(&*services).await?;
+                Err(if cancelled {
+                    Error::Cancelled("stopped".into())
+                } else {
+                    Error::Executor("failed".into())
+                })
+            }),
+            Arc::new(Background::default()),
+            0,
+        );
+        let session = runtime.create(&tool_config(), &[]).unwrap();
+        session
+            .message(MessageRequest { input: "go".into() })
+            .await
+            .unwrap();
+        let store = runtime.store(session.id());
+        assert_eq!(store.processed_through().unwrap(), 0);
+        assert_eq!(
+            store.fold().unwrap().transcript,
+            vec![Message::user_text("saved")]
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_history_read_cannot_complete_an_undelivered_gap() {
+    let delivered = Arc::new(Mutex::new(0));
+    let runtime = runtime(
+        scripted({
+            let delivered = delivered.clone();
+            move |input, services| {
+                let delivered = delivered.clone();
+                async move {
+                    *delivered.lock().unwrap() = input.events.last().unwrap().sequence;
+                    let gap = services.emit("unread".into(), json!({})).await?;
+                    let later = services.emit("read".into(), json!({})).await?;
+                    assert_eq!(services.events(gap).await?.next_cursor, later);
+                    Ok(TurnOutput::default())
+                }
+            }
+        }),
+        Arc::new(Background::default()),
+        0,
+    );
+    let session = runtime.create(&tool_config(), &[]).unwrap();
+    session
+        .message(MessageRequest { input: "go".into() })
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.store(session.id()).processed_through().unwrap(),
+        *delivered.lock().unwrap()
+    );
+}
+
+#[tokio::test]
+async fn successive_event_pages_complete_on_success() {
+    let delivered = Arc::new(Mutex::new(0));
+    let runtime = runtime(
+        scripted({
+            let delivered = delivered.clone();
+            move |input, services| {
+                let delivered = delivered.clone();
+                async move {
+                    services.emit("observation".into(), json!({})).await?;
+                    let page = services
+                        .events(input.events.last().unwrap().sequence)
+                        .await?;
+                    assert!(
+                        page.events
+                            .iter()
+                            .any(|event| event.event_type == "observation")
+                    );
+                    *delivered.lock().unwrap() = page.next_cursor;
+                    Ok(TurnOutput::default())
+                }
+            }
+        }),
+        Arc::new(Background::default()),
+        0,
+    );
+    let session = runtime.create(&tool_config(), &[]).unwrap();
+    session
+        .message(MessageRequest { input: "go".into() })
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.store(session.id()).processed_through().unwrap(),
+        *delivered.lock().unwrap()
+    );
 }

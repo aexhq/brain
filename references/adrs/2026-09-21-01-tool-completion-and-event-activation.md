@@ -3,6 +3,9 @@
 - Decision date: 2026-09-21
 - Status: Accepted; implemented in the coordinated 0.28 release
 
+The explicit event acknowledgement service is superseded by
+[ADR-055](2026-10-03-01-agentloop-context-and-completion.md).
+
 Refines [ADR-023](2026-09-04-01-turn-services.md),
 [ADR-035](2026-09-05-04-send-once.md),
 [ADR-037](2026-09-05-06-ephemeral.md), and

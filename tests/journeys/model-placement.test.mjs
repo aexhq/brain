@@ -32,7 +32,7 @@ const f = fixture({ providers: { selector: async ({ operation }) => {
     transcript.push({ role: "user", content: results.map((result) => ({ type: "tool_result", tool_use_id: result.call_id, content: result.output, is_error: result.is_error })) });
     await call("set_transcript", transcript);
     const page = await call("events", 0);
-    await call("acknowledge", page.next_cursor);
+
     receipt = { type: "result", output: { result: results[0].output } };
   }
   return { contract: "environment/v1", sequence, receipt };

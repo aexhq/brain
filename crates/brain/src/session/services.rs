@@ -19,10 +19,8 @@ pub trait TurnServices: Send + Sync {
             "Environment service is not available".into(),
         ))
     }
-    /// One finite page after a journal sequence. Reading does not advance the activation cursor.
+    /// One finite page after a journal sequence, completed when the activation returns successfully.
     async fn events(&self, after: u64) -> Result<brain_protocol::EventPage, Error>;
-    /// Durably acknowledge the observations processed through this journal sequence.
-    async fn acknowledge(&self, sequence: u64) -> Result<u64, Error>;
     /// Replaces conversation state and returns its durable journal sequence.
     async fn set_transcript(&self, messages: Vec<brain_protocol::Message>) -> Result<u64, Error>;
     /// Saves one value and returns its durable journal sequence.

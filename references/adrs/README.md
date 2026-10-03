@@ -107,6 +107,7 @@ remain in [the contracts](../../contracts), [user docs](../../docs), and
 | 2026-09-09 | [ADR-046: Keep dependency preparation in Environments and give Agentloop KV one API](2026-09-09-01-minimal-extension-contract.md) | Accepted |
 | 2026-09-12 | [ADR-047: Preserve known Tool stop causes and accept host outcomes directly](2026-09-12-01-tool-outcomes.md) | Accepted |
 | 2026-09-21 | [ADR-048: Separate Tool return from finish and activate the loop from committed events](2026-09-21-01-tool-completion-and-event-activation.md) | Accepted |
+| 2026-10-03 | [ADR-055: Give Agentloops one context and complete event batches on return](2026-10-03-01-agentloop-context-and-completion.md) | Accepted |
 
 ## Important reversals
 
