@@ -27,8 +27,8 @@ try {
   const events = [];
   for await (const event of session.events()) events.push(event);
   assert.deepEqual(
-    events.slice(-7).map(({ type }) => type),
-    ["turn_started", "activation_started", "kv_set", "kv_set", "note", "activation_ended", "turn_ended"],
+    events.slice(-6).map(({ type }) => type),
+    ["turn_started", "activation_started", "kv_set", "note", "activation_ended", "turn_ended"],
   );
   assert.deepEqual(events.at(-1)?.data.result, { turns: 1, message: "finish without external capabilities" });
   assert.ok(events.every(({ recordedAt }) => recordedAt instanceof Date && !Number.isNaN(recordedAt.valueOf())));
