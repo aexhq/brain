@@ -348,6 +348,8 @@ async fn a_worker_crash_does_not_replay_or_stop_its_sibling_and_shutdown_reaps_b
     assert_eq!((succeeded, failed), (1, 1));
     pool.ready().await.unwrap();
     assert_eq!(pid(1).await, second);
+    // Pool readiness can come from the survivor; direct probes require both workers.
+    pool.start().await.unwrap();
     let bridge = RecordingBridge {
         calls: Mutex::new(Vec::new()),
         kv: Mutex::new(Default::default()),
