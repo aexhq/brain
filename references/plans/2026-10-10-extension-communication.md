@@ -52,8 +52,13 @@ media gate, and promote those same artifacts. Pin the staged SDK and Brain revis
 extensions, pass their CI and Modal gate, and stage/promote their exact archives. Update the
 website's documentation revision and deploy through its CI-gated Vercel workflow.
 
-The workspace release guide records AWS production as retired on 2026-10-08. A replacement
-backend deployment needs an identified target; the retired infrastructure is not a rollout path.
+Production runs in the existing Railway project recorded in Platform's 2026-10-08 migration.
+Pin the admitted Brain and Aex image digests in Platform, pass its complete CI including the
+combined runtime and paired recovery gate, and deploy the exact main-run archive to both existing
+Railway services. Take a completed paired backup before rollout and verify retained sessions,
+the separate HTTP controller, real model calls, host event streaming and attachment storage.
+Promote the same staged package archives after production proof, and record the deployed tuple
+and evidence in Platform's release log. AWS infrastructure remains retired.
 
 ## References
 
