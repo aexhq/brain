@@ -3,9 +3,9 @@ title: Models
 description: Choose a model and connect your provider account.
 ---
 
-Bring a model-provider key and choose a model when you create the session. Your provider bills
-model usage to that key. This fragment extends the [quickstart](/brain/docs/quickstart), which
-checks `OPENAI_API_KEY` before assigning it to `apiKey`:
+Bring your own provider key and pick a model when you create the session. The provider bills
+usage to that key. This fragment comes from the [quickstart](/brain/docs/quickstart), which checks
+`OPENAI_API_KEY` before assigning it to `apiKey`:
 
 ```ts
 model: {
@@ -15,8 +15,8 @@ model: {
 },
 ```
 
-Keep the key in your server environment. The model stays fixed for the session; create another
-session to use a different model.
+Keep the key in your server environment. A session keeps its model for life; create a new session
+to switch models.
 
 ## Choose a provider
 
@@ -27,13 +27,13 @@ session to use a different model.
 | Vercel AI Gateway | `vercel-ai-gateway` | Provider-prefixed, such as `openai/gpt-5-mini` |
 | DeepSeek | `deepseek` | The model ID from your provider |
 
-Use `await brain.models()` to discover models and known capabilities, or
-`await brain.models("openai")` for one provider. Availability and supported inputs depend on
-the provider and your account.
+Call `await brain.models()` to list models and their known capabilities, or
+`await brain.models("openai")` for a single provider. What's available, and which inputs each
+model accepts, depends on the provider and your account.
 
 ## Send images and PDFs
 
-Choose a model that supports the input, then pass an accessible HTTPS URL:
+Pick a model that supports the input, then pass a reachable HTTPS URL:
 
 ```ts
 await session.send({
@@ -42,8 +42,8 @@ await session.send({
 });
 ```
 
-Replace the example URL with your own file and keep it accessible while the conversation needs
-it. Standalone Brain does not host files; hosted conveniences are covered by the [Aex docs](/docs).
+Use your own file URL and keep it reachable for as long as the conversation needs it. Standalone
+Brain doesn't host files; see the [Aex docs](/docs) for hosted uploads.
 
-See [model compatibility](/brain/docs/reference/models) for PDF formats, provider protocols
-and exact request behavior.
+[Model compatibility](/brain/docs/reference/models) covers PDF formats, provider protocols and
+exact request behavior.

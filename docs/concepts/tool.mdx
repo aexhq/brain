@@ -3,8 +3,8 @@ title: Tools
 description: Give an agent access to functions in your application or another environment.
 ---
 
-A tool is a function an agent can call: look up an order, search documents, update a record,
-or run a calculation. Its description tells the model when to use it; its input schema defines
+A tool is a function your agent can call: look up an order, search documents, update a record or
+run a calculation. Its description tells the model when to use it, and its input schema defines
 the arguments your function accepts.
 
 ```ts
@@ -21,17 +21,20 @@ const lookup = tool({
 const tools = [lookup({ env: hostEnv({ name: "app" }) })];
 ```
 
-Pass `tools` when creating the session. This function runs in your app and can use its database
-connections and dependencies. Keep the app connected while the agent needs the tool.
+Pass `tools` when you create the session. This function runs inside your app, so it can use your
+database connections and dependencies. Keep the app connected while the agent needs it.
 
-Use `ctx.finish(value)` to return a result and finish the tool. Background tools can send
-multiple results before finishing. Saved tool results appear in session history; the agent
-loop decides how to present them to the model.
+Call `ctx.finish(value)` to return a result and complete the call. Background tools can send
+several results before they finish. Tool results are saved in session history, and the agent loop
+decides how to show them to the model.
 
-Choose the session's tools before creation. The model can call those tools; it cannot add new
-ones or grant them access to another environment. Brain does not automatically retry failed
-calls, and cancellation does not undo effects that already happened.
+## Good to know
 
-See [Write a tool](/brain/docs/guides/write-a-tool) for a complete example, language choices
-and packaging. The [tool contract](/brain/docs/reference/tool-contract) covers errors,
-background work and multiple placements.
+- **The tool list is fixed at creation.** The model can call the tools you chose, but it can't add
+  new ones or give them access to another environment.
+- **No automatic retries.** Brain never retries a failed call, and cancelling doesn't undo effects
+  that already happened.
+
+[Write a tool](/brain/docs/guides/write-a-tool) has a complete example, language choices and
+packaging. The [tool contract](/brain/docs/reference/tool-contract) covers errors, background work
+and multiple placements.

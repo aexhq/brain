@@ -3,12 +3,12 @@ title: Embed the runtime
 description: Run sessions inside a Rust service you already own.
 ---
 
-Use the server when you want a process to talk to. Use the crate when another Rust service already
-owns startup, configuration, and deployment, and you want sessions inside it.
+Run the server when you want a process to talk to. Embed the crate when another Rust service
+already owns startup, configuration and deployment, and you want sessions inside it.
 
-Each `Session` represents one conversation. Your service can manage multiple sessions sharing
-one runtime. This Rust excerpt assumes you have configured the session directory, telemetry and
-the loop, model and tool executors described below:
+Each `Session` is one conversation, and your service can run many sessions on one shared runtime.
+This Rust excerpt assumes you've already configured the session directory, telemetry and the loop,
+model and tool executors described below:
 
 ```rust
 use std::sync::Arc;
@@ -45,48 +45,52 @@ session
     .await?;
 ```
 
-Open only the session needed, call `interrupt_unfinished_turn`, then `Session::open` when an explicit
-activation is required. `LocalSessionStore::open` alone permits transcript and Event reads without
-an actor. Call `checkpoint()` at a quiescent boundary before dropping execution to accelerate the
-next open; this projection is disposable. Keep one live store/sequencer per session and serialize
-mutations for that session. The stock server provides that coordination.
+Open only the session you need. When it needs explicit activation, call
+`interrupt_unfinished_turn`, then `Session::open`. `LocalSessionStore::open` on its own allows
+transcript and Event reads without an actor. To speed up the next open, call `checkpoint()` at a
+quiescent boundary before dropping execution; the projection it writes is disposable. Keep one live
+store and sequencer per session and serialize mutations to it. The stock server handles that
+coordination for you.
 
-Hold a filesystem lock on the local data directory for the process lifetime before opening mutable
-stores. `brain_server::data_layout::lock` provides the stock server's lock when embedding that
-composition. One local writer is supported; cross-server ownership belongs to the host platform.
+Hold a filesystem lock on the local data directory for the life of the process before opening
+mutable stores. When embedding the stock server's composition, `brain_server::data_layout::lock`
+provides that lock. Brain supports one local writer; cross-server ownership belongs to your host
+platform.
 
 ## You supply the ports
 
-Supply `loop_executor`, `model_executor`, and `tool_executor` implementations for your deployment.
-Set `environment_control` when your host supports resource operations; `None` leaves them unavailable.
-The loop executor
-receives the Agentloop, the Environment entry it is placed in, and the session's `TurnServices`,
-and runs the loop against them; the server's executor resolves the entry to its Environment
-adapter, and yours could run a trusted loop in-process. The model executor receives the session id
-and resolves the credential it sealed for it; the tool executor receives the Tool and its Environment
-entry. A custom `SessionStore` can construct asynchronous append completions
-with `CommitHandle::from_completion`; returning success must mean the canonical records committed.
+Provide `loop_executor`, `model_executor` and `tool_executor` implementations for your deployment.
+Set `environment_control` if your host supports resource operations; `None` leaves them unavailable.
 
-## What the runtime keeps
+- **Loop executor:** receives the Agentloop, the Environment entry it's placed in and the
+  session's `TurnServices`, then runs the loop against them. The server's executor resolves the
+  entry to its Environment adapter; yours could run a trusted loop in-process.
+- **Model executor:** receives the session id and resolves the credential it sealed for it.
+- **Tool executor:** receives the Tool and its Environment entry.
 
-Synchronous journal commits still land before effects, and recovery still rebuilds every projection
-from the same canonical journal. Embedding does not make admission more permissive:
+A custom `SessionStore` can build asynchronous append completions with
+`CommitHandle::from_completion`. Returning success must mean the canonical records have committed.
+
+## What the runtime guarantees
+
+Journal commits still land synchronously before effects, and recovery still rebuilds every
+projection from the same canonical journal. Embedding doesn't loosen admission:
 `Session::begin` and `complete` hold configuration to the same contract as the server.
 
 ## What stays yours
 
-Which sessions exist, which are running, what to do with them after a restart, and when to forget
-them. Where environments live and how they are found. Credentials, and how HTTP retries are
-answered. Everything about product policy. The runtime has opinions about correctness, not about
-your architecture.
+Which sessions exist, which are running, what happens to them after a restart and when to forget
+them. Where environments live and how they're found. Credentials, and how HTTP retries are
+answered. All product policy. The runtime has opinions about correctness, not about your
+architecture.
 
 ## Telemetry delivery
 
-The telemetry channel is bounded and never holds up a turn. Its worker drains queued records into
-ordered batches and retries a rejected batch for up to 30 seconds. A sink may therefore receive a
-batch more than once and must make duplicates harmless. Exhausted deliveries are counted and
-reported through `telemetry_delivery_dropped` records when the queue still has room.
+The telemetry channel is bounded and never holds up a turn. A worker drains queued records into
+ordered batches and retries a rejected batch for up to 30 seconds, so a sink may see the same batch
+more than once and must handle duplicates safely. When deliveries are exhausted, they're counted and
+reported through `telemetry_delivery_dropped` records if the queue still has room.
 
-Telemetry remains best effort. For resumable event forwarding, consume the session event endpoint,
-save its sequence cursor after the destination acknowledges a batch, and reconnect from that cursor.
-The session's canonical journal, rather than the telemetry queue, is the durable record.
+Telemetry is best effort. For resumable event forwarding, consume the session event endpoint, save
+its sequence cursor once the destination acknowledges a batch, and reconnect from that cursor. The
+session's canonical journal, not the telemetry queue, is the durable record.
