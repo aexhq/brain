@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { BrainError } from "./errors.js";
 import { EnvironmentServices } from "./environments.js";
-import type { EnvironmentCommand, EnvironmentEvent, EnvironmentMethod, EnvironmentObservation, EnvironmentReceipt, EnvironmentRef, EnvironmentRequest, EnvironmentResponse, ExecutionCallback } from "./generated/session.js";
+import { callExecution, reportEnvironment, type CallbackOptions } from "./callbacks.js";
+import { parseEnvironmentCommand, environmentFailure } from "./environment-protocol.js";
+import type { EnvironmentEvent, EnvironmentMethod, EnvironmentObservation, EnvironmentReceipt, EnvironmentRef, EnvironmentRequest, EnvironmentResponse } from "./generated/session.js";
 import type { Schema, SchemaOutput } from "./types.js";
 
 export interface EnvironmentReporter {
@@ -41,7 +43,7 @@ export interface EnvironmentRuntimeContract<S extends Schema | undefined = undef
 }
 
 /** The controller authenticates its HTTP caller before handing an operation to this handler. */
-export function environmentHandler<S extends Schema | undefined = undefined, Methods extends Record<string, Schema> = Record<string, Schema>>(contract: EnvironmentRuntimeContract<S, Methods>) {
+export function environmentHandler<S extends Schema | undefined = undefined, Methods extends Record<string, Schema> = Record<string, Schema>>(contract: EnvironmentRuntimeContract<S, Methods>, options: Pick<CallbackOptions, "fetch"> = {}) {
   const methods: Record<string, EnvironmentMethod> = Object.fromEntries(Object.entries(contract.methods ?? {}).map(([name, method]) => [name, {
     description: method.description,
     input_schema: z.toJSONSchema(method.input, { io: "input" }),
@@ -50,20 +52,17 @@ export function environmentHandler<S extends Schema | undefined = undefined, Met
   }]));
   return {
     methods,
-    async run(command: EnvironmentCommand, signal?: AbortSignal): Promise<EnvironmentResponse> {
-      if (command.contract !== "environment/v1") throw new TypeError("unsupported Environment contract");
+    async run(raw: unknown, signal?: AbortSignal): Promise<EnvironmentResponse> {
+      const command = parseEnvironmentCommand(raw);
       const operation = command.operation;
       const lifetime = new AbortController();
       const active = signal === undefined ? lifetime.signal : AbortSignal.any([lifetime.signal, signal]);
       const call = (method: string, input: unknown) => {
         active.throwIfAborted();
-        if (!operation.context?.methods.includes(method)) throw new BrainError(403, "not_granted", "Environment operation service is not granted", false);
-        return post(operation.context, { method, input }, active);
+        return callExecution(operation.context, method, input, { ...options, signal: active });
       };
       const report = async (event: EnvironmentEvent): Promise<number> => {
-        if (operation.reporter === undefined) throw new BrainError(403, "not_granted", "Environment reporter is not granted", false);
-        const result = await post(operation.reporter, event) as { sequence: number };
-        return result.sequence;
+        return reportEnvironment(operation.reporter, event, options);
       };
       let receipt: EnvironmentReceipt;
       try {
@@ -109,22 +108,11 @@ export function environmentHandler<S extends Schema | undefined = undefined, Met
             break;
         }
       } catch (error) {
-        receipt = error instanceof BrainError && ["ambiguous", "unknown"].includes(error.code)
-          ? { type: "unknown", message: error.message }
-          : { type: "failure", code: error instanceof BrainError ? error.code : "environment_error",
-              message: error instanceof Error ? error.message : String(error), retryable: error instanceof BrainError && error.retryable,
-              ...(error instanceof BrainError && error.details !== undefined ? { details: error.details } : {}) };
+        receipt = environmentFailure(error);
       } finally {
         lifetime.abort();
       }
       return { contract: "environment/v1", sequence: operation.sequence, receipt };
     },
   };
-}
-
-async function post(callback: ExecutionCallback, input: unknown, signal?: AbortSignal): Promise<unknown> {
-  const response = await fetch(callback.url, { method: "POST", headers: { authorization: `Bearer ${callback.token}`, "content-type": "application/json" }, body: JSON.stringify(input), ...(signal === undefined ? {} : { signal }) });
-  const body = await response.json();
-  if (!response.ok) throw new BrainError(response.status, body.code, body.message, body.retryable, body.details);
-  return body;
 }

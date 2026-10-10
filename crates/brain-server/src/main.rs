@@ -98,13 +98,6 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         &providers,
         &config.limits,
     )?);
-    let mut http = reqwest::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none());
-    if let Some(connect) = config.server_limits.max_environment_connect() {
-        http = http.connect_timeout(connect);
-    }
-    let http = http.build()?;
     let executions = Arc::new(Executions::default());
     let hosts = HostEnvironment::open(
         &config.data_dir.join("hosts").join("hosts.log"),
@@ -123,7 +116,6 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
             )),
             hosts: hosts.clone(),
             http: Arc::new(HttpEnvironmentAdapter::new(
-                http,
                 credentials.clone(),
                 &config.server_limits,
                 executions.clone(),
@@ -131,7 +123,7 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
                     .public_url
                     .clone()
                     .unwrap_or_else(|| format!("http://{}", config.listen)),
-            )),
+            )?),
         },
     )));
     // Every session's directory, rebuilt from disk. A session that was mid-turn when the

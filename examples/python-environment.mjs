@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
-import { finish } from "./environment-callback.mjs";
+import { environmentProtocol, finishExecution } from "@aexhq/brain/runtime";
 
 function command(executable, args, cwd, input) {
   return new Promise((accept, reject) => {
@@ -31,11 +31,7 @@ export function pythonEnvironment({ projects, uv = "uv", fetch = globalThis.fetc
     if (project.setup) await invoke(project, project.setup);
   }
   return {
-    async handle({ contract, operation }) {
-      if (contract !== "environment/v1" || !operation || !Number.isSafeInteger(operation.sequence) || operation.sequence < 1
-        || ![operation.session_id, operation.environment].every((value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value))) {
-        throw new TypeError("invalid Environment command");
-      }
+    handle: environmentProtocol(async operation => {
       const { request } = operation;
       const session = `${operation.session_id}/${operation.environment}`;
       let receipt;
@@ -67,14 +63,14 @@ export function pythonEnvironment({ projects, uv = "uv", fetch = globalThis.fetc
           if (!receipt) {
             try {
               const output = JSON.parse(await invoke(project, project.module, request.input));
-              receipt = await finish(request.callback, output, fetch);
+              receipt = await finishExecution(operation, { type: "result", output }, { fetch });
             } catch (error) {
               receipt = failure("execution_failed", error.message);
             }
           }
         }
       } else receipt = failure("unsupported", "operation is not supported by this example");
-      return { contract, sequence: operation.sequence, receipt };
-    },
+      return receipt;
+    }),
   };
 }

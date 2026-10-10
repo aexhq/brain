@@ -170,13 +170,15 @@ fn api_with_loop(root: &std::path::Path, loop_executor: Arc<dyn LoopExecutor>) -
                     root.join("native-workspaces"),
                 )),
                 hosts,
-                http: Arc::new(crate::HttpEnvironmentAdapter::new(
-                    reqwest::Client::new(),
-                    credentials.clone(),
-                    &Default::default(),
-                    Arc::new(crate::Executions::default()),
-                    "http://brain.example".into(),
-                )),
+                http: Arc::new(
+                    crate::HttpEnvironmentAdapter::new(
+                        credentials.clone(),
+                        &Default::default(),
+                        Arc::new(crate::Executions::default()),
+                        "http://brain.example".into(),
+                    )
+                    .unwrap(),
+                ),
             },
         ))),
         credentials,

@@ -1,6 +1,11 @@
 import { createRequire } from "node:module";
 export { createAgentloopContext } from "./agentloop-context.js";
 export type { AgentloopContext, AgentloopHandler } from "./agentloop-context.js";
+export { environmentProtocol } from "./environment-protocol.js";
+export { callExecution, reportEnvironment, finishExecution } from "./callbacks.js";
+export type { CallbackOptions } from "./callbacks.js";
+export { serveEnvironment } from "./environment-server.js";
+export type { EnvironmentServerOptions } from "./environment-server.js";
 import { readFile } from "node:fs/promises";
 import { join, resolve, relative } from "node:path";
 import { pathToFileURL } from "node:url";

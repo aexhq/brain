@@ -38,7 +38,7 @@ test("compose separately configured environments and allocate only on first invo
 
 test("the environment validates its own configuration at setup", { timeout: 30_000 }, async () => {
   const result = await east.handle({ contract: "environment/v1", operation: {
-    sequence: 1, environment: "east", session_id: "ses_invalid_config",
+    sequence: 1, environment: "east", session_id: "ses_000000000000000000000001",
     request: { type: "setup", configuration: { label: 123 } },
   } });
   assert.equal(result.receipt.type, "failure");

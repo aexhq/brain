@@ -29,6 +29,27 @@ The service must authenticate requests; the factory alone does not enforce authe
 Credentials are sealed by the server and never journaled.
 Configuration is recorded and forwarded unread. The Environment name is unique within its session.
 
+## JavaScript service adapters
+
+`@aexhq/brain/runtime` provides `environmentProtocol(run)` to validate commands and receipts
+using the generated Environment schema. `run` receives the operation and any authenticated
+context supplied by the server. Thrown `BrainError` values retain their code, retryability and
+details; ambiguous callback outcomes become `unknown` receipts.
+
+`serveEnvironment(handle, options)` serves `POST /v1/operations` on Node.js. Supply a bearer
+`token` or an `authenticate(headers)` function that returns your private context. It defaults to
+loopback, an automatically allocated port and a 16 MiB request limit; set `host`, `port` or
+`maxBodyBytes` as needed. The returned object exposes `url` and asynchronous `close()`.
+An optional `callback(headers, input)` relay serves `/v1/callback` and must authenticate its own
+invocation credentials. HTTP disconnect does not itself cancel an operation.
+
+`callExecution(callback, method, input)` checks the granted method and sends one callback.
+`reportEnvironment(reporter, event)` uses the binding event envelope and validates its committed
+sequence. `finishExecution(operation, receipt)` commits a synchronous Tool result before returning
+it; a lost or invalid acknowledgement becomes `unknown`. These helpers accept an optional
+`{ fetch, signal }`. They do not retry or follow redirects. Execution and reporter credentials
+remain separate; the provider controls background execution and resource lifetime.
+
 ## Operations
 
 A command has

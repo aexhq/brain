@@ -19,7 +19,9 @@ With Node.js 22 or newer:
 ```sh
 git clone https://github.com/aexhq/brain.git
 cd brain
-node examples/lazy-environment.mjs
+npm ci
+npm run build
+REFERENCE_ENV_TOKEN=workspace-local node examples/lazy-environment.mjs
 ```
 
 It listens on `127.0.0.1:8090`. For this local example, run Brain on the same host using the
@@ -42,7 +44,10 @@ In the [quickstart app](/brain/docs/quickstart), import `environment` and replac
 ```ts
 import { environment } from "@aexhq/brain";
 
-const workspace = environment({ url: () => "http://127.0.0.1:8090" });
+const workspace = environment({
+  url: () => "http://127.0.0.1:8090",
+  credential: () => "workspace-local",
+});
 const echo = tool({
   name: "echo",
   description: "Echo a message in the workspace.",
@@ -60,6 +65,23 @@ for a TypeScript service.
 
 Edit the example's `execute` handler to run your own fixed operation. It calls the supplied
 `finish` callback before returning a receipt, so Brain knows the tool has completed.
+
+Use the SDK's `environmentProtocol` to validate commands and receipts against Brain's generated
+contract, and `serveEnvironment` to authenticate and serve them over HTTP:
+
+```ts
+import { environmentProtocol, serveEnvironment } from "@aexhq/brain/runtime";
+
+const handle = environmentProtocol(async operation => provider.run(operation));
+const server = await serveEnvironment(handle, { token: process.env.ENVIRONMENT_TOKEN, port: 8090 });
+```
+
+Here `provider.run` implements the operations for your runtime. `serveEnvironment` requires a
+token or an `authenticate` function. It limits request bodies and validates commands before
+the provider runs. For a synchronous Tool, use `finishExecution(operation, receipt)` to commit
+completion. Use `callExecution` for other granted services and `reportEnvironment` for binding
+observations. Each callback is sent once; a lost completion acknowledgement returns an unknown
+outcome. Returning a receipt alone does not finish a Tool that is still running in the background.
 
 ## Add typed methods and observations
 

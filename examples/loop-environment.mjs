@@ -1,27 +1,15 @@
-import { createServer } from "node:http";
-import { createAgentloopContext } from "@aexhq/brain/runtime";
+import { environmentProtocol, serveEnvironment, callExecution, createAgentloopContext } from "@aexhq/brain/runtime";
 import { pathToFileURL } from "node:url";
 
 const accepted = () => ({ type: "accepted" });
 const failure = (code, message) => ({ type: "failure", code, message, retryable: false });
-const identifier = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
 
 // This provider resolves an opaque descriptor to its JavaScript Agentloop.
 // Invocation-scoped grants open only the services supplied by Brain.
 export function loopEnvironment({ fetch = globalThis.fetch } = {}) {
   const sessions = new Set();
-  const call = async (callback, path, body) => {
-    if (!callback.methods.includes(path)) throw new Error(`service ${path} is not granted`);
-    const response = await fetch(callback.url, {
-      method: "POST",
-      headers: { authorization: `Bearer ${callback.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ method: path, input: body }),
-    });
-    if (!response.ok) throw new Error(`${path} answered ${response.status}: ${await response.text()}`);
-    return response.json();
-  };
   async function turn(callback, input) {
-    const ctx = createAgentloopContext(input, (method, body) => call(callback, method, body));
+    const ctx = createAgentloopContext(input, (method, body) => callExecution(callback, method, body, { fetch }));
     let after = await ctx.kv.get("observed") ?? 0;
     const transcript = [...ctx.transcript];
     const observe = async (present) => {
@@ -52,12 +40,7 @@ export function loopEnvironment({ fetch = globalThis.fetch } = {}) {
     await observe(false);
     return { result: { stop_reason: result.stop_reason } };
   }
-  async function handle(command) {
-    const op = command?.operation;
-    if (command?.contract !== "environment/v1" || !op || !Number.isSafeInteger(op.sequence) || op.sequence < 1
-      || !identifier(op.session_id) || !identifier(op.environment)) {
-      throw new TypeError("invalid Environment command");
-    }
+  const handle = environmentProtocol(async op => {
     const request = op.request;
     const key = `${op.session_id}/${op.environment}`;
     let receipt;
@@ -85,27 +68,13 @@ export function loopEnvironment({ fetch = globalThis.fetch } = {}) {
     } else {
       receipt = failure("unsupported", "this Environment runs an Agentloop and nothing else");
     }
-    return { contract: "environment/v1", sequence: op.sequence, receipt };
-  }
+    return receipt;
+  });
   return { handle };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const env = loopEnvironment();
   const token = process.env.REFERENCE_ENV_TOKEN;
-  createServer(async (req, res) => {
-    if (token && req.headers.authorization !== `Bearer ${token}`) { res.writeHead(401).end(); return; }
-    if (req.method !== "POST" || req.url !== "/v1/operations") { res.writeHead(404).end(); return; }
-    try {
-      const chunks = [];
-      let bytes = 0;
-      for await (const chunk of req) {
-        bytes += chunk.length;
-        if (bytes > 32 * 1024 * 1024) throw new TypeError("command exceeds 32 MiB");
-        chunks.push(chunk);
-      }
-      const response = await env.handle(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(response));
-    } catch (error) { res.writeHead(400).end(String(error.message ?? error)); }
-  }).listen(Number(process.env.PORT ?? 8091), "127.0.0.1");
+  await serveEnvironment(env.handle, { token, port: Number(process.env.PORT ?? 8091) });
 }

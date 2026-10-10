@@ -15,18 +15,18 @@ test("a turn outside Brain calls back through its token and returns what the loo
     }
     return new Response("no such route", { status: 404 });
   } });
-  const command = (request) => env.handle({ contract: "environment/v1", operation: { sequence: 3, environment: "loop", session_id: "ses_one", request } });
+  const command = (request) => env.handle({ contract: "environment/v1", operation: { sequence: 3, environment: "loop", session_id: "ses_000000000000000000000001", request } });
   assert.equal((await command({ type: "setup", configuration: {} })).receipt.type, "accepted");
   const turned = await command({
     type: "execute",
     implementation: { type: "reference_agentloop" },
     input: { input: { message: "hello" }, transcript: [], kv: {}, events: [], configuration: {}, system: "", tools: [], runtime: { logical_time_ms: 3, deterministic_seed: [] } },
-    callback: { url: "http://brain.example/v1/sessions/ses_one/executions/3/call", token: "execution-token", methods: ["model", "emit", "set_transcript", "kv_put", "kv_read", "kv_delete", "events"] },
+    callback: { url: "http://brain.example/v1/sessions/ses_000000000000000000000001/executions/3/call", token: "execution-token", methods: ["model", "emit", "set_transcript", "kv_put", "kv_read", "kv_delete", "events"] },
   });
   assert.equal(turned.receipt.type, "result");
   assert.equal(calls.filter(({ body }) => body.method === "set_transcript").at(-1).body.input.length, 2);
   assert.deepEqual(calls.find(({ body }) => body.method === "kv_put" && body.input.key === "turns").body.input, { key: "turns", value: 1 });
-  assert.ok(calls.every(({ url }) => url === "http://brain.example/v1/sessions/ses_one/executions/3/call"));
+  assert.ok(calls.every(({ url }) => url === "http://brain.example/v1/sessions/ses_000000000000000000000001/executions/3/call"));
   assert.ok(calls.every(({ authorization }) => authorization === "Bearer execution-token"));
   assert.equal(calls.find(({ body }) => body.method === "model").body.input.messages.length, 1);
   const refused = await command({ type: "setup", configuration: { filesystem: "workspace" } });
