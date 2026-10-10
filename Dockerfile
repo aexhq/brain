@@ -9,7 +9,7 @@ RUN cargo build --locked --release -p brain-server --bin brain --bin brain-check
 
 FROM debian:bookworm-slim
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates perl-base \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --home /var/lib/brain brain \
     && install -d -o brain -g brain /var/lib/brain
