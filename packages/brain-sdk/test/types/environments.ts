@@ -1,5 +1,10 @@
 import { environmentHandler, tool, type CreateSessionOptions } from "../../dist/index.js";
 import { z } from "zod";
+import { environmentProtocol, serveEnvironment } from "../../dist/runtime.js";
+
+const protocol = environmentProtocol(() => ({ type: "accepted" }));
+void protocol({});
+void serveEnvironment(protocol, { token: "test" });
 
 declare const required: Pick<CreateSessionOptions, "model" | "agentloop">;
 const automatic: CreateSessionOptions = required;

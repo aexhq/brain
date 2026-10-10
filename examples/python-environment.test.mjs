@@ -13,7 +13,7 @@ async function fixture(t, setup = "prepare", module = "run") {
   await cp(new URL("../tests/fixtures/python-project/", import.meta.url), directory, { recursive: true });
   const env = pythonEnvironment({ uv: process.env.BRAIN_TEST_UV ?? "uv", projects: { example: { directory, setup, module } }, fetch: async () => Response.json(10) });
   let sequence = 0;
-  const send = async (request, session_id = "ses_one") => (await env.handle({ contract: "environment/v1",
+  const send = async (request, session_id = "ses_000000000000000000000001") => (await env.handle({ contract: "environment/v1",
     operation: { sequence: ++sequence, session_id, environment: "python", request } })).receipt;
   const attach = (session) => send({ type: "setup", configuration: {} }, session);
   const execute = (input, session) => send({ type: "execute", implementation: { type: "python_project", name: "example" }, input, deadline_ms: 30_000,
@@ -24,8 +24,8 @@ async function fixture(t, setup = "prepare", module = "run") {
 
 test("Python imports follow locked preparation; concurrent first use shares setup across sessions", { timeout: 60_000 }, async (t) => {
   const f = await fixture(t);
-  await f.attach("ses_two");
-  const results = await Promise.all([f.execute("one"), f.execute("two", "ses_two")]);
+  await f.attach("ses_000000000000000000000002");
+  const results = await Promise.all([f.execute("one"), f.execute("two", "ses_000000000000000000000002")]);
   assert.deepEqual(results.map(({ output }) => output), [
     { echo: "one", dependency: "1.17.0" }, { echo: "two", dependency: "1.17.0" },
   ]);

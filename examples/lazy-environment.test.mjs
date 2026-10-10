@@ -6,7 +6,7 @@ test("setup allocates nothing; concurrent calls share allocation and teardown is
   let allocations = 0;
   const env = lazyEnvironment({ allocate: async () => { allocations += 1; return new Map(); }, fetch: async () => Response.json(10) });
   let sequence = 0;
-  const send = (request, session = "ses_one") => env.handle({ contract: "environment/v1",
+  const send = (request, session = "ses_000000000000000000000001") => env.handle({ contract: "environment/v1",
     operation: { environment: "east", session_id: session, sequence: ++sequence, request } });
   assert.equal((await send({ type: "setup", configuration: {} })).receipt.type, "accepted");
   assert.equal(allocations, 0);
@@ -23,8 +23,8 @@ test("setup allocates nothing; concurrent calls share allocation and teardown is
   assert.equal(allocations, 2);
   await send({ type: "teardown" });
   assert.equal((await invoke("after teardown")).receipt.code, "unavailable");
-  assert.equal((await send({ type: "execute", implementation: { type: "reference_echo" }, input: {}, deadline_ms: 1 }, "ses_other")).receipt.code, "unavailable");
-  const refused = await send({ type: "setup", configuration: { package: "ffmpeg" } }, "ses_other");
+  assert.equal((await send({ type: "execute", implementation: { type: "reference_echo" }, input: {}, deadline_ms: 1 }, "ses_000000000000000000000002")).receipt.code, "unavailable");
+  const refused = await send({ type: "setup", configuration: { package: "ffmpeg" } }, "ses_000000000000000000000002");
   assert.equal(refused.receipt.code, "invalid_configuration");
   assert.match(refused.receipt.message, /label/u);
 });

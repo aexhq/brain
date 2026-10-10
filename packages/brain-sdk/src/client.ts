@@ -1,3 +1,4 @@
+import { HttpTransport, type HttpOptions } from "./http.js";
 import { HostPump } from "./client-pump.js";
 import { BrainError } from "./errors.js";
 import { EnvironmentServices } from "./environments.js";
@@ -13,13 +14,9 @@ import type {
   TurnOutcome,
 } from "./types.js";
 
-export interface BrainOptions {
-  baseUrl: string;
-  token?: string;
-  timeoutMs?: number;
+export interface BrainOptions extends HttpOptions {
   /** Idle tool connection timeout. Defaults to 5000 ms; 0 keeps it connected. */
   connectionIdleTimeoutMs?: number;
-  fetch?: typeof globalThis.fetch;
   /** A host registration to resume, from `credentials()` of an earlier client. */
   credentials?: HostCredentials;
 }
@@ -41,38 +38,22 @@ const nodeFilesystem = "node:fs/promises";
 export class BrainClient {
   readonly baseUrl: string;
   readonly sessions: Sessions;
-  private readonly token?: string;
-  private readonly timeoutMs?: number;
+  private readonly http: HttpTransport;
   private readonly connectionIdleTimeoutMs: number;
-  private readonly transport: typeof globalThis.fetch;
   private readonly agentloops = new WeakMap<object, Promise<string>>();
   private readonly tools = new WeakMap<object, Promise<string>>();
   private readonly programs = new WeakMap<object, Promise<string>>();
-  private readonly controller = new AbortController();
-  private readonly requests = new Set<Promise<unknown>>();
-  private readonly readers = new Set<ReadableStreamDefaultReader<Uint8Array>>();
   private closing?: Promise<void>;
   private registration?: HostRegistration;
   private host?: Promise<Host>;
   private hostClient?: BrainClient;
 
   constructor(options: BrainOptions) {
-    let end = options.baseUrl.length;
-    while (end > 0 && options.baseUrl.charCodeAt(end - 1) === 47) end -= 1;
-    this.baseUrl = options.baseUrl.slice(0, end);
-    if (this.baseUrl.length === 0) throw new TypeError("baseUrl is required");
-    const url = new URL(this.baseUrl);
-    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") {
-      throw new TypeError("baseUrl must be HTTP(S) without credentials, query, or fragment");
-    }
-    if (options.token !== undefined && options.token.trim() === "") throw new TypeError("token cannot be empty");
-    if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1)) throw new TypeError("timeoutMs must be a positive safe integer");
+    this.http = new HttpTransport(options);
+    this.baseUrl = this.http.baseUrl;
     const connectionIdleTimeoutMs = options.connectionIdleTimeoutMs === undefined ? 5000 : options.connectionIdleTimeoutMs;
     if (!Number.isInteger(connectionIdleTimeoutMs) || connectionIdleTimeoutMs < 0 || connectionIdleTimeoutMs > 2_147_483_647) throw new TypeError("connectionIdleTimeoutMs must be an integer from 0 to 2147483647");
     this.connectionIdleTimeoutMs = connectionIdleTimeoutMs;
-    this.token = options.token;
-    this.timeoutMs = options.timeoutMs;
-    this.transport = options.fetch ?? globalThis.fetch.bind(globalThis);
     if (options.credentials !== undefined) {
       if (!options.credentials.hostId || !options.credentials.token) throw new TypeError("credentials require hostId and token");
       this.registration = { host_id: options.credentials.hostId, token: options.credentials.token };
@@ -82,8 +63,8 @@ export class BrainClient {
   }
 
   withToken(token: string): BrainClient {
-    this.controller.signal.throwIfAborted();
-    return new BrainClient({ baseUrl: this.baseUrl, token, timeoutMs: this.timeoutMs, connectionIdleTimeoutMs: this.connectionIdleTimeoutMs, fetch: this.transport });
+    this.http.signal.throwIfAborted();
+    return new BrainClient({ ...this.http.options, token, connectionIdleTimeoutMs: this.connectionIdleTimeoutMs });
   }
 
   /** Release this client's I/O and local handlers without ending its stored sessions. */
@@ -91,54 +72,22 @@ export class BrainClient {
     if (this.closing !== undefined) return this.closing;
     const opening = this.host;
     const hostClient = this.hostClient;
+    const transport = this.http.close();
     this.closing = Promise.resolve().then(async () => {
-      const readers = [...this.readers].map((reader) => reader.cancel().catch(() => {}));
       const host = await opening?.catch(() => undefined);
       host?.pump.stop();
-      await Promise.allSettled([...readers, ...this.requests, hostClient?.close(), host?.pump.closed]);
-      this.readers.clear();
+      await Promise.allSettled([transport, hostClient?.close(), host?.pump.closed]);
     });
-    this.controller.abort(new DOMException("Brain client is closed", "AbortError"));
     void hostClient?.close();
     return this.closing;
-  }
-
-  private async io<T>(operation: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
-    this.controller.signal.throwIfAborted();
-    const combined = signal === undefined ? this.controller.signal : AbortSignal.any([this.controller.signal, signal]);
-    combined.throwIfAborted();
-    const pending = operation(combined);
-    this.requests.add(pending);
-    try { return await pending; }
-    finally { this.requests.delete(pending); }
   }
 
   async models(provider?: string): Promise<import("./generated/session.js").ModelList> {
     return this.request("GET", `/v1/models${provider === undefined ? "" : `?provider=${encodeURIComponent(provider)}`}`);
   }
 
-  async request<T>(method: string, path: string, body?: unknown, idempotencyKey?: string, contentType = "application/json", signal?: AbortSignal, extraHeaders?: HeadersInit): Promise<T> {
-    const headers = new Headers(extraHeaders);
-    headers.set("accept", "application/json");
-    if (body !== undefined) headers.set("content-type", contentType);
-    if (this.token !== undefined) headers.set("authorization", `Bearer ${this.token}`);
-    if (idempotencyKey !== undefined) headers.set("idempotency-key", idempotencyKey);
-    return this.io(async (signal) => {
-      const response = await this.transport(`${this.baseUrl}${path}`, {
-        method,
-        headers,
-        body: body === undefined ? undefined : body instanceof Uint8Array ? new Uint8Array(body).buffer : JSON.stringify(body),
-        signal,
-      });
-      if (!response.ok) {
-        const error = (await response.json().catch(() => ({}))) as Partial<BrainError>;
-        signal.throwIfAborted();
-        throw new BrainError(response.status, error.code ?? "http_error", error.message ?? response.statusText, error.retryable ?? false, error.details);
-      }
-      const value = response.status === 204 ? undefined : await response.json();
-      signal.throwIfAborted();
-      return value as T;
-    }, this.timeoutMs === undefined ? signal : signal === undefined ? AbortSignal.timeout(this.timeoutMs) : AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]));
+  request<T>(...args: Parameters<HttpTransport["request"]>): Promise<T> {
+    return this.http.request<T>(...args);
   }
 
   async *stream(sessionId: string, after = 0, signal?: AbortSignal): AsyncGenerator<SessionStreamEvent> {
@@ -149,56 +98,8 @@ export class BrainClient {
     }
   }
 
-  async *streamPath(path: string, signal?: AbortSignal, onOpen?: () => void): AsyncGenerator<SessionStreamEvent> {
-    const headers = new Headers({ accept: "text/event-stream" });
-    if (this.token !== undefined) headers.set("authorization", `Bearer ${this.token}`);
-    const response = await this.io((signal) => this.transport(`${this.baseUrl}${path}`, { headers, signal }), signal);
-    if (this.controller.signal.aborted) {
-      await response.body?.cancel().catch(() => {});
-      this.controller.signal.throwIfAborted();
-    }
-    if (!response.ok || response.body === null) {
-      const error = (await response.json().catch(() => ({}))) as Partial<BrainError>;
-      this.controller.signal.throwIfAborted();
-      signal?.throwIfAborted();
-      throw new BrainError(response.status, error.code ?? "http_error", error.message ?? response.statusText, error.retryable ?? false, error.details);
-    }
-    onOpen?.();
-    const reader = response.body.getReader();
-    this.readers.add(reader);
-    const decoder = new TextDecoder();
-    let buffer = "";
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) return;
-        buffer += decoder.decode(value, { stream: true });
-        let boundary;
-        while ((boundary = buffer.indexOf("\n\n")) !== -1) {
-          const frame = buffer.slice(0, boundary);
-          buffer = buffer.slice(boundary + 2);
-          let id: string | undefined;
-          let type: string | undefined;
-          const data: string[] = [];
-          for (const raw of frame.split("\n")) {
-            const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
-            if (line.startsWith("id:")) id = line.slice(3).trim();
-            else if (line.startsWith("event:")) type = line.slice(6).trim();
-            else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
-          }
-          if (type === undefined) continue;
-          const text = data.join("\n");
-          let payload: unknown = text;
-          try { payload = JSON.parse(text); } catch { /* keep non-JSON payloads */ }
-          this.controller.signal.throwIfAborted();
-          signal?.throwIfAborted();
-          yield { ...(id === undefined || id === "" ? {} : { sequence: Number(id) }), type, data: payload };
-        }
-      }
-    } finally {
-      await reader.cancel().catch(() => {});
-      this.readers.delete(reader);
-    }
+  streamPath(...args: Parameters<HttpTransport["stream"]>): AsyncGenerator<SessionStreamEvent> {
+    return this.http.stream(...args);
   }
 
   /** Prepare a built-in Environment implementation and return its reusable placed binding. */
@@ -251,7 +152,7 @@ export class BrainClient {
 
   /** Registers this process as a host, or resumes its registration, until client close. */
   async register(): Promise<Host> {
-    this.controller.signal.throwIfAborted();
+    this.http.signal.throwIfAborted();
     if (this.host !== undefined) return this.host;
     const opening = (async () => {
       const registration = this.registration ?? await this.request<HostRegistration>("POST", "/v1/hosts");
@@ -267,16 +168,16 @@ export class BrainClient {
         emit: (value) => hostClient.request<{ sequence: number }>("POST", `/v1/hosts/${encodeURIComponent(registration.host_id)}/events`, value),
       }, this.connectionIdleTimeoutMs);
       const stop = () => pump.stop();
-      this.controller.signal.addEventListener("abort", stop, { once: true });
+      this.http.signal.addEventListener("abort", stop, { once: true });
       void pump.closed.then(async () => {
-        this.controller.signal.removeEventListener("abort", stop);
+        this.http.signal.removeEventListener("abort", stop);
         await hostClient.close();
         if (this.hostClient === hostClient) this.hostClient = undefined;
         if (this.host === opening) this.host = undefined;
       });
       try { await pump.start(); }
       catch (error) { pump.stop(); throw error; }
-      this.controller.signal.throwIfAborted();
+      this.http.signal.throwIfAborted();
       return {
         hostId: registration.host_id,
         pump,
@@ -289,7 +190,7 @@ export class BrainClient {
   }
 
   private async withHost<T>(operation: () => Promise<T>): Promise<T> {
-    this.controller.signal.throwIfAborted();
+    this.http.signal.throwIfAborted();
     const host = await this.host;
     return host === undefined ? operation() : host.pump.use(operation);
   }
@@ -302,7 +203,7 @@ export class BrainClient {
   }
 
   private async admitComponent(value: Component | Program, cache: WeakMap<object, Promise<string>>, path: string, subject: string, lookup = false): Promise<string> {
-    this.controller.signal.throwIfAborted();
+    this.http.signal.throwIfAborted();
     const source = isProgram(value) ? inspectProgram(value) : inspectComponent(value);
     const cached = cache.get(value);
     if (cached !== undefined) return cached;
@@ -310,9 +211,9 @@ export class BrainClient {
       const bytes = source.artifact instanceof Uint8Array
         ? source.artifact
         : source.artifact.protocol === "file:"
-          ? await this.io(async (signal) => new Uint8Array(await (await import(nodeFilesystem)).readFile(source.artifact as URL, { signal })))
-          : await this.io(async (signal) => {
-              const response = await this.transport(source.artifact as URL, { signal });
+          ? await this.http.io(async (signal) => new Uint8Array(await (await import(nodeFilesystem)).readFile(source.artifact as URL, { signal })))
+          : await this.http.io(async (signal) => {
+              const response = await this.http.transport(source.artifact as URL, { signal });
               if (!response.ok) throw new BrainError(response.status, "http_error", response.statusText, false);
               return new Uint8Array(await response.arrayBuffer());
             });

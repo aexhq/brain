@@ -49,13 +49,15 @@ mod tests {
         let (telemetry, _) = brain_telemetry::telemetry_channel();
         let metadata =
             Arc::new(crate::metadata::ServerMetadata::open(&root.path().join("metadata")).unwrap());
-        let registry = EnvironmentRegistry::new(Arc::new(HttpEnvironmentAdapter::new(
-            reqwest::Client::new(),
-            metadata,
-            &Default::default(),
-            Arc::new(crate::Executions::default()),
-            "http://brain.example".into(),
-        )));
+        let registry = EnvironmentRegistry::new(Arc::new(
+            HttpEnvironmentAdapter::new(
+                metadata,
+                &Default::default(),
+                Arc::new(crate::Executions::default()),
+                "http://brain.example".into(),
+            )
+            .unwrap(),
+        ));
         let environment = Environment {
             lifecycle: Some(brain_protocol::EnvironmentLifecycle::Automatic),
             template: None,

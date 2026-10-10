@@ -92,7 +92,7 @@ test("Environment handlers share context vocabulary while only their reporter ou
     },
   });
   const result = await handler.run({ contract: "environment/v1", operation: {
-    session_id: "session", sequence: 2, environment: "workspace", binding: { name: "workspace", sequence: 1 }, configuration: { region: "eu" },
+    session_id: "ses_000000000000000000000001", sequence: 2, environment: "workspace", binding: { name: "workspace", sequence: 1 }, configuration: { region: "eu" },
     context: { url: "https://brain.example/call", token: "operation", methods: ["environments", "emit", "result"] },
     reporter: { url: "https://brain.example/events", token: "binding", methods: ["emit", "result"] },
     request: { type: "call", name: "inventory", input: {} },

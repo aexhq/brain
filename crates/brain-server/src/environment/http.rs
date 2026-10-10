@@ -25,13 +25,22 @@ pub struct HttpEnvironmentAdapter {
 
 impl HttpEnvironmentAdapter {
     pub fn new(
-        client: reqwest::Client,
         credentials: Arc<dyn CredentialStore>,
         server_limits: &crate::ServerLimits,
         executions: Arc<crate::Executions>,
         public_url: String,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, brain::Error> {
+        let mut client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never());
+        if let Some(connect) = server_limits.max_environment_connect() {
+            client = client.connect_timeout(connect);
+        }
+        let client = client
+            .build()
+            .map_err(|error| brain::Error::Executor(error.to_string()))?;
+        Ok(Self {
             client,
             credentials,
             max_operation: server_limits.max_environment(),
@@ -40,7 +49,7 @@ impl HttpEnvironmentAdapter {
             max_response_bytes: crate::limits::ceiling(
                 server_limits.max_environment_response_bytes,
             ),
-        }
+        })
     }
 }
 
@@ -295,7 +304,6 @@ mod tests {
         let credentials =
             Arc::new(crate::metadata::ServerMetadata::open(directory.path()).unwrap());
         let adapter = HttpEnvironmentAdapter::new(
-            reqwest::Client::new(),
             credentials,
             &crate::ServerLimits {
                 max_environment_response_bytes: 1024,
@@ -303,7 +311,8 @@ mod tests {
             },
             Arc::new(crate::Executions::default()),
             "http://brain.example".into(),
-        );
+        )
+        .unwrap();
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(3),
             adapter.execute(&environment, &operation, None),

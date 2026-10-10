@@ -11,12 +11,12 @@ const untilAbort = (signal) => new Promise((_, reject) => {
   else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
 });
 
-function fixture(t, { route, run = (_, ctx) => ctx.finish("done") } = {}) {
+function fixture(t, { route, credentials, run = (_, ctx) => ctx.finish("done") } = {}) {
   const requests = [];
   const connections = [];
   const result = Promise.withResolvers();
   let sessions = 0;
-  const client = new Brain({ baseUrl: "https://brain.example", fetch: async (input, init) => {
+  const client = new Brain({ baseUrl: "https://brain.example", credentials, fetch: async (input, init) => {
     const request = new Request(input, init);
     const path = new URL(request.url).pathname;
     requests.push({ path, method: request.method, signal: request.signal });
@@ -203,10 +203,11 @@ test("close does not await an uncooperative handler or publish its late output",
   assert.equal(f.requests.some(request => request.path.endsWith("/results")), false);
 });
 
-test("withToken clients have independent lifetimes", async (t) => {
-  const f = fixture(t);
+test("withToken clients have independent lifetimes and host credentials", async (t) => {
+  const f = fixture(t, { credentials: { hostId: "original-host", token: "original-host-token" } });
   const other = f.client.withToken("other-token");
   t.after(() => other.close());
   await f.client.close();
   assert.deepEqual(await other.models(), { providers: [] });
+  assert.deepEqual(await other.credentials(), { hostId: registration.host_id, token: registration.token });
 });

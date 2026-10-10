@@ -72,18 +72,19 @@ Set `BRAIN_BASE_URL`, `BRAIN_API_TOKEN`, or `BRAIN_MODEL` to override their defa
 default to `http://127.0.0.1:8080` and `openai/gpt-5-mini`.
 
 `lazy-environment.mjs` needs no Brain server. It serves the Environment protocol at
-`POST /v1/operations` on `127.0.0.1:8090`, and checks `REFERENCE_ENV_TOKEN` as a bearer token when
-that is set:
+`POST /v1/operations` on `127.0.0.1:8090`, and requires `REFERENCE_ENV_TOKEN` as a bearer token:
 
 ```sh
-node examples/lazy-environment.mjs
+REFERENCE_ENV_TOKEN=workspace-local node examples/lazy-environment.mjs
 ```
 
 A session reaches it by naming its address: an `environment({ url, credential })` factory in the
 SDK, or an entry `{ "name": "echo", "driver": "http", "url": "http://127.0.0.1:8090" }` in a raw
-create request. `npm test -w examples` checks concurrent allocation and caller-controlled teardown.
+create request, with `credential` matching `REFERENCE_ENV_TOKEN`. `npm test -w examples` checks
+concurrent allocation and caller-controlled teardown.
 
-`loop-environment.mjs` runs an Agentloop outside Brain's process on `127.0.0.1:8091`. Place a
+`loop-environment.mjs` also requires `REFERENCE_ENV_TOKEN` and runs an Agentloop outside Brain's
+process on `127.0.0.1:8091`. Place a
 session's Agentloop in it the same way, and Brain sends each turn with the address of its turn
 routes and the token that opens them. This minimal loop calls the model once, saves state and
 emits events; it does not dispatch tools. Brain must be reachable from the loop's

@@ -24,6 +24,24 @@ const session = await compile(schema, "BrainSessionContract", {
 });
 await writeFile(path.join(output, "session.ts"), session.replace(/\r\n/gu, "\n"));
 
+// Runtime validation uses the same definitions as the wire types, without bundling the session API.
+const environmentDefinitions = {};
+function includeDefinition(name) {
+  if (Object.hasOwn(environmentDefinitions, name)) return;
+  const definition = schema.$defs[name];
+  if (definition === undefined) throw new Error(`missing contract definition ${name}`);
+  environmentDefinitions[name] = definition;
+  function visit(value) {
+    if (value === null || typeof value !== "object") return;
+    if (typeof value.$ref === "string" && value.$ref.startsWith("#/$defs/")) includeDefinition(value.$ref.slice(8));
+    for (const child of Object.values(value)) visit(child);
+  }
+  visit(definition);
+}
+for (const name of ["EnvironmentCommand", "EnvironmentResponse"]) includeDefinition(name);
+await writeFile(path.join(output, "environment-schema.ts"),
+  `${banner}import type { JSONSchema } from "zod/v4/core";\nexport const environmentDefinitions: Record<string, JSONSchema.JSONSchema> = ${JSON.stringify(environmentDefinitions, null, 2)};\n`);
+
 // The known-provider union, from the providers contract the brain crate renders.
 const providersPath = path.join(root, "crates/brain/generated/contract/providers/v1/providers.json");
 const { providers } = JSON.parse(await readFile(providersPath, "utf8"));
