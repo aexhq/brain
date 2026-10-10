@@ -3,9 +3,9 @@ title: Quickstart
 description: Run an agent that looks up an order and tells you whether it has shipped.
 ---
 
-Connect an AI model to an order lookup function in your app. You need Docker, Node.js 22 or newer
-and an OpenAI API key. Your provider bills model calls separately. Prefer hosting? Use the
-[Aex quickstart](/docs).
+Give an AI model a function from your app and watch it answer a real question. You need Docker,
+Node.js 22 or newer and an OpenAI API key; OpenAI bills model calls to your key. Rather not run a
+server? Follow the [Aex quickstart](/docs) instead.
 
 ## 1. Start Brain
 
@@ -15,9 +15,9 @@ docker run --rm -p 127.0.0.1:8080:8080 \
   -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
 ```
 
-Leave this terminal running. The volume keeps saved sessions between restarts. The example token
-is for local use; see [deployment](/brain/docs/guides/operate) before exposing a server.
-The commands below use Bash; in PowerShell, put multiline shell commands on one line.
+Leave this terminal running. The volume keeps saved sessions across restarts. The token is for
+local use only; read [Operate Brain](/brain/docs/guides/operate) before exposing a server.
+Commands use Bash. In PowerShell, join multiline commands onto one line.
 
 ## 2. Install the client
 
@@ -34,7 +34,7 @@ npm install @aexhq/brain@0.38.0 @aexhq/agentloop-pi@9.0.0 zod@4.4.3
 <Tabs items={["TypeScript", "JavaScript"]} groupId="language">
 <Tab value="TypeScript">
 
-Install the compiler and runner:
+Add the compiler and runner:
 
 ```sh
 npm install --save-dev typescript@5.9.2 tsx@4 @types/node@22
@@ -43,23 +43,23 @@ npm install --save-dev typescript@5.9.2 tsx@4 @types/node@22
 </Tab>
 <Tab value="JavaScript">
 
-No compiler is needed. Save the program below as `order.mjs` instead of `order.ts`.
+No compiler needed. Save the program below as `order.mjs` instead of `order.ts`.
 
 </Tab>
 </Tabs>
 
-Set your model key in this terminal:
+Set your model key in the same terminal:
 
 ```sh
 export OPENAI_API_KEY="your-key"
 ```
 
-In PowerShell, use `$env:OPENAI_API_KEY = "your-key"`. Keep keys out of source control.
+In PowerShell, use `$env:OPENAI_API_KEY = "your-key"`. Never commit keys to source control.
 
 ## 3. Add a tool and send a message
 
-Save as `order.ts`. This is the complete [order example](https://github.com/aexhq/brain/blob/main/examples/order.ts);
-its source also runs unchanged as JavaScript. The input schema supplies the tool's argument types.
+Save this as `order.ts`. It's the complete [order example](https://github.com/aexhq/brain/blob/main/examples/order.ts),
+and it runs unchanged as JavaScript. The Zod input schema gives the tool its argument types.
 
 ```ts
 import { Brain, tool } from "@aexhq/brain";
@@ -115,23 +115,29 @@ node order.mjs
 </Tab>
 </Tabs>
 
-The transcript includes a `lookup_order` result and an answer saying order A-1001 has shipped.
-The wording depends on the model. Replace the sample return value with your own backend lookup.
+You'll see a `lookup_order` result in the transcript, followed by an answer saying order A-1001
+has shipped. Exact wording varies by model. Now swap the sample return value for a real lookup in
+your backend.
 
-Pi runs on the Brain server by default; the lookup runs in this application's process.
-`ctx.finish(value)` returns a tool result and completes the call. After five idle seconds,
-the client releases its tool connection so this script can exit. The session and history remain.
-Add another `send()` in the callback to keep chatting. A later send through the same live client
-reconnects before starting work.
+## What just happened
 
-Use `connectionIdleTimeoutMs: 0` on `new Brain(...)` when other callers or future autonomous
-events must reach these tools. Event subscriptions stay open until you stop them.
-Explicit `brain.close()` permanently disposes of the client; `session.end()` finishes the
-conversation and `session.delete()` removes its history. See [sessions](/brain/docs/concepts/sessions).
+- **The loop ran on Brain.** Pi, the ready-made loop, runs on the Brain server by default.
+- **The tool ran in your app.** `lookup_order` executed in this Node.js process, and
+  `ctx.finish(value)` returned its result and completed the call.
+- **The script exited cleanly.** After five idle seconds the client released its tool connection.
+  The session and its history are still on the server.
+
+To keep chatting, add another `send()` in the callback. A later send through the same live client
+reconnects before it starts work.
+
+If other callers or future autonomous events need these tools, pass
+`connectionIdleTimeoutMs: 0` to `new Brain(...)`. Event subscriptions stay open until you stop them.
+`brain.close()` permanently disposes of the client, `session.end()` finishes the conversation and
+`session.delete()` removes its history. See [Sessions](/brain/docs/concepts/sessions).
 
 ## Next steps
 
-- [Sessions](/brain/docs/concepts/sessions): stream output, retrieve outcomes and reconnect.
-- [Write a tool](/brain/docs/guides/write-a-tool): connect your application or package an extension.
-- [Choose a loop](/brain/docs/concepts/agent-loop): customize agent behavior.
+- [Sessions](/brain/docs/concepts/sessions): stream output, collect outcomes and reconnect.
+- [Write a tool](/brain/docs/guides/write-a-tool): connect your application or publish an extension.
+- [Agent loops](/brain/docs/concepts/agent-loop): change how the agent works.
 - [Operate Brain](/brain/docs/guides/operate): deploy, back up and upgrade your server.

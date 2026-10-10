@@ -3,12 +3,12 @@ title: Write a tool
 description: Add a function the agent can call, then run it in your app or package it for Brain.
 ---
 
-Start with a JavaScript or TypeScript function. The example below returns sample order data;
-replace its body with your database or API call.
+Start with a plain JavaScript or TypeScript function. The example below returns sample order
+data; swap its body for your database or API call.
 
 ## TypeScript and JavaScript
 
-Complete the [quickstart](/brain/docs/quickstart) first. Save this as `order-tool.ts` beside
+Finish the [quickstart](/brain/docs/quickstart) first, then save this as `order-tool.ts` next to
 `order.ts`. The same code works as JavaScript:
 
 ```ts
@@ -44,19 +44,19 @@ Keep the session's tool placement:
 tools: [lookupOrder()],
 ```
 
-The transcript includes the lookup result and an answer about the order. The tool runs in your
-process and can use its packages, credentials and working directory. It has no separate session
-workspace. Keep that process connected until the tool finishes; choose
+The transcript shows the lookup result and an answer about the order. The tool runs in your process
+and can use its packages, credentials and working directory; it has no separate session
+workspace. Keep that process connected until the tool finishes, or choose
 [HTTP or remote execution](/brain/docs/concepts/environment) when it should run independently.
 
 ## Publish a tool library
 
-Write and export `tool({ ..., run })` using your normal TypeScript or JavaScript build. The
-[runnable package example](https://github.com/aexhq/brain/tree/main/examples/packaged-tools)
-contains a filesystem tool, a normal `tsc` build, and two package exports. Clone the repository and
-run these commands from `examples/packaged-tools`, not the repository root. `brain.tools` in its
-`package.json` selects the executable export and factory names. After compilation, `brain-tools`
-generates the public client entry and its types. Build and inspect the release with:
+Write and export `tool({ ..., run })` with your normal TypeScript or JavaScript build. The
+[runnable package example](https://github.com/aexhq/brain/tree/main/examples/packaged-tools) has a
+filesystem tool, a standard `tsc` build and two package exports. Clone the repository and run these
+commands from `examples/packaged-tools`, not the repository root. `brain.tools` in its
+`package.json` selects the executable export and factory names, and after compilation
+`brain-tools` generates the public client entry and its types. Build and inspect the release:
 
 ```sh
 npm install
@@ -64,35 +64,36 @@ npm run build
 npm pack
 ```
 
-Consumers import the factory from the package and call `readText({ env: workspace })`. Its browser
-entry does not import the filesystem implementation. `readText()` loads the executable in the
-registering app when that runtime supports it. The selected Environment prepares ordinary npm
-dependencies and loads the exact package version; an unavailable package or incompatible placement
-fails explicitly. Neither the Tool author nor its consumer writes an execution descriptor.
+Consumers import the factory from your package and call `readText({ env: workspace })`. The browser
+entry never imports the filesystem implementation. `readText()` loads the executable in the
+registering app when that runtime supports it. The chosen Environment installs ordinary npm
+dependencies and loads the exact package version; a missing package or incompatible placement fails
+with a clear error. Neither you nor your consumers write an execution descriptor.
 
-Match the package's Brain SDK version to its consumers. Before publishing, follow the example's
-[fresh consumer check](https://github.com/aexhq/brain/tree/main/examples/packaged-tools#check-a-fresh-consumer)
-to catch incompatible factory and environment types. `readText()` uses the application's current
-working directory and permissions; remote placement follows that provider's workspace rules.
+Keep the package's Brain SDK version in step with its consumers. Before publishing, run the
+example's [fresh consumer check](https://github.com/aexhq/brain/tree/main/examples/packaged-tools#check-a-fresh-consumer)
+to catch incompatible factory and environment types. `readText()` uses the app's current working
+directory and permissions; remote placements follow that provider's workspace rules.
 
 For a service that loads packages itself, see [Write an environment](/brain/docs/guides/write-an-environment).
 
-## Supply useful model context
+## Give the model useful context
 
-Finish with the full structured value and optional short text: `ctx.finish(value, { content: summary })`.
-`ctx.emitResult` accepts the same option for partial results. The Agentloop decides where to place
-that text and when to compact it.
+Finish with the full structured value plus optional short text: `ctx.finish(value, { content: summary })`.
+`ctx.emitResult` takes the same option for partial results. The Agentloop decides where that text
+goes and when to compact it.
 
-A Tool can call `ctx.model` with its own messages. The
-[document summarizer](https://github.com/aexhq/brain/blob/main/examples/tool-model.mjs) is a complete
-example. Its request returns to that Tool; the Agentloop still owns the shared conversation.
+A Tool can also call `ctx.model` with its own messages; see the
+[document summarizer](https://github.com/aexhq/brain/blob/main/examples/tool-model.mjs) for a
+complete example. The response goes back to that Tool, and the Agentloop still owns the shared
+conversation.
 
 ## Language choices
 
-Other languages can supply JSON Schema metadata directly through `bindTool`; no Zod schema
-reconstruction is needed. The [Python package example](https://github.com/aexhq/brain/tree/main/tests/fixtures/python-project)
-exports metadata from Python and runs in a prepared Python Environment. Its JavaScript caller
-is exercised in [the cross-language test](https://github.com/aexhq/brain/blob/main/examples/python-environment.test.mjs).
+Other languages can supply JSON Schema metadata directly through `bindTool`, with no need to rebuild
+a Zod schema. The [Python package example](https://github.com/aexhq/brain/tree/main/tests/fixtures/python-project)
+exports metadata from Python and runs in a prepared Python Environment. Its JavaScript caller is
+covered by [the cross-language test](https://github.com/aexhq/brain/blob/main/examples/python-environment.test.mjs).
 
 | Language | Where it runs | Build path |
 | --- | --- | --- |
@@ -101,9 +102,9 @@ is exercised in [the cross-language test](https://github.com/aexhq/brain/blob/ma
 | Python | Brain (`brainEnv`) | Package the Python example below |
 | A language in your own runtime | Your environment service | [Write an environment](/brain/docs/guides/write-an-environment) |
 
-Rust and Python produce a `.wasm` extension file. You only need that packaging step when you
-want Brain to run the tool independently of your app. These are tested examples, not a promise
-that every library in those languages runs there.
+Rust and Python produce a `.wasm` extension file. You only need that packaging step when Brain
+should run the tool independently of your app. These are tested examples, not a promise that every
+library in those languages runs there.
 
 ## Rust
 
@@ -120,8 +121,8 @@ fn finish(value: serde_json::Value) -> Result<String, ToolError> {
 }
 ```
 
-The linked project includes the input handler, bindings and `Cargo.toml`. Edit its `run`
-function, then build from the Brain checkout with Rust 1.97 or newer:
+The linked project includes the input handler, bindings and `Cargo.toml`. Edit its `run` function,
+then build from the Brain checkout with Rust 1.97 or newer:
 
 ```sh
 rustup target add wasm32-wasip2
@@ -150,8 +151,8 @@ class WitWorld(WitWorld):
         return json.dumps(result)
 ```
 
-Edit `tests/fixtures/python/tool.py` in a Brain checkout. With Python 3, venv and Bash available
-(Linux or WSL), build it with:
+Edit `tests/fixtures/python/tool.py` in a Brain checkout. With Python 3, venv and Bash (Linux or
+WSL), build it:
 
 ```sh
 bash tools/build-python-fixtures.sh "$PWD/build/python"
@@ -159,12 +160,12 @@ bash tools/build-python-fixtures.sh "$PWD/build/python"
 
 The script installs the pinned builder and generates the imports. Copy
 `build/python/python-tool.wasm` into your app as `echo.wasm`.
-This example supports Python computation and Brain callbacks, not Python filesystem or network
-APIs. The server needs `BRAIN_MAX_CORE_INSTANCES=1024`; add that environment variable to the
-quickstart's Docker command. This requires a Brain server you control. For hosted runtimes, see
-the [Aex docs](/docs).
+
+This example covers Python computation and Brain callbacks, not Python filesystem or network APIs.
+The server needs `BRAIN_MAX_CORE_INSTANCES=1024`, so add that variable to the quickstart's Docker
+command; this requires a Brain server you control. For hosted runtimes, see the [Aex docs](/docs).
 Use a [Python environment service](/brain/docs/guides/write-an-environment#python-and-other-languages)
-for OS packages and ordinary file/network access.
+when you need OS packages or ordinary file and network access.
 
 ## Use the built tool
 
@@ -184,14 +185,16 @@ const echo = tool({
 // tools: [echo({ env: brainEnv({ name: "brain" }) })],
 ```
 
-Send `"Call echo with the message hello."` and run the app. The transcript should contain
-`hello` in the tool result. The SDK uploads the file when it creates the session.
+Send `"Call echo with the message hello."` and run the app. The tool result in the transcript
+should contain `hello`. The SDK uploads the file when it creates the session.
 
 ## Return values and outcomes
 
-Use `ctx.finish(value)` for ordinary successful output. Throw an error when the function cannot
-complete. Tools that continue in the background use `ctx.emitResult(value)` and eventually
-`ctx.finish()`. Returning alone leaves the tool open. Observe `ctx.signal` to stop on cancellation.
+- **Success:** call `ctx.finish(value)` with the output.
+- **Failure:** throw an error when the function can't complete.
+- **Background work:** call `ctx.emitResult(value)` as results arrive, then `ctx.finish()`.
+  Returning alone leaves the tool open.
+- **Cancellation:** watch `ctx.signal` and stop when it fires.
 
 See the [tool contract](/brain/docs/reference/tool-contract#return-values-and-outcomes) for
 structured errors, reserved status values, deadlines, background results and host reconnection.

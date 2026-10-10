@@ -3,13 +3,13 @@ title: Add a subagent
 description: Give an agent a tool that asks a separate agent to do a task.
 ---
 
-A subagent is another session with its own conversation and tools. Your main agent can call a
-tool that creates that session, sends a task, and returns its result.
+A subagent is another session with its own conversation and tools. Give your main agent a tool
+that creates that session, hands it a task and returns the result.
 
 ## Add a delegation tool
 
-Use the client and imports from the [quickstart](/brain/docs/quickstart). Declare this tool
-after creating `brain` and before creating the parent session:
+Start from the [quickstart](/brain/docs/quickstart)'s client and imports. Declare this tool after
+creating `brain` and before creating the parent session:
 
 ```ts
 import { hostEnv } from "@aexhq/brain";
@@ -37,19 +37,19 @@ const delegate = tool({
 });
 ```
 
-Add `delegate({ env: hostEnv({ name: "app" }) })` to the parent's `tools` array. Send
+Add `delegate({ env: hostEnv({ name: "app" }) })` to the parent's `tools` array, then send
 `"Ask the other agent to suggest three short names for an order-tracking app."` and run the app.
-The parent receives the child's conversation as a tool result and can use it in its answer.
+The parent gets the child's conversation back as a tool result and can use it in its answer.
 
-The child in this example has no tools. Add only the tools it needs when creating it.
-The parent does not automatically share its conversation, files or permissions with the child.
+This child has no tools; give it only the ones it needs when you create it. The parent doesn't
+automatically share its conversation, files or permissions with the child.
 
 ## Lifetime and history
 
-This tool runs in your process, which must stay connected while the child works. Passing
-`ctx.signal` stops the child's current turn when the owning tool is cancelled. Use that child
-exclusively during the call so cancellation cannot interrupt another caller's work.
+The tool runs in your process, which must stay connected while the child works. Passing
+`ctx.signal` stops the child's current turn if the parent's tool call is cancelled. Use the child
+exclusively during the call so cancelling can't interrupt someone else's work.
 
-The example ends the child but keeps its history. Save the child's ID if you want to inspect it
-later; call `child.delete()` after ending when you no longer need it. Brain records each session
-separately; your application owns the relationship between parent and child.
+The example ends the child but keeps its history. Save the child's ID to inspect it later, and call
+`child.delete()` after ending it once you no longer need it. Brain records each session
+separately; your application owns the parent–child relationship.

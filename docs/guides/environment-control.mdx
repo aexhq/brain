@@ -3,17 +3,19 @@ title: Control environments
 description: Choose automatic setup, optional model diagnostics, or explicit environment management.
 ---
 
-Keep routine setup out of the model's work, while deciding whether it can inspect or repair
-an environment when something fails. Lifecycle policy and management tools are independent.
+Keep routine setup out of the model's way, and decide separately whether the model can inspect or
+repair an environment when something breaks. Lifecycle policy and management tools are independent
+choices.
 
 Start with a working session and provider from [Environments](/brain/docs/concepts/environment).
 The snippets below extend your existing `sessions.create` options; method names and input schemas
-come from the chosen provider.
+come from your chosen provider.
 
 ## Choose who starts the environment
 
-Environments use `automatic` lifecycle by default, including the host created for inline tools.
-Omit the setting for ordinary setup, or use `environment.lifecycle` to override named bindings:
+Environments, including the host created for inline tools, use the `automatic` lifecycle by
+default. Leave the setting out for ordinary setup, or use `environment.lifecycle` to override
+specific bindings:
 
 ```ts
 const session = await brain.sessions.create({
@@ -24,22 +26,24 @@ const session = await brain.sessions.create({
 });
 ```
 
-`automatic` runs setup at session or instance creation. `manual` leaves the binding declared
-until an authorized caller runs setup. Calling a tool before that returns
-`environment_not_ready` without executing the tool. Keep the Agentloop's own environment
-automatic, and place management tools somewhere independent of the environment they manage.
+- **`automatic`** runs setup when the session or instance is created.
+- **`manual`** leaves the binding declared until an authorized caller runs setup. Calling a tool
+  before then returns `environment_not_ready` without running it.
 
-`environment.lifecycle.default` changes the policy for bindings without an override; it defaults
-to `automatic`. For example, `environment: { lifecycle: { default: "manual" } }` makes all bindings manual.
+Keep the Agentloop's own environment automatic, and place management tools somewhere independent
+of the environment they manage.
 
-Ending a session detaches environments that were set up; deleting it tears them down.
-The Env decides how those operations affect its resources. Cleanup also applies after manual
-setup, so it does not depend on the model remembering a final tool call. Failures never cause
-automatic retries, replacement allocation or migration.
+`environment.lifecycle.default` sets the policy for bindings without an override, and defaults to
+`automatic`. For example, `environment: { lifecycle: { default: "manual" } }` makes every binding manual.
+
+Ending a session detaches environments that were set up; deleting it tears them down. The Env
+decides what those operations mean for its resources. Cleanup also applies after manual setup, so it
+never depends on the model remembering a final tool call. Failures never trigger automatic retries,
+replacement allocation or migration.
 
 ## Optionally give the model control
 
-Install `@aexhq/env` following its [package guide](https://github.com/aexhq/extensions/tree/main/packages/env),
+Install `@aexhq/env` by following its [package guide](https://github.com/aexhq/extensions/tree/main/packages/env),
 then import it and grant only the operations it needs:
 
 ```ts
@@ -51,21 +55,21 @@ const debug = env({
 // Include debug in sessions.create({ tools: [debug, ...taskTools], ... }).
 ```
 
-This Tool defaults to your application's host like other inline tools. Include no management
-Tool for fully managed operation; include one for diagnostics or manual setup. Its name and
-package have no special meaning to Brain. You can write the same Tool with `tool(...)` and
+Like other inline tools, this Tool runs in your application's host by default. Leave out
+management Tools for fully managed operation, or include one for diagnostics or manual setup. Its
+name and package mean nothing special to Brain: you could write the same Tool with `tool(...)` and
 `ctx.environments`.
 
-`get` reads Brain's recorded state; it is not a health probe. Live inspection is an Env method:
-`ctx.environments.call(reference, "inspect", input)`. Each Env declares its own methods and
-schemas. An Env may manage browser tabs, jobs or other resources through those methods.
-Brain has no universal resource API and no built-in `env.inspect` operation.
+`get` reads Brain's recorded state; it isn't a health probe. For live inspection, call an Env
+method: `ctx.environments.call(reference, "inspect", input)`. Each Env declares its own methods and
+schemas and may manage browser tabs, jobs or other resources through them. Brain has no universal
+resource API and no built-in `env.inspect` operation.
 
 ## Use the shared service
 
 Tools and `environmentHandler` operations use `ctx.environments` under their own grants. Packaged
-JavaScript loops use [`host.environments`](/brain/docs/reference/agentloop-contract#environment-control).
-The session owner can use `session.environments` directly:
+JavaScript loops use [`host.environments`](/brain/docs/reference/agentloop-contract#environment-control),
+and the session owner can call `session.environments` directly:
 
 ```ts
 const views = await session.environments.list();
@@ -75,15 +79,15 @@ await session.environments.setup(workspace.reference);
 const health = await session.environments.call(workspace.reference, "inspect", {});
 ```
 
-The service provides `list`, `get`, `create`, `update`, `setup`, `delete` and `call`. References
-contain a name and declaration sequence. Keep the returned reference; fetch current state after
-a replacement. Old references cannot control a new incarnation with the same name.
+The service offers `list`, `get`, `create`, `update`, `setup`, `delete` and `call`. A reference is a
+name plus a declaration sequence. Hold on to the returned reference, and fetch current state after a
+replacement: old references can't control a new incarnation with the same name.
 
-To permit dynamic instances, the application supplies `template: { max_instances,
-configuration_schema }` on a binding and grants `create`. The count includes the original
-binding. New instances inherit its driver, methods, placement authority, lifecycle and grants.
-They cannot select a different URL, credential or implementation. `update` validates against
-the template schema and is allowed only before the first setup attempt.
+To allow dynamic instances, the application adds `template: { max_instances,
+configuration_schema }` to a binding and grants `create`. The count includes the original binding.
+New instances inherit its driver, methods, placement authority, lifecycle and grants, and can't
+pick a different URL, credential or implementation. `update` validates against the template schema
+and only works before the first setup attempt.
 
 ```ts
 const extra = await session.environments.create("workspace", "second", { region: "eu" });
@@ -91,23 +95,26 @@ const extra = await session.environments.create("workspace", "second", { region:
 await session.environments.delete(extra.reference);
 ```
 
-An Agentloop with a `read` grant can list environments during a turn to discover
-new instances and their authorized tools. Dispatch includes `environment_sequence` from the
-current reference. Already admitted calls keep their original target.
+An Agentloop with a `read` grant can list environments during a turn to discover new instances and
+their authorized tools. Dispatch includes `environment_sequence` from the current reference, and
+calls that were already admitted keep their original target.
 
 ## Respond to failures
 
-Brain records transport failures even when the tool never starts. Envs may emit environment,
-resource and operation observations through their scoped reporter. These are durable data;
-the Agentloop chooses how to present them to the model. The official loops include them in
-context without turning them into successful tool results.
+Brain records transport failures even when the tool never starts. Envs can also emit environment,
+resource and operation observations through their scoped reporter. These are durable data, and the
+Agentloop decides how to present them to the model. The official loops add them to context without
+dressing them up as successful tool results.
 
-Resource failure does not imply the whole environment is unavailable. An uncertain lifecycle
-operation retains its instance capacity until the Env reports a resolution naming that operation.
-A method declared with `effect: "replace"` changes the incarnation and requires idle execution.
-An extension cannot replace its own environment or the Agentloop's bootstrap environment.
+- **Resource failures are scoped.** Losing one resource doesn't make the whole environment
+  unavailable.
+- **Uncertain operations hold capacity.** An uncertain lifecycle operation keeps its instance
+  capacity until the Env reports a resolution naming that operation.
+- **Replacement is explicit.** A method declared with `effect: "replace"` changes the incarnation
+  and requires idle execution. An extension can't replace its own environment or the Agentloop's
+  bootstrap environment.
 
-Interruption stops automatic activations until the next explicit message. Startup does not
-replay effects or old activations. See [the protocol](/brain/docs/reference/environment-protocol)
-for reporter lifetime and authorization, and [write an environment](/brain/docs/guides/write-an-environment)
+Interrupting stops automatic activations until the next explicit message, and startup never replays
+effects or old activations. See [the protocol](/brain/docs/reference/environment-protocol) for
+reporter lifetime and authorization, and [Write an environment](/brain/docs/guides/write-an-environment)
 for authoring.

@@ -5,66 +5,86 @@
   ▀▀  ▀▀     |______/___|__|___|___|_______|__|____|
 </pre>
 
-<p align="center"><strong>Build your agent the way you want. Working across your systems</strong></p>
+<p align="center"><strong>Build agents your way. Run their tools wherever the work lives.</strong></p>
 
-Brain is an open-source agent runtime with pluggable loops, models, tools and execution
-environments. Use a ready-made loop or write your own context management and tool-calling logic.
-Run tools in your application, browser or remote environment, and interact with the agent through
-one API.
+<p align="center">
+<a href="https://aex.dev/brain/docs/quickstart">Quickstart</a> ·
+<a href="https://aex.dev/brain/docs">Docs</a> ·
+<a href="https://github.com/aexhq/extensions">Extensions</a> ·
+<a href="README.cn.md">中文</a>
+</p>
 
-[Quickstart](https://aex.dev/brain/docs/quickstart) · [Docs](https://aex.dev/brain/docs) ·
-[Extensions](https://github.com/aexhq/extensions) · [中文](README.cn.md)
+Brain is an open-source agent runtime. You choose the agent loop, the model, the tools and where
+each one runs. Brain saves the session and gives your application one API to drive it.
 
-A support agent could use tools you provide to look up an order in your backend, check a delivery
-page in a browser and update a ticket. Each tool runs where it can access the resources it needs.
+```ts
+const lookupOrder = tool({
+  name: "lookup_order",
+  description: "Look up an order by id.",
+  input: z.object({ id: z.string() }),
+  run: ({ id }, ctx) => ctx.finish({ id, status: "shipped" }),
+});
 
-- **Choose the behavior.** Use a supplied agent loop or define your own context selection,
-  model calls and tool sequencing through the same public interfaces.
-- **Choose the execution.** Place the loop and tools independently. Connect application
-  functions, HTTP services, browsers and remote compute through supported extensions.
-- **Use it from your app.** Send work, follow progress and retrieve results through Brain's API.
-  Run Brain yourself or use [Aex](https://aex.dev/docs) for hosting.
+const session = await brain.sessions.create({
+  model: { provider: "openai", name: "gpt-5-mini", apiKey },
+  agentloop: pi(),
+  tools: [lookupOrder()],
+});
+await session.send("Has order A-1001 shipped?");
+```
+
+The loop runs on the Brain server. `lookup_order` runs in your app, next to your own data.
+
+## Why Brain
+
+- **Own the agent's behavior.** Start with a ready-made loop, or write your own context
+  management, model calls and tool sequencing. Official loops use the same public interfaces as yours.
+- **Run each tool where it belongs.** Your app's process, the user's browser tab, an HTTPS
+  backend, a browser automation service or a remote sandbox. Choose per tool when you create a session.
+- **Drive it from your app.** Send messages, stream progress, submit background work and collect
+  results later through one session API.
+- **Host it yourself, or don't.** Run the MIT-licensed server on your infrastructure, or let
+  [Aex](https://aex.dev/docs) host it.
 
 ## Get started
 
-The [quickstart](https://aex.dev/brain/docs/quickstart) runs an agent that looks up an order through
-a function in your application. It provides the server command, matching packages, complete
-TypeScript example and expected output. You need Docker, Node.js 22 or newer and an OpenAI API key.
+The [quickstart](https://aex.dev/brain/docs/quickstart) runs an agent that checks an order through
+a function in your app. You need Docker, Node.js 22 or newer and an OpenAI API key.
 
-| Next task | Guide |
+| I want to… | Read |
 | --- | --- |
-| Stream an answer, submit work or reconnect | [Sessions](https://aex.dev/brain/docs/concepts/sessions) |
-| Connect your functions or package a tool | [Tools](https://aex.dev/brain/docs/guides/write-a-tool) |
-| Customize context and tool calls | [Agent loops](https://aex.dev/brain/docs/guides/write-a-loop) |
-| Connect browsers and remote execution | [Environments](https://aex.dev/brain/docs/concepts/environment) |
-| Configure a server | [Configuration](https://aex.dev/brain/docs/reference/configuration) |
+| Stream answers, submit work or reconnect | [Sessions](https://aex.dev/brain/docs/concepts/sessions) |
+| Connect my functions or publish a tool | [Write a tool](https://aex.dev/brain/docs/guides/write-a-tool) |
+| Change how the agent manages context and tools | [Write a loop](https://aex.dev/brain/docs/guides/write-a-loop) |
+| Use browsers and remote execution | [Environments](https://aex.dev/brain/docs/concepts/environment) |
+| Configure a self-hosted server | [Configuration](https://aex.dev/brain/docs/reference/configuration) |
 
-## Where Brain fits
+Call `await brain.prepare(placed)` at startup to prepare loop and tool code once and reuse it
+across sessions. See [Environment preparation](https://aex.dev/brain/docs/reference/environment-runtime#prepare-before-creating-sessions).
 
-Brain runs as a service your application connects to. An embedded agent library may be sufficient
-when one application process can own the whole agent. Brain lets you choose the loop and tool
-placements behind a separate session API.
+## When to use Brain
 
-A sandbox is an isolated place to run code, useful for tools that need it. It is optional:
-application functions work without one. Keeping the loop outside a tool's sandbox lets it receive
-that environment's failures as observations; your loop decides what to do with them.
-Other frameworks and hosted services also offer extensibility and persistent sessions. Brain
-combines an independently runnable engine with public interfaces for replacing its agent behavior
-and execution integrations.
+Brain is a service your application talks to. If one process can own the whole agent, an embedded
+agent library may be simpler. Choose Brain when you want to swap the loop, spread tools across
+systems and keep sessions behind their own API.
 
-> **Early preview.** APIs may change before 1.0. Committed history survives a server restart
-> with storage intact; interrupted work is reported as failed and is not automatically resumed
-> or retried. History does not restore lost environment files or processes.
+You don't need a sandbox: plain application functions work as tools. When a tool does need one,
+the loop stays outside it, so sandbox failures reach your loop as observations it can act on.
+
+Other frameworks and hosted services also offer extensions and persistent sessions. Brain pairs a
+self-runnable engine with public interfaces for replacing both agent behavior and execution.
+
+> **Early preview.** APIs may change before 1.0. Saved history survives a restart when storage is
+> intact. Interrupted work is marked as failed, not resumed or retried, and history can't restore
+> lost environment files or processes.
 
 The application SDK supports TypeScript and JavaScript. Other clients can use the
-[HTTP API](https://aex.dev/brain/docs/reference/api); extension guides show supported language and
-runtime choices.
+[HTTP API](https://aex.dev/brain/docs/reference/api). Each extension guide lists its supported languages.
+
+## Project
 
 [Contributing](CONTRIBUTING.md) · [Design decisions](references/adrs/README.md) ·
 [Benchmarks](BENCHMARKS.md) · [Security](SECURITY.md) · [MIT license](LICENSE)
 
-[Report an issue](https://github.com/aexhq/brain/issues) or contact [support@aex.dev](mailto:support@aex.dev).
-
-Prepare reusable Agentloop and Tool code before creating sessions with `await brain.prepare(placed)`.
-[Environment preparation](https://aex.dev/brain/docs/reference/environment-runtime#prepare-before-creating-sessions)
-explains startup configuration, shared runtimes and reuse across sessions.
+Found a bug? [Open an issue](https://github.com/aexhq/brain/issues) or email
+[support@aex.dev](mailto:support@aex.dev).

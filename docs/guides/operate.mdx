@@ -3,19 +3,19 @@ title: Operate Brain
 description: Deploy a server, connect remote environments, and preserve data during upgrades.
 ---
 
-Brain runs as one server with a local data directory. Keep that directory on persistent storage
-and run only one server against it. You need Docker for the commands below; they use a POSIX
-shell. For all flags and environment variables, see [Configuration](/brain/docs/reference/configuration).
+Brain runs as a single server with a local data directory. Put that directory on persistent storage
+and point only one server at it. The commands below need Docker and a POSIX shell. For every flag
+and environment variable, see [Configuration](/brain/docs/reference/configuration).
 
 ## Choose a release
 
-Use the SDK and image tested together by the release workflow. An image tagged
-`ghcr.io/aexhq/brain:sha-<commit>` identifies its source; a digest pins its exact contents.
-`latest` is convenient for the quickstart but moves. `brain --version` currently reports the
+Use an SDK and image that the release workflow tested together. An image tagged
+`ghcr.io/aexhq/brain:sha-<commit>` identifies its source, and a digest pins its exact contents.
+`latest` is handy for the quickstart but moves over time. `brain --version` currently reports the
 Rust package version, not the image's source revision.
 
-The [latest release](https://github.com/aexhq/brain/releases/latest) lists the promoted SDK
-version and immutable image reference. Its two attached files record the tested pair:
+The [latest release](https://github.com/aexhq/brain/releases/latest) lists the promoted SDK version
+and immutable image reference. Two attached files record the tested pair:
 
 - `manifest.json`: source commit and exact npm package versions and integrity hashes.
 - `brain-image.json`: the same source commit, image name and manifest digest.
@@ -27,18 +27,17 @@ gh release download --repo aexhq/brain \
   --pattern manifest.json --pattern brain-image.json --dir brain-release
 ```
 
-For a particular release, add its `release/sha-<commit>` tag after `download`.
-Compare `manifest.json`'s `source`
-with `brain-image.json`'s `source_sha`, then install the listed SDK version and use
-`<image>@<manifest_digest>`. Retain these files with your deployment configuration. Older
-releases may only have the staging run's `brain-npm-release-<commit>` artifact in the
-[release workflow](https://github.com/aexhq/brain/actions/workflows/npm-publish.yml); those
-artifacts expire after 30 days. If an older mapping is unavailable, obtain it before upgrading
-instead of assuming a moving image matches an older npm version.
+For a specific release, add its `release/sha-<commit>` tag after `download`. Check that
+`manifest.json`'s `source` matches `brain-image.json`'s `source_sha`, then install the listed SDK
+version and run `<image>@<manifest_digest>`. Keep these files with your deployment configuration.
+Older releases may only have the staging run's `brain-npm-release-<commit>` artifact in the
+[release workflow](https://github.com/aexhq/brain/actions/workflows/npm-publish.yml), and those
+artifacts expire after 30 days. If an older mapping is gone, obtain it before upgrading rather than
+assuming a moving image matches an older npm version.
 
 ## Start the server
 
-Set `BRAIN_IMAGE` to the selected immutable image and supply a private API token:
+Set `BRAIN_IMAGE` to the immutable image you chose and supply a private API token:
 
 ```sh
 export BRAIN_IMAGE='ghcr.io/aexhq/brain@sha256:REPLACE_WITH_RELEASE_DIGEST'
@@ -50,8 +49,8 @@ curl --fail --silent --show-error http://127.0.0.1:8080/health/ready
 ```
 
 Readiness returns 204 with no body. It checks the built-in worker pool, not model credentials,
-remote provider health or disk capacity. `/health/live` is a public process check.
-Use `docker logs brain` to inspect startup and execution errors.
+remote provider health or disk space. `/health/live` is a public process check. Run
+`docker logs brain` to see startup and execution errors.
 
 Keep the loopback publication for local access or a reverse proxy on the same host. For remote
 clients, terminate HTTPS at your proxy and forward the `Authorization` header. Application
@@ -74,14 +73,14 @@ curl --fail --silent --show-error \
   "$BRAIN_URL/v1/sessions/$SESSION_ID/events?after=0"
 ```
 
-The repository's `compose.yaml` builds the local source. Before `docker compose up --build -d`,
-set `BRAIN_API_TOKEN` and `BRAIN_DATA_DIR` to an absolute host directory. On Linux, make the
-directory writable by uid/gid 10001, the image's user. To run a published image, set
+The repository's `compose.yaml` builds from local source. Before `docker compose up --build -d`,
+set `BRAIN_API_TOKEN`, and set `BRAIN_DATA_DIR` to an absolute host directory. On Linux, make that
+directory writable by uid/gid 10001, the image's user. To run a published image instead, set
 `BRAIN_SERVER_IMAGE` to its immutable reference and use `docker compose up --no-build -d`.
 
 ## Connect remote environments
 
-There are two addresses to configure:
+Two addresses need configuring:
 
 | Direction | Address |
 | --- | --- |
@@ -90,36 +89,36 @@ There are two addresses to configure:
 
 For example, an Environment at `https://tools.example.com` can call a Brain server at
 `https://brain.example.com` when Brain starts with `BRAIN_PUBLIC_URL=https://brain.example.com`.
-This applies to remote loops, tools, controllers and independent Environment reporters.
-The server supplies scoped callback tokens; the Environment does not need the server API token.
-Pass the setting with `-e BRAIN_PUBLIC_URL` in `docker run`, or export it before starting Compose.
+This applies to remote loops, tools, controllers and independent Environment reporters. The server
+hands out scoped callback tokens, so the Environment never needs the server API token. Pass the
+setting with `-e BRAIN_PUBLIC_URL` in `docker run`, or export it before starting Compose.
 
 `BRAIN_PUBLIC_URL` defaults to the listen address. A container's `0.0.0.0:8080` binds its network
-interfaces but is not an address to advertise to another machine. Likewise, `127.0.0.1` refers
-to the caller's own container or machine. Set a reachable URL and check both directions from
-the actual containers when a callback fails. See the [Environment integration API](/brain/docs/reference/environment-protocol)
+interfaces but isn't an address another machine can use, and `127.0.0.1` always means the caller's
+own container or machine. Set a reachable URL, and when a callback fails, check both directions
+from the actual containers. See the [Environment integration API](/brain/docs/reference/environment-protocol)
 for callback authentication and request shapes.
 
 ## Back up and upgrade
 
-Pre-1.0 releases do not promise arbitrary retained-data compatibility. Read the selected
-release's contract changes first. The existing checker covers media/model history and the
-explicit Tool-completion transition; passing it is not a general migration certificate.
+Pre-1.0 releases don't promise compatibility with arbitrary retained data, so read the release's
+contract changes first. The bundled checker covers media/model history and the explicit
+Tool-completion transition; passing it isn't a general migration certificate.
 
-1. Stop accepting new work in your application. Wait for accepted turns and background tools
-   to finish, or interrupt them explicitly and inspect their recorded outcomes.
-2. Stop Brain with `docker stop brain`. Do not copy data while a writer is running. A stopped
-   or crashed turn is not automatically resumed by a new server process.
-3. Back up the complete data directory, the selected release mapping, server configuration
-   and any external provider files. The data includes sealed credentials: protect the backup.
-   Remote Environment files and resources need their own provider backup procedure.
-4. Check a copy with the candidate runtime when the transition calls for it. On failure, keep
-   the prior runtime and data together and arrange an explicit migration. Do not delete sessions
+1. Stop accepting new work in your application. Wait for accepted turns and background tools to
+   finish, or interrupt them explicitly and inspect their recorded outcomes.
+2. Stop Brain with `docker stop brain`. Never copy data while a writer is running. A new server
+   process doesn't resume a stopped or crashed turn.
+3. Back up the whole data directory, the release mapping you chose, server configuration and any
+   external provider files. The data includes sealed credentials, so protect the backup. Remote
+   Environment files and resources need their own provider backup procedure.
+4. When the transition calls for it, check a copy with the candidate runtime. If the check fails,
+   keep the prior runtime and data together and plan an explicit migration. Don't delete sessions
    to make a check pass.
-5. Start the candidate only after its stated compatibility requirements are satisfied. Verify
-   readiness, read an existing session and perform a representative application operation.
+5. Start the candidate only once its stated compatibility requirements are met. Verify readiness,
+   read an existing session and run a representative application operation.
 
-For the named volume above, archive after stopping the server:
+For the named volume above, archive the data after stopping the server:
 
 ```sh
 mkdir -p backups
@@ -129,7 +128,7 @@ docker run --rm --user 0 --entrypoint tar \
   "$BRAIN_IMAGE" -C /data -czf /backup/brain-data.tgz .
 ```
 
-Restore into a new volume, keeping the original backup intact:
+Restore into a new volume so the original backup stays intact:
 
 ```sh
 docker volume create brain-restored
@@ -147,19 +146,19 @@ docker run --rm --entrypoint /usr/local/bin/brain-check-media-upgrade \
   "$CANDIDATE_IMAGE" --data-dir /var/lib/brain
 ```
 
-Add `--from-chat` when upgrading from the former Chat/inline-media contract. Add
-`--from-tool-return` when moving from the former Tool return contract to explicit completion;
-open retained sessions using that old execution contract are rejected. Add
-`--from-agentloop-acknowledge` when upgrading to automatic Agentloop event completion;
-open sessions bound to the previous immutable loop contract must keep their matching runtime.
-Rebuild custom loops against the new WIT before creating sessions. If custom providers
-were configured, mount their file read-only and pass `--providers-file` with its container
-path. The checker locks the stopped store and inspects it without rewriting records.
+Add `--from-chat` when upgrading from the former Chat/inline-media contract, and
+`--from-tool-return` when moving from the former Tool return contract to explicit completion; open
+retained sessions that use that old execution contract are rejected. Add
+`--from-agentloop-acknowledge` when upgrading to automatic Agentloop event completion; open sessions
+bound to the previous immutable loop contract must keep their matching runtime. Rebuild custom
+loops against the new WIT before creating sessions. If you configured custom providers, mount their
+file read-only and pass `--providers-file` with its container path. The checker locks the stopped
+store and inspects it without rewriting any records.
 
 To restore service, start the matching prior image with `brain-restored:/var/lib/brain` and the
-saved configuration. Do not run an older image against data already modified by a candidate;
-restore the pre-upgrade backup instead. Host tools also need their original application
-handlers reattached; retained history alone does not restore those processes.
+saved configuration. Never run an older image against data a candidate has already modified;
+restore the pre-upgrade backup instead. Host tools also need their original application handlers
+reattached, because retained history alone doesn't restore those processes.
 
 ## Troubleshoot a request
 
@@ -173,4 +172,4 @@ handlers reattached; retained history alone does not restore those processes.
 | Request completed but work failed | Read the turn's terminal outcome and recorded error. An idle session or successful HTTP response alone does not establish task success. |
 
 See [Session history](/brain/docs/reference/session-history) for reconnecting, uncertain outcomes
-and recovery boundaries.
+and where recovery stops.

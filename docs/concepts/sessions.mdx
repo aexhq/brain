@@ -3,11 +3,11 @@ title: Build with sessions
 description: Send messages, stream progress, retrieve results and reconnect your tools.
 ---
 
-A session is one conversation and the work the agent does for it. It keeps the model, loop and
-tools you selected, along with messages and progress. Save its ID to open it later.
+A session is one conversation plus the work the agent does for it. It remembers the model, loop
+and tools you chose, along with every message and step of progress. Save its ID to pick it up later.
 
-Complete the [quickstart](/brain/docs/quickstart) first. These TypeScript/JavaScript excerpts use
-its `brain` and `session` inside the `.then()` callback. Keep the client alive to send more messages.
+Finish the [quickstart](/brain/docs/quickstart) first. These TypeScript/JavaScript excerpts use its
+`brain` and `session` inside the `.then()` callback. Keep the client alive to send more messages.
 
 ## Send messages and read the answer
 
@@ -17,15 +17,15 @@ const { messages } = await session.transcript();
 console.log(messages);
 ```
 
-Each message starts a turn: the loop can call the model and tools before finishing. `send()`
-waits for that turn and returns session state, not the answer. Read the transcript for messages.
-An idle session can have a failed turn; inspect `turn_failed` events as in the quickstart, or use
-`outcome(sequence)` for a submitted turn. Request errors reject the promise; catch them at your
-application boundary. Close the client when your application is finished with it.
+Each message starts a turn, in which the loop can call the model and tools before it finishes.
+`send()` waits for the turn and returns session state, not the answer, so read the transcript for
+messages. A session can go idle after a failed turn: check for `turn_failed` events as the
+quickstart does, or use `outcome(sequence)` for a submitted turn. Request errors reject the promise;
+catch them at your application boundary, and close the client when you're done with it.
 
 ## Stream progress
 
-Start reading before sending. This pattern prints events until the turn ends or fails and closes
+Start reading before you send. This pattern prints events until the turn ends or fails, and closes
 the subscription even if the request fails:
 
 ```ts
@@ -49,23 +49,23 @@ try {
 ```
 
 The [complete streaming example](https://github.com/aexhq/brain/blob/main/examples/streaming-session.mjs)
-uses the quickstart's server, packages and model key. Run it with `node streaming-session.mjs`.
-Aborting a subscription stops listening; it does not cancel the agent's work. To stop the turn,
-call `session.interrupt()`. A `send()` signal requests cancellation of an exclusively owned turn;
-do not send concurrently through another owner of that session.
+uses the quickstart's server, packages and model key; run it with `node streaming-session.mjs`.
+Aborting a subscription only stops listening. It doesn't cancel the agent's work; call
+`session.interrupt()` for that. A `send()` signal requests cancellation of a turn you exclusively
+own, so don't send concurrently through another owner of the same session.
 
 ### Reconnect from a cursor
 
-Save the last processed event's `sequence`. Open `await brain.sessions.get(sessionId)`, then call
-`session.events(cursor)` to read saved events and finish, or `session.stream(cursor)` to catch up
-and continue listening. Neither method automatically reconnects after a broken stream; your app
-opens the next subscription using its saved cursor.
+Save the `sequence` of the last event you processed. Open the session with
+`await brain.sessions.get(sessionId)`, then call `session.events(cursor)` to read saved events and
+stop, or `session.stream(cursor)` to catch up and keep listening. Neither reconnects on its own
+after a broken stream: your app opens the next subscription from its saved cursor.
 
-Model deltas are live-only and have no sequence. Reconnection recovers saved events and the
-completed model response, not missed token deltas. See [history](/brain/docs/reference/session-history#reading-events)
-for delivery and deduplication behavior.
+Model deltas are live-only and carry no sequence. Reconnecting recovers saved events and the
+completed model response, but not missed token deltas. See [history](/brain/docs/reference/session-history#reading-events)
+for delivery and deduplication.
 
-## Submit work and retrieve its outcome
+## Submit work and collect the outcome
 
 ```ts
 const sequence = await session.submit("Summarize the conversation.", {
@@ -74,12 +74,12 @@ const sequence = await session.submit("Summarize the conversation.", {
 console.log({ sessionId: session.id, sequence });
 ```
 
-`submit()` returns once Brain has saved the request. Persist the session ID and sequence. If you
-lose that response, repeat the same request with the same key; do not reuse the key for new work.
-Server-side work can continue after the client closes. Application tools still need their host
-process; use [HTTP or remote tools](/brain/docs/concepts/environment) for independent execution.
+`submit()` returns as soon as Brain has saved the request. Store the session ID and sequence. If
+the response gets lost, repeat the same request with the same key; never reuse a key for new work.
+Server-side work keeps going after the client closes, but application tools still need their host
+process. Use [HTTP or remote tools](/brain/docs/concepts/environment) for independent execution.
 
-Later, open the saved session with a new client:
+Later, open the saved session from a new client:
 
 ```ts
 const session = await brain.sessions.get(sessionId);
@@ -92,19 +92,19 @@ if (outcome.status === "ended") {
 }
 ```
 
-`pending` means check again later. `ended` means the loop finished; individual tool calls or
-background jobs may still have failed or be running. `answer` is present only if the loop emitted
+`pending` means check back later. `ended` means the loop finished, though individual tool calls or
+background jobs may still have failed or be running. `answer` is only present if the loop emitted
 an assistant answer event. The [complete submission example](https://github.com/aexhq/brain/blob/main/examples/submitted-turn.mjs)
-closes the submitter, polls from another client, checks failure and keeps the transcript.
+closes the submitter, polls from another client, checks for failure and keeps the transcript.
 
 ## Let an idle client disconnect
 
-The SDK releases its shared tool connection after five seconds without active turns,
-unfinished tools or their follow-up work. Session handles, callbacks and history remain
-available. A later `send()`, `submit()` or Environment operation through the same live
-client reconnects before starting work. Reading history does not open the tool connection.
+After five seconds with no active turns, unfinished tools or follow-up work, the SDK releases its
+shared tool connection. Session handles, callbacks and history stay available. The next `send()`,
+`submit()` or Environment operation through the same live client reconnects before it starts work.
+Reading history never opens the tool connection.
 
-Configure the timeout when creating the client:
+Set the timeout when you create the client:
 
 ```ts
 const brain = new Brain({
@@ -113,21 +113,20 @@ const brain = new Brain({
 });
 ```
 
-Use `connectionIdleTimeoutMs: 0` when other callers or future autonomous events must
-be able to invoke this client's tools. A disconnected browser cannot be woken by another
-caller. Closing the tab or process loses its callbacks; restore them as described below.
-The timeout does not end sessions or dispose of Environments. Event subscriptions remain
-open until you stop iteration or abort their signal. Explicit `brain.close()` disposes of
-the client permanently and later operations reject.
+Use `connectionIdleTimeoutMs: 0` when other callers or future autonomous events need to reach this
+client's tools. Nobody else can wake a disconnected browser. Closing the tab or process loses its
+callbacks; restore them as shown below. The timeout never ends sessions or disposes of
+Environments. Event subscriptions stay open until you stop iterating or abort their signal.
+`brain.close()` disposes of the client permanently, and later operations reject.
 
 ## Reattach application tools
 
-An open session handle alone does not restore your application's functions. Before stopping the
-original application, save `await brain.credentials()` in your credential store together with the
-session ID, then close that client. These are host credentials, separate from the Brain API token
-and model key; protect them as secrets.
+An open session handle doesn't bring your application's functions back on its own. Before stopping
+the original app, save `await brain.credentials()` in your credential store alongside the session
+ID, then close that client. These host credentials are separate from the Brain API token and the
+model key. Treat them as secrets.
 
-After restarting, restore the same tool definitions and pass the saved credentials:
+After restarting, restore the same tool definitions and pass in the saved credentials:
 
 ```ts
 const brain = new Brain({
@@ -142,10 +141,10 @@ try {
 }
 ```
 
-Here `savedCredentials` and `sessionId` come from your storage; `lookupOrder` is the quickstart's
-function. Supply exactly the tools originally placed in that host, with identical schemas and
-environment names. Changed contracts require a new session. Reattachment accepts future calls;
-it does not replay interrupted calls or restore state captured in the old process.
+Here `savedCredentials` and `sessionId` come from your storage, and `lookupOrder` is the
+quickstart's function. Supply exactly the tools originally placed in that host, with identical
+schemas and environment names; changed contracts need a new session. Reattaching accepts future
+calls. It doesn't replay interrupted calls or restore state held by the old process.
 
 ## Stop, finish or delete
 
@@ -156,6 +155,6 @@ it does not replay interrupted calls or restore state captured in the old proces
 | `session.delete()` | Delete an ended or failed session and release its environments |
 | `brain.close()` | Close this client's connections; keep stored sessions |
 
-Cancellation does not undo completed external actions. A server restart with storage intact
-preserves saved history but fails interrupted work without automatic retry. See
+Cancelling never undoes external actions that already completed. After a server restart with
+storage intact, saved history is preserved, but interrupted work fails and isn't retried. See
 [history and recovery](/brain/docs/reference/session-history) for the exact guarantees.
