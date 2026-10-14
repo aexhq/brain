@@ -32,6 +32,7 @@ export type {
   Component,
   Program,
   CreateSessionOptions,
+  AgentloopSelection,
   CustomProviderModel,
   Environment,
   KnownProviderId,

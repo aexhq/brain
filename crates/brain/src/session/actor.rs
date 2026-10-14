@@ -165,7 +165,7 @@ impl SessionActor {
             transcript: self.folded.transcript.clone(),
             kv: self.folded.kv.clone(),
             events,
-            configuration: self.config.harness.configuration.clone(),
+            configuration: self.config.agentloop.configuration.clone(),
             system: self.config.system.clone(),
             tools: self
                 .config
@@ -470,7 +470,7 @@ impl TurnServices for TurnHost {
             .control(
                 self.store.clone(),
                 None,
-                &self.config.harness.environments,
+                &self.config.agentloop.environments,
                 request,
             )
             .await

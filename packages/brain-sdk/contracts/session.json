@@ -44,6 +44,63 @@
       ],
       "type": "string"
     },
+    "AgentloopRegistration": {
+      "additionalProperties": false,
+      "description": "One installed implementation. Only the deployment supplies commands and capacity.",
+      "properties": {
+        "args": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "command": {
+          "type": "string"
+        },
+        "configuration": {
+          "default": null
+        },
+        "max_concurrency": {
+          "default": 64,
+          "format": "uint",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "workers": {
+          "default": 1,
+          "format": "uint",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
+    "AgentloopSelection": {
+      "additionalProperties": false,
+      "description": "Select a startup-registered implementation and supply its session configuration.",
+      "properties": {
+        "configuration": {
+          "default": null
+        },
+        "environments": {
+          "items": {
+            "$ref": "#/$defs/EnvironmentGrant"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
     "ApiError": {
       "properties": {
         "code": {
@@ -225,18 +282,15 @@
     "CreateSessionRequest": {
       "additionalProperties": false,
       "properties": {
+        "agentloop": {
+          "$ref": "#/$defs/AgentloopSelection"
+        },
         "environments": {
           "description": "The Environments of this session, set up as part of this create. Every Tool placement\nnames one of them. The harness is deployment-owned.",
           "items": {
             "$ref": "#/$defs/Environment"
           },
           "type": "array"
-        },
-        "harness": {
-          "$ref": "#/$defs/HarnessOptions",
-          "default": {
-            "configuration": null
-          }
         },
         "idle_ttl_ms": {
           "description": "How long the session may sit idle before Brain suspends it: its task and memory\nare released and rebuilt from disk on the next request. Absent means the server's\ndefault; zero means never.",
@@ -270,6 +324,7 @@
         }
       },
       "required": [
+        "agentloop",
         "model",
         "tools",
         "environments"
@@ -1440,22 +1495,6 @@
         "state_directory",
         "configuration"
       ],
-      "type": "object"
-    },
-    "HarnessOptions": {
-      "additionalProperties": false,
-      "description": "Options for the deployment's harness. Executable code is selected at server startup.",
-      "properties": {
-        "configuration": {
-          "default": null
-        },
-        "environments": {
-          "items": {
-            "$ref": "#/$defs/EnvironmentGrant"
-          },
-          "type": "array"
-        }
-      },
       "type": "object"
     },
     "HarnessRun": {

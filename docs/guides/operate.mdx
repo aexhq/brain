@@ -9,13 +9,15 @@ and environment variable, see [Configuration](/brain/docs/reference/configuratio
 
 ## Choose a release
 
-Use an SDK and image that the release workflow tested together. An image tagged
-`ghcr.io/aexhq/brain:sha-<commit>` identifies its source, and a digest pins its exact contents.
+Use an SDK and image that the release workflow tested together. The extension image,
+`ghcr.io/aexhq/brain-agentloops:sha-<extensions-commit>`, includes Pi, Codex, and OpenCode.
+Its build pins an immutable Brain image. A digest pins the exact image contents.
 `latest` is handy for the quickstart but moves over time. `brain --version` currently reports the
 Rust package version, not the image's source revision.
 
-The [latest release](https://github.com/aexhq/brain/releases/latest) lists the promoted SDK version
-and immutable image reference. Two attached files record the tested pair:
+The [extension release](https://github.com/aexhq/extensions/releases/latest) lists its packages
+and composed image. The [Brain release](https://github.com/aexhq/brain/releases/latest) records
+the neutral SDK and base image:
 
 - `manifest.json`: source commit and exact npm package versions and integrity hashes.
 - `brain-image.json`: the same source commit, image name and manifest digest.
@@ -29,7 +31,8 @@ gh release download --repo aexhq/brain \
 
 For a specific release, add its `release/sha-<commit>` tag after `download`. Check that
 `manifest.json`'s `source` matches `brain-image.json`'s `source_sha`, then install the listed SDK
-version and run `<image>@<manifest_digest>`. Keep these files with your deployment configuration.
+version. For an upstream agent, use the extension release's `agentloops-image.json` and run
+its `<image>@<manifest_digest>`. Keep these files with your deployment configuration.
 Older releases may only have the staging run's `brain-npm-release-<commit>` artifact in the
 [release workflow](https://github.com/aexhq/brain/actions/workflows/npm-publish.yml), and those
 artifacts expire after 30 days. If an older mapping is gone, obtain it before upgrading rather than
@@ -40,20 +43,21 @@ assuming a moving image matches an older npm version.
 Set `BRAIN_IMAGE` to the immutable image you chose and supply a private API token:
 
 ```sh
-export BRAIN_IMAGE='ghcr.io/aexhq/brain@sha256:REPLACE_WITH_RELEASE_DIGEST'
+export BRAIN_IMAGE='ghcr.io/aexhq/brain-agentloops@sha256:REPLACE_WITH_RELEASE_DIGEST'
 export BRAIN_API_TOKEN='REPLACE_WITH_A_PRIVATE_TOKEN'
 docker run -d --name brain --restart unless-stopped \
   -p 127.0.0.1:8080:8080 -e BRAIN_API_TOKEN \
-  -e BRAIN_HARNESS='{"command":"brain-harness-pi"}' \
+  -e BRAIN_AGENTLOOPS='{"pi":{"command":"brain-agentloop-pi"}}' \
   -v brain-data:/var/lib/brain "$BRAIN_IMAGE"
 curl --fail --silent --show-error http://127.0.0.1:8080/health/ready
 ```
 
-Readiness returns 204 with no body. It checks the startup harness and built-in worker pool, not model credentials,
+Readiness returns 204 with no body. It checks for an available agentloop worker and the built-in Tool worker pool, not model credentials,
 remote provider health or disk space. `/health/live` is a public process check. Run
 `docker logs brain` to see startup and execution errors.
 
-The image includes Node, Bun, and the upstream harness runtimes. Install custom harness
+The extension image includes Node, Bun, and the upstream runtimes. The base Brain image
+includes Node and the neutral protocol SDK. Install custom harness
 dependencies in a separate build stage and copy them into the runtime image; npm is a build-time dependency.
 
 Keep the loopback publication for local access or a reverse proxy on the same host. For remote
@@ -78,7 +82,7 @@ curl --fail --silent --show-error \
 ```
 
 The repository's `compose.yaml` builds from local source. Before `docker compose up --build -d`,
-set `BRAIN_API_TOKEN` and `BRAIN_HARNESS`, and set `BRAIN_DATA_DIR` to an absolute host directory. On Linux, make that
+set `BRAIN_API_TOKEN` and `BRAIN_AGENTLOOPS`, and set `BRAIN_DATA_DIR` to an absolute host directory. On Linux, make that
 directory writable by uid/gid 10001, the image's user. To run a published image instead, set
 `BRAIN_SERVER_IMAGE` to its immutable reference and use `docker compose up --no-build -d`.
 
@@ -154,8 +158,8 @@ Add `--from-chat` when upgrading from the former Chat/inline-media contract, and
 `--from-tool-return` when moving from the former Tool return contract to explicit completion; open
 retained sessions that use that old execution contract are rejected. Add
 `--from-agentloop-acknowledge` when upgrading to automatic Agentloop event completion; open sessions
-bound to the previous immutable loop contract must keep their matching runtime. Version 0.40
-requires a new data directory for the startup harness contract; the checker does not migrate old
+bound to the previous immutable loop contract must keep their matching runtime. Version 0.41
+requires a new data directory for registered agentloops (`brain-data/3`); the checker does not migrate old
 Agentloop sessions. Back up native harness files together with the journal. Interrupted native
 activations cannot be resumed; start a new session. If you configured custom providers, mount their
 file read-only and pass `--providers-file` with its container path. The checker locks the stopped
@@ -170,7 +174,7 @@ reattached, because retained history alone doesn't restore those processes.
 
 | Symptom | Check |
 | --- | --- |
-| Container exits before listening | Supply `BRAIN_API_TOKEN` and `BRAIN_HARNESS`; check data-directory permissions, format and whether another writer holds it. |
+| Container exits before listening | Supply `BRAIN_API_TOKEN` and `BRAIN_AGENTLOOPS`; check data-directory permissions, format and whether another writer holds it. |
 | 401 from an application route | Send the configured server bearer token. Host and Environment callbacks use their own scoped tokens instead. |
 | 400 mentioning `idempotency-key` | Send a key of 1–256 bytes. Environment control requires it for list/get requests too. Reuse it only for the same request and mode. |
 | Invalid request body or cursor | Read the JSON error's `message`. Malformed JSON, path and query values return 400; invalid JSON fields return 422; incorrect content type returns 415; an oversized body returns 413. |

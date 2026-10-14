@@ -15,7 +15,7 @@ try {
       name: "openai/gpt-5-mini",
       apiKey: "release-smoke-key",
     },
-    harness: { configuration: { mode: "diagnostic" } },
+    agentloop: { name: "fixture", configuration: { mode: "diagnostic" } },
   });
 
   const completed = await session.send("finish without external capabilities");

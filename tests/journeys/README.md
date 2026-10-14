@@ -21,7 +21,7 @@ Linux worker job, then runs all journeys as a required part of `build-test`.
 | `tool` with `run` in `hostEnv`, options, schemas, context | Progress ordering, input defaults and extra-property policy, input/output errors, handler errors, deadlines/signals, the call's sequence, concurrent sessions, protected Event rejection |
 | `close`, `register`, `credentials`, reattachment | Save credentials, close the client while retaining sessions, reject mismatched placements, restore matching handlers, preserve active-call cancellation on creation replay |
 | `environment`, `brainEnv`, placed Tools | Independent authenticated Environments, lazy allocation, configuration validation, explicit native grants and denied access, workspace persistence/isolation |
-| Startup harness with scoped stdio callbacks | Upstream Pi model and Tool calls, native resume, callback journal barriers, and rejection of session-selected executable code |
+| Registered agentloops with scoped stdio callbacks | Independent model and Tool calls, native resume, callback journal barriers, and rejection of session-selected executable code |
 | `timeoutMs` | Explicit client timeout leaves the server's execution observable and does not retry the model call |
 
 The pagination case emits fewer than the permitted Events per turn across enough turns to cross

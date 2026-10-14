@@ -1,8 +1,8 @@
 import { serveHarness } from "@aexhq/brain/harness";
 
-// Start Brain with BRAIN_HARNESS='{"command":"node","args":["examples/harness.mjs"]}'.
+// Start Brain with BRAIN_AGENTLOOPS='{"custom":{"command":"node","args":["examples/harness.mjs"]}}'.
 // This small custom implementation makes one model call for each user message.
-// Use brain-harness-pi, brain-harness-codex, or brain-harness-opencode for an upstream agent.
+// Select { name: "custom" } at session creation. Upstream agents live in extension packages.
 await serveHarness({
   name: "single-call", stateVersion: "1",
   open() {

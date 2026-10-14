@@ -12,7 +12,7 @@ const lookupOrder = tool({
 });
 
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080", token: "quickstart" });
-brain.sessions.create({
+brain.sessions.create({ agentloop: { name: "pi" },
   model: { provider: "openai", name: "gpt-5-mini", apiKey },
   tools: [lookupOrder()],
 }).then(async session => {

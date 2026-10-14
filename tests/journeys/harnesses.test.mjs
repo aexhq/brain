@@ -4,7 +4,7 @@ import { fixture, collect, failure } from "./support.mjs";
 
 const f = fixture();
 
-test("the startup Pi harness journals model results and resumes native state after restart", { timeout: 60_000 }, async t => {
+test("a registered model harness journals model results and resumes native state after restart", { timeout: 60_000 }, async t => {
   const session = await f.create(t);
   await session.send("hello");
   const first = await collect(session.events());
@@ -20,7 +20,7 @@ test("the startup Pi harness journals model results and resumes native state aft
 });
 
 test("a custom startup harness retains KV across activation and restart", { timeout: 60_000 }, async t => {
-  const session = await f.create(t, { harness: { configuration: { mode: "diagnostic" } } });
+  const session = await f.create(t, { agentloop: { name: "fixture", configuration: { mode: "diagnostic" } } });
   await session.send("kv");
   await f.stop(); await f.start();
   await session.send("again");
@@ -32,7 +32,7 @@ test("a custom startup harness retains KV across activation and restart", { time
 });
 
 test("an interrupted native activation preserves commits and cannot replay on restart", { timeout: 60_000 }, async t => {
-  const session = await f.create(t, { harness: { configuration: { mode: "kv-fail" } } });
+  const session = await f.create(t, { agentloop: { name: "fixture", configuration: { mode: "kv-fail" } } });
   await session.send("save");
   assert.equal((await collect(session.events())).at(-1).type, "turn_failed");
   await f.stop(); await f.start();
@@ -44,10 +44,11 @@ test("an interrupted native activation preserves commits and cannot replay on re
   assert.deepEqual(events.find(event => event.type === "kv_set" && event.data.key === "memory").data.value, { turns: 1 });
 });
 
-test("session clients cannot install or select an executable harness", { timeout: 30_000 }, async () => {
+test("session clients cannot install executable agentloops", { timeout: 30_000 }, async () => {
   const body = { model: { provider: "openai", name: "test", api_key: "fixture" }, tools: [], environments: [] };
-  for (const extra of [{ agentloop: { implementation: {} } }, { harness: { command: "node", args: ["user.mjs"] } }]) {
+  for (const extra of [{ agentloop: { implementation: {} } }, { agentloop: { name: "fixture", command: "node", args: ["user.mjs"] } }]) {
     await assert.rejects(f.brain.request("POST", "/v1/sessions", { ...body, ...extra }, crypto.randomUUID()), failure(422));
   }
+  await assert.rejects(f.brain.sessions.create({ model: { provider: "openai", name: "test", apiKey: "fixture" }, agentloop: { name: "not-installed" } }), /not registered/u);
   await assert.rejects(f.brain.request("POST", "/v1/agentloops", {}, crypto.randomUUID()), failure(404));
 });

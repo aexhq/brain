@@ -82,9 +82,6 @@ jobs:
       # generated file was edited by hand.
       - run: npm run gen
       - run: git diff --exit-code -- crates/brain-protocol/generated crates/brain-http/generated crates/brain/generated catalog crates/brain/src/model/generated packages/brain-sdk/src/generated packages/brain-sdk/contracts docs/reference/configuration.mdx
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.3.14"
       - run: npm test
       - run: npm run package-smoke
 
@@ -229,7 +226,8 @@ jobs:
           set -euo pipefail
           docker run -d --name brain-test -p 18080:8080 \
             -e BRAIN_API_TOKEN=test-token \
-            -e 'BRAIN_HARNESS={"command":"brain-harness-pi"}' \
+            -v "$PWD/tests:/opt/brain/tests:ro" \
+            -e 'BRAIN_AGENTLOOPS={"fixture":{"command":"node","args":["/opt/brain/tests/fixtures/harness.mjs"]}}' \
             brain:test
           trap 'docker logs brain-test; docker rm -f brain-test >/dev/null' EXIT
           for attempt in $(seq 1 60); do

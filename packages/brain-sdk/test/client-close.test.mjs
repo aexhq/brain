@@ -40,6 +40,7 @@ function fixture(t, { route, credentials, run = (_, ctx) => ctx.finish("done") }
   t.after(() => client.close());
   const lookup = tool({ name: "lookup", description: "Look up a value.", input: z.object({}), run });
   const options = {
+    agentloop: { name: "fixture" },
 
     model: { provider: "openai", name: "gpt-5", apiKey: "fixture-model-token" },
     tools: [lookup({ env: hostEnv({ name: "app" }) })],

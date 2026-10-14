@@ -14,8 +14,8 @@
 <a href="README.md">English</a>
 </p>
 
-Brain 通过持久化会话 API 运行智能体。启动服务器时选择 Pi、Codex、OpenCode 或自定义 harness；
-应用负责选择模型、工具和工具的运行位置。
+Brain 通过持久化会话 API 运行智能体。启动服务器时可同时注册 Pi、Codex、OpenCode 和自定义 agentloop；
+每个会话选择已注册的 agentloop、行为配置、模型、工具和工具的运行位置。
 
 ```ts
 const lookupOrder = tool({
@@ -26,6 +26,7 @@ const lookupOrder = tool({
 });
 
 const session = await brain.sessions.create({
+  agentloop: { name: "pi" },
   model: { provider: "openai", name: "gpt-5-mini", apiKey },
   tools: [lookupOrder()],
 });

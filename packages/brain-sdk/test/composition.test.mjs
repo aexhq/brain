@@ -19,7 +19,7 @@ test("prepare compiles a browser placement without opening a host or executing i
   const client = new Brain({ baseUrl: "https://brain.example", fetch: () => { throw new Error("unexpected transport"); } });
   const read = tool({ name: "read_selection", description: "Read selection", input: z.object({}),
     run: () => { throw new Error("must not execute during preparation"); } });
-  const options = { model: { provider: "openai", name: "model", apiKey: "private-model-key" },
+  const options = { agentloop: { name: "fixture" }, model: { provider: "openai", name: "model", apiKey: "private-model-key" },
      tools: [read({ env: clientBrowser({ name: "editor" }) })] };
   const request = await client.sessions.prepare(options, "authorized-host");
   assert.deepEqual(request.environments.find(env => env.name === "editor"),

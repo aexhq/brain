@@ -523,7 +523,7 @@ function compileSession(
     if (!entries.some(entry => entry.name === name)) throw new TypeError(`Environment lifecycle names an undeclared binding: ${name}`);
   }
   return {
-    harness: structuredClone(options.harness ?? {}),
+    agentloop: { name: options.agentloop.name, configuration: structuredClone(options.agentloop.configuration ?? {}) as CreateSessionRequest["agentloop"]["configuration"], environments: structuredClone([...(options.agentloop.environments ?? [])]) },
     model: { provider: options.model.provider, name: options.model.name, api_key: options.model.apiKey },
     system: options.system ?? "",
     ...(options.responseFormat === undefined ? {} : { response_format: structuredClone(options.responseFormat) as CreateSessionRequest["response_format"] }),
@@ -573,7 +573,12 @@ function validateSessionOptions(options: CreateSessionOptions): void {
   for (const policy of Object.values(lifecycle?.bindings ?? {})) {
     if (!["automatic", "manual"].includes(policy)) throw new TypeError("invalid Environment lifecycle policy");
   }
-  if ("agentloop" in options) throw new TypeError("harness implementations are supplied when Brain starts");
+  if ("harness" in options) throw new TypeError("use agentloop to select a startup-registered implementation");
+  const selection = options.agentloop;
+  if (selection === null || typeof selection !== "object" || typeof selection.name !== "string" || !/^[A-Za-z0-9_-]{1,64}$/u.test(selection.name)) throw new TypeError("agentloop must select a registered name");
+  for (const key of Object.keys(selection)) {
+    if (!["name", "configuration", "environments"].includes(key)) throw new TypeError(`unknown agentloop field: ${key}; executable code is configured at startup`);
+  }
   const provider = options.model?.provider;
   if (typeof provider !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(provider)) throw new TypeError("model provider is invalid");
   if (provider === "vercel-ai-gateway" && !/^[^/\s]+\/[^/\s][^\s]*$/u.test(options.model.name)) throw new TypeError("model name must include its provider namespace");

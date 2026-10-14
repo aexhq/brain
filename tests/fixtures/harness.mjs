@@ -1,17 +1,17 @@
 // Deployment-owned diagnostic harness. Scenario selection is test data, never code.
 import assert from "node:assert/strict";
 import { serveHarness } from "@aexhq/brain/harness";
-import { piHarness } from "@aexhq/brain/harness/pi";
+import { modelHarness } from "./model-harness.mjs";
 
-const pi = piHarness();
+const model = modelHarness();
 await serveHarness({
   name: "brain-test", stateVersion: "1",
   async open(options) {
-    const native = await pi.open({ ...options, configuration: { contextWindow: 64000, maxTokens: 1024, compaction: { enabled: false } } });
+    const native = await model.open({ ...options, configuration: { contextWindow: 64000, maxTokens: 1024, compaction: { enabled: false } } });
     return {
       async run(ctx) {
-        const { mode = "pi", ...configuration } = ctx.configuration ?? {};
-        if (mode === "pi") return native.run({ ...ctx, configuration });
+        const { mode = "model", ...configuration } = ctx.configuration ?? {};
+        if (mode === "model") return native.run({ ...ctx, configuration });
         if (mode === "diagnostic" || mode === "kv-fail") {
           await ctx.readEvents(0);
           const turns = (await ctx.kv.get("memory"))?.turns + 1 || 1;

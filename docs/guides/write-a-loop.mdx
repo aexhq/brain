@@ -8,7 +8,7 @@ want its loop and compaction behavior; implement this interface when your applic
 needs different behavior.
 
 This complete JavaScript example makes one model call per user message. Save it as
-`harness.mjs` beside an installed `@aexhq/brain@0.40.0`:
+`harness.mjs` beside an installed `@aexhq/brain@0.41.0`:
 
 ```js
 import { serveHarness } from "@aexhq/brain/harness";
@@ -38,14 +38,22 @@ Other languages implement the [stdio protocol](/brain/docs/reference/agentloop-c
 The repository includes a [Python protocol fixture](https://github.com/aexhq/brain/blob/main/tests/fixtures/harness.py)
 and a [runnable JavaScript example](https://github.com/aexhq/brain/blob/main/examples/harness.mjs).
 
-## Start Brain with it
+## Register it and create a session
 
 ```sh
-export BRAIN_HARNESS='{"command":"node","args":["/absolute/path/harness.mjs"]}'
+export BRAIN_AGENTLOOPS='{"custom":{"command":"node","args":["/absolute/path/harness.mjs"]}}'
 brain --data-dir ./brain-data --api-token local-development
 ```
 
-In PowerShell, assign the same JSON string to `$env:BRAIN_HARNESS`. The command is an
+Select that registration in the client:
+
+```ts
+const session = await brain.sessions.create({
+  model, agentloop: { name: "custom", configuration: {} },
+});
+```
+
+In PowerShell, assign the same JSON string to `$env:BRAIN_AGENTLOOPS`. The command is an
 executable with an argument array; Brain does not evaluate a shell command. Write
 diagnostics to stderr and reserve stdout for protocol frames.
 

@@ -1,62 +1,74 @@
 ---
-title: Agent harnesses
-description: Choose an upstream agent at server startup, or implement Brain's harness interface.
+title: Agentloops
+description: Choose an installed agent implementation and configure each conversation.
 ---
 
-An agent harness decides when to call the model, use tools, and compact a conversation.
-Brain can run the real Pi, Codex, or OpenCode implementation behind one session API.
-The upstream agent owns its behavior and native state; Brain executes and journals its
-model and tool requests.
+An agent loop decides when to call the model, use tools, and compact a conversation.
+One Brain server can run Pi, Codex, OpenCode and custom implementations concurrently.
+The deployment installs and registers implementations; applications select a name and
+pass behavior settings when creating a session.
 
-## Choose at startup
+```ts
+import { pi } from "@aexhq/agentloop-pi";
 
-The Brain image includes all three adapters. Select one when starting the server:
+const session = await brain.sessions.create({
+  model,
+  tools: [lookupOrder()],
+  agentloop: pi({ compaction: { enabled: true, reserveTokens: 8192 } }),
+});
+```
+
+`pi(options)` returns `{ name: "pi", configuration: options }`. The helper does not
+load or run Pi in your application. A plain selection object works in any language.
+The chosen name must already be registered by the server; unknown names fail at create.
+Session requests cannot supply commands, executable code or package paths.
+
+## Register implementations
+
+The extension image includes all three upstream runtimes and registers `pi`, `codex`
+and `opencode`. The base Brain image contains the neutral server and SDK.
 
 ```sh
 docker run --rm -p 127.0.0.1:8080:8080 \
   -e BRAIN_API_TOKEN=quickstart \
-  -e 'BRAIN_HARNESS={"command":"brain-harness-pi"}' \
-  -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
+  -v brain-agentloops-data:/var/lib/brain ghcr.io/aexhq/brain-agentloops:latest
 ```
 
-Use `brain-harness-codex` or `brain-harness-opencode` for the other implementations.
-One deployment uses one harness. Applications choose models and tools when creating
-sessions; they cannot upload or replace the agent implementation.
+Override `BRAIN_AGENTLOOPS` to choose installed commands, deployment defaults and
+worker capacity. This example runs two Pi workers and one Codex worker:
 
-| Adapter | Upstream | Runtime | Native state |
-| --- | --- | --- | --- |
-| Pi | Pi coding-agent SDK 1.2.0 | Node 22.19+ | Session JSONL |
-| Codex | Codex app-server 0.162.1 | Rust executable | Rollout files |
-| OpenCode | OpenCode SDK 2.0.28 | Bun 1.3.14 | SQLite |
-
-Compaction runs inside the upstream agent and uses Brain's model adapter. Upstream
-built-in tools, ambient extensions, direct model connections, and transport retries
-are disabled or excluded. Only session tools are offered to the model.
-
-## Configure a session
-
-```ts
-const session = await brain.sessions.create({
-  model: { provider: "openai", name: "gpt-5-mini", apiKey },
-  tools: [lookupOrder()],
-  harness: { configuration: { contextWindow: 128_000 } },
-});
+```json
+{
+  "pi": { "command": "brain-agentloop-pi", "workers": 2, "max_concurrency": 32 },
+  "codex": { "command": "brain-agentloop-codex", "workers": 1, "max_concurrency": 8 }
+}
 ```
 
-Options depend on the selected adapter. Unknown options fail when the harness starts
-the session. See the [harness reference](/brain/docs/reference/agentloop-contract).
+Registrations are fixed for the server lifetime. Different names may use the same
+executable with different deployment defaults. Use that registered name in the session
+selection; configuration never changes which executable runs.
 
-Successful sessions resume from upstream native state. Back up the entire Brain data
-directory, including `harness/`. The transcript API is a view of model context, not a
-portable agent checkpoint. An interrupted or failed native activation requires a new
-session: Brain will not let upstream recovery replay uncertain effects.
+## Behavior and state
 
-Pi supports HTTPS image and PDF inputs and tool media. Codex and OpenCode currently
-support text only and reject imported transcripts. All three require fixed tool
-placements for a native session; custom harnesses can implement dynamic discovery.
+Upstream agents own their loops, compaction and native session files. Extension
+adapters route model and tool execution through Brain's durable journal barriers.
+Pi, Codex and OpenCode integration code and runtime dependencies live in the extension
+packages, outside Brain. See the [harness reference](/brain/docs/reference/agentloop-contract)
+for supported settings and runtime requirements.
+
+Each open session stays on its assigned worker and runs one activation at a time.
+Workers admit concurrent sessions up to `max_concurrency`; excess activations wait.
+Idle-session passivation releases native resources. A failed process does not restart
+or replay its work, and other workers continue serving their sessions.
+
+Back up the entire data directory, including `agentloops/`. Native state is not a
+portable checkpoint. Interrupted or failed native activations require a new session.
+Pre-0.41 data directories are incompatible; retain them separately and start with a
+new directory.
 
 ## Provide your own
 
-The public boundary is JSON-RPC over stdio, so an implementation can use any language.
-The TypeScript authoring API supplies typed lifecycle and callback functions.
-[Write a harness](/brain/docs/guides/write-a-loop) starts with a complete example.
+Implement the public JSON-RPC stdio contract in any language, register its command,
+and select its name in sessions. Custom implementations have the same callback and
+lifecycle interface as the official extensions. [Write an agentloop](/brain/docs/guides/write-a-loop)
+starts with a working example.

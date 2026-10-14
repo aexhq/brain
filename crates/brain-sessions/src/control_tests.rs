@@ -51,7 +51,7 @@ fn fixture(
 ) {
     let root = tempfile::tempdir().unwrap();
     let config: SessionConfig = serde_json::from_value(json!({
-        "harness": { "configuration":{}},
+        "agentloop": {"name":"fixture", "configuration":{}},
         "model":{"provider":"openai", "name":"test"}, "tools":[],
         "environments":[
             {"name":"brain", "driver":"brain", "lifecycle":"automatic"},

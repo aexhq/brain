@@ -264,7 +264,7 @@ jobs:
           set -euo pipefail
           image=$(jq -er '"\(.image)@\(.manifest_digest)"' "$RUNNER_TEMP/brain-release/brain-image.json")
           docker pull "$image" >/dev/null
-          docker run -d --name brain-sdk-e2e -p 18080:8080 -e BRAIN_API_TOKEN -e 'BRAIN_HARNESS={"command":"node","args":["/opt/brain/test-harness.mjs"]}' -v "$PWD/tests/fixtures/harness.mjs:/opt/brain/test-harness.mjs:ro" "$image"
+          docker run -d --name brain-sdk-e2e -p 18080:8080 -e BRAIN_API_TOKEN -e 'BRAIN_AGENTLOOPS={"fixture":{"command":"node","args":["/opt/brain/fixtures/harness.mjs"]}}' -v "$PWD/tests/fixtures:/opt/brain/fixtures:ro" "$image"
           trap 'docker logs brain-sdk-e2e; docker rm -f brain-sdk-e2e >/dev/null' EXIT
           for attempt in $(seq 1 60); do
             if curl --fail --silent http://127.0.0.1:18080/health/ready >/dev/null; then break; fi
@@ -317,8 +317,8 @@ jobs:
           image=$(jq -er '"\(.image)@\(.manifest_digest)"' "$RUNNER_TEMP/brain-release/brain-image.json")
           docker pull "$image" >/dev/null
           docker run -d --name brain-http-e2e -p 18081:8080 -e BRAIN_API_TOKEN \
-            -e 'BRAIN_HARNESS={"command":"node","args":["/opt/brain/test-harness.mjs"]}' \
-            -v "$PWD/tests/fixtures/harness.mjs:/opt/brain/test-harness.mjs:ro" \
+            -e 'BRAIN_AGENTLOOPS={"fixture":{"command":"node","args":["/opt/brain/fixtures/harness.mjs"]}}' \
+            -v "$PWD/tests/fixtures:/opt/brain/fixtures:ro" \
             -v "$RUNNER_TEMP/http-data:/var/lib/brain" "$image"
           trap 'docker logs brain-http-e2e; docker rm -f brain-http-e2e >/dev/null' EXIT
           for attempt in $(seq 1 60); do
@@ -390,7 +390,7 @@ jobs:
           set -euo pipefail
           image=$(jq -er '"\(.image)@\(.manifest_digest)"' "$RUNNER_TEMP/brain-release/brain-image.json")
           docker pull "$image" >/dev/null
-          docker run -d --name "brain-${{ matrix.name }}-e2e" -p "$TEST_PORT:8080" -e BRAIN_API_TOKEN -e 'BRAIN_HARNESS={"command":"node","args":["/opt/brain/test-harness.mjs"]}' -v "$PWD/tests/fixtures/harness.mjs:/opt/brain/test-harness.mjs:ro" "$image"
+          docker run -d --name "brain-${{ matrix.name }}-e2e" -p "$TEST_PORT:8080" -e BRAIN_API_TOKEN -e 'BRAIN_AGENTLOOPS={"fixture":{"command":"node","args":["/opt/brain/fixtures/harness.mjs"]}}' -v "$PWD/tests/fixtures:/opt/brain/fixtures:ro" "$image"
           trap 'docker logs "brain-${{ matrix.name }}-e2e"; docker rm -f "brain-${{ matrix.name }}-e2e" >/dev/null' EXIT
           for attempt in $(seq 1 60); do
             if curl --fail --silent "http://127.0.0.1:$TEST_PORT/health/ready" >/dev/null; then break; fi

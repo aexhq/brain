@@ -5,7 +5,7 @@ so a change that would be a breaking change later is usually just a change today
 
 ## Setup
 
-You need Rust 1.97.1, Node 22.19 or newer, Bun 1.3.14, and Python 3.13.
+You need Rust 1.97.1, Node 22.19 or newer and Python 3.13.
 On Windows with a Python launcher shim, set `BRAIN_TEST_PYTHON` to the absolute interpreter path.
 
 ```sh
@@ -49,6 +49,9 @@ Tool-result files, continuation and Responses compaction. Missing credentials fa
 promotion requires a successful run for the same commit. For a local probe, run
 `cargo run --locked -p brain --example media-probe -- --help` for the required environment variables
 and supply accessible HTTPS URLs for the two fixtures. Keep secrets out of shell arguments and logs.
+
+Upstream adapter and runtime tests live in the extension repository. Brain tests its neutral
+protocol with independent JavaScript and Python implementations, including mixed worker pools.
 
 Main CI publishes immutable candidate images. Only release promotion moves the image and npm
 `latest` tags, after the media gate passes.

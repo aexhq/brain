@@ -1,8 +1,9 @@
 # Brain SDK
 
 Connect your TypeScript or JavaScript application to [Brain](https://aex.dev/brain), the
-open-source agent runtime. Connect models and tools, and drive agents through one session API. The operator selects
-Pi, Codex, OpenCode, or a custom harness when starting Brain.
+open-source agent runtime. Connect models and tools, and drive agents through one session API.
+The operator registers installed agentloops when starting Brain. Each session selects one by name
+and supplies its behavior settings. Pi, Codex, and OpenCode implementations live in extension packages.
 
 ## Get started
 

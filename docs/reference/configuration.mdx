@@ -17,7 +17,7 @@ For deployment, remote callbacks, backups and upgrades, start with
 | --- | --- | --- | --- |
 | `BRAIN_LISTEN` | `--listen` | `127.0.0.1:8080` | Address to bind |
 | `BRAIN_DATA_DIR` | `--data-dir` | `brain-data` | Where journals, admitted Components, and local state live |
-| `BRAIN_HARNESS` | `--harness` | none | Startup harness as JSON: {"command":"node","args":["harness.mjs"]} |
+| `BRAIN_AGENTLOOPS` | `--agentloops` | none | Registered agentloops as JSON: {"pi":{"command":"brain-agentloop-pi","workers":2}} |
 | `BRAIN_ENV_WORKER` | `--env-worker` | `brain-env-worker` | Path to the Tool worker executable |
 | `BRAIN_ENV_WORKERS` | `--env-workers` | `2` | OS worker processes in the built-in Environment pool |
 | `BRAIN_ENV_PREPARATION` | `--env-preparation` | none | JSON file of Components and program sources to prepare before serving execution |
@@ -75,7 +75,7 @@ Environment routes, endpoints, or credentials of its own.
 ## The data directory
 
 Brain owns everything under `BRAIN_DATA_DIR`. Use an empty directory for a new installation;
-Brain writes the `brain-data/2` layout marker on initialization. One server process may own it
+Brain writes the `brain-data/3` layout marker on initialization. One server process may own it
 at a time. A matching marker does not establish compatibility with every earlier contract:
 pre-1.0 releases can change retained session and executable formats, and Brain does not
 automatically migrate old data. Follow the [upgrade and restore procedure](/brain/docs/guides/operate#back-up-and-upgrade)
@@ -84,12 +84,12 @@ before changing the runtime on existing data.
 ```
 brain-data/
   .lock                               process-held single-writer lock
-  format                              layout marker (`brain-data/2`)
+  format                              layout marker (`brain-data/3`)
   sessions/{session_id}/journal/      one canonical journal per session
   sessions/{session_id}/checkpoint    disposable current-state/index projection
   components/                         admitted Tool Components and programs
-  harness/identity.json               startup harness and native-state version
-  harness/{session_id}/               upstream native session state
+  agentloops/{name}/identity.json     registered implementation and native-state version
+  agentloops/{name}/{session_id}/     upstream native session state
   native-workspaces/{session_id}/{environment}/   retained native Environment workspace
   hosts/hosts.log                     host registrations and token hashes
   requests/requests.log               durable HTTP request claims and answers
@@ -99,7 +99,7 @@ brain-data/
 
 Session configuration, status, public Events, transcript, and harness KV are projections of
 the canonical journal. Upstream native files are separate continuation state; include them in
-backups. Version 0.40 requires a new data directory and refuses the previous layout.
+backups. Version 0.41 requires a new data directory and refuses the previous layout.
 
 ## Listening beyond loopback
 

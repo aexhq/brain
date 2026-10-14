@@ -29,6 +29,7 @@ async function request(method, path, body, contentType = "application/json") {
 }
 
 const session = await request("POST", "/v1/sessions", {
+  agentloop: { name: "pi" },
   model: {
     provider: "vercel-ai-gateway",
     name: process.env.BRAIN_MODEL ?? "openai/gpt-5-mini",

@@ -37,6 +37,41 @@
       ],
       "type": "object"
     },
+    "AgentloopRegistration": {
+      "additionalProperties": false,
+      "description": "One installed implementation. Only the deployment supplies commands and capacity.",
+      "properties": {
+        "args": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "command": {
+          "type": "string"
+        },
+        "configuration": {
+          "default": null
+        },
+        "max_concurrency": {
+          "default": 64,
+          "format": "uint",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "workers": {
+          "default": 1,
+          "format": "uint",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
     "ContentBlock": {
       "oneOf": [
         {

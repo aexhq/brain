@@ -1,7 +1,7 @@
 # ADR-053: Select one upstream agent harness at Brain startup
 
 - Decision date: 2026-10-14
-- Status: Accepted
+- Status: Amended by [ADR-056](2026-10-14-02-registered-agentloops.md): register multiple implementations and select a name per session.
 
 Amends [ADR-023](2026-09-04-01-turn-services.md),
 [ADR-033](2026-09-05-02-placement.md),

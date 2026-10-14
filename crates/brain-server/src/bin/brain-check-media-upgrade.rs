@@ -147,7 +147,7 @@ mod tests {
             ("groq", false, false),
         ] {
             let config = json!({
-                "harness": { "configuration": {}},
+                "agentloop": {"name":"fixture", "configuration": {}},
                 "model": {"provider": provider, "name": "model"}, "tools": [], "environments": []
             });
             for (kind, value) in [

@@ -11,11 +11,11 @@ test("lifecycle defaults to automatic and grants do not install a management Too
     return Response.json({ session_id: "session", status: "idle", last_sequence: 1 });
   } });
   const remote = environment({ url: () => "https://env.example" })({ name: "controller" });
-  const options = { model: { provider: "openai", name: "test", apiKey: "fixture" }, environments: [remote], harness: { environments: [{ environment: "controller", permissions: ["read"], methods: [] }] } };
+  const options = { model: { provider: "openai", name: "test", apiKey: "fixture" }, environments: [remote], agentloop: { name: "fixture", environments: [{ environment: "controller", permissions: ["read"], methods: [] }] } };
   await brain.sessions.create(options);
   assert.deepEqual(requests[0].tools, []);
   assert.equal(requests[0].environments[0].lifecycle, "automatic");
-  assert.deepEqual(requests[0].harness.environments[0].permissions, ["read"]);
+  assert.deepEqual(requests[0].agentloop.environments[0].permissions, ["read"]);
 });
 
 test("nested lifecycle defaults and binding overrides compile into explicit wire policies", async () => {
@@ -26,6 +26,7 @@ test("nested lifecycle defaults and binding overrides compile into explicit wire
   } });
   const remote = environment({ url: () => "https://env.example" });
   const options = {
+    agentloop: { name: "fixture" },
     model: { provider: "openai", name: "test", apiKey: "fixture" },
 
     environments: [remote({ name: "controller" }), remote({ name: "workspace" })],
@@ -38,7 +39,7 @@ test("nested lifecycle defaults and binding overrides compile into explicit wire
     [{ lifecycle: { default: "manual" } }, ["manual", "manual"]],
     [{ lifecycle: { default: "manual", bindings: { controller: "automatic" } } }, ["automatic", "manual"]],
   ]) {
-    await brain.sessions.create({ ...options, environment: configuration });
+    await brain.sessions.create({ agentloop: { name: "fixture" }, ...options, environment: configuration });
     assert.deepEqual(requests.at(-1).environments.map(binding => binding.lifecycle), expected);
   }
   const count = requests.length;
@@ -48,10 +49,10 @@ test("nested lifecycle defaults and binding overrides compile into explicit wire
     { lifecycle: { bindings: null } }, { lifecycle: { bindings: [] } },
     { lifecycle: { bindings: { workspace: "invalid" } } },
   ]) {
-    await assert.rejects(brain.sessions.create({ ...options, environment: configuration }), /environment|lifecycle/i);
+    await assert.rejects(brain.sessions.create({ agentloop: { name: "fixture" }, ...options, environment: configuration }), /environment|lifecycle/i);
   }
-  await assert.rejects(brain.sessions.create({ ...options, environment: { lifecycle: { bindings: { typo: "manual" } } } }), /undeclared binding/);
-  await assert.rejects(brain.sessions.create({ ...options, environmentLifecycle: { default: "manual" } }), /use environment\.lifecycle/);
+  await assert.rejects(brain.sessions.create({ agentloop: { name: "fixture" }, ...options, environment: { lifecycle: { bindings: { typo: "manual" } } } }), /undeclared binding/);
+  await assert.rejects(brain.sessions.create({ agentloop: { name: "fixture" }, ...options, environmentLifecycle: { default: "manual" } }), /use environment\.lifecycle/);
   assert.equal(requests.length, count);
 });
 

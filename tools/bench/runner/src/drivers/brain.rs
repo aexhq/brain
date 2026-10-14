@@ -103,6 +103,7 @@ impl Driver for BrainDriver {
 
     async fn create(&self) -> Result<Unit> {
         let body = json!({
+            "agentloop": { "name": "pi" },
             "model": {
                 "provider": "vercel-ai-gateway",
                 // The contract requires a provider-qualified name, so this must carry a

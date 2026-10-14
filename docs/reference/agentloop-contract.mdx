@@ -3,10 +3,20 @@ title: Harness protocol
 description: Startup selection, lifecycle, native state, and journaled callbacks.
 ---
 
-Brain selects one implementation from `--harness` or `BRAIN_HARNESS` before readiness.
-Its JSON value has `command`, optional `args`, and optional `configuration`.
-The command is deployment code. Session requests accept only `harness.configuration`
-and `harness.environments`; executable fields and the old `agentloop` field are rejected.
+Brain reads a name-to-registration map from `--agentloops` or `BRAIN_AGENTLOOPS`
+before readiness. Each registration has `command`, optional `args`, optional
+`configuration`, `workers` (default 1), and `max_concurrency` per worker (default 64).
+Counts must be positive. Names contain 1–64 ASCII letters, digits, underscores or hyphens.
+
+Sessions require `agentloop: { name, configuration?, environments? }`. The name selects
+a startup registration. Commands and implementation code are rejected in session requests.
+The selection, options and Environment grants are immutable after creation.
+
+Brain balances newly opened sessions across healthy workers in that registration.
+Open sessions retain their worker assignment. An activation waits for worker capacity;
+cancellation also works while queued. Failure does not reassign an open session or
+retry effects. Other workers remain available. Readiness succeeds while any worker
+can serve requests; creating a session for an unavailable registration fails.
 
 ## Transport and lifecycle
 
@@ -32,7 +42,7 @@ session configuration, and the runtime envelope.
 There is one active run per session. Different sessions can run concurrently.
 Cancellation must be handled while run is pending. Initialization has a 30-second
 deadline; cancellation has a five-second grace period before Brain kills the harness
-process. Killing a shared process also fails its other active sessions.
+process. Killing a worker also fails its other active sessions; other workers are unaffected.
 
 ## Callbacks
 
@@ -75,7 +85,7 @@ remain absent. Upstream token estimates used for compaction are private runtime 
 ## Native state and recovery
 
 The harness identity and state version are bound to the data directory. A mismatched
-identity refuses startup. Native state lives beneath `harness/<session_id>/`; closing
+identity refuses startup. Native state lives beneath `agentloops/<registration>/<session_id>/`; closing
 or passivating a session retains it, while session deletion removes it.
 
 Brain records `brain.harness.activation` before entering native execution and removes
@@ -86,25 +96,23 @@ at-least-once recovery routine from replaying an uncertain tool effect.
 
 The journal is authoritative for Brain's effects. Upstream files are authoritative for
 agent continuation. There is no cross-harness checkpoint conversion or transactional
-crash recovery spanning the two stores. Pre-0.40 active sessions are not compatible;
+crash recovery spanning the two stores. Pre-0.41 active sessions are not compatible;
 start with a new data directory.
 
 ## Upstream adapters
 
-The image includes the pinned runtimes. For a standalone Node deployment, install the
-SDK and only the runtime you use; these are optional peers so clients stay small:
+The `ghcr.io/aexhq/brain-agentloops` image composes the public Brain image with
+extension-owned runtimes. For a custom deployment, install the corresponding package:
 
 ```sh
-npm install @aexhq/brain@0.40.0 @earendil-works/pi-coding-agent@1.2.0 @earendil-works/pi-ai@1.2.0
-# Or Codex:
-npm install @aexhq/brain@0.40.0 @openai/codex@0.162.1
-# Or OpenCode, run with Bun 1.3.14:
-npm pkg set 'overrides.@modelcontextprotocol/client=2.3.1' 'overrides.@parcel/watcher=2.6.0'
-npm install @aexhq/brain@0.40.0 @opencode/sdk@2.0.28 @ai-sdk/provider@3.0.8
+npm install @aexhq/brain@0.41.0 @aexhq/agentloop-pi@11.0.0
+npm install @aexhq/agentloop-codex@11.0.0 @aexhq/agentloop-opencode@1.0.0
 ```
 
-The OpenCode overrides replace upstream dependencies affected by high-severity
-advisories. The image and conformance suite use these exact versions.
+They provide `brain-agentloop-pi`, `brain-agentloop-codex` and `brain-agentloop-opencode`.
+Pi uses Node 22.19+, Codex launches its pinned Rust executable, and OpenCode uses
+Bun 1.3.14. Client exports construct selections; `/runtime` exports the implementation.
+The packages own upstream compatibility tests, configuration types and dependency pins.
 
 | Adapter | Configuration |
 | --- | --- |
@@ -128,7 +136,7 @@ resolved from the current activation. Custom harnesses may support additional fe
 
 ## Environment control
 
-Grant a harness access with `harness.environments`, and declare the corresponding
+Grant a harness access with `agentloop.environments`, and declare the corresponding
 Environments in the session. Call `ctx.environments` in a custom implementation.
 Upstream adapters do not invent management tools or interpret these grants as model
 tools. See [Environment control](/brain/docs/guides/environment-control).

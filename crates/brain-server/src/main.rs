@@ -134,9 +134,9 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         environment_control: Some(environments.clone()),
         limits: config.limits.clone(),
         harness: Arc::new(
-            brain_sessions::harness::StdioHarness::start(
-                &serde_json::from_str::<brain_protocol::HarnessCommand>(&config.harness)?,
-                &config.data_dir.join("harness"),
+            brain_sessions::agentloops::AgentloopRegistry::start(
+                &serde_json::from_str(&config.agentloops)?,
+                &config.data_dir.join("agentloops"),
                 providers.clone(),
             )
             .await?,

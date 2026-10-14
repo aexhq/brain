@@ -93,6 +93,7 @@ export function fixture({ providers = {} } = {}) {
     await f.start();
     f.brain = f.client();
     f.options = (extra = {}) => ({
+      agentloop: { name: "fixture" },
       model: { provider: "vercel-ai-gateway", name: "test/journey", apiKey: "journey-model-token" },
       ...extra,
     });
@@ -108,7 +109,7 @@ export function fixture({ providers = {} } = {}) {
       BRAIN_LISTEN: new URL(f.baseUrl).host, BRAIN_DATA_DIR: join(directory, "data"),
       BRAIN_API_TOKEN: f.token, BRAIN_ENV_WORKER: process.env.BRAIN_TEST_WORKER,
       BRAIN_MODEL_BASE_URL: `${f.upstreamUrl}/v1`,
-      BRAIN_HARNESS: JSON.stringify({ command: process.execPath, args: [fileURLToPath(new URL("../fixtures/harness.mjs", import.meta.url))] }),
+      BRAIN_AGENTLOOPS: JSON.stringify({ fixture: { command: process.execPath, args: [fileURLToPath(new URL("../fixtures/harness.mjs", import.meta.url))] } }),
       BRAIN_ENV_FILESYSTEM_ALLOW: "scratch,workspace",
     }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     child.stdout.on("data", (chunk) => { logs += chunk; });

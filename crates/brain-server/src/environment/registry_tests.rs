@@ -70,7 +70,7 @@ mod tests {
             },
             configuration: serde_json::json!({}),
         };
-        let config = serde_json::json!({"harness": {"configuration":{}},
+        let config = serde_json::json!({"agentloop": {"name":"fixture","configuration":{}},
             "model":{"provider":"openai","name":"test"},"tools":[],"environments":[environment]});
         let store = brain::LocalSessionStore::create(
             &root.path().join("session"),

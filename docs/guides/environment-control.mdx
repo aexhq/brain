@@ -19,6 +19,7 @@ specific bindings:
 
 ```ts
 const session = await brain.sessions.create({
+  agentloop: { name: "pi" },
   environment: { lifecycle: { bindings: { workspace: "manual" } } },
   model,
   tools,
@@ -51,7 +52,8 @@ import { env } from "@aexhq/env";
 const debug = env({
   environments: [{ environment: "workspace", permissions: ["read", "call"], methods: ["inspect"] }],
 });
-// Include debug in sessions.create({ tools: [debug, ...taskTools], ... }).
+// Include debug in sessions.create({
+  agentloop: { name: "pi" }, tools: [debug, ...taskTools], ... }).
 ```
 
 Like other inline tools, this Tool runs in your application's host by default. Leave out

@@ -246,7 +246,7 @@ async fn all_extension_roles_share_scoped_control_and_live_events_follow_the_age
     runtime.limits.max_turn_secs = 5;
     registry.bind_executions(&runtime.tool_executions);
     let config = serde_json::from_value(json!({
-        "harness": {"configuration":{},
+        "agentloop": {"name":"fixture","configuration":{},
             "environments":[{"environment":"workspace","permissions":["read","create","setup"]}]},
         "model":{"provider":"openai","name":"test"},
         "tools":[{"name":"work","description":"Work","input_schema":{},"placements":{"workspace":{"implementation":{}}},

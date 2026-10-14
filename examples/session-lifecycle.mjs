@@ -9,7 +9,7 @@ const brain = new Brain({
 });
 
 try {
-  const created = await brain.sessions.create({
+  const created = await brain.sessions.create({ agentloop: { name: "pi" },
     model: {
       provider: "vercel-ai-gateway",
       name: process.env.BRAIN_MODEL ?? "openai/gpt-5-mini",

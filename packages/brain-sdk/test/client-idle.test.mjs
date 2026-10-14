@@ -59,6 +59,7 @@ function fixture(t, { timeout = 15, suspend, message, create } = {}) {
   t.after(() => client.close());
   const lookup = tool({ name: "lookup", description: "Look up", input: z.object({}), run: (_, ctx) => ctx.finish("retained closure") });
   const options = {
+    agentloop: { name: "fixture" },
 
     tools: [lookup()], model: { provider: "openai", name: "gpt-5", apiKey: "fixture" },
   };
