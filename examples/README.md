@@ -20,8 +20,9 @@ npm run example:basic
 application and uses `OPENAI_API_KEY`.
 
 `harness.mjs` is a small custom startup implementation. Run it with
-`BRAIN_AGENTLOOPS='{"command":"node","args":["/absolute/path/examples/harness.mjs"]}'`.
-Applications do not select or upload harness code.
+`BRAIN_AGENTLOOPS='{"custom":{"command":"node","args":["/absolute/path/examples/harness.mjs"]}}'`.
+Select `agentloop: { name: "custom" }` in the application. Applications select installed names;
+they cannot upload harness code.
 
 `lazy-environment.mjs` and the Python Environment examples demonstrate tool runtimes.
 Their preparation and integration checks are described in [CONTRIBUTING.md](../CONTRIBUTING.md).

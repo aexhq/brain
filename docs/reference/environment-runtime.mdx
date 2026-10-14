@@ -57,10 +57,8 @@ const brain = new Brain({ baseUrl: "http://localhost:8080", token: process.env.B
 const lookup = tool({ name: "lookup", description: "Look up a value",
   input: z.object({ id: z.string() }), implementation: component(new URL("./lookup.wasm", import.meta.url)) });
 const prepared = await brain.prepare(lookup({ env: brainEnv({ name: "brain" }) }));
-const first = await brain.sessions.create({
-  agentloop: { name: "pi" }, model, tools: [prepared] });
-const second = await brain.sessions.create({
-  agentloop: { name: "pi" }, model, tools: [prepared] });
+const first = await brain.sessions.create({ agentloop: { name: "pi" }, model, tools: [prepared] });
+const second = await brain.sessions.create({ agentloop: { name: "pi" }, model, tools: [prepared] });
 ```
 
 Imports and factories perform no I/O. `prepare` admits any missing artifacts and loads them on

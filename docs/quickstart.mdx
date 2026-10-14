@@ -121,7 +121,7 @@ your backend.
 
 ## What just happened
 
-- **The harness ran on Brain.** The startup command selected the upstream Pi SDK. It owns
+- **The agentloop ran on Brain.** Startup registered Pi; the session selected it by name. Pi owns
   the agent loop and compaction; Brain executes and journals its model and tool calls.
 - **The tool ran in your app.** `lookup_order` executed in this Node.js process, and
   `ctx.finish(value)` returned its result and completed the call.
