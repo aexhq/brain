@@ -1,10 +1,10 @@
 {
   "name": "brain",
   "class": "session-kernel",
-  "version": "startup-harness-0.40",
+  "version": "registered-agentloops-0.41",
   "notes": [
-    "Run npm ci && npm run build and cargo build --release -p brain-server --bin brain -p brain-env-worker --bin brain-env-worker before measuring.",
-    "Uses the real upstream Pi harness selected at startup. Previous measurements used a different loop and are not comparable. New performance claims require rerunning the probes."
+    "Run npm ci && npm run build and cargo build --release -p brain-server --bin brain -p brain-env-worker --bin brain-env-worker before measuring. Install @aexhq/agentloop-pi@11.0.0 globally for brain-agentloop-pi on PATH.",
+    "Uses the upstream Pi extension registered at startup and selected per session. Previous measurements used a different loop and are not comparable. New performance claims require rerunning the probes."
   ],
   "requires": {
     "linux": true
@@ -17,8 +17,8 @@
       "BRAIN_DATA_DIR": "{data_dir}",
       "BRAIN_ENV_WORKER": "target/release/brain-env-worker",
       "BRAIN_MODEL_BASE_URL": "{model_base_url}",
-      "BRAIN_HARNESS": "{\"command\":\"node\",\"args\":[\"packages/brain-sdk/bin/brain-harness-pi.mjs\"],\"configuration\":{\"contextWindow\":64000,\"maxTokens\":1024}}",
-      "BRAIN_API_TOKEN": "bench"
+      "BRAIN_API_TOKEN": "bench",
+      "BRAIN_AGENTLOOPS": "{\"pi\":{\"command\":\"brain-agentloop-pi\",\"configuration\":{\"contextWindow\":64000,\"maxTokens\":1024}}}"
     },
     "base_url": "http://127.0.0.1:{port}",
     "ready_url": "http://127.0.0.1:{port}/health/ready",

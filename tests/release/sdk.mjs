@@ -15,7 +15,7 @@ try {
       name: "openai/gpt-5-mini",
       apiKey: "release-smoke-key",
     },
-    harness: { configuration: { mode: "diagnostic" } },
+    agentloop: { name: "fixture", configuration: { mode: "diagnostic" } },
   });
   assert.equal(session.state.status, "idle");
   assert.equal((await brain.sessions.get(session.id)).id, session.id);

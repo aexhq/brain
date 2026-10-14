@@ -30,6 +30,7 @@ pub fn session() -> Value {
             define::<ApiError>(generator);
             define::<CreateSessionRequest>(generator);
             define::<crate::HarnessCommand>(generator);
+            define::<crate::AgentloopRegistration>(generator);
             define::<crate::HarnessInitialize>(generator);
             define::<crate::HarnessIdentity>(generator);
             define::<crate::HarnessSession>(generator);
@@ -106,6 +107,7 @@ pub fn tool() -> Value {
 /// Startup lifecycle payloads and one activation's input and output.
 pub fn harness() -> Value {
     document("harness/v1/contract.json", "Brain Harness", |generator| {
+        define::<crate::AgentloopRegistration>(generator);
         define::<crate::HarnessInitialize>(generator);
         define::<crate::HarnessIdentity>(generator);
         define::<crate::HarnessSession>(generator);

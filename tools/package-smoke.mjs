@@ -52,7 +52,7 @@ try {
       `assert.equal(typeof brain.sessions.create, "function");\n` +
       `assert.equal(typeof brainSdk.SessionHandle.prototype.interrupt, "function");\n` +
       `assert.equal(typeof serveHarness, "function");\n` +
-      `await assert.rejects(brain.sessions.create({ model: { provider: "vercel-ai-gateway", name: "openai/test", apiKey: "test" } }), /validated Brain reached fetch/u);\n` +
+      `await assert.rejects(brain.sessions.create({ agentloop: { name: "fixture" }, model: { provider: "vercel-ai-gateway", name: "openai/test", apiKey: "test" } }), /validated Brain reached fetch/u);\n` +
       `assert.equal(typeof brainSdk.tool, "function");\n` +
       `assert.equal(typeof brainSdk.environment, "function");\n` +
       `assert.equal("DurableEventBridge" in brainSdk, false);\n` +

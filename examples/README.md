@@ -5,8 +5,8 @@ OpenCode uses Bun 1.3.14. The server image includes the pinned upstream adapters
 
 ```sh
 docker run --rm -p 127.0.0.1:8080:8080 -e BRAIN_API_TOKEN=example \
-  -e 'BRAIN_HARNESS={"command":"brain-harness-pi"}' \
-  -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
+  -e 'BRAIN_AGENTLOOPS={"pi":{"command":"brain-agentloop-pi"}}' \
+  -v brain-data:/var/lib/brain ghcr.io/aexhq/brain-agentloops:latest
 export BRAIN_API_TOKEN=example
 export VERCEL_AI_GATEWAY_API_KEY=your-key
 npm ci
@@ -20,8 +20,9 @@ npm run example:basic
 application and uses `OPENAI_API_KEY`.
 
 `harness.mjs` is a small custom startup implementation. Run it with
-`BRAIN_HARNESS='{"command":"node","args":["/absolute/path/examples/harness.mjs"]}'`.
-Applications do not select or upload harness code.
+`BRAIN_AGENTLOOPS='{"custom":{"command":"node","args":["/absolute/path/examples/harness.mjs"]}}'`.
+Select `agentloop: { name: "custom" }` in the application. Applications select installed names;
+they cannot upload harness code.
 
 `lazy-environment.mjs` and the Python Environment examples demonstrate tool runtimes.
 Their preparation and integration checks are described in [CONTRIBUTING.md](../CONTRIBUTING.md).

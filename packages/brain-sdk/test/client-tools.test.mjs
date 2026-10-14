@@ -93,7 +93,7 @@ test("one host runs the Tools placed in it and commits ctx.emit before its resul
   const client = new Brain({ baseUrl: "https://brain.example", token: "brain-token", fetch: fetchStub });
   t.after(() => client.close());
   const app = hostEnv({ name: "app" });
-  const session = await client.sessions.create({
+  const session = await client.sessions.create({ agentloop: { name: "fixture" },
     model,
 
     tools: [lookup({ env: app })],
@@ -132,7 +132,7 @@ test("session creation waits for the host command stream", async (t) => {
     input: z.object({}),
     run: async () => null,
   });
-  await assert.rejects(client.sessions.create({
+  await assert.rejects(client.sessions.create({ agentloop: { name: "fixture" },
     model,
 
     tools: [local({ env: hostEnv({ name: "app" }) })],
@@ -254,6 +254,7 @@ test("a new session shares the host connection after the previous session ends",
     run: async () => null,
   });
   const options = {
+    agentloop: { name: "fixture" },
     model,
 
     tools: [local({ env: hostEnv({ name: "app" }) })],

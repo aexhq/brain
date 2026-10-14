@@ -14,8 +14,9 @@
 <a href="README.cn.md">中文</a>
 </p>
 
-Brain runs agents behind a durable session API. Choose Pi, Codex, OpenCode, or your own harness
-when starting the server. Applications choose models, tools, and where their tools run.
+Brain runs agents behind a durable session API. Register Pi, Codex, OpenCode, and your own
+agentloops when starting the server. Each session selects a registered agentloop, its behavior,
+models, tools, and where its tools run.
 
 ```ts
 const lookupOrder = tool({
@@ -26,13 +27,14 @@ const lookupOrder = tool({
 });
 
 const session = await brain.sessions.create({
+  agentloop: { name: "pi" },
   model: { provider: "openai", name: "gpt-5-mini", apiKey },
   tools: [lookupOrder()],
 });
 await session.send("Has order A-1001 shipped?");
 ```
 
-The startup-selected harness runs on the Brain server. `lookup_order` runs in your app, next to your own data.
+The selected agentloop runs in a worker registered by the Brain deployment. `lookup_order` runs in your app, next to your own data.
 
 ## Why Brain
 

@@ -30,7 +30,7 @@ const request = async (method, path, body, contentType = "application/json") => 
 };
 
 const session = await request("POST", "/v1/sessions", {
-  harness: { configuration: { mode: "diagnostic" } },
+  agentloop: { name: "fixture", configuration: { mode: "diagnostic" } },
   model: {
     provider: "vercel-ai-gateway",
     name: "openai/gpt-5-mini",

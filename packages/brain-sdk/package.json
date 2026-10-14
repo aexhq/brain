@@ -1,6 +1,6 @@
 {
   "name": "@aexhq/brain",
-  "version": "0.40.0",
+  "version": "0.41.0",
   "description": "TypeScript SDK for an independently runnable Brain server",
   "license": "MIT",
   "repository": {
@@ -41,18 +41,6 @@
     "./harness": {
       "types": "./dist/harness.d.ts",
       "import": "./dist/harness.js"
-    },
-    "./harness/pi": {
-      "types": "./dist/harness-pi.d.ts",
-      "import": "./dist/harness-pi.js"
-    },
-    "./harness/codex": {
-      "types": "./dist/harness-codex.d.ts",
-      "import": "./dist/harness-codex.js"
-    },
-    "./harness/opencode": {
-      "types": "./dist/harness-opencode.d.ts",
-      "import": "./dist/harness-opencode.js"
     }
   },
   "files": [
@@ -63,16 +51,13 @@
   ],
   "bin": {
     "brain-tools": "./bin/brain-tools.mjs",
-    "brain-tool-runtime": "./bin/brain-tool-runtime.mjs",
-    "brain-harness-pi": "./bin/brain-harness-pi.mjs",
-    "brain-harness-codex": "./bin/brain-harness-codex.mjs",
-    "brain-harness-opencode": "./bin/brain-harness-opencode.mjs"
+    "brain-tool-runtime": "./bin/brain-tool-runtime.mjs"
   },
   "scripts": {
     "gen": "node scripts/gen.mjs",
     "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc -p tsconfig.json",
-    "test": "tsc -p tsconfig.json && tsc -p test/types/tsconfig.json && node --test test/*.test.mjs && node --test test/upstream/codex.test.mjs && bun test test/upstream/opencode.test.mjs",
+    "test": "tsc -p tsconfig.json && tsc -p test/types/tsconfig.json && node --test test/*.test.mjs",
     "prepack": "npm run build"
   },
   "devDependencies": {
@@ -83,29 +68,5 @@
   },
   "dependencies": {
     "zod": "4.4.3"
-  },
-  "peerDependencies": {
-    "@ai-sdk/provider": "3.0.8",
-    "@earendil-works/pi-ai": "1.2.0",
-    "@earendil-works/pi-coding-agent": "1.2.0",
-    "@openai/codex": "0.162.1",
-    "@opencode/sdk": "2.0.28"
-  },
-  "peerDependenciesMeta": {
-    "@ai-sdk/provider": {
-      "optional": true
-    },
-    "@earendil-works/pi-ai": {
-      "optional": true
-    },
-    "@earendil-works/pi-coding-agent": {
-      "optional": true
-    },
-    "@openai/codex": {
-      "optional": true
-    },
-    "@opencode/sdk": {
-      "optional": true
-    }
   }
 }

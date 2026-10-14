@@ -21,6 +21,7 @@ remain in [the contracts](../../contracts), [user docs](../../docs), and
 
 ## Current architecture
 
+- [ADR-056: Register agentloop workers and select them per session](2026-10-14-02-registered-agentloops.md)
 - [ADR-053: Select one upstream agent harness at Brain startup](2026-10-14-01-startup-harness.md)
 
 - [ADR-052: Suspend idle client tool connections without disposing sessions](2026-09-28-01-client-connection-lifecycle.md)
@@ -59,6 +60,7 @@ remain in [the contracts](../../contracts), [user docs](../../docs), and
 
 | Date | Record | Status |
 | --- | --- | --- |
+| 2026-10-14 | [ADR-056: Registered agentloop workers](2026-10-14-02-registered-agentloops.md) | Accepted |
 | 2026-10-14 | [ADR-053: Startup harness and upstream native state](2026-10-14-01-startup-harness.md) | Accepted |
 | 2026-09-28 | [ADR-052: Idle client tool connections](2026-09-28-01-client-connection-lifecycle.md) | Accepted |
 | 2026-09-25 | [ADR-051: Environment lifecycle, observations and shared control](2026-09-25-01-environment-events-and-control.md) | Accepted |

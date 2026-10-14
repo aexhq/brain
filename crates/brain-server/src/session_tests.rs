@@ -14,7 +14,7 @@ async fn submission_sequence_replays_after_restart_without_another_turn() {
     let root = root("submission-replay");
     let server = api(&root);
     let create: CreateSessionRequest = serde_json::from_value(serde_json::json!({
-        "harness": { "configuration":{}},
+        "agentloop": {"name":"fixture", "configuration":{}},
         "model": {"provider":"openai","name":"gpt-5-mini","api_key":"model-key"},
         "tools": [],
         "environments": [{"name":"brain","lifecycle": "automatic", "driver": "brain"}]
@@ -218,7 +218,7 @@ async fn a_session_is_created_set_up_and_deleted_through_its_environments() {
     let root = root("create");
     let api = api(&root);
     let request: CreateSessionRequest = serde_json::from_value(serde_json::json!({
-        "harness": { "configuration": {}},
+        "agentloop": {"name":"fixture", "configuration": {}},
         "model": {"provider": "openai", "name": "gpt-5-mini", "api_key": "model-key"},
         "tools": [],
         "environments": [
@@ -319,7 +319,7 @@ async fn a_busy_submission_can_retry_its_key_after_restart() {
     let held = Arc::new(Held(tokio::sync::Notify::new()));
     let server = api_with_loop(&root, held.clone());
     let create = serde_json::from_value(serde_json::json!({
-        "harness": { "configuration":{}},
+        "agentloop": {"name":"fixture", "configuration":{}},
         "model": {"provider":"openai","name":"gpt-5-mini","api_key":"model-key"},
         "tools": [], "environments": [{"name":"brain","lifecycle": "automatic", "driver": "brain"}]
     }))

@@ -13,6 +13,11 @@ export type EnvironmentName = string;
 export type AdmissionStatus = "admitted" | "rejected";
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentPermission".
+ */
+export type EnvironmentPermission = "read" | "create" | "setup" | "update" | "delete" | "call";
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "ProgramId".
  */
 export type ProgramId = string;
@@ -111,11 +116,6 @@ export type Environment = {
   name: EnvironmentName;
   template?: EnvironmentTemplate;
 } & Environment1;
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "EnvironmentPermission".
- */
-export type EnvironmentPermission = "read" | "create" | "setup" | "update" | "delete" | "call";
 export type Environment1 =
   | {
       driver: "brain";
@@ -488,6 +488,45 @@ export interface EnvironmentRef {
   sequence: number;
 }
 /**
+ * One installed implementation. Only the deployment supplies commands and capacity.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "AgentloopRegistration".
+ */
+export interface AgentloopRegistration {
+  args?: string[];
+  command: string;
+  configuration?: {
+    [k: string]: unknown | undefined;
+  };
+  max_concurrency?: number;
+  workers?: number;
+}
+/**
+ * Select a startup-registered implementation and supply its session configuration.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "AgentloopSelection".
+ */
+export interface AgentloopSelection {
+  configuration?: {
+    [k: string]: unknown | undefined;
+  };
+  environments?: EnvironmentGrant[];
+  name: string;
+}
+/**
+ * Authority over a declared binding and instances made from its template.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentGrant".
+ */
+export interface EnvironmentGrant {
+  environment: EnvironmentName;
+  methods?: string[];
+  permissions: EnvironmentPermission[];
+}
+/**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "ApiError".
  */
@@ -512,12 +551,12 @@ export interface BrainPreparation {
  * via the `definition` "CreateSessionRequest".
  */
 export interface CreateSessionRequest {
+  agentloop: AgentloopSelection;
   /**
    * The Environments of this session, set up as part of this create. Every Tool placement
    * names one of them. The harness is deployment-owned.
    */
   environments: Environment[];
-  harness?: HarnessOptions;
   /**
    * How long the session may sit idle before Brain suspends it: its task and memory
    * are released and rebuilt from disk on the next request. Absent means the server's
@@ -547,17 +586,6 @@ export interface CreateSessionRequest {
   transcript?: Message[];
 }
 /**
- * Authority over a declared binding and instances made from its template.
- *
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "EnvironmentGrant".
- */
-export interface EnvironmentGrant {
-  environment: EnvironmentName;
-  methods?: string[];
-  permissions: EnvironmentPermission[];
-}
-/**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "EnvironmentMethod".
  */
@@ -576,15 +604,6 @@ export interface EnvironmentMethod {
 export interface EnvironmentTemplate {
   configuration_schema: unknown;
   max_instances: number;
-}
-/**
- * Options for the deployment's harness. Executable code is selected at server startup.
- */
-export interface HarnessOptions {
-  configuration?: {
-    [k: string]: unknown | undefined;
-  };
-  environments?: EnvironmentGrant[];
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
@@ -853,18 +872,6 @@ export interface HarnessInitialize {
   configuration: unknown;
   protocol: string;
   state_directory: string;
-}
-/**
- * Options for the deployment's harness. Executable code is selected at server startup.
- *
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "HarnessOptions".
- */
-export interface HarnessOptions1 {
-  configuration?: {
-    [k: string]: unknown | undefined;
-  };
-  environments?: EnvironmentGrant[];
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema

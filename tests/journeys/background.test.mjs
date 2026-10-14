@@ -31,7 +31,7 @@ for (const placement of ["host", "http", "native"]) {
     const env = placement === "host" ? hostEnv({ name: "app" })
       : placement === "native" ? brainEnv({ name: "brain" }) : f.provider("remote");
     const session = await f.create(t, {
-      harness: { configuration: { mode: "observer" } },
+      agentloop: { name: "fixture", configuration: { mode: "observer" } },
       tools: [work({ env })],
     }, placement === "host" ? f.client({ connectionIdleTimeoutMs: 20 }) : f.brain);
     await session.send("start");
@@ -79,7 +79,7 @@ test("remote background completion can invoke a client Tool after the initiating
     invoked.resolve();
   } });
   const session = await f.create(t, {
-    harness: { configuration: { mode: "observer" } },
+    agentloop: { name: "fixture", configuration: { mode: "observer" } },
     tools: [work({ env: f.provider("remote") }), followup()],
   }, client);
   await session.send("start remote work");

@@ -393,7 +393,7 @@ async fn exposes_every_v1_route_with_its_contract_status() {
     // A create request in the execution shape: a tool declaring its implementation and
     // implementation, placed in an environment reached over HTTP with a credential.
     let create = serde_json::json!({
-        "harness": { "configuration": {}},
+        "agentloop": {"name":"fixture", "configuration": {}},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
         "tools": [{"name": "bash", "description": "Run a shell command.", "input_schema": {"type": "object"}, "placements": {"env_1": {"implementation": {"kind": "test"}}}}],
         "environments": [{
@@ -635,7 +635,7 @@ async fn request_bodies_reject_unknown_fields() {
     // `hosting`, `binding_names`, and `host_id` on a tool are deleted fields; a client
     // still sending them is told so instead of silently ignored.
     let create = serde_json::json!({
-        "harness": { "configuration": {}},
+        "agentloop": {"name":"fixture", "configuration": {}},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
         "tools": [{"name": "bash", "description": "Run a shell command.", "input_schema": {"type": "object"}, "binding_names": [], "hosting": "resident", "host_id": "host_12345678901234567890", "placements": {"env_1": {"implementation": {"type": "host_function", "name": "bash"}}}}],
         "environments": [{

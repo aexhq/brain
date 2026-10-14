@@ -62,7 +62,7 @@ fn executor(
 ) {
     let root = tempfile::tempdir().unwrap();
     let dispatch = dispatch();
-    let config = json!({"harness": {"configuration":{}},
+    let config = json!({"agentloop": {"name":"fixture","configuration":{}},
         "model":{"provider":"openai","name":"test"},"tools":[dispatch.tool],"environments":[dispatch.environment]});
     let (telemetry, _) = brain_telemetry::telemetry_channel();
     let store = brain::LocalSessionStore::create(

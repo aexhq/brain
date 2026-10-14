@@ -192,7 +192,7 @@ fn rust_views_round_trip_contract_examples() {
         serde_json::from_value(read_json("tests/examples/session/create-session.json")).unwrap();
     assert_eq!(session.model.provider, "vercel-ai-gateway");
     assert_eq!(session.model.name, "openai/gpt-5-mini");
-    assert_eq!(session.harness.configuration, serde_json::json!({}));
+    assert_eq!(session.agentloop.configuration, serde_json::json!({}));
     assert_eq!(session.system, "Be useful.");
     assert_eq!(session.tools.len(), 1);
     assert_eq!(session.tools[0].name, "read");

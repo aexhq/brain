@@ -1022,7 +1022,7 @@ impl Sessions {
         self.resources
             .session_runtime
             .harness
-            .delete(&session_id)
+            .delete(&session_id, &config)
             .await
             .map_err(api_error)?;
         store.delete().map_err(api_error)?;

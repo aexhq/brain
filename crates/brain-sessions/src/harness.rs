@@ -439,7 +439,7 @@ impl AgentHarness for StdioHarness {
         self.pipe.stop("Brain shut down").await;
     }
 
-    async fn delete(&self, session: &SessionId) -> Result<(), Error> {
+    async fn delete(&self, session: &SessionId, _config: &SessionConfig) -> Result<(), Error> {
         self.close(session).await?;
         self.pipe
             .request("session/delete", json!({"session_id":session}))

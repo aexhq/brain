@@ -41,7 +41,7 @@ async function start(baseUrl) {
     ...process.env, BRAIN_LISTEN: new URL(baseUrl).host, BRAIN_DATA_DIR: join(root, "data"),
     BRAIN_API_TOKEN: "runtime-test", BRAIN_ENV_WORKER: process.env.BRAIN_TEST_WORKER,
     BRAIN_MODEL_BASE_URL: `${modelUrl}/v1`,
-    BRAIN_HARNESS: JSON.stringify({ command: process.execPath, args: [fileURLToPath(new URL("../fixtures/harness.mjs", import.meta.url))] }),
+    BRAIN_AGENTLOOPS: JSON.stringify({ fixture: { command: process.execPath, args: [fileURLToPath(new URL("../fixtures/harness.mjs", import.meta.url))] } }),
   }, stdio: ["ignore", "inherit", "inherit"] });
   for (let i = 0; i < 1200; i++) {
     if (server.exitCode !== null) throw new Error(`server exited: ${server.exitCode}`);
@@ -91,7 +91,8 @@ try {
   const provider = environment({ options: z.object({ url: z.url(), token: z.string() }), url: ({ url }) => url, credential: ({ token }) => token, configure: () => ({}) });
   const tools = ["first", "second"].map((name) => tool({ name, input: z.object({ value: z.string() }),
     implementation: { type: "reference_echo" }, description: "Echo input" })({ env: provider({ name, url: providers[name], token: name }) }));
-  const options = { model: { provider: "vercel-ai-gateway", name: "test/scripted", apiKey: "test" }, tools };
+  const options = {
+    agentloop: { name: "fixture" }, model: { provider: "vercel-ai-gateway", name: "test/scripted", apiKey: "test" }, tools };
   const session = await brain.sessions.create(options);
   assert.equal(allocations, 0, "logical setup must not allocate");
   await session.send("use both environments");

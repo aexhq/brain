@@ -18,16 +18,5 @@
   },
   "engines": {
     "node": ">=22.19.0"
-  },
-  "overrides": {
-    "@parcel/watcher": "2.6.0",
-    "@modelcontextprotocol/client": "2.3.1"
-  },
-  "dependencies": {
-    "@ai-sdk/provider": "3.0.8",
-    "@earendil-works/pi-ai": "1.2.0",
-    "@earendil-works/pi-coding-agent": "1.2.0",
-    "@openai/codex": "0.162.1",
-    "@opencode/sdk": "2.0.28"
   }
 }

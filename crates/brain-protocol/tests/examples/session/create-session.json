@@ -36,7 +36,8 @@
       }
     }
   ],
-  "harness": {
+  "agentloop": {
+    "name": "fixture",
     "configuration": {}
   }
 }

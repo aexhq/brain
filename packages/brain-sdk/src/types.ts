@@ -82,6 +82,12 @@ export interface ModelResponse {
 export type Media = Readonly<WireMedia>;
 export interface UserInput { readonly message: string; readonly media?: readonly Media[] }
 
+export interface AgentloopSelection {
+  readonly name: string;
+  readonly configuration?: unknown;
+  readonly environments?: readonly import("./environments.js").EnvironmentGrant[];
+}
+
 export interface CreateSessionOptions {
   readonly environment?: {
     readonly lifecycle?: {
@@ -91,7 +97,7 @@ export interface CreateSessionOptions {
   };
   readonly environments?: readonly Environment[];
   readonly model: ModelSelection;
-  readonly harness?: import("./generated/session.js").HarnessOptions;
+  readonly agentloop: AgentloopSelection;
   readonly tools?: readonly SessionTool[];
   readonly system?: string;
   readonly responseFormat?: unknown;

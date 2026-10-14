@@ -43,7 +43,7 @@ test("preparation shares runtimes across programs, clients and sessions", async 
   await second.prepare(make("first program"));
   await second.prepare(make("new program"));
   for (let count = 0; count < 2; count++) {
-    await second.sessions.create({ tools: [loop], model: { provider: "openai", name: "gpt-5", apiKey: "fixture" } });
+    await second.sessions.create({ agentloop: { name: "fixture" }, tools: [loop], model: { provider: "openai", name: "gpt-5", apiKey: "fixture" } });
   }
   assert.deepEqual(uploads.map(upload => upload.path), ["/v1/tools", "/v1/programs", "/v1/programs"]);
   assert.equal(prepared.length, 3);

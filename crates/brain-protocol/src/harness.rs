@@ -2,6 +2,7 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroUsize;
 
 use crate::{ModelDef, SessionId, TurnInput};
 
@@ -15,6 +16,28 @@ pub struct HarnessCommand {
     pub args: Vec<String>,
     #[serde(default)]
     pub configuration: serde_json::Value,
+}
+
+/// One installed implementation. Only the deployment supplies commands and capacity.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentloopRegistration {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub configuration: serde_json::Value,
+    #[serde(default = "one_worker")]
+    pub workers: NonZeroUsize,
+    #[serde(default = "worker_concurrency")]
+    pub max_concurrency: NonZeroUsize,
+}
+
+fn one_worker() -> NonZeroUsize {
+    NonZeroUsize::new(1).unwrap()
+}
+fn worker_concurrency() -> NonZeroUsize {
+    NonZeroUsize::new(64).unwrap()
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]

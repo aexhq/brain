@@ -18,7 +18,7 @@ use brain::{
     SessionStore, ToolExecutor, TurnServices, Writer,
 };
 use brain_protocol::{
-    Driver, Environment, EnvironmentName, HarnessOptions, Message, ModelBinding, SessionConfig,
+    AgentloopSelection, Driver, Environment, EnvironmentName, Message, ModelBinding, SessionConfig,
     SessionId, TurnInput, TurnOutput,
 };
 use futures_util::future::BoxFuture;
@@ -181,7 +181,8 @@ pub fn temporary_directory(name: &str) -> PathBuf {
 /// The smallest admitted configuration: an Agentloop and its Environment, no tools.
 pub fn config() -> SessionConfig {
     SessionConfig {
-        harness: HarnessOptions {
+        agentloop: AgentloopSelection {
+            name: "fixture".into(),
             environments: Vec::new(),
             configuration: serde_json::json!({}),
         },

@@ -241,3 +241,6 @@ export async function serveHarness(
     await writes;
   }
 }
+
+export { environmentDefinitions as harnessDefinitions } from "./generated/environment-schema.js";
+export type { ActivationTool, ContentBlock, Media, Message, ModelResult, Usage, ToolResult, ToolReturn } from "./generated/session.js";

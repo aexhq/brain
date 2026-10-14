@@ -9,4 +9,5 @@ pub mod locks;
 
 mod execution;
 pub use execution::{SessionServices, SessionToolExecutor};
+pub mod agentloops;
 pub mod harness;

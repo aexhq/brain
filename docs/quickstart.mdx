@@ -12,8 +12,8 @@ server? Follow the [Aex quickstart](/docs) instead.
 ```sh
 docker run --rm -p 127.0.0.1:8080:8080 \
   -e BRAIN_LISTEN=0.0.0.0:8080 -e BRAIN_API_TOKEN=quickstart \
-  -e BRAIN_HARNESS='{"command":"brain-harness-pi"}' \
-  -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
+  -e BRAIN_AGENTLOOPS='{"pi":{"command":"brain-agentloop-pi"}}' \
+  -v brain-data:/var/lib/brain ghcr.io/aexhq/brain-agentloops:latest
 ```
 
 Leave this terminal running. The volume keeps saved sessions across restarts. The token is for
@@ -29,7 +29,7 @@ mkdir brain-example
 cd brain-example
 npm init -y
 npm pkg set type=module
-npm install @aexhq/brain@0.40.0 zod@4.4.3
+npm install @aexhq/brain@0.41.0 zod@4.4.3
 ```
 
 <Tabs items={["TypeScript", "JavaScript"]} groupId="language">
@@ -78,6 +78,7 @@ const lookupOrder = tool({
 
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080", token: "quickstart" });
 brain.sessions.create({
+  agentloop: { name: "pi" },
   model: { provider: "openai", name: "gpt-5-mini", apiKey },
   tools: [lookupOrder()],
 }).then(async session => {
@@ -120,7 +121,7 @@ your backend.
 
 ## What just happened
 
-- **The harness ran on Brain.** The startup command selected the upstream Pi SDK. It owns
+- **The agentloop ran on Brain.** Startup registered Pi; the session selected it by name. Pi owns
   the agent loop and compaction; Brain executes and journals its model and tool calls.
 - **The tool ran in your app.** `lookup_order` executed in this Node.js process, and
   `ctx.finish(value)` returned its result and completed the call.

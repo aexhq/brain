@@ -23,6 +23,8 @@
   result. A record is named by session id and sequence and nothing else. Brain sends an effect once,
   never retries it automatically, and records an unknown outcome when a remote result is uncertain.
   The ADRs in [references/adrs](references/adrs/README.md) record why.
+- Agentloop implementation code and upstream runtimes belong to extension packages. Brain
+  registers installed executables at startup; sessions select names and pass configuration.
 - Keep the `brain` core independent of cloud SDKs. Put storage, custody, and runtime behaviour behind
   public adapters, and do not weaken production invariants for local development.
 - Real Linux brain-env, image, HTTP, journal recovery, remote-model, and remote-Environment gates run

@@ -8,7 +8,7 @@ const brain = new Brain({
 });
 
 try {
-  const session = await brain.sessions.create({
+  const session = await brain.sessions.create({ agentloop: { name: "pi" },
     model: { provider: "openai", name: "gpt-5-mini", apiKey },
   });
   const subscription = new AbortController();

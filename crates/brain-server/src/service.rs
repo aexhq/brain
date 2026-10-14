@@ -357,6 +357,11 @@ impl BrainApi for ServerApi {
         idempotency_key: String,
         request: CreateSessionRequest,
     ) -> Result<SessionSummary, ApiError> {
+        self.resources
+            .session_runtime
+            .harness
+            .validate(&request.agentloop)
+            .map_err(api_error)?;
         validate_model(&request, &self.resources.providers)?;
         for environment in &request.environments {
             if let Driver::Http { url, .. } = &environment.driver {
@@ -391,7 +396,7 @@ impl BrainApi for ServerApi {
             }
         }
         let config = SessionConfig {
-            harness: request.harness.clone(),
+            agentloop: request.agentloop.clone(),
             model: ModelBinding {
                 provider: request.model.provider.clone(),
                 name: request.model.name.clone(),
@@ -775,7 +780,7 @@ mod tests {
         let registry = brain::model::ProviderRegistry::default_set();
         let request = |provider: &str, name: &str, response_format: bool| {
             serde_json::from_value::<brain_protocol::CreateSessionRequest>(serde_json::json!({
-                "harness": {
+                "agentloop": {"name":"fixture",
                     "configuration": {}},
                 "model": { "provider": provider, "name": name, "api_key": "k" },
                 "tools": [],

@@ -79,6 +79,7 @@ impl Session {
         transcript: &[Message],
     ) -> Result<CreatingSession, Error> {
         validate_session_contract(request)?;
+        config.harness.validate(&request.agentloop)?;
         // The creation record is the session's own genesis and comes first; a transcript
         // the caller carries forward is what happened before it, and follows.
         store.append_sync(
@@ -337,6 +338,7 @@ impl CreatingSession {
     /// Admits the session with what was granted and starts it.
     pub fn complete(mut self, config: SessionConfig) -> Result<Session, Error> {
         validate_session_contract(&config)?;
+        self.config.harness.validate(&config.agentloop)?;
         let configuration = serde_json::to_value(&config).map_err(json_error)?;
         let saved = self.store.append_sync(
             &[AppendRecord::new(
@@ -388,6 +390,7 @@ fn stopped() -> Error {
 }
 
 fn validate_session_contract(config: &SessionConfig) -> Result<(), Error> {
+    crate::validate_agentloop_name(&config.agentloop.name)?;
     if !identifier_valid(&config.model.provider)
         || config.model.name.is_empty()
         || config.model.name.chars().any(char::is_whitespace)
@@ -468,7 +471,7 @@ fn validate_session_contract(config: &SessionConfig) -> Result<(), Error> {
         }
     }
     for grant in config
-        .harness
+        .agentloop
         .environments
         .iter()
         .chain(config.tools.iter().flat_map(|tool| &tool.environments))
@@ -549,7 +552,7 @@ fn validate_tool_definition(tool: &brain_protocol::ToolDefinition) -> Result<(),
 
 #[cfg(test)]
 mod tests {
-    use brain_protocol::{Environment, EnvironmentName, HarnessOptions, ModelBinding, Tool};
+    use brain_protocol::{AgentloopSelection, Environment, EnvironmentName, ModelBinding, Tool};
 
     use super::*;
 
@@ -585,7 +588,8 @@ mod tests {
     /// in one Environment.
     fn config() -> SessionConfig {
         SessionConfig {
-            harness: HarnessOptions {
+            agentloop: AgentloopSelection {
+                name: "fixture".into(),
                 environments: Vec::new(),
                 configuration: serde_json::json!({}),
             },

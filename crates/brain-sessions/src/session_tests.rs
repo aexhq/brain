@@ -654,7 +654,7 @@ impl brain::environment::EnvironmentAdapter for UnusedEnvironment {
 }
 fn session_config() -> SessionConfig {
     serde_json::from_value(serde_json::json!({
-        "harness": { "configuration": {}},
+        "agentloop": {"name":"fixture", "configuration": {}},
         "model": {"provider": "openai", "name": "test"}, "system": "test", "tools": [],
         "environments": [{"name": "brain", "lifecycle": "automatic", "driver": "brain"}]
     }))

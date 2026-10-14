@@ -9,10 +9,11 @@ use crate::{
 /// The contract identifier of the session API.
 pub const SESSION_CONTRACT: &str = "session/v1";
 
-/// Options for the deployment's harness. Executable code is selected at server startup.
+/// Select a startup-registered implementation and supply its session configuration.
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct HarnessOptions {
+pub struct AgentloopSelection {
+    pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub environments: Vec<crate::EnvironmentGrant>,
     #[serde(default)]
@@ -22,8 +23,7 @@ pub struct HarnessOptions {
 #[derive(Clone, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateSessionRequest {
-    #[serde(default)]
-    pub harness: HarnessOptions,
+    pub agentloop: AgentloopSelection,
     pub model: ModelSelection,
     /// The system prompt the agent loop starts from. The loop may send a different one
     /// on any model call.
@@ -56,7 +56,7 @@ pub struct CreateSessionRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionConfig {
-    pub harness: HarnessOptions,
+    pub agentloop: AgentloopSelection,
     pub model: ModelBinding,
     #[serde(default)]
     pub system: String,

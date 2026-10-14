@@ -58,7 +58,7 @@ assert.equal(missingKey.response.status, 400);
 assert.equal(missingKey.result.code, "invalid_request");
 
 const createBody = {
-  harness: { configuration: { mode: "diagnostic" } },
+  agentloop: { name: "fixture", configuration: { mode: "diagnostic" } },
   model: { provider: "vercel-ai-gateway", name: "openai/gpt-5-mini", api_key: "release-smoke-key" },
   tools: [],
   environments: [{ name: "brain", driver: "brain", lifecycle: "automatic" }],
@@ -70,7 +70,7 @@ assert.equal(created.result.status, "idle");
 const replayedCreate = await call("POST", "/v1/sessions", { body: createBody, key: "http-contract-create" });
 assert.deepEqual(replayedCreate.result, created.result);
 const conflictingCreate = await call("POST", "/v1/sessions", {
-  body: { ...createBody, harness: { configuration: { mode: "diagnostic", changed: true } } },
+  body: { ...createBody, agentloop: { name: "fixture", configuration: { mode: "diagnostic", changed: true } } },
   key: "http-contract-create",
 });
 assert.equal(conflictingCreate.response.status, 409);

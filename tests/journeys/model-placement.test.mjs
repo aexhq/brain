@@ -14,7 +14,7 @@ test("model-visible selection dispatches one canonical Tool to the chosen author
   });
   f.model = (_request, response) => callTools(response, [{ name: "lookup", input: { environment: "right", input: {} } }]);
   const session = await f.create(t, {
-    harness: { configuration: { mode: "selection" } },
+    agentloop: { name: "fixture", configuration: { mode: "selection" } },
     tools: [lookup({ env: hostEnv({ name: "left" }), where: "left" }), lookup({ env: hostEnv({ name: "right" }), where: "right" })],
   });
   await session.send("choose right");

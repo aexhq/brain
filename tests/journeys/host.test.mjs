@@ -146,7 +146,7 @@ for (const mode of ["input", "output", "throw"]) {
     const session = await f.create(t, { tools: [lookup({ env: app })] });
     await session.send("lookup");
     assert.equal(calls, mode === "input" ? 0 : 1);
-    const expected = mode === "throw" ? "tool_error" : mode === "input" ? "Validation failed" : "invalid_output";
+    const expected = mode === "throw" ? "tool_error" : mode === "input" ? "invalid_input" : "invalid_output";
     assert.ok(JSON.stringify(f.modelRequests.at(-1).input).includes(expected));
     assert.equal(f.modelRequests.length, 2);
   });
@@ -186,7 +186,7 @@ for (const strict of [false, true]) {
     await session.send("find blue");
     if (strict) {
       assert.equal(seen.length, 1);
-      assert.match(f.modelRequests.at(-1).input.at(-1).output, /Validation failed/u);
+      assert.match(f.modelRequests.at(-1).input.at(-1).output, /invalid_input/u);
     } else assert.deepEqual(seen[1], { query: "blue", limit: 10 });
   });
 }

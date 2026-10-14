@@ -9,7 +9,7 @@ if (!apiKey) throw new Error("OPENAI_API_KEY is required");
 const submitter = new Brain(options);
 let id, sequence;
 try {
-  const session = await submitter.sessions.create({
+  const session = await submitter.sessions.create({ agentloop: { name: "pi" },
     model: { provider: "openai", name: "gpt-5-mini", apiKey },
   });
   id = session.id;
