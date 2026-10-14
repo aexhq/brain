@@ -2399,7 +2399,7 @@ paths:
             example:
               agentloop:
                 configuration: {}
-                name: fixture
+                name: pi
               environments:
               - configuration: {}
                 driver: brain

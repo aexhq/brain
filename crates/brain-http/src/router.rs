@@ -603,8 +603,7 @@ fn idempotency_key(headers: &HeaderMap) -> Result<String, HttpError> {
     security(("serverToken" = [])),
     params(("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
     request_body(content = contract::CreateSessionRequest, example = json!({
-        "agentloop": {"name":"fixture",
-            "configuration": {}},
+        "agentloop": {"name":"pi", "configuration": {}},
         "model": {"provider": "openai", "name": "gpt-4.1-mini", "api_key": "YOUR_MODEL_API_KEY"},
         "tools": [],
         "environments": [{"name": "brain", "driver": "brain", "lifecycle": "automatic", "configuration": {}}]
