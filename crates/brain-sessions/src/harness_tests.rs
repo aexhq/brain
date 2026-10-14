@@ -82,7 +82,7 @@ async fn start(directory: &std::path::Path, mode: &str) -> StdioHarness {
 }
 async fn run(harness: &StdioHarness, services: Arc<Services>) -> Result<TurnOutput, Error> {
     let config = serde_json::from_value(
-        json!({"model":{"provider":"openai","name":"fixture"},"tools":[],"environments":[]}),
+        json!({"model":{"provider":"openai","name":"fixture"},"harness":{},"tools":[],"environments":[]}),
     )
     .unwrap();
     let kv = services.values.lock().unwrap().clone();
