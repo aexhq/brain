@@ -1,11 +1,9 @@
 use crate::EnvironmentRegistry;
 use async_trait::async_trait;
-use brain::{
-    LoopExecutor, ToolExecutor, ToolServices, TurnServices, environment::ExecutionServices,
-};
+use brain::{ToolExecutor, ToolServices, TurnServices, environment::ExecutionServices};
 use brain_protocol::{
-    AgentloopRef, Environment, EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest,
-    Outcome, SessionId, ToolCancellation, ToolDispatch, codes,
+    EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, Outcome, ToolCancellation,
+    ToolDispatch,
 };
 use serde_json::{Value, json};
 
@@ -13,76 +11,6 @@ use serde_json::{Value, json};
 #[path = "execution_tests.rs"]
 mod tests;
 use std::sync::Arc;
-
-/// Runs each turn in the Environment the Agentloop names, through the same interface
-/// every other operation on that Environment uses. An Environment outside this process
-/// is handed the turn's routes and the token that opens them.
-pub struct EnvironmentLoopExecutor {
-    pub environments: Arc<EnvironmentRegistry>,
-    pub deadline_ms: Option<u64>,
-}
-
-#[async_trait]
-impl LoopExecutor for EnvironmentLoopExecutor {
-    async fn turn(
-        &self,
-        session: &SessionId,
-        sequence: u64,
-        agentloop: &AgentloopRef,
-        environment: &Environment,
-        input: brain_protocol::TurnInput,
-        services: Arc<dyn brain::TurnServices>,
-    ) -> Result<brain_protocol::TurnOutput, brain::Error> {
-        let operation = EnvironmentOperation {
-            template: None,
-            context: None,
-            binding: None,
-            reporter: None,
-            configuration: serde_json::Value::Null,
-            sequence,
-            environment: environment.name.clone(),
-            session_id: session.clone(),
-            request: EnvironmentRequest::Execute {
-                implementation: agentloop.implementation.clone(),
-                input: serde_json::to_value(input).map_err(json_error)?,
-                deadline_ms: self.deadline_ms,
-                callback: None,
-            },
-        };
-        match self
-            .environments
-            .execute(
-                environment,
-                &operation,
-                Some(Arc::new(SessionServices::Loop(services))),
-            )
-            .await?
-        {
-            EnvironmentReceipt::Result { output } => {
-                serde_json::from_value(output).map_err(json_error)
-            }
-            EnvironmentReceipt::Failure {
-                code,
-                message,
-                retryable,
-                ..
-            } => {
-                if code == codes::failure::CANCELLED {
-                    return Err(brain::Error::Cancelled(message));
-                }
-                Err(brain::Error::Loop(brain_protocol::TurnError {
-                    code,
-                    message,
-                    retryable,
-                }))
-            }
-            EnvironmentReceipt::Unknown { message } => Err(brain::Error::Ambiguous(message)),
-            _ => Err(brain::Error::Ambiguous(
-                "Environment returned a nonterminal turn receipt".into(),
-            )),
-        }
-    }
-}
 
 /// Every Tool call goes to the Environment the Tool names; the registry knows how.
 pub struct SessionToolExecutor {
@@ -181,7 +109,7 @@ impl ToolExecutor for SessionToolExecutor {
 }
 
 pub enum SessionServices {
-    Loop(Arc<dyn TurnServices>),
+    Harness(Arc<dyn TurnServices>),
     Tool(Arc<dyn ToolServices>),
 }
 
@@ -189,7 +117,7 @@ pub enum SessionServices {
 impl ExecutionServices for SessionServices {
     fn methods(&self) -> Vec<&'static str> {
         match self {
-            Self::Loop(_) => vec![
+            Self::Harness(_) => vec![
                 "environments",
                 "events",
                 "model",
@@ -217,7 +145,7 @@ impl ExecutionServices for SessionServices {
             return Err(brain::Error::Cancelled("execution cancelled".into()));
         }
         match (self, method) {
-            (Self::Loop(services), "environments") => {
+            (Self::Harness(services), "environments") => {
                 services
                     .environments(serde_json::from_value(input).map_err(json_error)?)
                     .await
@@ -248,41 +176,41 @@ impl ExecutionServices for SessionServices {
                     .finish(serde_json::from_value(input).map_err(json_error)?)
                     .await?
             )),
-            (Self::Loop(services), "set_transcript") => Ok(json!(
+            (Self::Harness(services), "set_transcript") => Ok(json!(
                 services
                     .set_transcript(serde_json::from_value(input).map_err(json_error)?)
                     .await?
             )),
-            (Self::Loop(services), "kv_put") => Ok(json!(
+            (Self::Harness(services), "kv_put") => Ok(json!(
                 services
                     .kv_put(serde_json::from_value(input).map_err(json_error)?)
                     .await?
             )),
-            (Self::Loop(services), "kv_read") => {
+            (Self::Harness(services), "kv_read") => {
                 let key = serde_json::from_value(input).map_err(json_error)?;
                 Ok(match services.kv_read(key).await? {
                     Some(value) => json!({"value": value}),
                     None => json!({}),
                 })
             }
-            (Self::Loop(services), "kv_delete") => Ok(json!(
+            (Self::Harness(services), "kv_delete") => Ok(json!(
                 services
                     .kv_delete(serde_json::from_value(input).map_err(json_error)?)
                     .await?
             )),
-            (Self::Loop(services), "events") => serde_json::to_value(
+            (Self::Harness(services), "events") => serde_json::to_value(
                 services
                     .events(serde_json::from_value(input).map_err(json_error)?)
                     .await?,
             )
             .map_err(json_error),
-            (Self::Loop(services), "model") => serde_json::to_value(
+            (Self::Harness(services), "model") => serde_json::to_value(
                 services
                     .model(serde_json::from_value(input).map_err(json_error)?)
                     .await?,
             )
             .map_err(json_error),
-            (Self::Loop(services), "dispatch") => serde_json::to_value(
+            (Self::Harness(services), "dispatch") => serde_json::to_value(
                 services
                     .dispatch(serde_json::from_value(input).map_err(json_error)?)
                     .await?,
@@ -292,14 +220,14 @@ impl ExecutionServices for SessionServices {
                 let event: brain_protocol::TurnEmitRequest =
                     serde_json::from_value(input).map_err(json_error)?;
                 let sequence = match self {
-                    Self::Loop(s) => s.emit(event.event_type, event.data).await?,
+                    Self::Harness(s) => s.emit(event.event_type, event.data).await?,
                     Self::Tool(s) => s.emit(event.event_type, event.data).await?,
                 };
                 Ok(json!(sequence))
             }
             (_, "telemetry") => {
                 match self {
-                    Self::Loop(s) => s.telemetry(input),
+                    Self::Harness(s) => s.telemetry(input),
                     Self::Tool(s) => s.telemetry(input),
                 };
                 Ok(Value::Null)
@@ -311,14 +239,14 @@ impl ExecutionServices for SessionServices {
     }
     fn cancelled(&self) -> bool {
         match self {
-            Self::Loop(s) => s.cancelled(),
+            Self::Harness(s) => s.cancelled(),
             Self::Tool(s) => s.cancelled(),
         }
     }
     async fn closed(&self) {
         match self {
             Self::Tool(services) => services.closed().await,
-            Self::Loop(_) => std::future::pending().await,
+            Self::Harness(_) => std::future::pending().await,
         }
     }
 }

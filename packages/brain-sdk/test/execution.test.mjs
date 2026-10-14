@@ -4,7 +4,7 @@ import { HostToolRegistry } from "../dist/host.js";
 
 import { z } from "zod";
 import {
-  agentloop, brainEnv, component, environment, hostEnv, inspectAgentloop, inspectEnvironment,
+  brainEnv, component, environment, hostEnv, inspectEnvironment,
   inspectTool, tool,
 } from "../dist/index.js";
 
@@ -18,12 +18,6 @@ test("extensions are immutable factories with explicit placement", () => {
     configuration: { secrets: ["MODEL_TOKEN"] },
   });
   assert.deepEqual(inspectEnvironment(hostEnv({ name: "app" })).driver, { driver: "host" });
-
-  const pi = agentloop({ options: z.object({ compactAt: z.number() }), implementation: wasm });
-  const loop = pi({ env: native, compactAt: 0.8 });
-  assert.deepEqual(inspectAgentloop(loop).configuration, { compactAt: 0.8 });
-  assert.equal(inspectAgentloop(loop).environment, native);
-  assert.equal("use" in loop, false);
 
   const read = tool({
     name: "read",

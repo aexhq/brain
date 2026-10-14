@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
 
 
 const apiKey = process.env.VERCEL_AI_GATEWAY_API_KEY;
@@ -30,13 +28,7 @@ async function request(method, path, body, contentType = "application/json") {
   return text ? JSON.parse(text) : undefined;
 }
 
-const componentPath = process.env.BRAIN_AGENTLOOP_WASM;
-if (!componentPath) throw new Error("BRAIN_AGENTLOOP_WASM must name a compiled Agentloop Component");
-const componentBytes = new Uint8Array(await readFile(resolve(componentPath)));
-
-const admission = await request("POST", "/v1/agentloops", componentBytes, "application/octet-stream");
 const session = await request("POST", "/v1/sessions", {
-  agentloop: { implementation: { type: "brain_component", entrypoint: "turn", id: admission.id }, configuration: {}, environment: "brain" },
   model: {
     provider: "vercel-ai-gateway",
     name: process.env.BRAIN_MODEL ?? "openai/gpt-5-mini",
@@ -44,7 +36,7 @@ const session = await request("POST", "/v1/sessions", {
   },
   system: "Answer briefly.",
   tools: [],
-  environments: [{ name: "brain", driver: "brain", lifecycle: "automatic" }],
+  environments: [],
 });
 
 try {

@@ -9,22 +9,21 @@ use crate::{
 /// The contract identifier of the session API.
 pub const SESSION_CONTRACT: &str = "session/v1";
 
-/// The admitted Agentloop a session runs: which one, how it is configured, which
-/// Environment of the session runs it.
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+/// Options for the deployment's harness. Executable code is selected at server startup.
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct AgentloopRef {
+pub struct HarnessOptions {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub environments: Vec<crate::EnvironmentGrant>,
-    pub implementation: serde_json::Value,
+    #[serde(default)]
     pub configuration: serde_json::Value,
-    pub environment: EnvironmentName,
 }
 
 #[derive(Clone, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateSessionRequest {
-    pub agentloop: AgentloopRef,
+    #[serde(default)]
+    pub harness: HarnessOptions,
     pub model: ModelSelection,
     /// The system prompt the agent loop starts from. The loop may send a different one
     /// on any model call.
@@ -36,8 +35,8 @@ pub struct CreateSessionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_format: Option<serde_json::Value>,
     pub tools: Vec<Tool>,
-    /// The Environments of this session, set up as part of this create. Every Tool and
-    /// the Agentloop name one of them.
+    /// The Environments of this session, set up as part of this create. Every Tool placement
+    /// names one of them. The harness is deployment-owned.
     pub environments: Vec<Environment>,
     /// A transcript to carry forward, if the caller has one: the messages the new
     /// session's first model call should already see. Brain journals them as the session's
@@ -55,8 +54,9 @@ pub struct CreateSessionRequest {
 /// session can only ever do what it was granted. Credentials never enter it: the model
 /// key and an Environment's credential are sealed by the server beside the session.
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionConfig {
-    pub agentloop: AgentloopRef,
+    pub harness: HarnessOptions,
     pub model: ModelBinding,
     #[serde(default)]
     pub system: String,
@@ -207,12 +207,4 @@ pub struct SessionList {
 pub enum AdmissionStatus {
     Admitted,
     Rejected,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-pub struct AgentloopAdmission {
-    pub id: crate::AgentloopId,
-    pub status: AdmissionStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<crate::ApiError>,
 }

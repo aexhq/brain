@@ -30,7 +30,6 @@ pub struct Options {
     /// Independent conversations, each on a freshly started subject with an empty data
     /// directory. One run is an anecdote; the shape has to reproduce.
     pub repeats: usize,
-    pub agentloop: PathBuf,
     pub out: PathBuf,
 }
 
@@ -169,7 +168,6 @@ async fn drive(
 ) -> Result<Vec<Row>> {
     let bench = drivers::Bench {
         base_url: base_url.to_owned(),
-        agentloop_package: options.agentloop.clone(),
         pid: Some(pid),
         environment: std::sync::Arc::clone(environment),
         model_base_url: provider.base_url.clone(),

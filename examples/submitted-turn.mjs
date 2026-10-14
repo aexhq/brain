@@ -1,5 +1,4 @@
 import { Brain } from "@aexhq/brain";
-import { pi } from "@aexhq/agentloop-pi";
 
 const options = {
   baseUrl: process.env.BRAIN_BASE_URL ?? "http://127.0.0.1:8080",
@@ -12,7 +11,6 @@ let id, sequence;
 try {
   const session = await submitter.sessions.create({
     model: { provider: "openai", name: "gpt-5-mini", apiKey },
-    agentloop: pi(),
   });
   id = session.id;
   sequence = await session.submit("Reply with READY.", { idempotencyKey: crypto.randomUUID() });

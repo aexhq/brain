@@ -5,8 +5,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
-import { Brain, agentloop, brainEnv, component, environment, tool } from "@aexhq/brain";
+import { fileURLToPath } from "node:url";
+import { Brain, environment, tool } from "@aexhq/brain";
 import { z } from "zod";
 import { lazyEnvironment } from "../../examples/lazy-environment.mjs";
 
@@ -41,6 +41,7 @@ async function start(baseUrl) {
     ...process.env, BRAIN_LISTEN: new URL(baseUrl).host, BRAIN_DATA_DIR: join(root, "data"),
     BRAIN_API_TOKEN: "runtime-test", BRAIN_ENV_WORKER: process.env.BRAIN_TEST_WORKER,
     BRAIN_MODEL_BASE_URL: `${modelUrl}/v1`,
+    BRAIN_HARNESS: JSON.stringify({ command: process.execPath, args: [fileURLToPath(new URL("../fixtures/harness.mjs", import.meta.url))] }),
   }, stdio: ["ignore", "inherit", "inherit"] });
   for (let i = 0; i < 1200; i++) {
     if (server.exitCode !== null) throw new Error(`server exited: ${server.exitCode}`);
@@ -87,18 +88,17 @@ try {
   runtimeBaseUrl = baseUrl;
   await start(baseUrl);
   const brain = new Brain({ baseUrl, token: "runtime-test" });
-  const artifact = component(pathToFileURL(process.env.BRAIN_TEST_REFERENCE_AGENTLOOP));
-  await brain.admitAgentloop(artifact);
-  const loop = agentloop({ implementation: artifact });
   const provider = environment({ options: z.object({ url: z.url(), token: z.string() }), url: ({ url }) => url, credential: ({ token }) => token, configure: () => ({}) });
   const tools = ["first", "second"].map((name) => tool({ name, input: z.object({ value: z.string() }),
     implementation: { type: "reference_echo" }, description: "Echo input" })({ env: provider({ name, url: providers[name], token: name }) }));
-  const options = { model: { provider: "vercel-ai-gateway", name: "test/scripted", apiKey: "test" }, agentloop: loop({ env: brainEnv({ name: "brain" }) }), tools };
+  const options = { model: { provider: "vercel-ai-gateway", name: "test/scripted", apiKey: "test" }, tools };
   const session = await brain.sessions.create(options);
   assert.equal(allocations, 0, "logical setup must not allocate");
   await session.send("use both environments");
   assert.equal(allocations, 2);
-  assert.equal((await session.transcript()).messages.length, 4);
+  const firstTranscript = (await session.transcript()).messages;
+  assert.equal(firstTranscript.flatMap(message => message.content).filter(block => block.type === "tool_result").length, 2);
+  assert.equal(firstTranscript.at(-1).content[0].text, "done");
   // The caller ends the provider resource; elapsed time is not Environment policy.
   for (const [environment, provider] of Object.entries(control)) {
     await provider.handle({ contract: "environment/v1", operation: { session_id: session.id, environment, sequence: 999, request: { type: "teardown" } } });
@@ -110,7 +110,9 @@ try {
   const before = await session.transcript();
   await stop();
   await start(baseUrl);
-  assert.deepEqual(await session.transcript(), before);
+  const reopened = await session.transcript();
+  assert.deepEqual(reopened.messages, before.messages);
+  assert.ok(reopened.through_sequence >= before.through_sequence);
   assert.equal(modelCalls, calls, "restart and history reads must not activate a loop");
   const histories = [];
   for (let i = 0; i < 2; i++) {
@@ -118,7 +120,11 @@ try {
     for (let turn = 0; turn < 2; turn++) await retained.send(`turn ${turn}`);
     histories.push(retained);
   }
-  for (const retained of histories) assert.equal((await retained.transcript()).messages.length, 8);
+  for (const retained of histories) {
+    const messages = (await retained.transcript()).messages;
+    assert.equal(messages.flatMap(message => message.content).filter(block => block.type === "tool_result").length, 4);
+    assert.equal(messages.filter(message => message.role === "assistant").length, 4);
+  }
   await stop();
   const upgrade = flag => spawnSync(join(dirname(process.env.BRAIN_TEST_SERVER), "brain-check-media-upgrade"),
     ["--data-dir", join(root, "data"), flag], { encoding: "utf8" });

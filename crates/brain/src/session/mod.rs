@@ -468,7 +468,7 @@ fn validate_session_contract(config: &SessionConfig) -> Result<(), Error> {
         }
     }
     for grant in config
-        .agentloop
+        .harness
         .environments
         .iter()
         .chain(config.tools.iter().flat_map(|tool| &tool.environments))
@@ -493,18 +493,11 @@ fn validate_session_contract(config: &SessionConfig) -> Result<(), Error> {
         }
     }
     // The one placement rule: everything that runs names an Environment of this session.
-    let placed = config
-        .tools
-        .iter()
-        .flat_map(|tool| {
-            tool.placements
-                .keys()
-                .map(|environment| (tool.name.as_str(), environment))
-        })
-        .chain(std::iter::once((
-            "agentloop",
-            &config.agentloop.environment,
-        )));
+    let placed = config.tools.iter().flat_map(|tool| {
+        tool.placements
+            .keys()
+            .map(|environment| (tool.name.as_str(), environment))
+    });
     for (subject, environment) in placed {
         if !environments.contains(environment) {
             return Err(Error::InvalidState(format!(
@@ -556,15 +549,9 @@ fn validate_tool_definition(tool: &brain_protocol::ToolDefinition) -> Result<(),
 
 #[cfg(test)]
 mod tests {
-    use brain_protocol::{
-        AgentloopId, AgentloopRef, Environment, EnvironmentName, ModelBinding, Tool,
-    };
+    use brain_protocol::{Environment, EnvironmentName, HarnessOptions, ModelBinding, Tool};
 
     use super::*;
-
-    fn digest() -> String {
-        "a".repeat(64)
-    }
 
     fn tool() -> Tool {
         Tool {
@@ -598,11 +585,9 @@ mod tests {
     /// in one Environment.
     fn config() -> SessionConfig {
         SessionConfig {
-            agentloop: AgentloopRef {
+            harness: HarnessOptions {
                 environments: Vec::new(),
                 configuration: serde_json::json!({}),
-                environment: EnvironmentName::new("workspace"),
-                implementation: serde_json::json!({"type": "brain_component", "entrypoint": "turn", "id": AgentloopId::new(digest())}),
             },
             model: ModelBinding {
                 provider: "vercel-ai-gateway".into(),
@@ -714,7 +699,6 @@ mod tests {
                         EnvironmentName::new("../escape"),
                         request.tools[0].placements.values().next().unwrap().clone(),
                     )]);
-                    request.agentloop.environment = EnvironmentName::new("../escape");
                 },
                 "Environment name",
             ),
@@ -752,11 +736,6 @@ mod tests {
                         request.tools[0].placements.values().next().unwrap().clone(),
                     )])
                 },
-                "must name an Environment of this session",
-            ),
-            (
-                "an Agentloop naming an Environment the session does not have",
-                |request| request.agentloop.environment = EnvironmentName::new("elsewhere"),
                 "must name an Environment of this session",
             ),
         ];

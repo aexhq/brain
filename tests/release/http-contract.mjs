@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 
 const baseUrl = process.env.BRAIN_BASE_URL;
 const token = process.env.BRAIN_API_TOKEN;
@@ -51,26 +50,15 @@ const unauthorized = await call("GET", "/v1/sessions", { authorized: false });
 assert.equal(unauthorized.response.status, 401);
 assert.equal(unauthorized.result.code, "unauthorized");
 
-const missingKey = await call("POST", "/v1/agentloops", {
+const missingKey = await call("POST", "/v1/tools", {
   body: new Uint8Array([1]),
   contentType: "application/octet-stream",
 });
 assert.equal(missingKey.response.status, 400);
 assert.equal(missingKey.result.code, "invalid_request");
 
-const packageBytes = await readFile(new URL("./diagnostic-agentloop.wasm", import.meta.url));
-const admitted = await call("POST", "/v1/agentloops", {
-  body: packageBytes,
-  contentType: "application/octet-stream",
-  key: "http-contract-admit",
-});
-assert.equal(admitted.response.status, 200);
-assert.equal(admitted.result.status, "admitted");
-const admission = await call("GET", `/v1/agentloops/${admitted.result.id}`);
-assert.deepEqual(admission.result, admitted.result);
-
 const createBody = {
-  agentloop: { implementation: { type: "brain_component", entrypoint: "turn", id: admitted.result.id }, configuration: {}, environment: "brain" },
+  harness: { configuration: { mode: "diagnostic" } },
   model: { provider: "vercel-ai-gateway", name: "openai/gpt-5-mini", api_key: "release-smoke-key" },
   tools: [],
   environments: [{ name: "brain", driver: "brain", lifecycle: "automatic" }],
@@ -82,7 +70,7 @@ assert.equal(created.result.status, "idle");
 const replayedCreate = await call("POST", "/v1/sessions", { body: createBody, key: "http-contract-create" });
 assert.deepEqual(replayedCreate.result, created.result);
 const conflictingCreate = await call("POST", "/v1/sessions", {
-  body: { ...createBody, agentloop: { ...createBody.agentloop, configuration: { changed: true } } },
+  body: { ...createBody, harness: { configuration: { mode: "diagnostic", changed: true } } },
   key: "http-contract-create",
 });
 assert.equal(conflictingCreate.response.status, 409);

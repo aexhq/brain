@@ -33,7 +33,6 @@ pub struct Options {
     pub repeats: usize,
     /// Sessions created after the cold one, on each process.
     pub warm_per_repeat: usize,
-    pub agentloop: PathBuf,
 }
 
 pub async fn run(options: Options) -> Result<()> {
@@ -138,7 +137,6 @@ async fn measure(
 ) -> Result<(f64, Vec<f64>)> {
     let bench = drivers::Bench {
         base_url: running.base_url.clone(),
-        agentloop_package: options.agentloop.clone(),
         pid: Some(running.pid),
         environment: std::sync::Arc::clone(environment),
         model_base_url: provider.base_url.clone(),

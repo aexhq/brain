@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { z } from "zod";
-import { Brain, agentloop, environment, environmentHandler } from "../dist/index.js";
+import { Brain, environment, environmentHandler } from "../dist/index.js";
 import { HostToolRegistry } from "../dist/host.js";
 
 test("lifecycle defaults to automatic and grants do not install a management Tool", async () => {
@@ -11,11 +11,11 @@ test("lifecycle defaults to automatic and grants do not install a management Too
     return Response.json({ session_id: "session", status: "idle", last_sequence: 1 });
   } });
   const remote = environment({ url: () => "https://env.example" })({ name: "controller" });
-  const options = { model: { provider: "openai", name: "test", apiKey: "fixture" }, agentloop: agentloop({ implementation: {} })({ env: remote, environments: [{ environment: "controller", permissions: ["read"], methods: [] }] }) };
+  const options = { model: { provider: "openai", name: "test", apiKey: "fixture" }, environments: [remote], harness: { environments: [{ environment: "controller", permissions: ["read"], methods: [] }] } };
   await brain.sessions.create(options);
   assert.deepEqual(requests[0].tools, []);
   assert.equal(requests[0].environments[0].lifecycle, "automatic");
-  assert.deepEqual(requests[0].agentloop.environments[0].permissions, ["read"]);
+  assert.deepEqual(requests[0].harness.environments[0].permissions, ["read"]);
 });
 
 test("nested lifecycle defaults and binding overrides compile into explicit wire policies", async () => {
@@ -27,8 +27,8 @@ test("nested lifecycle defaults and binding overrides compile into explicit wire
   const remote = environment({ url: () => "https://env.example" });
   const options = {
     model: { provider: "openai", name: "test", apiKey: "fixture" },
-    agentloop: agentloop({ implementation: {} })({ env: remote({ name: "controller" }) }),
-    environments: [remote({ name: "workspace" })],
+
+    environments: [remote({ name: "controller" }), remote({ name: "workspace" })],
   };
   for (const [configuration, expected] of [
     [{}, ["automatic", "automatic"]],

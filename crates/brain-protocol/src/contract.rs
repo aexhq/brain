@@ -8,12 +8,11 @@ use schemars::{JsonSchema, SchemaGenerator, generate::SchemaSettings};
 use serde_json::{Map, Value, json};
 
 use crate::{
-    AGENTLOOP_CONTRACT_VERSION, AgentloopAdmission, AgentloopId, ApiError, CreateSessionRequest,
-    Environment, EnvironmentCallRequest, EnvironmentCallResult, EnvironmentCommand,
-    EnvironmentName, EnvironmentResponse, EventPage, HostCommand, HostEvent, HostEventAck, HostId,
-    HostRegistration, HostResult, Message, MessageRequest, Outcome, SESSION_CONTRACT, SessionId,
-    SessionList, SessionSummary, Tool, ToolAdmission, ToolId, TurnEmitRequest, TurnInput,
-    TurnOutput,
+    ApiError, CreateSessionRequest, Environment, EnvironmentCallRequest, EnvironmentCallResult,
+    EnvironmentCommand, EnvironmentName, EnvironmentResponse, EventPage, HARNESS_PROTOCOL,
+    HostCommand, HostEvent, HostEventAck, HostId, HostRegistration, HostResult, Message,
+    MessageRequest, Outcome, SESSION_CONTRACT, SessionId, SessionList, SessionSummary, Tool,
+    ToolAdmission, ToolId, TurnEmitRequest, TurnInput, TurnOutput,
 };
 
 /// Where the contracts are published; each document's `$id` is its path under here.
@@ -26,12 +25,16 @@ pub fn session() -> Value {
         "session/v1/schemas.json",
         "Brain Session API v1",
         |generator| {
-            define::<AgentloopAdmission>(generator);
             define::<crate::BrainPreparation>(generator);
             define::<crate::ProgramAdmission>(generator);
-            define::<AgentloopId>(generator);
             define::<ApiError>(generator);
             define::<CreateSessionRequest>(generator);
+            define::<crate::HarnessCommand>(generator);
+            define::<crate::HarnessInitialize>(generator);
+            define::<crate::HarnessIdentity>(generator);
+            define::<crate::HarnessSession>(generator);
+            define::<crate::HarnessRun>(generator);
+            define::<crate::HarnessCallback>(generator);
             define::<Environment>(generator);
             define::<EnvironmentCommand>(generator);
             define::<EnvironmentResponse>(generator);
@@ -100,26 +103,27 @@ pub fn tool() -> Value {
     })
 }
 
-/// One turn as the agent loop sees it: what Brain hands over and what comes back.
-pub fn agentloop() -> Value {
-    document(
-        "agentloop/v1/contract.json",
-        "Brain Agentloop",
-        |generator| {
-            let input = reference::<TurnInput>(generator);
-            let output = reference::<TurnOutput>(generator);
-            root(json!({
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["contract", "input", "output"],
-                "properties": {
-                    "contract": { "const": AGENTLOOP_CONTRACT_VERSION },
-                    "input": input,
-                    "output": output
-                }
-            }))
-        },
-    )
+/// Startup lifecycle payloads and one activation's input and output.
+pub fn harness() -> Value {
+    document("harness/v1/contract.json", "Brain Harness", |generator| {
+        define::<crate::HarnessInitialize>(generator);
+        define::<crate::HarnessIdentity>(generator);
+        define::<crate::HarnessSession>(generator);
+        define::<crate::HarnessRun>(generator);
+        define::<crate::HarnessCallback>(generator);
+        let input = reference::<TurnInput>(generator);
+        let output = reference::<TurnOutput>(generator);
+        root(json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["contract", "input", "output"],
+            "properties": {
+                "contract": { "const": HARNESS_PROTOCOL },
+                "input": input,
+                "output": output
+            }
+        }))
+    })
 }
 
 /// The closed code sets: journal record kinds, failure codes, API error codes.

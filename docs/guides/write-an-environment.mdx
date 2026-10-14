@@ -123,7 +123,7 @@ const handler = environmentHandler({
 Hand the provider's watchers only `ctx.reporter`, and keep operation services inside the handler.
 The reporter can outlive setup and carries no control authority. An operation can call another
 authorized environment through `ctx.environments`, with grants separate from those of any Tool or
-Agentloop it hosts. Export `handler.methods` on the `environment(...)` factory so the application
+Tool it hosts. Export `handler.methods` on the `environment(...)` factory so the application
 can grant the methods it chooses.
 
 Use `effect: "replace"` for a method that replaces the whole execution environment, and ordinary

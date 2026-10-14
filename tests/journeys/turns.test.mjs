@@ -25,7 +25,7 @@ test("resending an acknowledged message with its key never repeats the model eff
   assert.equal((await session.transcript()).messages.length, 2);
 });
 
-test("cancel a running turn, inspect its outcome, and explicitly send again", { timeout: 30_000 }, async (t) => {
+test("cancelled native work cannot be resumed or replayed", { timeout: 30_000 }, async (t) => {
   const entered = deferred();
   f.model = () => { entered.resolve(); };
   const session = await f.create(t);
@@ -40,7 +40,11 @@ test("cancel a running turn, inspect its outcome, and explicitly send again", { 
   assert.equal(f.modelRequests.length, 1);
   f.model = (_request, response) => reply(response, "recovered");
   await session.send("try a new turn");
-  assert.equal(text((await session.transcript()).messages.at(-1)), "recovered");
+  assert.equal(f.modelRequests.length, 1);
+  assert.match(JSON.stringify((await collect(session.events())).filter(event => event.type === "turn_failed")), /native harness activation did not complete/u);
+  const replacement = await f.create(t);
+  await replacement.send("new conversation");
+  assert.equal(text((await replacement.transcript()).messages.at(-1)), "recovered");
 });
 
 test("a client timeout does not silently retry or cancel server execution", { timeout: 30_000 }, async (t) => {
@@ -84,10 +88,10 @@ test("restart keeps history cold, and lost execution becomes an observation", { 
   assert.ok(events.some(({ type, data }) => type === "turn_failed" && JSON.stringify(data).includes("interrupted")));
   const recovered = await reopened.transcript();
   assert.deepEqual(recovered.messages.slice(0, saved.messages.length), saved.messages);
-  assert.equal(text(recovered.messages.at(-1)), "unfinished");
-  assert.ok(recovered.through_sequence > saved.through_sequence);
+  assert.deepEqual(recovered.messages, saved.messages);
   assert.equal(f.modelRequests.length, 2);
   f.model = (_request, response) => reply(response);
   await reopened.send("continue explicitly");
-  assert.ok(JSON.stringify(f.modelRequests.at(-1).input).includes("interrupted"));
+  assert.equal(f.modelRequests.length, 2);
+  assert.match(JSON.stringify((await collect(reopened.events())).filter(event => event.type === "turn_failed")), /native harness activation did not complete/u);
 });

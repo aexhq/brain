@@ -46,7 +46,6 @@ id_type!(SessionId, "^ses_[A-Za-z0-9]{20,32}$");
 id_type!(EnvironmentName, IDENTIFIER_PATTERN);
 // The one server-minted identity outside a session: a registered host.
 id_type!(HostId, "^host_[A-Za-z0-9]{20,32}$");
-id_type!(AgentloopId, SHA256_PATTERN);
 id_type!(ToolId, SHA256_PATTERN);
 id_type!(ProgramId, SHA256_PATTERN);
 

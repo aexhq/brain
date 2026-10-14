@@ -19,13 +19,7 @@ use crate::EnvLimits;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HostCall {
     Environments { request_json: String },
-    SetTranscript { messages_json: String },
-    KvPut { key: String, value_json: String },
-    KvRead { key: String },
-    KvDelete { key: String },
-    Events { after: u64 },
     Model { request_json: String },
-    Dispatch { calls_json: String },
     Emit { kind: String, payload_json: String },
     ToolResult { outcome_json: String },
     ToolReturned { outcome_json: Option<String> },
@@ -132,7 +126,6 @@ fn split_origin(origin: &str) -> Option<(&str, &str)> {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComponentKind {
-    Agentloop,
     Tool,
 }
 

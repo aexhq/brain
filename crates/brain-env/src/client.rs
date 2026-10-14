@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use brain_protocol::{AgentloopId, ToolId, TurnError, TurnInput, TurnOutput};
+use brain_protocol::{ToolId, TurnError};
 
 use crate::wire::{max_request_bytes, read_frame, write_frame};
 use crate::{
@@ -168,12 +168,6 @@ impl WorkerClient {
         }
     }
 
-    pub async fn admit(&self, package: &[u8]) -> Result<AgentloopId, String> {
-        self.admit_as(package, ComponentKind::Agentloop)
-            .await
-            .map(AgentloopId::new)
-    }
-
     pub async fn admit_tool(&self, component: &[u8]) -> Result<ToolId, String> {
         self.admit_as(component, ComponentKind::Tool)
             .await
@@ -224,28 +218,6 @@ impl WorkerClient {
         .await
     }
 
-    pub async fn turn(
-        &self,
-        digest: AgentloopId,
-        environment: NativeEnvironment,
-        input: TurnInput,
-        bridge: &dyn TurnBridge,
-    ) -> Result<TurnOutput, LoopError> {
-        let output = self
-            .execute(
-                crate::WorkerCode {
-                    kind: ComponentKind::Agentloop,
-                    digest: digest.to_string(),
-                    program: None,
-                },
-                environment,
-                serde_json::to_value(input).map_err(|e| e.to_string())?,
-                bridge,
-            )
-            .await?;
-        serde_json::from_value(output).map_err(|e| LoopError::Failed(e.to_string()))
-    }
-
     /// Worker health is independent of invocation progress. Cancellation uses the
     /// same connection without dropping a partially read response frame.
     pub(crate) async fn execute(
@@ -271,7 +243,7 @@ impl WorkerClient {
         .await
         .map_err(|error| {
             if error.starts_with("worker frame exceeds") {
-                "Agentloop turn input exceeds the configured limit".to_owned()
+                "Tool execution input exceeds the configured limit".to_owned()
             } else {
                 error
             }

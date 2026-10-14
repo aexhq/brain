@@ -44,11 +44,12 @@ export BRAIN_IMAGE='ghcr.io/aexhq/brain@sha256:REPLACE_WITH_RELEASE_DIGEST'
 export BRAIN_API_TOKEN='REPLACE_WITH_A_PRIVATE_TOKEN'
 docker run -d --name brain --restart unless-stopped \
   -p 127.0.0.1:8080:8080 -e BRAIN_API_TOKEN \
+  -e BRAIN_HARNESS='{"command":"brain-harness-pi"}' \
   -v brain-data:/var/lib/brain "$BRAIN_IMAGE"
 curl --fail --silent --show-error http://127.0.0.1:8080/health/ready
 ```
 
-Readiness returns 204 with no body. It checks the built-in worker pool, not model credentials,
+Readiness returns 204 with no body. It checks the startup harness and built-in worker pool, not model credentials,
 remote provider health or disk space. `/health/live` is a public process check. Run
 `docker logs brain` to see startup and execution errors.
 
@@ -74,7 +75,7 @@ curl --fail --silent --show-error \
 ```
 
 The repository's `compose.yaml` builds from local source. Before `docker compose up --build -d`,
-set `BRAIN_API_TOKEN`, and set `BRAIN_DATA_DIR` to an absolute host directory. On Linux, make that
+set `BRAIN_API_TOKEN` and `BRAIN_HARNESS`, and set `BRAIN_DATA_DIR` to an absolute host directory. On Linux, make that
 directory writable by uid/gid 10001, the image's user. To run a published image instead, set
 `BRAIN_SERVER_IMAGE` to its immutable reference and use `docker compose up --no-build -d`.
 
@@ -89,7 +90,7 @@ Two addresses need configuring:
 
 For example, an Environment at `https://tools.example.com` can call a Brain server at
 `https://brain.example.com` when Brain starts with `BRAIN_PUBLIC_URL=https://brain.example.com`.
-This applies to remote loops, tools, controllers and independent Environment reporters. The server
+This applies to remote tools, controllers and independent Environment reporters. The server
 hands out scoped callback tokens, so the Environment never needs the server API token. Pass the
 setting with `-e BRAIN_PUBLIC_URL` in `docker run`, or export it before starting Compose.
 
@@ -150,8 +151,10 @@ Add `--from-chat` when upgrading from the former Chat/inline-media contract, and
 `--from-tool-return` when moving from the former Tool return contract to explicit completion; open
 retained sessions that use that old execution contract are rejected. Add
 `--from-agentloop-acknowledge` when upgrading to automatic Agentloop event completion; open sessions
-bound to the previous immutable loop contract must keep their matching runtime. Rebuild custom
-loops against the new WIT before creating sessions. If you configured custom providers, mount their
+bound to the previous immutable loop contract must keep their matching runtime. Version 0.40
+requires a new data directory for the startup harness contract; the checker does not migrate old
+Agentloop sessions. Back up native harness files together with the journal. Interrupted native
+activations cannot be resumed; start a new session. If you configured custom providers, mount their
 file read-only and pass `--providers-file` with its container path. The checker locks the stopped
 store and inspects it without rewriting any records.
 
@@ -164,7 +167,7 @@ reattached, because retained history alone doesn't restore those processes.
 
 | Symptom | Check |
 | --- | --- |
-| Container exits before listening | Supply `BRAIN_API_TOKEN`; check data-directory permissions, format and whether another writer holds it. |
+| Container exits before listening | Supply `BRAIN_API_TOKEN` and `BRAIN_HARNESS`; check data-directory permissions, format and whether another writer holds it. |
 | 401 from an application route | Send the configured server bearer token. Host and Environment callbacks use their own scoped tokens instead. |
 | 400 mentioning `idempotency-key` | Send a key of 1–256 bytes. Environment control requires it for list/get requests too. Reuse it only for the same request and mode. |
 | Invalid request body or cursor | Read the JSON error's `message`. Malformed JSON, path and query values return 400; invalid JSON fields return 422; incorrect content type returns 415; an oversized body returns 413. |

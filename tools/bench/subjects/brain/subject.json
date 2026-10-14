@@ -1,13 +1,10 @@
 {
   "name": "brain",
   "class": "session-kernel",
-  "version": "f6efa6e",
+  "version": "startup-harness-0.40",
   "notes": [
-    "The reference subject. Driven over the public HTTP surface with no brain crate linked, so its numbers are produced the same way every rival's are.",
-    "Build first: cargo build --release -p brain-server --bin brain -p brain-env --bin brain-env-worker",
-    "Pinned to the commit measured: origin/main f6efa6e, which is the first revision where ttfb is a distinct measurement from round_trip and where the four architectural blockers are fixed.",
-    "No ttfb probe. The events endpoint streams live as of f6efa6e, but Brain journals a model call as one `model_result` record written when the call completes - there is no per-token record to wait for, so a first-token number here would be the whole model call under another name. Declare it again once Brain publishes stream deltas as they arrive.",
-    "No tool_dispatch probe. The agentloop the benchmark drives (examples/example-brain.mjs) answers every model completion with turn.reply and has no tool path at all, so no tool is ever dispatched however the scripted provider answers. The probe timed out blaming the environment, which had nothing to do with it. Declare it again once the benchmark ships its own agentloop that dispatches a tool - it should not borrow one whose job is teaching."
+    "Run npm ci && npm run build and cargo build --release -p brain-server --bin brain -p brain-env-worker --bin brain-env-worker before measuring.",
+    "Uses the real upstream Pi harness selected at startup. Previous measurements used a different loop and are not comparable. New performance claims require rerunning the probes."
   ],
   "requires": {
     "linux": true
@@ -19,7 +16,9 @@
       "BRAIN_LISTEN": "127.0.0.1:{port}",
       "BRAIN_DATA_DIR": "{data_dir}",
       "BRAIN_ENV_WORKER": "target/release/brain-env-worker",
-      "BRAIN_MODEL_BASE_URL": "{model_base_url}"
+      "BRAIN_MODEL_BASE_URL": "{model_base_url}",
+      "BRAIN_HARNESS": "{\"command\":\"node\",\"args\":[\"packages/brain-sdk/bin/brain-harness-pi.mjs\"],\"configuration\":{\"contextWindow\":64000,\"maxTokens\":1024}}",
+      "BRAIN_API_TOKEN": "bench"
     },
     "base_url": "http://127.0.0.1:{port}",
     "ready_url": "http://127.0.0.1:{port}/health/ready",
@@ -33,13 +32,13 @@
       "definition": "kill -9 after 50 turns, relaunch on the same data, until the same session serves a turn whose model request carries its history"
     },
     "create": {
-      "definition": "POST /v1/sessions until the response carries a session_id, agentloop already admitted"
+      "definition": "POST /v1/sessions until the response carries a session_id, startup harness ready"
     },
     "idle": {
       "definition": "private memory across the whole process tree with no sessions created, sampled for 20s after 10s of settling; the figure a project README calls \"idle memory\""
     },
     "ttfb": {
-      "definition": "message submitted until the first assistant_delta frame on its SSE stream; the stream is opened before the message is sent, so the client’s own subscribe latency is outside the measurement"
+      "definition": "message submitted until the first assistant_delta frame on its SSE stream; the stream is opened before the message is sent, so the client\u2019s own subscribe latency is outside the measurement"
     },
     "round_trip": {
       "definition": "POST /v1/sessions/{id}/messages until the response returns, one complete text turn"

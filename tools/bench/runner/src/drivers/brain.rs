@@ -4,7 +4,6 @@
 //! contract, so Brain's number is produced the same way every competitor's number is —
 //! which is the only way the comparison means anything.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -20,12 +19,6 @@ pub struct BrainDriver {
     client: reqwest::Client,
     base_url: String,
     token: Option<String>,
-    /// The prebuilt Agentloop Component. Admitted once in `prepare`.
-    agentloop_package: PathBuf,
-    /// `id`, the content address the wire names an admitted Agentloop by. Reading any
-    /// other name silently produced `None` and failed admission with a message that
-    /// blamed the server.
-    agentloop_identity: Option<String>,
     /// The message sent for every timed turn. Fixed, because input length is an input to
     /// turn cost and must be identical across subjects.
     prompt: String,
@@ -48,7 +41,6 @@ impl BrainDriver {
 impl BrainDriver {
     pub fn new(
         base_url: impl Into<String>,
-        agentloop_package: PathBuf,
         pid: Option<u32>,
         environment: Arc<Fixture>,
     ) -> Result<Self> {
@@ -61,9 +53,7 @@ impl BrainDriver {
                 .timeout(Duration::from_secs(30))
                 .build()?,
             base_url: base_url.into().trim_end_matches('/').to_owned(),
-            token: std::env::var("BRAIN_API_TOKEN").ok(),
-            agentloop_package,
-            agentloop_identity: None,
+            token: Some(std::env::var("BRAIN_API_TOKEN").unwrap_or_else(|_| "bench".into())),
             prompt: "benchmark".to_owned(),
             turns_requested: std::sync::atomic::AtomicU64::new(0),
             pid,
@@ -107,42 +97,12 @@ async fn ok(response: reqwest::Response, doing: &str) -> Result<reqwest::Respons
 #[async_trait]
 impl Driver for BrainDriver {
     async fn prepare(&mut self) -> Result<()> {
-        let package = tokio::fs::read(&self.agentloop_package)
-            .await
-            .with_context(|| {
-                format!(
-                    "reading Agentloop Component {}; build the diagnostic-agentloop fixture first",
-                    self.agentloop_package.display()
-                )
-            })?;
-        let response = self
-            .idempotent(reqwest::Method::POST, "/v1/agentloops")
-            .header("content-type", "application/octet-stream")
-            .body(package)
-            .send()
-            .await?;
-        let admission: Value = ok(response, "admitting the agentloop")
-            .await?
-            .json()
-            .await?;
-        self.agentloop_identity = admission
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        anyhow::ensure!(
-            self.agentloop_identity.is_some(),
-            "agentloop admission returned no identity: {admission}"
-        );
+        ok(self.request(reqwest::Method::GET, "/health/ready").send().await?, "harness readiness").await?;
         Ok(())
     }
 
     async fn create(&self) -> Result<Unit> {
-        let identity = self
-            .agentloop_identity
-            .as_ref()
-            .context("prepare() must run before create()")?;
         let body = json!({
-            "agentloop": { "id": identity, "configuration": {}, "environment": "brain" },
             "model": {
                 "provider": "vercel-ai-gateway",
                 // The contract requires a provider-qualified name, so this must carry a
@@ -160,18 +120,13 @@ impl Driver for BrainDriver {
                 "name": "echo",
                 "description": "Returns its input unchanged.",
                 "input_schema": {"type": "object", "properties": {}},
-                "needs": [],
-                "implementation": {"type": "echo"},
-                "environment": "bench",
+                "placements": {"bench": {"implementation": {"type": "echo"}}},
             }],
             "environments": [{
                 "name": "bench",
                 "driver": "http",
                 "url": self.environment.base_url,
                 "configuration": {},
-            }, {
-                "name": "brain",
-                "driver": "brain",
             }],
         });
         let session = self

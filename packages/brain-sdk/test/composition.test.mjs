@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { z } from "zod";
-import { Brain, agentloop, brainEnv, clientBrowser, inspectTool, tool } from "../dist/index.js";
+import { Brain, brainEnv, clientBrowser, inspectTool, tool } from "../dist/index.js";
 import { runToolHandler } from "../dist/runtime.js";
 
 test("the default browser transport retains the global fetch receiver", async () => {
@@ -19,9 +19,8 @@ test("prepare compiles a browser placement without opening a host or executing i
   const client = new Brain({ baseUrl: "https://brain.example", fetch: () => { throw new Error("unexpected transport"); } });
   const read = tool({ name: "read_selection", description: "Read selection", input: z.object({}),
     run: () => { throw new Error("must not execute during preparation"); } });
-  const loop = agentloop({ implementation: { type: "brain_component", entrypoint: "turn", id: "loop" } });
   const options = { model: { provider: "openai", name: "model", apiKey: "private-model-key" },
-    agentloop: loop({ env: brainEnv({ name: "brain" }) }), tools: [read({ env: clientBrowser({ name: "editor" }) })] };
+     tools: [read({ env: clientBrowser({ name: "editor" }) })] };
   const request = await client.sessions.prepare(options, "authorized-host");
   assert.deepEqual(request.environments.find(env => env.name === "editor"),
     { name: "editor", lifecycle: "automatic", driver: "host", host_id: "authorized-host", configuration: {} });

@@ -66,7 +66,7 @@ fn serialized_model_metadata_matches_the_public_contract() {
 #[test]
 fn contract_schemas_are_valid_draft_2020_12() {
     for path in [
-        "generated/contract/agentloop/v1/contract.json",
+        "generated/contract/harness/v1/contract.json",
         "generated/contract/environment/v1/schemas.json",
         "generated/contract/tool/v1/schemas.json",
         "generated/contract/session/v1/schemas.json",
@@ -85,7 +85,7 @@ fn checked_in_examples_validate() {
         validate_definition("generated/contract/session/v1/schemas.json", name, example);
     }
     let agentloop = read_json("tests/examples/agentloop/turn.json");
-    jsonschema::draft202012::new(&read_json("generated/contract/agentloop/v1/contract.json"))
+    jsonschema::draft202012::new(&read_json("generated/contract/harness/v1/contract.json"))
         .unwrap()
         .validate(&agentloop)
         .unwrap();
@@ -192,8 +192,7 @@ fn rust_views_round_trip_contract_examples() {
         serde_json::from_value(read_json("tests/examples/session/create-session.json")).unwrap();
     assert_eq!(session.model.provider, "vercel-ai-gateway");
     assert_eq!(session.model.name, "openai/gpt-5-mini");
-    assert_eq!(session.agentloop.implementation["id"], "a".repeat(64));
-    assert_eq!(session.agentloop.environment.as_str(), "brain");
+    assert_eq!(session.harness.configuration, serde_json::json!({}));
     assert_eq!(session.system, "Be useful.");
     assert_eq!(session.tools.len(), 1);
     assert_eq!(session.tools[0].name, "read");

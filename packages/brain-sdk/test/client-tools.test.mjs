@@ -4,7 +4,7 @@ import test from "node:test";
 import { z } from "zod";
 import { HostToolRegistry } from "../dist/host.js";
 import { HostPump } from "../dist/client-pump.js";
-import { Brain, agentloop, brainEnv, component, hostEnv, tool } from "../dist/index.js";
+import { Brain, brainEnv, component, hostEnv, tool } from "../dist/index.js";
 
 const sessionId = "ses_12345678901234567890";
 const sse = (data) => `event: command\ndata: ${JSON.stringify(data)}\n\n`;
@@ -52,7 +52,6 @@ test("one host runs the Tools placed in it and commits ctx.emit before its resul
     const request = new Request(input, init);
     requests.push(request);
     const path = new URL(request.url).pathname;
-    if (path === "/v1/agentloops") return Response.json({ id: "a".repeat(64), status: "admitted" });
     if (path === "/v1/hosts") return Response.json({ host_id: "host_12345678901234567890", token: "host-token" });
     if (path.endsWith("/commands")) {
       return new Response(new ReadableStream({
@@ -91,19 +90,18 @@ test("one host runs the Tools placed in it and commits ctx.emit before its resul
       return ctx.finish({ id });
     },
   });
-  const pi = agentloop({ implementation: component(new Uint8Array([1])) });
   const client = new Brain({ baseUrl: "https://brain.example", token: "brain-token", fetch: fetchStub });
   t.after(() => client.close());
   const app = hostEnv({ name: "app" });
   const session = await client.sessions.create({
     model,
-    agentloop: pi({ env: brainEnv({ name: "brain" }) }),
+
     tools: [lookup({ env: app })],
   });
   await completed;
   const createRequest = requests.find((request) => new URL(request.url).pathname === "/v1/sessions");
   const body = await createRequest.json();
-  assert.deepEqual(body.environments[1], { name: "app", lifecycle: "automatic", driver: "host", host_id: "host_12345678901234567890", configuration: {} });
+  assert.deepEqual(body.environments[0], { name: "app", lifecycle: "automatic", driver: "host", host_id: "host_12345678901234567890", configuration: {} });
   assert.deepEqual(body.tools[0].placements.app, { implementation: { type: "host_function", name: "lookup" } });
   assert.equal("implementation" in body.tools[0], false);
   const eventRequest = requests.find((request) => new URL(request.url).pathname.endsWith("/events"));
@@ -122,14 +120,12 @@ test("session creation waits for the host command stream", async (t) => {
     const request = new Request(input, init);
     const path = new URL(request.url).pathname;
     paths.push(path);
-    if (path === "/v1/agentloops") return Response.json({ id: "a".repeat(64), status: "admitted" });
     if (path === "/v1/hosts") return Response.json({ host_id: "host_12345678901234567890", token: "host-token" });
     if (path.endsWith("/commands")) return Response.json({ code: "unavailable", message: "offline", retryable: true }, { status: 503 });
     if (path === "/v1/sessions") throw new Error("session create raced the host connection");
     throw new Error(`unexpected request ${request.method} ${path}`);
   } });
   t.after(() => client.close());
-  const pi = agentloop({ implementation: component(new Uint8Array([1])) });
   const local = tool({
     name: "local",
     description: "Run here.",
@@ -138,7 +134,7 @@ test("session creation waits for the host command stream", async (t) => {
   });
   await assert.rejects(client.sessions.create({
     model,
-    agentloop: pi({ env: brainEnv({ name: "brain" }) }),
+
     tools: [local({ env: hostEnv({ name: "app" }) })],
   }), /offline/u);
   assert.equal(paths.includes("/v1/sessions"), false);
@@ -227,9 +223,6 @@ test("a new session shares the host connection after the previous session ends",
   const client = new Brain({ baseUrl: "https://brain.example", fetch: async (input, init) => {
     const request = new Request(input, init);
     const path = new URL(request.url).pathname;
-    if (path === "/v1/agentloops") {
-      return Response.json({ id: "a".repeat(64), status: "admitted" });
-    }
     if (path === "/v1/hosts") {
       hosts += 1;
       return Response.json({ host_id: `host_${hosts}`, token: `token_${hosts}` });
@@ -254,7 +247,6 @@ test("a new session shares the host connection after the previous session ends",
     throw new Error(`unexpected request ${request.method} ${path}`);
   } });
   t.after(() => client.close());
-  const pi = agentloop({ implementation: component(new Uint8Array([1])) });
   const local = tool({
     name: "local",
     description: "Run here.",
@@ -263,7 +255,7 @@ test("a new session shares the host connection after the previous session ends",
   });
   const options = {
     model,
-    agentloop: pi({ env: brainEnv({ name: "brain" }) }),
+
     tools: [local({ env: hostEnv({ name: "app" }) })],
   };
 

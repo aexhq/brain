@@ -4,9 +4,9 @@ use async_trait::async_trait;
 use brain::{Feed, SessionRuntime, Writer};
 use brain_env::WorkerPool;
 use brain_server::{
-    BrainEnvironment, EnvironmentLoopExecutor, EnvironmentRegistry, Executions, HostEnvironment,
-    HttpEnvironmentAdapter, IdempotencyStore, NativePolicy, ServerApi, ServerConfig,
-    ServerModelExecutor, ServerResources, SessionToolExecutor,
+    BrainEnvironment, EnvironmentRegistry, Executions, HostEnvironment, HttpEnvironmentAdapter,
+    IdempotencyStore, NativePolicy, ServerApi, ServerConfig, ServerModelExecutor, ServerResources,
+    SessionToolExecutor,
 };
 use brain_telemetry::{TelemetryRecord, TelemetrySink, telemetry_channel_with};
 use clap::Parser;
@@ -53,7 +53,7 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
     let loops = Arc::new(WorkerPool::new(
         &config.env_worker,
         config.data_dir.join("run"),
-        config.data_dir.join("agentloops"),
+        config.data_dir.join("components"),
         config.env_limits.clone(),
         config.env_workers,
     ));
@@ -133,13 +133,14 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
     let session_runtime = Arc::new(SessionRuntime {
         environment_control: Some(environments.clone()),
         limits: config.limits.clone(),
-        loop_executor: Arc::new(EnvironmentLoopExecutor {
-            environments: environments.clone(),
-            deadline_ms: config
-                .limits
-                .max_turn()
-                .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64),
-        }),
+        harness: Arc::new(
+            brain_sessions::harness::StdioHarness::start(
+                &serde_json::from_str::<brain_protocol::HarnessCommand>(&config.harness)?,
+                &config.data_dir.join("harness"),
+                providers.clone(),
+            )
+            .await?,
+        ),
         model_executor: model,
         tool_executor: Arc::new(SessionToolExecutor::new(environments.clone())),
         tool_executions: Arc::default(),

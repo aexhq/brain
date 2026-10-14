@@ -21,6 +21,8 @@ remain in [the contracts](../../contracts), [user docs](../../docs), and
 
 ## Current architecture
 
+- [ADR-053: Select one upstream agent harness at Brain startup](2026-10-14-01-startup-harness.md)
+
 - [ADR-052: Suspend idle client tool connections without disposing sessions](2026-09-28-01-client-connection-lifecycle.md)
 
 - [ADR-051: Coordinate Environment lifecycle and expose the same scoped control service to extensions](2026-09-25-01-environment-events-and-control.md)
@@ -57,6 +59,7 @@ remain in [the contracts](../../contracts), [user docs](../../docs), and
 
 | Date | Record | Status |
 | --- | --- | --- |
+| 2026-10-14 | [ADR-053: Startup harness and upstream native state](2026-10-14-01-startup-harness.md) | Accepted |
 | 2026-09-28 | [ADR-052: Idle client tool connections](2026-09-28-01-client-connection-lifecycle.md) | Accepted |
 | 2026-09-25 | [ADR-051: Environment lifecycle, observations and shared control](2026-09-25-01-environment-events-and-control.md) | Accepted |
 | 2026-08-20 | [ADR-001: Make Brain an independent runtime with injected execution ports](2026-08-20-01-standalone.md) | Accepted |

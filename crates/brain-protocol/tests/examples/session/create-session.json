@@ -1,13 +1,4 @@
 {
-  "agentloop": {
-    "configuration": {},
-    "environment": "brain",
-    "implementation": {
-      "type": "brain_component",
-      "entrypoint": "turn",
-      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    }
-  },
   "model": {
     "provider": "vercel-ai-gateway",
     "name": "openai/gpt-5-mini",
@@ -44,5 +35,8 @@
         "region": "eu"
       }
     }
-  ]
+  ],
+  "harness": {
+    "configuration": {}
+  }
 }

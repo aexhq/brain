@@ -10,6 +10,10 @@ Refined by [ADR-048](2026-09-21-01-tool-completion-and-event-activation.md), acc
 and implemented in 0.28: committed Tool observations can activate the
 Agentloop, which acknowledges processing with a durable sequence marker.
 
+Amended by [ADR-053](2026-10-14-01-startup-harness.md): the deployment selects one
+harness at startup; native state and compaction belong to upstream. Agentloops no
+longer use Environment placement or Wasm admission. Tool execution remains unchanged.
+
 ## Context
 
 A loop that only returned one decision at a time could not naturally choose sequential or parallel tool execution, skip a tool, perform its own retry policy, or call another API for compaction. Step-shaped execution also created repeated context transfers.

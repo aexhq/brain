@@ -14,12 +14,12 @@ use std::{
 
 use async_trait::async_trait;
 use brain::{
-    Error, Feed, LocalSessionStore, LoopExecutor, ModelExecutor, Session, SessionRuntime,
+    AgentHarness, Error, Feed, LocalSessionStore, ModelExecutor, Session, SessionRuntime,
     SessionStore, ToolExecutor, TurnServices, Writer,
 };
 use brain_protocol::{
-    AgentloopId, AgentloopRef, Driver, Environment, EnvironmentName, Message, ModelBinding,
-    SessionConfig, SessionId, TurnInput, TurnOutput,
+    Driver, Environment, EnvironmentName, HarnessOptions, Message, ModelBinding, SessionConfig,
+    SessionId, TurnInput, TurnOutput,
 };
 use futures_util::future::BoxFuture;
 
@@ -39,7 +39,7 @@ impl Runtime {
         telemetry: brain_telemetry::TelemetryPublisher,
         max_model_calls: usize,
         max_tool_secs: u64,
-        loop_executor: Arc<dyn LoopExecutor>,
+        harness: Arc<dyn AgentHarness>,
         model_executor: Arc<dyn ModelExecutor>,
         tool_executor: Arc<dyn ToolExecutor>,
     ) -> Self {
@@ -60,7 +60,7 @@ impl Runtime {
                 max_tool_secs,
                 ..Default::default()
             },
-            loop_executor,
+            harness,
             model_executor,
             tool_executor,
             live: feed.clone(),
@@ -181,11 +181,9 @@ pub fn temporary_directory(name: &str) -> PathBuf {
 /// The smallest admitted configuration: an Agentloop and its Environment, no tools.
 pub fn config() -> SessionConfig {
     SessionConfig {
-        agentloop: AgentloopRef {
+        harness: HarnessOptions {
             environments: Vec::new(),
             configuration: serde_json::json!({}),
-            environment: EnvironmentName::new("workspace"),
-            implementation: serde_json::json!({"type": "brain_component", "entrypoint": "turn", "id": AgentloopId::new("a".repeat(64))}),
         },
         model: ModelBinding {
             provider: "vercel-ai-gateway".into(),
@@ -229,13 +227,12 @@ where
 }
 
 #[async_trait]
-impl LoopExecutor for ScriptedLoop {
+impl AgentHarness for ScriptedLoop {
     async fn turn(
         &self,
         _session: &SessionId,
         _sequence: u64,
-        _agentloop: &AgentloopRef,
-        _environment: &Environment,
+        _config: &brain_protocol::SessionConfig,
         input: TurnInput,
         services: Arc<dyn TurnServices>,
     ) -> Result<TurnOutput, Error> {

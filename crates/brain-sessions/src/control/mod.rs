@@ -189,13 +189,7 @@ impl EnvironmentRegistry {
                 "session no longer accepts Environment operations".into(),
             ));
         }
-        if (Some(&view.reference.name) == caller
-            || (view.reference.name == config.agentloop.environment
-                && !(caller.is_none()
-                    && view.state == EnvironmentState::Declared
-                    && matches!(request, Request::Setup { .. }))))
-            && !matches!(request, Request::Call { .. })
-        {
+        if Some(&view.reference.name) == caller && !matches!(request, Request::Call { .. }) {
             return Err(Error::InvalidState(
                 "an extension cannot replace its own execution Environment".into(),
             ));
@@ -278,7 +272,6 @@ impl EnvironmentRegistry {
                 validate(&definition.input_schema, &input)?;
                 if definition.effect == brain_protocol::EnvironmentMethodEffect::Replace {
                     if Some(&view.reference.name) == caller
-                        || view.reference.name == config.agentloop.environment
                         || active_tools(&*store, &view.reference.name)?
                     {
                         return Err(Error::Conflict(

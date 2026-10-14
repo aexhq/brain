@@ -21,7 +21,6 @@ specific bindings:
 const session = await brain.sessions.create({
   environment: { lifecycle: { bindings: { workspace: "manual" } } },
   model,
-  agentloop,
   tools,
 });
 ```
@@ -30,8 +29,8 @@ const session = await brain.sessions.create({
 - **`manual`** leaves the binding declared until an authorized caller runs setup. Calling a tool
   before then returns `environment_not_ready` without running it.
 
-Keep the Agentloop's own environment automatic, and place management tools somewhere independent
-of the environment they manage.
+Place management tools somewhere independent of the environment they manage. The harness
+runs outside these Environments.
 
 `environment.lifecycle.default` sets the policy for bindings without an override, and defaults to
 `automatic`. For example, `environment: { lifecycle: { default: "manual" } }` makes every binding manual.
@@ -67,8 +66,8 @@ resource API and no built-in `env.inspect` operation.
 
 ## Use the shared service
 
-Tools and `environmentHandler` operations use `ctx.environments` under their own grants. Packaged
-JavaScript loops use [`host.environments`](/brain/docs/reference/agentloop-contract#environment-control),
+Tools and `environmentHandler` operations use `ctx.environments` under their own grants. Custom
+harnesses use [`ctx.environments`](/brain/docs/reference/agentloop-contract),
 and the session owner can call `session.environments` directly:
 
 ```ts
@@ -95,9 +94,10 @@ const extra = await session.environments.create("workspace", "second", { region:
 await session.environments.delete(extra.reference);
 ```
 
-An Agentloop with a `read` grant can list environments during a turn to discover new instances and
+A custom harness with a `read` grant can list environments during a turn to discover new instances and
 their authorized tools. Dispatch includes `environment_sequence` from the current reference, and
-calls that were already admitted keep their original target.
+calls that were already admitted keep their original target. Bundled upstream adapters require
+a fixed Tool placement catalogue for a native session; dynamic catalogues require a custom harness.
 
 ## Respond to failures
 
@@ -111,8 +111,7 @@ dressing them up as successful tool results.
 - **Uncertain operations hold capacity.** An uncertain lifecycle operation keeps its instance
   capacity until the Env reports a resolution naming that operation.
 - **Replacement is explicit.** A method declared with `effect: "replace"` changes the incarnation
-  and requires idle execution. An extension can't replace its own environment or the Agentloop's
-  bootstrap environment.
+  and requires idle execution. An extension can't replace its own environment.
 
 Interrupting stops automatic activations until the next explicit message, and startup never replays
 effects or old activations. See [the protocol](/brain/docs/reference/environment-protocol) for

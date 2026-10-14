@@ -4,6 +4,7 @@ use brain::{
     environment::{EnvironmentAdapter, Services},
 };
 use brain_protocol::ToolResult;
+use brain_protocol::{Environment, codes};
 
 struct Adapter(EnvironmentReceipt);
 #[async_trait]
@@ -61,7 +62,7 @@ fn executor(
 ) {
     let root = tempfile::tempdir().unwrap();
     let dispatch = dispatch();
-    let config = json!({"agentloop":{"environment":"remote","implementation":{},"configuration":{}},
+    let config = json!({"harness": {"configuration":{}},
         "model":{"provider":"openai","name":"test"},"tools":[dispatch.tool],"environments":[dispatch.environment]});
     let (telemetry, _) = brain_telemetry::telemetry_channel();
     let store = brain::LocalSessionStore::create(

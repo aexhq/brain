@@ -1,7 +1,7 @@
 use super::*;
 use async_trait::async_trait;
-use brain::LoopExecutor;
-use brain_protocol::{AgentloopRef, Environment, ModelBinding};
+use brain::AgentHarness;
+use brain_protocol::{Environment, ModelBinding};
 use brain_protocol::{
     Message, ModelRequest, ModelResult, ModelStreamEvent, Outcome, ToolCancellation, ToolDispatch,
     TurnInput, TurnOutput,
@@ -50,13 +50,12 @@ async fn complete_background_batches(many: bool) {
         observations: StdMutex<Vec<brain_protocol::Event>>,
     }
     #[async_trait]
-    impl LoopExecutor for Observer {
+    impl AgentHarness for Observer {
         async fn turn(
             &self,
             _: &SessionId,
             _: u64,
-            _: &AgentloopRef,
-            _: &Environment,
+            _config: &brain_protocol::SessionConfig,
             input: TurnInput,
             services: Arc<dyn TurnServices>,
         ) -> Result<TurnOutput, brain::Error> {
@@ -113,7 +112,7 @@ async fn complete_background_batches(many: bool) {
     let runtime =
         Arc::get_mut(&mut Arc::get_mut(&mut api.resources).unwrap().session_runtime).unwrap();
     runtime.tool_executor = background.clone();
-    runtime.loop_executor = observer.clone();
+    runtime.harness = observer.clone();
     runtime.limits.max_tool_secs = 0;
     let mut config = session_config();
     config.tools = vec![
@@ -250,13 +249,12 @@ async fn turn_end_callbacks_are_journaled_and_do_not_delay_answers() {
     }
     struct Turn;
     #[async_trait]
-    impl LoopExecutor for Turn {
+    impl AgentHarness for Turn {
         async fn turn(
             &self,
             _: &SessionId,
             _: u64,
-            _: &AgentloopRef,
-            _: &Environment,
+            _config: &brain_protocol::SessionConfig,
             input: TurnInput,
             services: Arc<dyn brain::TurnServices>,
         ) -> Result<TurnOutput, brain::Error> {
@@ -292,7 +290,7 @@ async fn turn_end_callbacks_are_journaled_and_do_not_delay_answers() {
         resources.environments = Arc::new(EnvironmentRegistry::new(hooks.clone()));
         Arc::get_mut(&mut resources.session_runtime)
             .unwrap()
-            .loop_executor = Arc::new(Turn);
+            .harness = Arc::new(Turn);
         let config = session_config();
         let id = SessionId::new("ses_hooks");
         api.create_session(id.clone(), config, vec![])
@@ -404,13 +402,12 @@ async fn submission_commits_before_returning_and_drain_waits_for_completion() {
         finish: tokio::sync::Notify,
     }
     #[async_trait]
-    impl LoopExecutor for Held {
+    impl AgentHarness for Held {
         async fn turn(
             &self,
             _: &SessionId,
             _: u64,
-            _: &AgentloopRef,
-            _: &Environment,
+            _config: &brain_protocol::SessionConfig,
             input: TurnInput,
             services: Arc<dyn brain::TurnServices>,
         ) -> Result<TurnOutput, brain::Error> {
@@ -430,7 +427,7 @@ async fn submission_commits_before_returning_and_drain_waits_for_completion() {
     });
     Arc::get_mut(&mut Arc::get_mut(&mut api.resources).unwrap().session_runtime)
         .unwrap()
-        .loop_executor = held.clone();
+        .harness = held.clone();
     let store = seed(&api, "ses_submit");
     let id = SessionId::new("ses_submit");
     let sequence = tokio::time::timeout(
@@ -497,13 +494,12 @@ async fn graceful_drain_keeps_turn_services_alive_and_refuses_new_work() {
         finish: tokio::sync::Notify,
     }
     #[async_trait]
-    impl LoopExecutor for Held {
+    impl AgentHarness for Held {
         async fn turn(
             &self,
             _: &SessionId,
             _: u64,
-            _: &AgentloopRef,
-            _: &Environment,
+            _config: &brain_protocol::SessionConfig,
             _: TurnInput,
             services: Arc<dyn brain::TurnServices>,
         ) -> Result<TurnOutput, brain::Error> {
@@ -529,7 +525,7 @@ async fn graceful_drain_keeps_turn_services_alive_and_refuses_new_work() {
     });
     Arc::get_mut(&mut Arc::get_mut(&mut api.resources).unwrap().session_runtime)
         .unwrap()
-        .loop_executor = held.clone();
+        .harness = held.clone();
     let store = seed(&api, "ses_drain");
     let running_api = api.clone();
     let running = tokio::spawn(async move {
@@ -570,13 +566,12 @@ async fn graceful_drain_keeps_turn_services_alive_and_refuses_new_work() {
 }
 
 #[async_trait]
-impl LoopExecutor for Echo {
+impl AgentHarness for Echo {
     async fn turn(
         &self,
         _: &SessionId,
         _: u64,
-        _: &AgentloopRef,
-        _: &Environment,
+        _config: &brain_protocol::SessionConfig,
         input: TurnInput,
         services: Arc<dyn brain::TurnServices>,
     ) -> Result<TurnOutput, brain::Error> {
@@ -634,7 +629,7 @@ fn api(root: &std::path::Path) -> Sessions {
                 max_tool_secs: 1,
                 ..Default::default()
             },
-            loop_executor: Arc::new(Echo),
+            harness: Arc::new(Echo),
             model_executor: Arc::new(Echo),
             tool_executor: Arc::new(Echo),
             live: feed,
@@ -659,7 +654,7 @@ impl brain::environment::EnvironmentAdapter for UnusedEnvironment {
 }
 fn session_config() -> SessionConfig {
     serde_json::from_value(serde_json::json!({
-        "agentloop": {"implementation": {"type": "brain_component", "entrypoint": "turn", "id": "a".repeat(64)}, "configuration": {}, "environment": "brain"},
+        "harness": { "configuration": {}},
         "model": {"provider": "openai", "name": "test"}, "system": "test", "tools": [],
         "environments": [{"name": "brain", "lifecycle": "automatic", "driver": "brain"}]
     }))

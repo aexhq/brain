@@ -1,23 +1,36 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use brain_protocol::{AgentloopRef, Environment, SessionId, TurnInput, TurnOutput};
+use brain_protocol::{SessionConfig, SessionId, TurnInput, TurnOutput};
 
 use crate::{Error, TurnServices};
 
 #[async_trait]
-pub trait LoopExecutor: Send + Sync + 'static {
-    /// Runs one whole turn in the Environment the Agentloop names. `sequence` is the
-    /// `activation_started` record's, which with the session id names the turn on the
-    /// Environment's wire. Everything the loop asks Brain to do during the turn goes
-    /// through `services`.
+pub trait AgentHarness: Send + Sync + 'static {
+    fn ready(&self) -> bool {
+        true
+    }
+    /// Runs an activation using the implementation supplied at startup. Model and
+    /// tool effects go through the activation-scoped services, which commit intent
+    /// and terminal records before returning. Native session state belongs here.
     async fn turn(
         &self,
         session: &SessionId,
         sequence: u64,
-        agentloop: &AgentloopRef,
-        environment: &Environment,
+        config: &SessionConfig,
         input: TurnInput,
         services: Arc<dyn TurnServices>,
     ) -> Result<TurnOutput, Error>;
+
+    /// Release a native session while keeping its persistent state for resume.
+    async fn close(&self, _session: &SessionId) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Remove native state after the session has ended.
+    async fn delete(&self, _session: &SessionId) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn shutdown(&self) {}
 }

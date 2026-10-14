@@ -88,13 +88,12 @@ async fn cross_environment_deletions_settle_without_waiting_on_each_others_contr
     }
     struct Dispatch;
     #[async_trait]
-    impl LoopExecutor for Dispatch {
+    impl AgentHarness for Dispatch {
         async fn turn(
             &self,
             _: &SessionId,
             _: u64,
-            _: &AgentloopRef,
-            _: &Environment,
+            _config: &brain_protocol::SessionConfig,
             input: TurnInput,
             services: Arc<dyn brain::TurnServices>,
         ) -> Result<TurnOutput, brain::Error> {
@@ -116,7 +115,7 @@ async fn cross_environment_deletions_settle_without_waiting_on_each_others_contr
     let runtime = Arc::get_mut(&mut resources.session_runtime).unwrap();
     runtime.environment_control = Some(registry.clone());
     runtime.tool_executor = Arc::new(Deleter(tokio::sync::Barrier::new(2)));
-    runtime.loop_executor = Arc::new(Dispatch);
+    runtime.harness = Arc::new(Dispatch);
     registry.bind_executions(&runtime.tool_executions);
     let mut config = session_config();
     for (name, other) in [("left", "right"), ("right", "left")] {
@@ -156,13 +155,12 @@ async fn cross_environment_deletions_settle_without_waiting_on_each_others_contr
 }
 
 #[async_trait]
-impl LoopExecutor for Observer {
+impl AgentHarness for Observer {
     async fn turn(
         &self,
         _: &SessionId,
         _: u64,
-        _: &AgentloopRef,
-        _: &Environment,
+        _config: &brain_protocol::SessionConfig,
         input: TurnInput,
         services: Arc<dyn brain::TurnServices>,
     ) -> Result<TurnOutput, brain::Error> {
@@ -244,11 +242,11 @@ async fn all_extension_roles_share_scoped_control_and_live_events_follow_the_age
     let runtime = Arc::get_mut(&mut resources.session_runtime).unwrap();
     runtime.environment_control = Some(registry.clone());
     runtime.tool_executor = Arc::new(crate::SessionToolExecutor::new(registry.clone()));
-    runtime.loop_executor = observer.clone();
+    runtime.harness = observer.clone();
     runtime.limits.max_turn_secs = 5;
     registry.bind_executions(&runtime.tool_executions);
     let config = serde_json::from_value(json!({
-        "agentloop":{"environment":"brain","implementation":{},"configuration":{},
+        "harness": {"configuration":{},
             "environments":[{"environment":"workspace","permissions":["read","create","setup"]}]},
         "model":{"provider":"openai","name":"test"},
         "tools":[{"name":"work","description":"Work","input_schema":{},"placements":{"workspace":{"implementation":{}}},

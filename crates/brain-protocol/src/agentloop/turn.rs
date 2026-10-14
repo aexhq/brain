@@ -6,8 +6,6 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{ActivationTool, Event, Message, SessionId, UserInput};
 
-pub const AGENTLOOP_CONTRACT_VERSION: &str = "agentloop/v1";
-
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct RuntimeEnvelope {
     pub logical_time_ms: u64,

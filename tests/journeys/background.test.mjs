@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentloop, brainEnv, hostEnv, tool } from "@aexhq/brain";
+import { brainEnv, hostEnv, tool } from "@aexhq/brain";
 import { z } from "zod";
 import { fixture, collect } from "./support.mjs";
 
-const returns = new Map();
 const grants = new Map();
 async function call(grant, method, input) {
   const response = await fetch(grant.url, { method: "POST", headers: {
@@ -15,38 +14,6 @@ async function call(grant, method, input) {
 }
 
 const f = fixture({ providers: {
-  observer: async ({ operation: op }) => {
-    let receipt = { type: "accepted" };
-    if (op.request.type === "execute") {
-      const { input, callback } = op.request;
-      if (input.input) {
-        const environment = input.tools.find(tool => tool.name === "work").environments[0];
-        returns.set(op.session_id, await call(callback, "dispatch", [
-          { call_id: "background", environment, name: "work", input: { background: true } },
-        ]));
-        await call(callback, "set_transcript", [{ role: "user", content: [{ type: "text", text: "loop-selected" }] }]);
-      }
-      let after = input.kv["brain.last_activation"] ?? 0;
-      let followed = input.kv.followed;
-      for (;;) {
-        const page = await call(callback, "events", after);
-        if (!page.events.length) break;
-        for (const event of page.events) if (event.event_type === "tool_call_ended") {
-          const followup = input.tools.find(tool => tool.name === "followup");
-          if (followup && !followed) {
-            followed = true;
-            await call(callback, "kv_put", { key: "followed", value: true });
-            await call(callback, "dispatch", [{ call_id: "followup", environment: followup.environments[0], name: "followup", input: {} }]);
-          }
-          await call(callback, "kv_put", { key: "observed_finish", value: event.sequence });
-        }
-        after = page.next_cursor;
-      }
-
-      receipt = { type: "result", output: {} };
-    }
-    return { contract: "environment/v1", sequence: op.sequence, receipt };
-  },
   remote: async ({ operation: op }) => {
     if (op.request.type === "execute") grants.set(op.session_id, op.request.callback);
     return { contract: "environment/v1", sequence: op.sequence,
@@ -64,11 +31,13 @@ for (const placement of ["host", "http", "native"]) {
     const env = placement === "host" ? hostEnv({ name: "app" })
       : placement === "native" ? brainEnv({ name: "brain" }) : f.provider("remote");
     const session = await f.create(t, {
-      agentloop: agentloop({ implementation: { type: "observer" } })({ env: f.provider("observer") }),
+      harness: { configuration: { mode: "observer" } },
       tools: [work({ env })],
     }, placement === "host" ? f.client({ connectionIdleTimeoutMs: 20 }) : f.brain);
     await session.send("start");
-    const [returned] = returns.get(session.id);
+    const initial = await collect(session.events());
+    assert.equal(initial.some(event => event.type === "turn_failed"), false, JSON.stringify(initial));
+    const returned = initial.find(event => event.type === "tool_return").data;
     assert.equal(returned.finished, false);
     assert.equal(returned.events.filter(event => event.event_type === "tool_result_emitted").length, 0);
     if (placement === "host") {
@@ -91,7 +60,7 @@ for (const placement of ["host", "http", "native"]) {
     assert.equal(events.filter(event => event.type === "tool_call_ended").length, 1);
     if (placement !== "native") assert.ok(events.some(event => event.type === "turn_started" && event.data.trigger === "events"));
     assert.deepEqual((await session.transcript()).messages,
-      [{ role: "user", content: [{ type: "text", text: "loop-selected" }] }]);
+      [{ role: "user", content: [{ type: "text", text: "harness-selected" }] }]);
     assert.equal(f.modelRequests.length, 0);
   });
 }
@@ -110,7 +79,7 @@ test("remote background completion can invoke a client Tool after the initiating
     invoked.resolve();
   } });
   const session = await f.create(t, {
-    agentloop: agentloop({ implementation: { type: "observer" } })({ env: f.provider("observer") }),
+    harness: { configuration: { mode: "observer" } },
     tools: [work({ env: f.provider("remote") }), followup()],
   }, client);
   await session.send("start remote work");

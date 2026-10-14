@@ -33,7 +33,6 @@
         "name",
         "description",
         "input_schema",
-        "output_schema",
         "environments"
       ],
       "type": "object"
@@ -44,51 +43,6 @@
         "rejected"
       ],
       "type": "string"
-    },
-    "AgentloopAdmission": {
-      "properties": {
-        "error": {
-          "$ref": "#/$defs/ApiError"
-        },
-        "id": {
-          "$ref": "#/$defs/AgentloopId"
-        },
-        "status": {
-          "$ref": "#/$defs/AdmissionStatus"
-        }
-      },
-      "required": [
-        "id",
-        "status"
-      ],
-      "type": "object"
-    },
-    "AgentloopId": {
-      "pattern": "^[0-9a-f]{64}$",
-      "type": "string"
-    },
-    "AgentloopRef": {
-      "additionalProperties": false,
-      "description": "The admitted Agentloop a session runs: which one, how it is configured, which\nEnvironment of the session runs it.",
-      "properties": {
-        "configuration": true,
-        "environment": {
-          "$ref": "#/$defs/EnvironmentName"
-        },
-        "environments": {
-          "items": {
-            "$ref": "#/$defs/EnvironmentGrant"
-          },
-          "type": "array"
-        },
-        "implementation": true
-      },
-      "required": [
-        "implementation",
-        "configuration",
-        "environment"
-      ],
-      "type": "object"
     },
     "ApiError": {
       "properties": {
@@ -117,13 +71,6 @@
       "additionalProperties": false,
       "description": "Reusable artifacts to load on the built-in Environment's execution workers.",
       "properties": {
-        "agentloops": {
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/AgentloopId"
-          },
-          "type": "array"
-        },
         "programs": {
           "default": [],
           "items": {
@@ -278,15 +225,18 @@
     "CreateSessionRequest": {
       "additionalProperties": false,
       "properties": {
-        "agentloop": {
-          "$ref": "#/$defs/AgentloopRef"
-        },
         "environments": {
-          "description": "The Environments of this session, set up as part of this create. Every Tool and\nthe Agentloop name one of them.",
+          "description": "The Environments of this session, set up as part of this create. Every Tool placement\nnames one of them. The harness is deployment-owned.",
           "items": {
             "$ref": "#/$defs/Environment"
           },
           "type": "array"
+        },
+        "harness": {
+          "$ref": "#/$defs/HarnessOptions",
+          "default": {
+            "configuration": null
+          }
         },
         "idle_ttl_ms": {
           "description": "How long the session may sit idle before Brain suspends it: its task and memory\nare released and rebuilt from disk on the next request. Absent means the server's\ndefault; zero means never.",
@@ -320,7 +270,6 @@
         }
       },
       "required": [
-        "agentloop",
         "model",
         "tools",
         "environments"
@@ -1408,6 +1357,145 @@
       ],
       "type": "string"
     },
+    "HarnessCallback": {
+      "additionalProperties": false,
+      "properties": {
+        "input": true,
+        "method": {
+          "type": "string"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "required": [
+        "session_id",
+        "sequence",
+        "method",
+        "input"
+      ],
+      "type": "object"
+    },
+    "HarnessCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "command": {
+          "type": "string"
+        },
+        "configuration": {
+          "default": null
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
+    "HarnessIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Stable adapter and native-state format identity. Changes require a new data directory.",
+          "type": "string"
+        },
+        "protocol": {
+          "type": "string"
+        },
+        "state_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol",
+        "name",
+        "state_version"
+      ],
+      "type": "object"
+    },
+    "HarnessInitialize": {
+      "additionalProperties": false,
+      "properties": {
+        "configuration": true,
+        "protocol": {
+          "type": "string"
+        },
+        "state_directory": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol",
+        "state_directory",
+        "configuration"
+      ],
+      "type": "object"
+    },
+    "HarnessOptions": {
+      "additionalProperties": false,
+      "description": "Options for the deployment's harness. Executable code is selected at server startup.",
+      "properties": {
+        "configuration": {
+          "default": null
+        },
+        "environments": {
+          "items": {
+            "$ref": "#/$defs/EnvironmentGrant"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "HarnessRun": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "$ref": "#/$defs/TurnInput"
+        },
+        "model": {
+          "$ref": "#/$defs/ModelDef"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "required": [
+        "session_id",
+        "sequence",
+        "model",
+        "input"
+      ],
+      "type": "object"
+    },
+    "HarnessSession": {
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
     "HostActivity": {
       "additionalProperties": false,
       "description": "Connection-scoped transport activity; this is not a journal Event.",
@@ -2278,8 +2366,7 @@
       "required": [
         "name",
         "description",
-        "input_schema",
-        "output_schema"
+        "input_schema"
       ],
       "type": "object"
     },

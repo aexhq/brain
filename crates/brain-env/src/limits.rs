@@ -8,10 +8,10 @@ use std::{path::PathBuf, time::Duration};
 /// them with this same definition, so both sides hold one set of values.
 #[derive(Clone, Debug, PartialEq, Eq, clap::Args)]
 pub struct EnvLimits {
-    /// Bytes an Agentloop or Tool Component package may hold.
+    /// Bytes an Tool Component package may hold.
     #[arg(long, env = "BRAIN_MAX_PACKAGE_BYTES", default_value_t = EnvLimits::default().max_package_bytes)]
     pub max_package_bytes: usize,
-    /// Bytes one execution input may hold, including an Agentloop's transcript and events.
+    /// Bytes one execution input may hold, including invocation configuration.
     #[arg(long, env = "BRAIN_MAX_EXECUTION_INPUT_BYTES", default_value_t = EnvLimits::default().max_execution_input_bytes)]
     pub max_execution_input_bytes: usize,
     /// Bytes one execution output may hold.

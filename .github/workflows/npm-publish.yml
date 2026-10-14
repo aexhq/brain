@@ -116,6 +116,9 @@ jobs:
       - name: Use the npm version pinned for trusted publishing
         run: npm install --global npm@11.19.0
       - run: npm ci
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
       - run: npm test
       - run: npm run package-smoke
       - name: Pack the exact release archives
@@ -250,8 +253,6 @@ jobs:
           test "$(npm view "$sdk" version)" = "${sdk##*@}"
           mkdir "$RUNNER_TEMP/sdk-e2e"
           cp tests/release/sdk.mjs "$RUNNER_TEMP/sdk-e2e/"
-          cargo build --manifest-path tests/fixtures/diagnostic-agentloop/Cargo.toml --target wasm32-wasip2 --release
-          cp tests/fixtures/diagnostic-agentloop/target/wasm32-wasip2/release/diagnostic_agentloop.wasm "$RUNNER_TEMP/sdk-e2e/diagnostic-agentloop.wasm"
           cd "$RUNNER_TEMP/sdk-e2e"
           npm init --yes >/dev/null
           npm install --ignore-scripts --no-audit --no-fund --save-exact "$sdk" zod@4.4.3
@@ -263,7 +264,7 @@ jobs:
           set -euo pipefail
           image=$(jq -er '"\(.image)@\(.manifest_digest)"' "$RUNNER_TEMP/brain-release/brain-image.json")
           docker pull "$image" >/dev/null
-          docker run -d --name brain-sdk-e2e -p 18080:8080 -e BRAIN_API_TOKEN "$image"
+          docker run -d --name brain-sdk-e2e -p 18080:8080 -e BRAIN_API_TOKEN -e 'BRAIN_HARNESS={"command":"node","args":["/opt/brain/test-harness.mjs"]}' -v "$PWD/tests/fixtures/harness.mjs:/opt/brain/test-harness.mjs:ro" "$image"
           trap 'docker logs brain-sdk-e2e; docker rm -f brain-sdk-e2e >/dev/null' EXIT
           for attempt in $(seq 1 60); do
             if curl --fail --silent http://127.0.0.1:18080/health/ready >/dev/null; then break; fi
@@ -302,8 +303,6 @@ jobs:
           set -euo pipefail
           mkdir "$RUNNER_TEMP/http-e2e" "$RUNNER_TEMP/http-data"
           cp tests/release/http.mjs "$RUNNER_TEMP/http-e2e/"
-          cargo build --manifest-path tests/fixtures/diagnostic-agentloop/Cargo.toml --target wasm32-wasip2 --release
-          cp tests/fixtures/diagnostic-agentloop/target/wasm32-wasip2/release/diagnostic_agentloop.wasm "$RUNNER_TEMP/http-e2e/diagnostic-agentloop.wasm"
           cd "$RUNNER_TEMP/http-e2e"
           npm init --yes >/dev/null
           sdk=$(jq -er '.packages[] | select(.name == "@aexhq/brain") | "\(.name)@\(.version)"' "$RUNNER_TEMP/brain-release/manifest.json")
@@ -318,6 +317,8 @@ jobs:
           image=$(jq -er '"\(.image)@\(.manifest_digest)"' "$RUNNER_TEMP/brain-release/brain-image.json")
           docker pull "$image" >/dev/null
           docker run -d --name brain-http-e2e -p 18081:8080 -e BRAIN_API_TOKEN \
+            -e 'BRAIN_HARNESS={"command":"node","args":["/opt/brain/test-harness.mjs"]}' \
+            -v "$PWD/tests/fixtures/harness.mjs:/opt/brain/test-harness.mjs:ro" \
             -v "$RUNNER_TEMP/http-data:/var/lib/brain" "$image"
           trap 'docker logs brain-http-e2e; docker rm -f brain-http-e2e >/dev/null' EXIT
           for attempt in $(seq 1 60); do
@@ -366,7 +367,7 @@ jobs:
         with:
           toolchain: "1.97.1"
           targets: wasm32-wasip2
-      - name: Install the staged SDK and build the diagnostic Agentloop
+      - name: Install the staged SDK
         shell: bash
         env:
           TEST_SCRIPT: ${{ matrix.script }}
@@ -376,8 +377,6 @@ jobs:
           test "$(npm view "$sdk" version)" = "${sdk##*@}"
           mkdir "$RUNNER_TEMP/contract-e2e"
           cp "tests/release/$TEST_SCRIPT" "$RUNNER_TEMP/contract-e2e/"
-          cargo build --manifest-path tests/fixtures/diagnostic-agentloop/Cargo.toml --target wasm32-wasip2 --release
-          cp tests/fixtures/diagnostic-agentloop/target/wasm32-wasip2/release/diagnostic_agentloop.wasm "$RUNNER_TEMP/contract-e2e/diagnostic-agentloop.wasm"
           cd "$RUNNER_TEMP/contract-e2e"
           npm init --yes >/dev/null
           npm install --ignore-scripts --no-audit --no-fund --save-exact "$sdk" zod@4.4.3
@@ -391,7 +390,7 @@ jobs:
           set -euo pipefail
           image=$(jq -er '"\(.image)@\(.manifest_digest)"' "$RUNNER_TEMP/brain-release/brain-image.json")
           docker pull "$image" >/dev/null
-          docker run -d --name "brain-${{ matrix.name }}-e2e" -p "$TEST_PORT:8080" -e BRAIN_API_TOKEN "$image"
+          docker run -d --name "brain-${{ matrix.name }}-e2e" -p "$TEST_PORT:8080" -e BRAIN_API_TOKEN -e 'BRAIN_HARNESS={"command":"node","args":["/opt/brain/test-harness.mjs"]}' -v "$PWD/tests/fixtures/harness.mjs:/opt/brain/test-harness.mjs:ro" "$image"
           trap 'docker logs "brain-${{ matrix.name }}-e2e"; docker rm -f "brain-${{ matrix.name }}-e2e" >/dev/null' EXIT
           for attempt in $(seq 1 60); do
             if curl --fail --silent "http://127.0.0.1:$TEST_PORT/health/ready" >/dev/null; then break; fi

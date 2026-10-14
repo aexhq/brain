@@ -10,7 +10,7 @@ use std::{
     },
 };
 
-use brain_protocol::{TurnError, TurnInput, codes};
+use brain_protocol::{TurnError, codes};
 use tokio::sync::{Semaphore, mpsc, oneshot};
 
 use brain_env::{
@@ -18,11 +18,10 @@ use brain_env::{
     WorkerResponse, read_frame, write_frame,
 };
 
-use crate::{AdmissionEngine, AdmittedAgentloop, AdmittedTool, GuestHost};
+use crate::{AdmissionEngine, AdmittedTool, GuestHost};
 
 pub struct WorkerService {
     engine: Arc<AdmissionEngine>,
-    agentloops: RwLock<HashMap<String, Arc<AdmittedAgentloop>>>,
     tools: RwLock<HashMap<String, Arc<AdmittedTool>>>,
     programs: RwLock<HashMap<String, Arc<str>>>,
     running: Semaphore,
@@ -60,12 +59,11 @@ fn cancelled() -> TurnError {
 }
 
 impl WorkerService {
-    pub fn new(limits: EnvLimits, allowed_imports: Vec<String>) -> Result<Self, String> {
+    pub fn new(limits: EnvLimits) -> Result<Self, String> {
         let running = Semaphore::new(permits(limits.max_concurrent_executions));
         let running_leaf = Semaphore::new(permits(limits.max_concurrent_executions));
         Ok(Self {
-            engine: Arc::new(AdmissionEngine::new(limits, allowed_imports)?),
-            agentloops: RwLock::new(HashMap::new()),
+            engine: Arc::new(AdmissionEngine::new(limits)?),
             tools: RwLock::new(HashMap::new()),
             programs: RwLock::new(HashMap::new()),
             running,
@@ -176,17 +174,6 @@ impl WorkerService {
                     );
                 }
                 match code.kind {
-                    ComponentKind::Agentloop => match serde_json::from_value(input) {
-                        Ok(input) => self.turn(stream, &code.digest, environment, input).await,
-                        Err(error) => {
-                            let _ = crate::worker_write(
-                                stream,
-                                &failed("invalid_input", error.to_string()),
-                                &limits,
-                            )
-                            .await;
-                        }
-                    },
                     ComponentKind::Tool => match serde_json::from_value(input) {
                         Ok(input) => self.tool(stream, &code.digest, environment, input).await,
                         Err(error) => {
@@ -222,24 +209,6 @@ impl WorkerService {
         };
         let engine = self.engine.clone();
         match kind {
-            ComponentKind::Agentloop => {
-                let compiled = tokio::task::spawn_blocking(move || engine.admit(&component)).await;
-                let component = match compiled {
-                    Ok(Ok(component)) => component,
-                    Ok(Err(message)) => return failed("admission_failed", message),
-                    Err(_) => {
-                        return failed("admission_failed", "the worker stopped compiling".into());
-                    }
-                };
-                let digest = component.digest.as_str().to_owned();
-                match self.agentloops.write() {
-                    Ok(mut admitted) => {
-                        admitted.insert(digest.clone(), Arc::new(component));
-                        WorkerResponse::Admitted { digest }
-                    }
-                    Err(_) => failed("admission_failed", "the worker lost its state".into()),
-                }
-            }
             ComponentKind::Tool => {
                 let compiled =
                     tokio::task::spawn_blocking(move || engine.admit_tool(&component)).await;
@@ -260,47 +229,6 @@ impl WorkerService {
                 }
             }
         }
-    }
-
-    async fn turn<S>(
-        &self,
-        stream: &mut S,
-        digest: &str,
-        environment: NativeEnvironment,
-        input: TurnInput,
-    ) where
-        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-    {
-        let component = self
-            .agentloops
-            .read()
-            .ok()
-            .and_then(|admitted| admitted.get(digest).cloned());
-        let Some(component) = component else {
-            let _ = crate::worker_write(
-                stream,
-                &failed(
-                    "not_admitted",
-                    "Agentloop digest is not admitted in this worker".into(),
-                ),
-                self.engine.limits(),
-            )
-            .await;
-            return;
-        };
-        let engine = self.engine.clone();
-        self.converse(stream, move |bridge| async move {
-            match component
-                .turn(engine.engine(), engine.limits(), environment, input, bridge)
-                .await
-            {
-                Ok(output) => WorkerResponse::Completed {
-                    output: serde_json::to_value(output).expect("TurnOutput is serializable"),
-                },
-                Err(error) => WorkerResponse::TurnFailed { error },
-            }
-        })
-        .await;
     }
 
     async fn tool<S>(
@@ -448,27 +376,11 @@ mod tests {
     use super::*;
 
     fn service() -> Arc<WorkerService> {
-        Arc::new(WorkerService::new(EnvLimits::default(), Vec::new()).unwrap())
-    }
-
-    fn input() -> TurnInput {
-        TurnInput {
-            input: Some("hello".into()),
-            transcript: Vec::new(),
-            kv: Default::default(),
-            events: Vec::new(),
-            configuration: serde_json::json!({}),
-            system: String::new(),
-            tools: Vec::new(),
-            runtime: brain_protocol::RuntimeEnvelope::at(
-                &brain_protocol::SessionId::new("ses_test"),
-                1,
-            ),
-        }
+        Arc::new(WorkerService::new(EnvLimits::default()).unwrap())
     }
 
     #[tokio::test]
-    async fn an_unknown_loop_is_refused_without_blocking_others() {
+    async fn an_unknown_tool_is_refused_without_blocking_others() {
         let service = service();
         let (mut client, mut server) = tokio::io::duplex(64 * 1024);
         let serving = tokio::spawn({
@@ -479,13 +391,13 @@ mod tests {
             &mut client,
             &WorkerRequest::Execute {
                 code: brain_env::WorkerCode {
-                    kind: ComponentKind::Agentloop,
+                    kind: ComponentKind::Tool,
                     digest: "agl_missing".into(),
                     program: None,
                 },
                 can_dispatch: true,
                 environment: NativeEnvironment::default(),
-                input: serde_json::to_value(input()).unwrap(),
+                input: serde_json::json!({"input": {}, "configuration": {}, "deadline_at_ms": 0}),
             },
             EnvLimits::default().max_response_frame_bytes(),
         )

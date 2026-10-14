@@ -5,8 +5,8 @@ description: Build agents your way and run their tools wherever the work lives.
 
 ## Build agents your way. Run their tools wherever the work lives.
 
-Brain is an open-source agent runtime. You choose the agent loop, the model, the tools and where
-each one runs. Brain saves the session and gives your application one API to drive it.
+Brain runs agents behind a durable session API. Select Pi, Codex, OpenCode, or a custom harness
+at server startup. Applications choose models, tools, and where their tools run.
 
 Picture a support agent that looks up an order in your backend, checks a delivery page in a
 browser and updates a ticket. Each tool runs where it can reach what it needs, while your app
@@ -21,10 +21,10 @@ You need Docker, Node.js and a model key. Run Brain yourself, or let [Aex](/docs
 
 | Piece | What it controls |
 | --- | --- |
-| [Agent loop](/brain/docs/concepts/agent-loop) | Context management, model calls and tool sequencing |
+| [Agent loop](/brain/docs/concepts/agent-loop) | Upstream agent behavior, native state, and compaction; selected at startup |
 | [Model](/brain/docs/concepts/model) | The provider and model the session uses |
 | [Tools](/brain/docs/concepts/tool) | The functions the agent can call |
-| [Environments](/brain/docs/concepts/environment) | Where the loop and each tool run |
+| [Environments](/brain/docs/concepts/environment) | Where each tool runs |
 
 A [session](/brain/docs/concepts/sessions) ties these together for one conversation. Start with a
 ready-made loop and your app's functions, then add browser or workspace extensions when you need them.

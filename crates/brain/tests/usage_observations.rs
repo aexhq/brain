@@ -56,7 +56,7 @@ async fn partial_usage_survives_errors_and_cancellation_without_waiting_for_obse
             observed: observed.clone(),
             interrupted,
         });
-        let loop_executor = scripted(|_, services| async move {
+        let harness = scripted(|_, services| async move {
             services
                 .model(ModelRequest {
                     system: None,
@@ -76,7 +76,7 @@ async fn partial_usage_survives_errors_and_cancellation_without_waiting_for_obse
             telemetry,
             8,
             120,
-            loop_executor,
+            harness,
             model,
             Arc::new(NoTools),
         );

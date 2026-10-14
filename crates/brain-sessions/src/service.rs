@@ -407,6 +407,12 @@ impl Sessions {
     }
 
     async fn passivate(&self, session_id: &SessionId) -> Result<(), ApiError> {
+        self.resources
+            .session_runtime
+            .harness
+            .close(session_id)
+            .await
+            .map_err(api_error)?;
         let store = self.store(session_id).await?;
         tokio::task::spawn_blocking(move || store.checkpoint())
             .await
@@ -469,16 +475,6 @@ impl Sessions {
         {
             return Err(ApiError::invalid_request(
                 "each Environment requires an explicit lifecycle",
-            ));
-        }
-        if config
-            .environment(&config.agentloop.environment)
-            .is_some_and(|environment| {
-                environment.lifecycle == Some(brain_protocol::EnvironmentLifecycle::Manual)
-            })
-        {
-            return Err(ApiError::invalid_request(
-                "the Agentloop requires an automatically managed bootstrap Environment",
             ));
         }
         let session_lock = self.session_lock(&session_id)?;
@@ -1023,6 +1019,12 @@ impl Sessions {
                 .await
                 .map_err(api_error)?;
         }
+        self.resources
+            .session_runtime
+            .harness
+            .delete(&session_id)
+            .await
+            .map_err(api_error)?;
         store.delete().map_err(api_error)?;
         self.sessions
             .lock()

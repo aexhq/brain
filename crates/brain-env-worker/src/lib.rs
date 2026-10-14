@@ -9,12 +9,9 @@ use brain_env::{EnvLimits, WorkerRequest, WorkerResponse};
 mod runtime;
 mod service;
 
-pub use runtime::{AdmissionEngine, AdmittedAgentloop, AdmittedTool, GuestHost};
+pub use runtime::{AdmissionEngine, AdmittedTool, GuestHost};
 pub use service::WorkerService;
 
-/// The interfaces a guest may import: the contract's own types and the host services.
-pub const RUNTIME_SHIM_IMPORTS: &[&str] =
-    &["brain:agentloop/types@0.2.0", "brain:agentloop/host@0.2.0"];
 pub const CAPABILITY_IMPORTS: &[&str] = &[
     "wasi:cli/environment@0.2.9",
     "wasi:cli/exit@0.2.9",

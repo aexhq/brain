@@ -3,7 +3,7 @@ import type { EnvironmentGrant, EnvironmentMethod, EnvironmentTemplate } from ".
 
 import type { HostToolCall, HostToolContract } from "./host.js";
 import type {
-  Component, Program, Environment, Outcome, PlacedAgentloop, PlacedTool, Schema, SchemaInput, SchemaOutput,
+  Component, Program, Environment, Outcome, PlacedTool, Schema, SchemaInput, SchemaOutput,
   ToolDefinition,
 } from "./types.js";
 
@@ -32,14 +32,6 @@ interface EnvironmentSource {
   readonly configuration: unknown;
 }
 
-interface AgentloopSource {
-  readonly environments?: readonly EnvironmentGrant[];
-  readonly kind: "agentloop";
-  readonly implementation: Component | Program | Readonly<Record<string, unknown>>;
-  readonly configuration: unknown;
-  readonly environment: Environment;
-}
-
 interface ToolSource {
   readonly environments?: readonly EnvironmentGrant[];
   readonly kind: "tool";
@@ -60,7 +52,7 @@ interface ProgramSource {
   readonly artifact: URL | Uint8Array;
 }
 
-type ExtensionSource = ProgramSource | ComponentSource | EnvironmentSource | AgentloopSource | ToolSource;
+type ExtensionSource = ProgramSource | ComponentSource | EnvironmentSource | ToolSource;
 type Branded = object & { readonly [source]?: ExtensionSource };
 
 export function component(artifact: URL | Uint8Array): Component {
@@ -89,14 +81,13 @@ export function isProgram(value: unknown): value is Program {
   return typeof value === "object" && value !== null && (value as Branded)[source]?.kind === "program";
 }
 
-export function inspectPlaced(value: PlacedAgentloop | PlacedTool): AgentloopSource | ToolSource {
+export function inspectPlaced(value: PlacedTool): ToolSource {
   const kind = (value as Branded)?.[source]?.kind;
-  if (kind === "agentloop") return inspectAgentloop(value as PlacedAgentloop);
   if (kind === "tool") return inspectTool(value as PlacedTool);
-  throw new TypeError("prepare needs a placed Agentloop or Tool");
+  throw new TypeError("prepare needs a placed Tool");
 }
 
-export function withImplementation<T extends PlacedAgentloop | PlacedTool>(value: T, implementation: Readonly<Record<string, unknown>>): T {
+export function withImplementation<T extends PlacedTool>(value: T, implementation: Readonly<Record<string, unknown>>): T {
   return branded({ ...inspectPlaced(value), implementation });
 }
 
@@ -208,29 +199,6 @@ export function placeDefaultTools(tools: readonly PlacedTool[], name: string): P
     const tool = inspectTool(placed);
     return inspectEnvironment(tool.environment).automatic ? branded({ ...tool, environment }) : placed;
   });
-}
-
-export interface AgentloopContract<OptionsSchema extends Schema | undefined = undefined> {
-  readonly options?: OptionsSchema;
-  readonly implementation: Component | Program | Readonly<Record<string, unknown>> | ((options: Options<OptionsSchema>) => Readonly<Record<string, unknown>>);
-}
-
-type Placement<OptionsSchema extends Schema | undefined> = { readonly env: Environment; readonly environments?: readonly EnvironmentGrant[] } &
-  (OptionsSchema extends Schema ? SchemaInput<OptionsSchema> : Record<never, never>);
-
-export function agentloop<OptionsSchema extends Schema | undefined = undefined>(
-  contract: AgentloopContract<OptionsSchema>,
-): (placement: Placement<OptionsSchema>) => PlacedAgentloop {
-  return ((raw: unknown) => {
-    const { env, options, environments } = placedOptions(contract.options, raw);
-    return branded({
-      kind: "agentloop",
-      ...(environments === undefined ? {} : { environments }),
-      implementation: typeof contract.implementation === "function" ? clone(contract.implementation(options as never)) : (isComponent(contract.implementation) || isProgram(contract.implementation)) ? contract.implementation : clone(contract.implementation),
-      configuration: clone(options),
-      environment: env,
-    });
-  }) as (placement: Placement<OptionsSchema>) => PlacedAgentloop;
 }
 
 export interface ToolRunContext<Options, Output = unknown> extends HostToolCall<Output> {
@@ -365,9 +333,6 @@ export function inspectEnvironment(value: Environment): EnvironmentSource {
   return inspect(value, "environment");
 }
 
-export function inspectAgentloop(value: PlacedAgentloop): AgentloopSource {
-  return inspect(value, "agentloop");
-}
 
 export function inspectTool(value: PlacedTool): ToolSource {
   return inspect(value, "tool");

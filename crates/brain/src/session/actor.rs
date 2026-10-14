@@ -165,7 +165,7 @@ impl SessionActor {
             transcript: self.folded.transcript.clone(),
             kv: self.folded.kv.clone(),
             events,
-            configuration: self.config.agentloop.configuration.clone(),
+            configuration: self.config.harness.configuration.clone(),
             system: self.config.system.clone(),
             tools: self
                 .config
@@ -231,17 +231,11 @@ impl SessionActor {
                 kv: std::mem::take(&mut self.folded.kv),
             })),
         });
-        let agentloop_environment = self
-            .config
-            .environment(&self.config.agentloop.environment)
-            .cloned()
-            .ok_or_else(|| Error::InvalidState("Agentloop Environment is missing".into()))?;
         let outcome = {
-            let running = self.runtime.loop_executor.turn(
+            let running = self.runtime.harness.turn(
                 &self.row.session_id,
                 activation,
-                &self.config.agentloop,
-                &agentloop_environment,
+                &self.config,
                 input,
                 host.clone(),
             );
@@ -347,6 +341,7 @@ impl SessionActor {
             return Err(Error::InvalidState("cannot end a running session".into()));
         }
         if !matches!(self.row.status, SessionStatus::Ended) {
+            self.runtime.harness.close(&self.row.session_id).await?;
             self.commit(
                 vec![AppendRecord::new(
                     codes::event::SESSION_ENDED,
@@ -474,8 +469,8 @@ impl TurnServices for TurnHost {
             .ok_or_else(|| Error::InvalidState("Environment service is not available".into()))?
             .control(
                 self.store.clone(),
-                Some(&self.config.agentloop.environment),
-                &self.config.agentloop.environments,
+                None,
+                &self.config.harness.environments,
                 request,
             )
             .await

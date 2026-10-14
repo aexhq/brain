@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-import { Brain, agentloop, brainEnv, component } from "@aexhq/brain";
+import { Brain } from "@aexhq/brain";
 
 const baseUrl = process.env.BRAIN_BASE_URL;
 const token = process.env.BRAIN_API_TOKEN;
@@ -8,9 +8,6 @@ assert.ok(baseUrl);
 assert.ok(token);
 
 const brain = new Brain({ baseUrl, token });
-const diagnostic = agentloop({
-  implementation: component(new URL("./diagnostic-agentloop.wasm", import.meta.url)),
-});
 try {
   const session = await brain.sessions.create({
     model: {
@@ -18,7 +15,7 @@ try {
       name: "openai/gpt-5-mini",
       apiKey: "release-smoke-key",
     },
-    agentloop: diagnostic({ env: brainEnv({ name: "brain" }) }),
+    harness: { configuration: { mode: "diagnostic" } },
   });
   await session.send("first turn");
   await session.send("second turn");
@@ -33,7 +30,7 @@ try {
   const suffix = [];
   for await (const event of session.events(cursor)) suffix.push(event);
   assert.deepEqual(
-    suffix.map(({ type }) => type),
+    suffix.filter(event => !(event.type.startsWith("kv_") && event.data.key?.startsWith("brain.harness."))).map(({ type }) => type),
     ["session_resumed", "turn_started", "activation_started", "kv_set", "note", "activation_ended", "turn_ended"],
   );
   assert.equal(suffix.at(-1)?.sequence, session.state.lastSequence);
