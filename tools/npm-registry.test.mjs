@@ -1,6 +1,52 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { registryValue, waitFor } from "./npm-registry.mjs";
+import { assertReleaseProvenance, registryValue, waitFor } from "./npm-registry.mjs";
+
+function releaseProof() {
+  const source = "1".repeat(40);
+  return {
+    predicateType: "https://slsa.dev/provenance/v1",
+    subject: [{ name: "pkg:npm/%40aexhq/brain@0.41.0", digest: { sha512: "ab".repeat(64) } }],
+    predicate: { buildDefinition: {
+      externalParameters: { workflow: {
+        repository: "https://github.com/aexhq/brain",
+        path: ".github/workflows/npm-publish.yml",
+        ref: `refs/tags/release/sha-${source}`,
+      } },
+      resolvedDependencies: [{ digest: { gitCommit: source } }],
+    } },
+  };
+}
+
+const releaseItem = {
+  name: "@aexhq/brain", version: "0.41.0",
+  integrity: `sha512-${Buffer.from("ab".repeat(64), "hex").toString("base64")}`,
+};
+
+test("a server-only release reuses the identical SDK's original release provenance", () => {
+  assertReleaseProvenance(releaseProof(), releaseItem);
+});
+
+test("provenance must identify the exact reviewed package archive", () => {
+  for (const item of [
+    { ...releaseItem, name: "@aexhq/other" },
+    { ...releaseItem, version: "0.42.0" },
+    { ...releaseItem, integrity: `sha512-${Buffer.alloc(64).toString("base64")}` },
+  ]) assert.throws(() => assertReleaseProvenance(releaseProof(), item), /reviewed archive/);
+});
+
+test("original provenance requires the Brain release workflow and matching immutable tag", () => {
+  for (const mutation of [
+    { repository: "https://github.com/other/brain" },
+    { path: ".github/workflows/ci.yml" },
+    { ref: "refs/heads/main" },
+    { ref: `refs/tags/release/sha-${"2".repeat(40)}` },
+  ]) {
+    const proof = releaseProof();
+    Object.assign(proof.predicate.buildDefinition.externalParameters.workflow, mutation);
+    assert.throws(() => assertReleaseProvenance(proof, releaseItem), /immutable Brain release/);
+  }
+});
 
 test("only missing registry metadata is treated as pending", () => {
   assert.equal(registryValue(() => '"sha512-ok"', "pkg@1.0.0", "dist.integrity"), "sha512-ok");

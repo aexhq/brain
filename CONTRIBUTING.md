@@ -58,6 +58,8 @@ Main CI publishes immutable candidate images. Only release promotion moves the i
 
 Publication and registry verification are separate jobs. Verification allows up to five minutes
 for registry visibility and rejects conflicting archive integrities or authentication failures.
+Server-only releases may reuse an identical SDK archive. Verification checks its original signed
+Brain release provenance and exact archive digest; it never republishes that package version.
 If verification fails after an upload, re-run the failed jobs in the same workflow run: they
 download the original archives and do not publish again.
 
