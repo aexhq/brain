@@ -20,6 +20,8 @@ FROM node:22.23.2-bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates perl-base \
     && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /usr/local/lib/node_modules/npm \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx \
     && useradd --system --uid 10001 --home /var/lib/brain brain \
     && install -d -o brain -g brain /var/lib/brain
 COPY --from=build /src/target/release/brain /usr/local/bin/brain

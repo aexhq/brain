@@ -53,6 +53,9 @@ Readiness returns 204 with no body. It checks the startup harness and built-in w
 remote provider health or disk space. `/health/live` is a public process check. Run
 `docker logs brain` to see startup and execution errors.
 
+The image includes Node, Bun, and the upstream harness runtimes. Install custom harness
+dependencies in a separate build stage and copy them into the runtime image; npm is a build-time dependency.
+
 Keep the loopback publication for local access or a reverse proxy on the same host. For remote
 clients, terminate HTTPS at your proxy and forward the `Authorization` header. Application
 requests send `Authorization: Bearer <BRAIN_API_TOKEN>`. Give the token only to trusted callers:
