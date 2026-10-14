@@ -17,7 +17,7 @@ For deployment, remote callbacks, backups and upgrades, start with
 | --- | --- | --- | --- |
 | `BRAIN_LISTEN` | `--listen` | `127.0.0.1:8080` | Address to bind |
 | `BRAIN_DATA_DIR` | `--data-dir` | `brain-data` | Where journals, admitted Components, and local state live |
-| `BRAIN_AGENTLOOPS` | `--agentloops` | none | Registered agentloops as JSON: {"pi":{"command":"brain-agentloop-pi","workers":2}} |
+| `BRAIN_AGENTLOOPS` | `--agentloops` | none | Registered agentloops as a JSON map from names to installed commands and worker settings |
 | `BRAIN_ENV_WORKER` | `--env-worker` | `brain-env-worker` | Path to the Tool worker executable |
 | `BRAIN_ENV_WORKERS` | `--env-workers` | `2` | OS worker processes in the built-in Environment pool |
 | `BRAIN_ENV_PREPARATION` | `--env-preparation` | none | JSON file of Components and program sources to prepare before serving execution |

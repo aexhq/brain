@@ -14,7 +14,7 @@ pub struct ServerConfig {
     /// Where journals, admitted Components, and local state live.
     #[arg(long, env = "BRAIN_DATA_DIR", default_value = "brain-data")]
     pub data_dir: PathBuf,
-    /// Registered agentloops as JSON: {"pi":{"command":"brain-agentloop-pi","workers":2}}.
+    /// Registered agentloops as a JSON map from names to installed commands and worker settings.
     #[arg(long, env = "BRAIN_AGENTLOOPS")]
     pub agentloops: String,
     /// Path to the Tool worker executable.
