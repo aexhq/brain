@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { z } from "zod";
-import { Brain, agentloop, environment, tool } from "../dist/index.js";
+import { Brain, environment, tool } from "../dist/index.js";
 
 test("default placement avoids explicit names, preserves closures and reattaches the original host with model services", async t => {
   let configuration;
@@ -32,7 +32,7 @@ test("default placement avoids explicit names, preserves closures and reattaches
   let client = new Brain({ baseUrl: "https://brain.example", fetch });
   t.after(() => client.close());
   const remote = environment({ url: () => "https://loop.example" })({ name: "brain-sdk-host" });
-  await client.sessions.create({ model: { provider: "openai", name: "test", apiKey: "fixture" }, agentloop: agentloop({ implementation: {} })({ env: remote }), tools: [echo()] });
+  await client.sessions.create({ model: { provider: "openai", name: "test", apiKey: "fixture" },  environments: [remote], tools: [echo()] });
   assert.equal(configuration.environments[1].name, "brain-sdk-host-1");
   assert.deepEqual(configuration.tools[0].placements, { "brain-sdk-host-1": { implementation: { type: "host_function", name: "echo" } } });
   const credentials = await client.credentials();
@@ -44,7 +44,7 @@ test("default placement avoids explicit names, preserves closures and reattaches
   assert.equal((await invoke(2)).value.count, 1);
   await client.close();
   client = new Brain({ baseUrl: "https://brain.example", credentials, fetch });
-  await client.sessions.get("session", { tools: [echo()] });
+  await client.sessions.get("session", { environments: [remote], tools: [echo()] });
   const second = await invoke(10);
   assert.equal(second.value.count, 2);
   assert.equal(second.content, "ready");

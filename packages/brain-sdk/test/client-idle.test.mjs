@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { Brain, agentloop, brainEnv, tool } from "../dist/index.js";
+import { Brain, brainEnv, tool } from "../dist/index.js";
 import { z } from "zod";
 
 const frame = (type, data) => new TextEncoder().encode(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -59,7 +59,7 @@ function fixture(t, { timeout = 15, suspend, message, create } = {}) {
   t.after(() => client.close());
   const lookup = tool({ name: "lookup", description: "Look up", input: z.object({}), run: (_, ctx) => ctx.finish("retained closure") });
   const options = {
-    agentloop: agentloop({ implementation: { type: "fixture" } })({ env: brainEnv({ name: "brain" }) }),
+
     tools: [lookup()], model: { provider: "openai", name: "gpt-5", apiKey: "fixture" },
   };
   return {

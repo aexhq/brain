@@ -1,37 +1,62 @@
 ---
-title: Agent loops
-description: Choose the logic that calls the model, uses tools and manages the conversation.
+title: Agent harnesses
+description: Choose an upstream agent at server startup, or implement Brain's harness interface.
 ---
 
-An agent loop is the agent's decision-maker. It picks what the model sees, when to call tools and
-when the answer is done. Brain runs the loop and saves its progress. Use a ready-made loop or
-write your own.
+An agent harness decides when to call the model, use tools, and compact a conversation.
+Brain can run the real Pi, Codex, or OpenCode implementation behind one session API.
+The upstream agent owns its behavior and native state; Brain executes and journals its
+model and tool requests.
 
-## Use a ready-made loop
+## Choose at startup
 
-The [quickstart](/brain/docs/quickstart) uses Pi:
+The Brain image includes all three adapters. Select one when starting the server:
 
-```ts
-import { pi } from "@aexhq/agentloop-pi";
-
-const loop = pi();
+```sh
+docker run --rm -p 127.0.0.1:8080:8080 \
+  -e BRAIN_API_TOKEN=quickstart \
+  -e 'BRAIN_HARNESS={"command":"brain-harness-pi"}' \
+  -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
 ```
 
-Pass `loop` as `agentloop` when you create a session. Pi calls the model, runs tool calls in
-parallel and summarizes older conversation when the context fills up. Tune it with options such
-as `pi({ contextWindow: 64_000 })`. It runs in `brainEnv({ name: "brain" })` by default; pass
-`{ env }` to choose another Environment.
+Use `brain-harness-codex` or `brain-harness-opencode` for the other implementations.
+One deployment uses one harness. Applications choose models and tools when creating
+sessions; they cannot upload or replace the agent implementation.
 
-Prefer a different style? Try the [Codex loop](https://github.com/aexhq/extensions/tree/main/packages/loop-codex).
-Both are loops built for Brain, not the Pi or Codex applications themselves. Each package guide
-lists its behavior and options.
+| Adapter | Upstream | Runtime | Native state |
+| --- | --- | --- | --- |
+| Pi | Pi coding-agent SDK 1.2.0 | Node 22.19+ | Session JSONL |
+| Codex | Codex app-server 0.162.1 | Rust executable | Rollout files |
+| OpenCode | OpenCode SDK 2.0.28 | Bun 1.3.14 | SQLite |
 
-## Customize behavior
+Compaction runs inside the upstream agent and uses Brain's model adapter. Upstream
+built-in tools, ambient extensions, direct model connections, and transport retries
+are disabled or excluded. Only session tools are offered to the model.
 
-Often a session's `system` prompt and the loop's options are enough. Write your own loop when you
-need different context selection, tool sequencing or stopping rules. A loop can also react to
-background tool results without waiting for a new user message.
+## Configure a session
 
-[Write an agent loop](/brain/docs/guides/write-a-loop) walks through JavaScript, Rust and Python
-examples, including the build. The [loop API](/brain/docs/reference/agentloop-contract) covers
-saved state and model and tool calls.
+```ts
+const session = await brain.sessions.create({
+  model: { provider: "openai", name: "gpt-5-mini", apiKey },
+  tools: [lookupOrder()],
+  harness: { configuration: { contextWindow: 128_000 } },
+});
+```
+
+Options depend on the selected adapter. Unknown options fail when the harness starts
+the session. See the [harness reference](/brain/docs/reference/agentloop-contract).
+
+Successful sessions resume from upstream native state. Back up the entire Brain data
+directory, including `harness/`. The transcript API is a view of model context, not a
+portable agent checkpoint. An interrupted or failed native activation requires a new
+session: Brain will not let upstream recovery replay uncertain effects.
+
+Pi supports HTTPS image and PDF inputs and tool media. Codex and OpenCode currently
+support text only and reject imported transcripts. All three require fixed tool
+placements for a native session; custom harnesses can implement dynamic discovery.
+
+## Provide your own
+
+The public boundary is JSON-RPC over stdio, so an implementation can use any language.
+The TypeScript authoring API supplies typed lifecycle and callback functions.
+[Write a harness](/brain/docs/guides/write-a-loop) starts with a complete example.

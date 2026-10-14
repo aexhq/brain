@@ -1,5 +1,4 @@
 import { Brain } from "@aexhq/brain";
-import { pi } from "@aexhq/agentloop-pi";
 
 const apiKey = process.env.OPENAI_API_KEY;
 if (!apiKey) throw new Error("OPENAI_API_KEY is required");
@@ -11,7 +10,6 @@ const brain = new Brain({
 try {
   const session = await brain.sessions.create({
     model: { provider: "openai", name: "gpt-5-mini", apiKey },
-    agentloop: pi(),
   });
   const subscription = new AbortController();
   let cursor = session.state.lastSequence;

@@ -1,9 +1,8 @@
 use async_trait::async_trait;
 use brain_protocol::{
-    AgentloopAdmission, AgentloopId, ApiError, CreateSessionRequest, EnvironmentCallRequest,
-    EnvironmentCallResult, EnvironmentName, EventPage, ExecutionCall, HostCommand, HostEvent,
-    HostEventAck, HostId, HostRegistration, HostResult, LiveEvent, MessageRequest, SessionId,
-    SessionList, SessionSummary, ToolAdmission,
+    ApiError, CreateSessionRequest, EnvironmentCallRequest, EnvironmentCallResult, EnvironmentName,
+    EventPage, ExecutionCall, HostCommand, HostEvent, HostEventAck, HostId, HostRegistration,
+    HostResult, LiveEvent, MessageRequest, SessionId, SessionList, SessionSummary, ToolAdmission,
 };
 
 pub struct HostConnection {
@@ -94,17 +93,13 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
         token: String,
         call: ExecutionCall,
     ) -> Result<serde_json::Value, ApiError>;
-    async fn admit_agentloop(
-        &self,
-        idempotency_key: String,
-        package: Vec<u8>,
-    ) -> Result<AgentloopAdmission, ApiError>;
+
     async fn admit_tool(
         &self,
         idempotency_key: String,
         component: Vec<u8>,
     ) -> Result<ToolAdmission, ApiError>;
-    async fn get_agentloop(&self, id: AgentloopId) -> Result<AgentloopAdmission, ApiError>;
+
     async fn create_session(
         &self,
         idempotency_key: String,

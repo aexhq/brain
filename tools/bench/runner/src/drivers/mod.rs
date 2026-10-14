@@ -9,7 +9,7 @@
 //! Nothing outside `tools/bench` changes: the runner depends on no brain crate and talks
 //! to every subject, Brain included, over its public HTTP surface.
 
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 use anyhow::Result;
 
@@ -41,9 +41,6 @@ pub mod letta;
 pub struct Bench {
     /// Where the subject is listening.
     pub base_url: String,
-    /// The compiled Agentloop package. Brain's alone; another subject's equivalent
-    /// belongs beside it rather than in place of it.
-    pub agentloop_package: PathBuf,
     /// The subject's process, when the runner started it rather than being pointed at one.
     pub pid: Option<u32>,
     /// The echo environment every subject's tools are bound to.
@@ -73,7 +70,6 @@ pub fn for_subject(subject: &str, bench: &Bench) -> Result<Option<Box<dyn Driver
     match subject {
         "brain" => Ok(Some(Box::new(brain::BrainDriver::new(
             &bench.base_url,
-            bench.agentloop_package.clone(),
             bench.pid,
             Arc::clone(&bench.environment),
         )?))),

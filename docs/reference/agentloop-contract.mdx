@@ -1,119 +1,134 @@
 ---
-title: Agent loop API
-description: Model calls, tools, saved state and event handling through one context.
+title: Harness protocol
+description: Startup selection, lifecycle, native state, and journaled callbacks.
 ---
 
-An agent loop chooses what to do with each message or background observation. Brain supplies
-its context, executes requested calls and saves explicit writes. Start with
-[Write an agent loop](/brain/docs/guides/write-a-loop) for a complete example and build commands.
+Brain selects one implementation from `--harness` or `BRAIN_HARNESS` before readiness.
+Its JSON value has `command`, optional `args`, and optional `configuration`.
+The command is deployment code. Session requests accept only `harness.configuration`
+and `harness.environments`; executable fields and the old `agentloop` field are rejected.
 
-## The context
+## Transport and lifecycle
 
-Export `turn = defineAgentloop(handler)` from `@aexhq/brain/agentloop`. The handler receives one
-`ctx` object with parsed values and scoped services. Return an optional JSON value as the run's
-result; return without a value when no separate result is needed.
+The process exchanges one JSON-RPC 2.0 object per UTF-8 line over stdin/stdout.
+Both directions use request ids; diagnostics belong on stderr. The protocol is
+`brain/harness/v1`. Rust types in `brain-protocol/src/harness.rs` define its payloads.
 
-| Field | Value |
+| Brain request | Parameters | Result |
+| --- | --- | --- |
+| `initialize` | `protocol, state_directory, configuration` | `protocol, name, state_version` |
+| `session/open` | `session_id` | `null` |
+| `session/run` | `session_id, sequence, model, input` | `{ result? }` |
+| `session/cancel` | `session_id` | `null` |
+| `session/close` | `session_id` | `null` |
+| `session/delete` | `session_id` | `null` |
+| `shutdown` | `{}` | `null` |
+
+`sequence` names the activation's journal record. `model` supplies advisory model
+metadata, not credentials. `input` contains optional user input, transcript, KV,
+pending events, immutable tool declarations and current placements, system prompt,
+session configuration, and the runtime envelope.
+
+There is one active run per session. Different sessions can run concurrently.
+Cancellation must be handled while run is pending. Initialization has a 30-second
+deadline; cancellation has a five-second grace period before Brain kills the harness
+process. Killing a shared process also fails its other active sessions.
+
+## Callbacks
+
+A harness requests `brain/call` with:
+
+```json
+{
+  "session_id": "ses_12345678901234567890",
+  "sequence": 3,
+  "method": "model",
+  "input": {
+    "messages": [{"role":"user","content":[{"type":"text","text":"Hello"}]}],
+    "tools": []
+  }
+}
+```
+
+| Method | Input / result |
 | --- | --- |
-| `ctx.input` | `{ message, media? }`, or `undefined` for a background activation |
-| `ctx.transcript` | Saved model messages |
-| `ctx.events` | A finite batch of pending events, in sequence order |
-| `ctx.configuration` | Options supplied through the loop factory |
-| `ctx.system` | The session's system prompt |
-| `ctx.tools` | Tool definitions and authorized environments |
-| `ctx.runtime` | Logical time and a deterministic seed |
+| `model` | `ModelRequest` / `ModelResult` |
+| `dispatch` | `ToolInvocation[]` / `ToolReturn[]` |
+| `set_transcript` | `Message[]` / committed sequence |
+| `kv_read` | key string / `{}` or `{ value }` |
+| `kv_put` | `{ key, value }` / committed sequence |
+| `kv_delete` | key string / committed sequence |
+| `events` | sequence / finite `EventPage` |
+| `emit` | `{ event_type, data }` / committed sequence |
+| `environments` | `EnvironmentControlRequest` / operation result |
+| `telemetry` | JSON record / `null` |
 
-There is one activation at a time per session. Local variables and mutations of these input
-values do not persist across activations. Save conversation and KV changes explicitly.
+Callbacks work only during the named activation. Await every callback before returning.
+An error contains `data.code` and `data.fatal`; fatal errors stop the activation even
+when upstream catches them. The TypeScript binding aborts `ctx.signal` and calls
+`cancel`. Brain drains already admitted callbacks before closing their authority.
 
-## Call Brain services
+Model and Tool requests cross durable journal barriers. Brain sends each effect once
+and records an unknown outcome if a remote result is uncertain. Missing usage counters
+remain absent. Upstream token estimates used for compaction are private runtime state.
 
-| Operation | Use |
+## Native state and recovery
+
+The harness identity and state version are bound to the data directory. A mismatched
+identity refuses startup. Native state lives beneath `harness/<session_id>/`; closing
+or passivating a session retains it, while session deletion removes it.
+
+Brain records `brain.harness.activation` before entering native execution and removes
+it only after successful completion. A remaining marker refuses subsequent execution,
+including after restart. Create a new session after an interrupted or failed native
+activation. The journal and transcript remain readable. This prevents an upstream
+at-least-once recovery routine from replaying an uncertain tool effect.
+
+The journal is authoritative for Brain's effects. Upstream files are authoritative for
+agent continuation. There is no cross-harness checkpoint conversion or transactional
+crash recovery spanning the two stores. Pre-0.40 active sessions are not compatible;
+start with a new data directory.
+
+## Upstream adapters
+
+The image includes the pinned runtimes. For a standalone Node deployment, install the
+SDK and only the runtime you use; these are optional peers so clients stay small:
+
+```sh
+npm install @aexhq/brain@0.40.0 @earendil-works/pi-coding-agent@1.2.0 @earendil-works/pi-ai@1.2.0
+# Or Codex:
+npm install @aexhq/brain@0.40.0 @openai/codex@0.162.1
+# Or OpenCode, run with Bun 1.3.14:
+npm pkg set 'overrides.@modelcontextprotocol/client=2.3.1' 'overrides.@parcel/watcher=2.6.0'
+npm install @aexhq/brain@0.40.0 @opencode/sdk@2.0.28 @ai-sdk/provider@3.0.8
+```
+
+The OpenCode overrides replace upstream dependencies affected by high-severity
+advisories. The image and conformance suite use these exact versions.
+
+| Adapter | Configuration |
 | --- | --- |
-| `await ctx.model(request)` | Call the session model with your chosen messages |
-| `await ctx.callTool(call)` | Invoke one tool and receive its available observations |
-| `await ctx.callTools(calls)` | Invoke a batch together; returns stay in call order |
-| `await ctx.readEvents(after)` | Read a finite event page; continue from `next_cursor` |
-| `await ctx.emit(kind, data)` | Append an application-visible event |
-| `await ctx.setTranscript(messages)` | Save the selected conversation |
-| `await ctx.kv.get(key)` | Read a JSON value, or `undefined` if absent |
-| `await ctx.kv.set(key, value)` | Save one JSON value |
-| `await ctx.kv.delete(key)` | Remove a key; absence is a no-op |
-| `await ctx.environments.list()` | List visible environments; other operations use the same scoped service |
-| `await ctx.telemetry(record)` | Publish best-effort diagnostics |
+| Pi | `contextWindow?`, `maxTokens?`, `compaction?: { enabled?, reserveTokens?, keepRecentTokens? }` |
+| Codex | `contextWindow?`, `compactAtTokens?` |
+| OpenCode | `contextWindow?`, `maxTokens?`, `compaction?: { auto?, buffer?, keep?: { tokens? } }` |
 
-Requests and responses are ordinary objects. The adapter handles JSON encoding and the
-Component binding's sequence conversions. Model and tool shapes come from Brain's generated
-contracts. KV stores JSON values; stored `null` is distinct from absence.
+Session values override deployment values. Missing context-window or output-limit
+metadata must be supplied explicitly where required. Unknown keys fail.
 
-## Model calls
+Pi uses the complete coding-agent session SDK. OpenCode uses its embedded SDK with a
+custom provider and tool catalogue. Codex uses its Rust app-server, dynamic tools, and
+a local Responses gateway into Brain's model adapter; its dynamic-tool API is
+experimental and version-pinned. All three delegate compaction to upstream, retain
+opaque model continuation, exclude unadmitted tools, and disable transport retries.
 
-Model calls record their request and response without editing the saved conversation. Append
-selected replies to your messages and call `ctx.setTranscript(messages)`. Auxiliary summaries
-or classifications can remain separate.
+Pi accepts HTTPS media and imported transcripts. Codex and OpenCode currently accept
+text only and start from native state. All three keep a fixed tool-placement catalogue
+per native session. A changed catalogue fails explicitly; incarnation references are
+resolved from the current activation. Custom harnesses may support additional features.
 
-Keep native model blocks unchanged when retaining context. Images and PDFs need their media
-blocks, not merely URL text. Brain does not host or refresh those files. See
-[models](/brain/docs/concepts/model) for format and provider compatibility.
+## Environment control
 
-## Tool calls
-
-Each call supplies `call_id`, `name`, `environment` and `input`. Preserve the model's call ID
-when executing its request, and use names and placements from `ctx.tools`. Dynamically created
-environments also require their current `environment_sequence`.
-
-A return contains `call_id`, the original call `sequence`, ordered `events`, and `finished`.
-Read `tool_result_emitted.data.result` for a result and `tool_call_ended.data.outcome` for
-completion. There may be several results or none. A successful empty finish is a completion
-boundary, not a null result. Inspect failures and uncertainty before presenting success.
-
-A tool may continue after releasing its caller. Later results can activate the loop without
-user input. The journal also contains observations already received through a tool call; the
-loop can remember what it presented in KV. Model-facing tool definitions do not grant execution
-authority. With several placements, your loop chooses one.
-
-## Event completion and saved state
-
-Successful return completes the delivered event batch, including deliberately ignored events.
-Brain records that boundary automatically. Contiguous pages read during the activation join
-that batch. It never advances across an unread gap or to the journal's current head merely
-because the handler returned. Events that arrived without being delivered remain pending.
-
-Failure or cancellation leaves the batch incomplete. Earlier transcript and KV writes still
-persist, so a later activation may see observations it has previously encountered. Brain does
-not automatically retry the failed activation or its effects.
-
-The loop owns any finer progress tracking. Save pending work, remembered observations or
-skip decisions with `ctx.kv.set`. There is no public acknowledgement, partial checkpoint or
-retry-policy API. Historical events remain readable after completion.
-
-Each write commits independently before resolving. Separate writes are not a transaction.
-A model call, a local mutation or returning a result does not save conversation changes.
-
-## Environments and failures
-
-`ctx.environments` exposes the operations in
-[environment control](/brain/docs/guides/environment-control), under the loop's grants.
-Tools and environment handlers use the same service vocabulary.
-
-Brain records requested effects before dispatch and observations before returning them. It
-sends each effect once. Propagate service errors unless the loop has a deliberate handling
-policy. Cancellation or a reached budget makes service calls fail with `cancelled` or
-`decision_limit`; cancellation does not undo external actions. Background tools retain their
-original deadlines and budgets.
-
-Test a second message, background activation, failed tool and cancellation as well as the
-first answer. The [Rust reference loop](https://github.com/aexhq/brain/tree/main/examples/reference-agentloop)
-shows a complete model-and-tool policy.
-
-## Runtime adapters and other languages
-
-The JavaScript Component adapter is `defineAgentloop`. An HTTP runtime adapter can construct
-the same author context with `createAgentloopContext` from `@aexhq/brain/runtime`, supplying
-an invocation-scoped callback transport. See the
-[HTTP example](https://github.com/aexhq/brain/blob/main/examples/loop-environment.mjs).
-
-Rust and Python build requirements are in the
-[language examples](/brain/docs/guides/write-a-loop#language-choices). Runtime implementers use
-`@aexhq/brain/contracts/agentloop.wit` (`brain:agentloop@0.2.0`) and the JSON payload schemas in
-`@aexhq/brain/contracts/session.json`. The raw Component imports belong to that adapter boundary.
+Grant a harness access with `harness.environments`, and declare the corresponding
+Environments in the session. Call `ctx.environments` in a custom implementation.
+Upstream adapters do not invent management tools or interpret these grants as model
+tools. See [Environment control](/brain/docs/guides/environment-control).

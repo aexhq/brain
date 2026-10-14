@@ -6,7 +6,6 @@ use brain_protocol::BrainPreparation;
 #[derive(Default, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PreparationConfig {
-    pub agentloops: Vec<PathBuf>,
     pub tools: Vec<PathBuf>,
     pub programs: Vec<PathBuf>,
 }
@@ -18,12 +17,7 @@ impl crate::WorkerPool {
         directory: &Path,
     ) -> Result<(), crate::LoopError> {
         let mut preparation = BrainPreparation::default();
-        for path in &config.agentloops {
-            let bytes = tokio::fs::read(directory.join(path))
-                .await
-                .map_err(|error| error.to_string())?;
-            preparation.agentloops.push(self.admit(bytes).await?);
-        }
+
         for path in &config.tools {
             let bytes = tokio::fs::read(directory.join(path))
                 .await

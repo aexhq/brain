@@ -12,6 +12,7 @@ server? Follow the [Aex quickstart](/docs) instead.
 ```sh
 docker run --rm -p 127.0.0.1:8080:8080 \
   -e BRAIN_LISTEN=0.0.0.0:8080 -e BRAIN_API_TOKEN=quickstart \
+  -e BRAIN_HARNESS='{"command":"brain-harness-pi"}' \
   -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
 ```
 
@@ -28,7 +29,7 @@ mkdir brain-example
 cd brain-example
 npm init -y
 npm pkg set type=module
-npm install @aexhq/brain@0.38.0 @aexhq/agentloop-pi@9.0.0 zod@4.4.3
+npm install @aexhq/brain@0.40.0 zod@4.4.3
 ```
 
 <Tabs items={["TypeScript", "JavaScript"]} groupId="language">
@@ -63,7 +64,6 @@ and it runs unchanged as JavaScript. The Zod input schema gives the tool its arg
 
 ```ts
 import { Brain, tool } from "@aexhq/brain";
-import { pi } from "@aexhq/agentloop-pi";
 import { z } from "zod";
 
 const apiKey = process.env.OPENAI_API_KEY;
@@ -79,7 +79,6 @@ const lookupOrder = tool({
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080", token: "quickstart" });
 brain.sessions.create({
   model: { provider: "openai", name: "gpt-5-mini", apiKey },
-  agentloop: pi(),
   tools: [lookupOrder()],
 }).then(async session => {
   const after = session.state.lastSequence;
@@ -121,7 +120,8 @@ your backend.
 
 ## What just happened
 
-- **The loop ran on Brain.** Pi, the ready-made loop, runs on the Brain server by default.
+- **The harness ran on Brain.** The startup command selected the upstream Pi SDK. It owns
+  the agent loop and compaction; Brain executes and journals its model and tool calls.
 - **The tool ran in your app.** `lookup_order` executed in this Node.js process, and
   `ctx.finish(value)` returned its result and completed the call.
 - **The script exited cleanly.** After five idle seconds the client released its tool connection.

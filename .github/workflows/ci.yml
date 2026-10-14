@@ -82,6 +82,9 @@ jobs:
       # generated file was edited by hand.
       - run: npm run gen
       - run: git diff --exit-code -- crates/brain-protocol/generated crates/brain-http/generated crates/brain/generated catalog crates/brain/src/model/generated packages/brain-sdk/src/generated packages/brain-sdk/contracts docs/reference/configuration.mdx
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
       - run: npm test
       - run: npm run package-smoke
 
@@ -124,6 +127,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace-debug
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
       - run: cargo test --workspace --all-targets
 
   rust-platforms:
@@ -141,20 +147,19 @@ jobs:
           toolchain: "1.97.1"
           targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
       - run: cargo test --workspace --all-targets
       - name: Build the diagnostic Components
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --manifest-path tests/fixtures/diagnostic-agentloop/Cargo.toml --target wasm32-wasip2 --release
           cargo build --manifest-path tests/fixtures/diagnostic-tool/Cargo.toml --target wasm32-wasip2 --release
-          cargo build --manifest-path examples/reference-agentloop/Cargo.toml --target wasm32-wasip2 --release
       - name: Admit and activate through the real worker process
         shell: bash
         env:
-          BRAIN_TEST_AGENTLOOP_PACKAGE: ${{ github.workspace }}/tests/fixtures/diagnostic-agentloop/target/wasm32-wasip2/release/diagnostic_agentloop.wasm
           BRAIN_TEST_TOOL_COMPONENT: ${{ github.workspace }}/tests/fixtures/diagnostic-tool/target/wasm32-wasip2/release/diagnostic_tool.wasm
-          BRAIN_TEST_REFERENCE_AGENTLOOP: ${{ github.workspace }}/examples/reference-agentloop/target/wasm32-wasip2/release/reference_agentloop.wasm
         run: cargo test -p brain-env-worker --features integration-tests --test worker_process --test preparation
 
   brain-env:
@@ -170,24 +175,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace-debug
-      - name: Build the diagnostic Agentloop Component
+      - name: Build the diagnostic Tool Component
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --manifest-path tests/fixtures/diagnostic-agentloop/Cargo.toml --target wasm32-wasip2 --release
           cargo build --manifest-path tests/fixtures/diagnostic-tool/Cargo.toml --target wasm32-wasip2 --release
-          cargo build --manifest-path examples/reference-agentloop/Cargo.toml --target wasm32-wasip2 --release
-          cp tests/fixtures/diagnostic-agentloop/target/wasm32-wasip2/release/diagnostic_agentloop.wasm "$RUNNER_TEMP/diagnostic-agentloop.wasm"
           cp tests/fixtures/diagnostic-tool/target/wasm32-wasip2/release/diagnostic_tool.wasm "$RUNNER_TEMP/diagnostic-tool.wasm"
-          cp examples/reference-agentloop/target/wasm32-wasip2/release/reference_agentloop.wasm "$RUNNER_TEMP/reference-agentloop.wasm"
       - run: bash tools/build-python-fixtures.sh "$RUNNER_TEMP/python"
       - name: Admit and activate through the real Linux worker process
         env:
-          BRAIN_TEST_PYTHON_AGENTLOOP: ${{ runner.temp }}/python/python-agentloop.wasm
           BRAIN_TEST_PYTHON_TOOL: ${{ runner.temp }}/python/python-tool.wasm
-          BRAIN_TEST_AGENTLOOP_PACKAGE: ${{ runner.temp }}/diagnostic-agentloop.wasm
           BRAIN_TEST_TOOL_COMPONENT: ${{ runner.temp }}/diagnostic-tool.wasm
-          BRAIN_TEST_REFERENCE_AGENTLOOP: ${{ runner.temp }}/reference-agentloop.wasm
         run: cargo test -p brain-env-worker --features integration-tests --test worker_process --test preparation --test in_process
 
       - uses: actions/setup-node@v7
@@ -204,23 +202,18 @@ jobs:
         env:
           BRAIN_TEST_SERVER: ${{ github.workspace }}/target/debug/brain
           BRAIN_TEST_WORKER: ${{ github.workspace }}/target/debug/brain-env-worker
-          BRAIN_TEST_REFERENCE_AGENTLOOP: ${{ runner.temp }}/reference-agentloop.wasm
         run: node tests/release/runtime.mjs
       - name: Run SDK user journeys in parallel
         env:
           BRAIN_TEST_SERVER: ${{ github.workspace }}/target/debug/brain
           BRAIN_TEST_WORKER: ${{ github.workspace }}/target/debug/brain-env-worker
-          BRAIN_TEST_PYTHON_AGENTLOOP: ${{ runner.temp }}/python/python-agentloop.wasm
           BRAIN_TEST_PYTHON_TOOL: ${{ runner.temp }}/python/python-tool.wasm
-          BRAIN_TEST_AGENTLOOP_PACKAGE: ${{ runner.temp }}/diagnostic-agentloop.wasm
           BRAIN_TEST_TOOL_COMPONENT: ${{ runner.temp }}/diagnostic-tool.wasm
-          BRAIN_TEST_REFERENCE_AGENTLOOP: ${{ runner.temp }}/reference-agentloop.wasm
         run: npm run test:journeys
       - name: Verify every package release fixture before publication
         env:
           BRAIN_TEST_SERVER: ${{ github.workspace }}/target/debug/brain
           BRAIN_TEST_WORKER: ${{ github.workspace }}/target/debug/brain-env-worker
-          BRAIN_TEST_AGENTLOOP_PACKAGE: ${{ runner.temp }}/diagnostic-agentloop.wasm
         run: bash tools/check-release-fixtures.sh
 
   image-smoke:
@@ -236,6 +229,7 @@ jobs:
           set -euo pipefail
           docker run -d --name brain-test -p 18080:8080 \
             -e BRAIN_API_TOKEN=test-token \
+            -e 'BRAIN_HARNESS={"command":"brain-harness-pi"}' \
             brain:test
           trap 'docker logs brain-test; docker rm -f brain-test >/dev/null' EXIT
           for attempt in $(seq 1 60); do

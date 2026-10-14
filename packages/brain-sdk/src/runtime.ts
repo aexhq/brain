@@ -1,6 +1,4 @@
 import { createRequire } from "node:module";
-export { createAgentloopContext } from "./agentloop-context.js";
-export type { AgentloopContext, AgentloopHandler } from "./agentloop-context.js";
 export { environmentProtocol } from "./environment-protocol.js";
 export { callExecution, reportEnvironment, finishExecution } from "./callbacks.js";
 export type { CallbackOptions } from "./callbacks.js";

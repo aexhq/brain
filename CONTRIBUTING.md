@@ -5,7 +5,8 @@ so a change that would be a breaking change later is usually just a change today
 
 ## Setup
 
-You need Rust 1.97.1 and Node 22 or newer.
+You need Rust 1.97.1, Node 22.19 or newer, Bun 1.3.14, and Python 3.13.
+On Windows with a Python launcher shim, set `BRAIN_TEST_PYTHON` to the absolute interpreter path.
 
 ```sh
 cargo build --workspace
@@ -28,7 +29,7 @@ npm run package-smoke
 ```
 
 Check that generation leaves no uncommitted changes in the generated contracts, SDK types or
-configuration reference. CI also runs real loop worker and HTTP lifecycle integration tests, the locked Python
+configuration reference. CI also runs real Tool worker and HTTP lifecycle integration tests, the locked Python
 Environment preparation test, and an image smoke test. Run the Python check with
 `BRAIN_TEST_UV=/path/to/uv node --test examples/python-environment.test.mjs`; CI installs uv 0.8.15. Performance probes are optional diagnostics during pre-launch iteration. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 

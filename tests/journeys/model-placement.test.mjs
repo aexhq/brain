@@ -1,42 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { agentloop, hostEnv, tool } from "@aexhq/brain";
+import { hostEnv, tool } from "@aexhq/brain";
 import { z } from "zod";
 import { fixture, callTools, collect } from "./support.mjs";
 
-const f = fixture({ providers: { selector: async ({ operation }) => {
-  const { request, sequence } = operation;
-  let receipt = { type: "accepted" };
-  if (request.type === "execute") {
-    const callback = request.callback;
-    const call = async (method, input) => {
-      const response = await fetch(callback.url, { method: "POST", headers: {
-        authorization: `Bearer ${callback.token}`, "content-type": "application/json",
-      }, body: JSON.stringify({ method, input }) });
-      assert.equal(response.status, 200);
-      return response.json();
-    };
-    const [definition] = request.input.tools;
-    const transcript = [{ role: "user", content: [{ type: "text", text: "choose a placement" }] }];
-    const model = await call("model", { messages: transcript, tools: [{
-      name: definition.name, description: definition.description,
-      input_schema: { type: "object", properties: {
-        environment: { type: "string", enum: definition.environments }, input: definition.input_schema,
-      }, required: ["environment", "input"], additionalProperties: false },
-    }] });
-    transcript.push(model.message);
-    const returned = await call("dispatch", model.message.content.filter((block) => block.type === "tool_use").map((block) => ({
-      call_id: block.id, name: block.name, environment: block.input.environment, input: block.input.input,
-    })));
-    const results = returned.map(value => value.events.find(event => event.event_type === "tool_result_emitted").data.result);
-    transcript.push({ role: "user", content: results.map((result) => ({ type: "tool_result", tool_use_id: result.call_id, content: result.output, is_error: result.is_error })) });
-    await call("set_transcript", transcript);
-    const page = await call("events", 0);
-
-    receipt = { type: "result", output: { result: results[0].output } };
-  }
-  return { contract: "environment/v1", sequence, receipt };
-} } });
+const f = fixture();
 
 test("model-visible selection dispatches one canonical Tool to the chosen authorized Environment", { timeout: 30_000 }, async (t) => {
   const called = [];
@@ -46,7 +14,7 @@ test("model-visible selection dispatches one canonical Tool to the chosen author
   });
   f.model = (_request, response) => callTools(response, [{ name: "lookup", input: { environment: "right", input: {} } }]);
   const session = await f.create(t, {
-    agentloop: agentloop({ implementation: { type: "selection_example" } })({ env: f.provider("selector") }),
+    harness: { configuration: { mode: "selection" } },
     tools: [lookup({ env: hostEnv({ name: "left" }), where: "left" }), lookup({ env: hostEnv({ name: "right" }), where: "right" })],
   });
   await session.send("choose right");

@@ -5,11 +5,10 @@ use axum::{
 };
 use brain_http::{BrainApi, HostConnection, HttpLimits, router, router_with_bearer};
 use brain_protocol::{
-    AdmissionStatus, AgentloopAdmission, AgentloopId, ApiError, CreateSessionRequest,
-    EnvironmentCallRequest, EnvironmentCallResult, EnvironmentName, Event, EventPage, HostCommand,
-    HostEvent, HostEventAck, HostId, HostOperation, HostRegistration, HostResult, LiveEvent,
-    MessageRequest, SessionId, SessionList, SessionStatus, SessionSummary, StreamingEvent,
-    ToolAdmission, ToolAdmissionStatus, ToolId,
+    AdmissionStatus, ApiError, CreateSessionRequest, EnvironmentCallRequest, EnvironmentCallResult,
+    EnvironmentName, Event, EventPage, HostCommand, HostEvent, HostEventAck, HostId, HostOperation,
+    HostRegistration, HostResult, LiveEvent, MessageRequest, SessionId, SessionList, SessionStatus,
+    SessionSummary, StreamingEvent, ToolAdmission, ToolAdmissionStatus, ToolId,
 };
 use tower::ServiceExt;
 
@@ -20,7 +19,7 @@ async fn preparation_is_authenticated_and_rejects_invalid_configuration() {
         (Some("secret"), "{}", StatusCode::NO_CONTENT),
         (
             Some("secret"),
-            r#"{"agentloops":["../outside"]}"#,
+            r#"{"tools":["../outside"]}"#,
             StatusCode::BAD_REQUEST,
         ),
         (
@@ -269,9 +268,7 @@ impl BrainApi for Api {
             other => panic!("unexpected service {other}"),
         })
     }
-    async fn admit_agentloop(&self, _: String, _: Vec<u8>) -> Result<AgentloopAdmission, ApiError> {
-        Ok(admission())
-    }
+
     async fn admit_tool(&self, _: String, _: Vec<u8>) -> Result<ToolAdmission, ApiError> {
         Ok(ToolAdmission {
             id: ToolId::new("b".repeat(64)),
@@ -279,9 +276,7 @@ impl BrainApi for Api {
             error: None,
         })
     }
-    async fn get_agentloop(&self, _: AgentloopId) -> Result<AgentloopAdmission, ApiError> {
-        Ok(admission())
-    }
+
     async fn create_session(
         &self,
         _: String,
@@ -394,12 +389,11 @@ impl BrainApi for Api {
 
 #[tokio::test]
 async fn exposes_every_v1_route_with_its_contract_status() {
-    let digest = "a".repeat(64);
     let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     // A create request in the execution shape: a tool declaring its implementation and
     // implementation, placed in an environment reached over HTTP with a credential.
     let create = serde_json::json!({
-        "agentloop": {"implementation": {"type": "brain_component", "entrypoint": "turn", "id": digest}, "configuration": {}, "environment": "env_1"},
+        "harness": { "configuration": {}},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
         "tools": [{"name": "bash", "description": "Run a shell command.", "input_schema": {"type": "object"}, "placements": {"env_1": {"implementation": {"kind": "test"}}}}],
         "environments": [{
@@ -411,9 +405,7 @@ async fn exposes_every_v1_route_with_its_contract_status() {
         }]
     });
     let cases = vec![
-        request("POST", "/v1/agentloops", Some(vec![1]), None),
         request("POST", "/v1/tools", Some(vec![1]), None),
-        request("GET", &format!("/v1/agentloops/{digest}"), None, None),
         request("POST", "/v1/hosts", None, None),
         Request::builder()
             .uri("/v1/hosts/host_12345678901234567890/commands")
@@ -500,7 +492,7 @@ async fn exposes_every_v1_route_with_its_contract_status() {
 async fn mutating_routes_fail_fast_without_an_idempotency_key() {
     let request = Request::builder()
         .method("POST")
-        .uri("/v1/agentloops")
+        .uri("/v1/tools")
         .body(Body::from(vec![1]))
         .unwrap();
     let response = router(Api::default(), &HttpLimits::default())
@@ -587,7 +579,7 @@ async fn invalid_http_inputs_return_structured_errors_with_validation_context() 
 async fn oversized_json_and_component_bodies_keep_the_size_limit_and_error_envelope() {
     for (path, content_type) in [
         ("/v1/sessions", "application/json"),
-        ("/v1/agentloops", "application/octet-stream"),
+        ("/v1/tools", "application/octet-stream"),
     ] {
         let response = router(
             Api::default(),
@@ -640,11 +632,10 @@ async fn environment_control_requires_a_key_even_for_list() {
 
 #[tokio::test]
 async fn request_bodies_reject_unknown_fields() {
-    let digest = "a".repeat(64);
     // `hosting`, `binding_names`, and `host_id` on a tool are deleted fields; a client
     // still sending them is told so instead of silently ignored.
     let create = serde_json::json!({
-        "agentloop": {"implementation": {"type": "brain_component", "entrypoint": "turn", "id": digest}, "configuration": {}, "environment": "env_1"},
+        "harness": { "configuration": {}},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
         "tools": [{"name": "bash", "description": "Run a shell command.", "input_schema": {"type": "object"}, "binding_names": [], "hosting": "resident", "host_id": "host_12345678901234567890", "placements": {"env_1": {"implementation": {"type": "host_function", "name": "bash"}}}}],
         "environments": [{
@@ -835,14 +826,6 @@ fn request(
     builder
         .body(body.map_or_else(Body::empty, Body::from))
         .unwrap()
-}
-
-fn admission() -> AgentloopAdmission {
-    AgentloopAdmission {
-        id: AgentloopId::new("a".repeat(64)),
-        status: AdmissionStatus::Admitted,
-        error: None,
-    }
 }
 
 fn session() -> SessionSummary {

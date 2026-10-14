@@ -14,8 +14,8 @@
 <a href="README.md">English</a>
 </p>
 
-Brain 是一个开源的智能体运行时。agent loop、模型、工具以及它们各自的运行位置都由你决定。
-Brain 负责保存会话，并为你的应用提供统一的 API。
+Brain 通过持久化会话 API 运行智能体。启动服务器时选择 Pi、Codex、OpenCode 或自定义 harness；
+应用负责选择模型、工具和工具的运行位置。
 
 ```ts
 const lookupOrder = tool({
@@ -27,7 +27,6 @@ const lookupOrder = tool({
 
 const session = await brain.sessions.create({
   model: { provider: "openai", name: "gpt-5-mini", apiKey },
-  agentloop: pi(),
   tools: [lookupOrder()],
 });
 await session.send("Has order A-1001 shipped?");
@@ -37,8 +36,8 @@ loop 运行在 Brain 服务器上，`lookup_order` 则运行在你的应用中�
 
 ## 为什么选择 Brain
 
-- **掌控智能体的行为。** 直接使用现成的 loop，或自己编写上下文管理、模型调用和工具调度逻辑。
-  官方 loop 与你的代码使用同一套公共接口。
+- **直接使用上游智能体。** Pi、Codex 和 OpenCode 负责循环、原生状态和上下文压缩；
+  适配器通过 Brain 调用模型与工具。自定义 harness 实现同一套跨语言接口。
 - **每个工具都在合适的位置运行。** 应用进程、用户的浏览器标签页、HTTPS 后端、浏览器自动化服务或远程沙箱，
   创建会话时可以为每个工具单独选择。
 - **从应用中驱动智能体。** 通过统一的会话 API 发送消息、流式查看进度、提交后台任务并稍后获取结果。
@@ -58,7 +57,7 @@ loop 运行在 Brain 服务器上，`lookup_order` 则运行在你的应用中�
 | 使用浏览器和远程执行环境 | [环境](https://aex.dev/brain/docs/concepts/environment) |
 | 配置自托管服务器 | [配置参考](https://aex.dev/brain/docs/reference/configuration) |
 
-在应用启动时调用 `await brain.prepare(placed)`，即可预先准备 loop 和工具代码，并在多个会话间复用。
+在应用启动时调用 `await brain.prepare(placed)`，即可预先准备工具代码，并在多个会话间复用。
 详见[环境预备](https://aex.dev/brain/docs/reference/environment-runtime#prepare-before-creating-sessions)。
 
 ## 什么时候使用 Brain
@@ -73,7 +72,7 @@ Brain 是应用所连接的独立服务。如果单个进程就能管理整个�
 加上可替换智能体行为和执行集成的公共接口。
 
 > **早期预览。** 1.0 之前 API 可能变化。存储完好时，已保存的历史记录可在重启后保留。
-> 被中断的工作会标记为失败，不会自动恢复或重试；会话历史也无法恢复环境中丢失的文件或进程。
+> 被中断的工作会标记为失败，不会自动恢复或重试；会话历史也无法恢复环境中丢失的文件或进程。原生执行被中断后需要新建会话。
 
 应用 SDK 支持 TypeScript 和 JavaScript。其他客户端可以使用
 [HTTP API](https://aex.dev/brain/docs/reference/api)。各扩展指南会列出其支持的语言。

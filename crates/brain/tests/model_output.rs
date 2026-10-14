@@ -69,7 +69,7 @@ async fn completed_provider_status_survives_invalid_json_in_the_durable_failure(
             })
             .unwrap(),
         );
-        let loop_executor = scripted(|input, services| async move {
+        let harness = scripted(|input, services| async move {
             let messages = vec![Message::user_text(
                 &input.input.as_ref().expect("user activation").message,
             )];
@@ -93,7 +93,7 @@ async fn completed_provider_status_survives_invalid_json_in_the_durable_failure(
             telemetry,
             8,
             120,
-            loop_executor,
+            harness,
             model,
             Arc::new(NoTools),
         );

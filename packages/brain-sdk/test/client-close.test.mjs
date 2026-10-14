@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { z } from "zod";
-import { Brain, agentloop, brainEnv, component, hostEnv, tool } from "../dist/index.js";
+import { Brain, brainEnv, component, hostEnv, tool } from "../dist/index.js";
 
 const registration = { host_id: "host_lifecycle", token: "fixture-host-token" };
 const state = (id, status = "idle") => ({ session_id: id, status, last_sequence: 1 });
@@ -22,7 +22,6 @@ function fixture(t, { route, credentials, run = (_, ctx) => ctx.finish("done") }
     requests.push({ path, method: request.method, signal: request.signal });
     const response = await route?.(path, request);
     if (response !== undefined) return response;
-    if (path === "/v1/agentloops") return Response.json({ id: "a".repeat(64), status: "admitted" });
     if (path === "/v1/hosts") return Response.json(registration);
     if (path.endsWith("/commands")) {
       const connection = { signal: request.signal, cancelled: false };
@@ -39,10 +38,9 @@ function fixture(t, { route, credentials, run = (_, ctx) => ctx.finish("done") }
     throw new Error(`unexpected request ${request.method} ${path}`);
   } });
   t.after(() => client.close());
-  const loop = agentloop({ implementation: component(new Uint8Array([1])) });
   const lookup = tool({ name: "lookup", description: "Look up a value.", input: z.object({}), run });
   const options = {
-    agentloop: loop({ env: brainEnv({ name: "brain" }) }),
+
     model: { provider: "openai", name: "gpt-5", apiKey: "fixture-model-token" },
     tools: [lookup({ env: hostEnv({ name: "app" }) })],
   };
@@ -60,7 +58,7 @@ test("close is idempotent before use and rejects new work", async (t) => {
   await closing;
   for (const operation of [
     () => f.client.models(), () => f.client.register(), () => f.client.credentials(),
-    () => f.client.sessions.create(f.options), () => f.client.admit(f.options.agentloop),
+    () => f.client.sessions.create(f.options), () => f.client.admitTool(component(new Uint8Array([1]))),
     () => f.client.stream("session").next(),
   ]) await assert.rejects(operation(), aborted);
   assert.throws(() => f.client.withToken("another-token"), aborted);
@@ -96,7 +94,7 @@ test("ending the last session does not stop a concurrent create", async (t) => {
   f.invoke(second.id);
   assert.deepEqual((await f.result).update.outcome, { status: "ok", value: "done" });
   assert.equal(f.connections.length, 1);
-  await assert.rejects((async () => { await f.client.close(); await f.client.admit(f.options.agentloop); })(), aborted);
+  await assert.rejects((async () => { await f.client.close(); await f.client.admitTool(component(new Uint8Array([1]))); })(), aborted);
 });
 
 test("a failed reattachment leaves the client usable and closes with it", async (t) => {
@@ -146,12 +144,12 @@ for (const phase of ["request body", "Component download"]) {
       }));
     } });
     const pending = phase === "request body" ? f.client.models()
-      : f.client.admitAgentloop(component(new URL("https://artifacts.example/loop.wasm")));
+      : f.client.admitTool(component(new URL("https://artifacts.example/loop.wasm")));
     const rejected = assert.rejects(pending, aborted);
     await entered.promise;
     await f.client.close();
     await rejected;
-    assert.equal(f.requests.some(request => request.path === "/v1/agentloops"), false);
+    assert.equal(f.requests.some(request => request.path === "/v1/tools"), false);
   });
 }
 

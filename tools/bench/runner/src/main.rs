@@ -80,9 +80,6 @@ enum Command {
         /// directory. One run is an anecdote; the shape has to reproduce.
         #[arg(long, default_value_t = 2)]
         repeats: usize,
-        /// Compiled agentloop package for the Brain driver.
-        #[arg(long, default_value = "tests/fixtures/diagnostic-agentloop/target/wasm32-wasip2/release/diagnostic_agentloop.wasm")]
-        agentloop: PathBuf,
         /// Where the per-turn rows are written, as CSV.
         #[arg(long, default_value = "tools/bench/results/growth.csv")]
         out: PathBuf,
@@ -100,8 +97,6 @@ enum Command {
         /// Sessions created after the cold one, on each process.
         #[arg(long, default_value_t = 20)]
         warm_per_repeat: usize,
-        #[arg(long, default_value = "tests/fixtures/diagnostic-agentloop/target/wasm32-wasip2/release/diagnostic_agentloop.wasm")]
-        agentloop: PathBuf,
     },
     /// Run probes.
     Run {
@@ -129,9 +124,6 @@ enum Command {
         /// server the operator started.
         #[arg(long)]
         base_url: Option<String>,
-        /// Compiled agentloop package for the Brain driver.
-        #[arg(long, default_value = "tests/fixtures/diagnostic-agentloop/target/wasm32-wasip2/release/diagnostic_agentloop.wasm")]
-        agentloop: PathBuf,
         /// Pid whose process tree holds the subject's memory, when the runner did not
         /// start it.
         #[arg(long)]
@@ -189,7 +181,6 @@ async fn main() -> Result<()> {
             ref subject,
             turns,
             repeats,
-            ref agentloop,
             ref out,
         } => {
             growth::run(growth::Options {
@@ -197,7 +188,6 @@ async fn main() -> Result<()> {
                 subject: subject.clone(),
                 turns,
                 repeats,
-                agentloop: agentloop.clone(),
                 out: out.clone(),
             })
             .await
@@ -206,14 +196,12 @@ async fn main() -> Result<()> {
             subject,
             repeats,
             warm_per_repeat,
-            agentloop,
         } => {
             coldstart::run(coldstart::Options {
                 subject,
                 subjects: cli.subjects.clone(),
                 repeats,
                 warm_per_repeat,
-                agentloop,
             })
             .await
         }
@@ -248,7 +236,6 @@ async fn run(cli: Cli) -> Result<()> {
         units,
         concurrency,
         base_url,
-        agentloop,
         pid,
         resume,
         allow_paid,
@@ -395,7 +382,6 @@ async fn run(cli: Cli) -> Result<()> {
         let halt: Option<Outcome> = 'probes: {
             let bench = drivers::Bench {
                 base_url: base.clone(),
-                agentloop_package: agentloop.clone(),
                 pid: subject_pid,
                 environment: std::sync::Arc::clone(&environment),
                 model_base_url: provider.base_url.clone(),
@@ -457,7 +443,6 @@ async fn run(cli: Cli) -> Result<()> {
                     // they only run for subjects the runner launches itself.
                     relaunch: entry.launch.as_ref().map(|launch| {
                         let name = entry.name.clone();
-                        let agentloop = agentloop.clone();
                         let environment = std::sync::Arc::clone(&environment);
                         let model_base_url = provider.base_url.clone();
                         probes::Relaunch {
@@ -470,7 +455,6 @@ async fn run(cli: Cli) -> Result<()> {
                             make_driver: std::sync::Arc::new(move |base_url: String| {
                                 let bench = drivers::Bench {
                                     base_url,
-                                    agentloop_package: agentloop.clone(),
                                     pid: None,
                                     environment: std::sync::Arc::clone(&environment),
                                     model_base_url: model_base_url.clone(),

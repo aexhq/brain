@@ -14,7 +14,10 @@ pub struct ServerConfig {
     /// Where journals, admitted Components, and local state live.
     #[arg(long, env = "BRAIN_DATA_DIR", default_value = "brain-data")]
     pub data_dir: PathBuf,
-    /// Path to the loop worker executable.
+    /// Startup harness as JSON: {"command":"node","args":["harness.mjs"]}.
+    #[arg(long, env = "BRAIN_HARNESS")]
+    pub harness: String,
+    /// Path to the Tool worker executable.
     #[arg(long, env = "BRAIN_ENV_WORKER", default_value = "brain-env-worker")]
     pub env_worker: PathBuf,
     /// OS worker processes in the built-in Environment pool.

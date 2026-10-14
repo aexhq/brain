@@ -92,8 +92,6 @@ pub(crate) mod contract {
         ProgramAdmission,
         ProgramId,
         ToolId,
-        AgentloopAdmission,
-        AgentloopId,
         ApiError,
         CreateSessionRequest,
         EnvironmentCallRequest,
@@ -123,7 +121,7 @@ pub(crate) mod contract {
     );
 }
 
-/// The bytes of an agentloop package, as `POST /v1/agentloops` receives them.
+/// The bytes of a Tool package, as `POST /v1/tools` receives them.
 pub(crate) struct Package;
 
 impl PartialSchema for Package {

@@ -10,10 +10,9 @@ use axum::{
     routing::{MethodFilter, MethodRouter, on},
 };
 use brain_protocol::{
-    AgentloopAdmission, AgentloopId, CreateSessionRequest, EnvironmentCallRequest,
-    EnvironmentCallResult, EnvironmentName, ExecutionCall, HostCommand, HostEvent, HostEventAck,
-    HostId, HostRegistration, HostResult, MessageRequest, SessionId, SessionList, SessionSummary,
-    ToolAdmission,
+    CreateSessionRequest, EnvironmentCallRequest, EnvironmentCallResult, EnvironmentName,
+    ExecutionCall, HostCommand, HostEvent, HostEventAck, HostId, HostRegistration, HostResult,
+    MessageRequest, SessionId, SessionList, SessionSummary, ToolAdmission,
 };
 use utoipa::{OpenApi, openapi::HttpMethod};
 
@@ -49,9 +48,7 @@ const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
         admit_program,
         get_program,
         get_tool,
-        admit_agentloop,
         admit_tool,
-        get_agentloop,
         register_host,
         host_commands,
         suspend_host,
@@ -169,9 +166,7 @@ fn protected_routes<A: BrainApi>(
         documented::<__path_admit_program, _, _, _>(routed, admit_program::<A>),
         documented::<__path_get_program, _, _, _>(routed, get_program::<A>),
         documented::<__path_get_tool, _, _, _>(routed, get_tool::<A>),
-        documented::<__path_admit_agentloop, _, _, _>(routed, admit_agentloop::<A>),
         documented::<__path_admit_tool, _, _, _>(routed, admit_tool::<A>),
-        documented::<__path_get_agentloop, _, _, _>(routed, get_agentloop::<A>),
         documented::<__path_register_host, _, _, _>(routed, register_host::<A>),
         documented::<__path_create_session, _, _, _>(routed, create_session::<A>),
         documented::<__path_list_sessions, _, _, _>(routed, list_sessions::<A>),
@@ -491,35 +486,6 @@ fn host_sse(command: HostCommand) -> Result<SseEvent, std::convert::Infallible> 
 
 #[utoipa::path(
     post,
-    path = "/v1/agentloops",
-    operation_id = "admitAgentloop",
-    summary = "Upload an agent loop",
-    tag = "Components",
-    security(("serverToken" = [])),
-    params(("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
-    request_body(content = inline(Package), content_type = "application/octet-stream"),
-    responses(
-        (status = 200, description = "Agentloop admitted", body = contract::AgentloopAdmission),
-        (status = "default", description = "Structured error", body = contract::ApiError)
-    )
-)]
-async fn admit_agentloop<A: BrainApi>(
-    State(api): State<A>,
-    headers: HeaderMap,
-    ApiBytes(body): ApiBytes,
-) -> Result<Json<AgentloopAdmission>, HttpError> {
-    if body.is_empty() {
-        return Err(invalid("Agentloop package must not be empty"));
-    }
-    Ok(Json(
-        api.admit_agentloop(idempotency_key(&headers)?, body.to_vec())
-            .await
-            .map_err(HttpError)?,
-    ))
-}
-
-#[utoipa::path(
-    post,
     path = "/v1/tools",
     operation_id = "admitTool",
     summary = "Upload a tool",
@@ -545,26 +511,6 @@ async fn admit_tool<A: BrainApi>(
             .await
             .map_err(HttpError)?,
     ))
-}
-
-#[utoipa::path(
-    get,
-    path = "/v1/agentloops/{id}",
-    operation_id = "getAgentloop",
-    summary = "Read agent loop admission",
-    tag = "Components",
-    security(("serverToken" = [])),
-    params(("id" = contract::AgentloopId, Path)),
-    responses(
-        (status = 200, description = "Admission status", body = contract::AgentloopAdmission),
-        (status = "default", description = "Structured error", body = contract::ApiError)
-    )
-)]
-async fn get_agentloop<A: BrainApi>(
-    State(api): State<A>,
-    Path(id): Path<AgentloopId>,
-) -> Result<Json<AgentloopAdmission>, HttpError> {
-    Ok(Json(api.get_agentloop(id).await.map_err(HttpError)?))
 }
 
 #[utoipa::path(
@@ -652,18 +598,13 @@ fn idempotency_key(headers: &HeaderMap) -> Result<String, HttpError> {
     path = "/v1/sessions",
     operation_id = "createSession",
     summary = "Create a session",
-    description = "Create a conversation using an admitted agent loop. In this example, replace the component id with the id returned by uploading your loop to POST /v1/agentloops, and replace the model API key. Loop configuration depends on the chosen package; the empty object suits the reference loop.",
+    description = "Create a conversation using the harness supplied at Brain startup. Supply the model credential and the tools this session may use.",
     tag = "Sessions",
     security(("serverToken" = [])),
     params(("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
     request_body(content = contract::CreateSessionRequest, example = json!({
-        "agentloop": {
-            "implementation": {
-                "type": "brain_component", "entrypoint": "turn",
-                "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            },
-            "configuration": {}, "environment": "brain"
-        },
+        "harness": {
+            "configuration": {}},
         "model": {"provider": "openai", "name": "gpt-4.1-mini", "api_key": "YOUR_MODEL_API_KEY"},
         "tools": [],
         "environments": [{"name": "brain", "driver": "brain", "lifecycle": "automatic", "configuration": {}}]

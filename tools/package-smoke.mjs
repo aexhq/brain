@@ -38,27 +38,21 @@ try {
       },
     }, null, 2)}\n`,
   );
-  writeFileSync(
-    join(directory, "extension.mjs"),
-    `import { agentloop, brainEnv, component } from "@aexhq/brain";\n` +
-      `export const runtime = brainEnv({ name: "brain" });\n` +
-      `export const simple = agentloop({ implementation: component(new Uint8Array([1])) });\n`,
-  );
   run(["install", "--no-audit", "--no-fund"], directory);
   writeFileSync(
     join(directory, "smoke.mjs"),
     `import assert from "node:assert/strict";\n` +
       `import { readFileSync } from "node:fs";\n` +
       `import * as brainSdk from "@aexhq/brain";\n` +
-      `import { runtime, simple } from "./extension.mjs";\n` +
+      `import { serveHarness } from "@aexhq/brain/harness";\n` +
       `const { Brain } = brainSdk;\n` +
-      `for (const name of ["tool", "agentloop"]) assert.match(readFileSync(new URL(import.meta.resolve("@aexhq/brain/contracts/" + name + ".wit")), "utf8"), /package brain:/u);\n` +
+      `for (const name of ["tool"]) assert.match(readFileSync(new URL(import.meta.resolve("@aexhq/brain/contracts/" + name + ".wit")), "utf8"), /package brain:/u);\n` +
       `globalThis.fetch = async () => { throw new Error("validated Brain reached fetch"); };\n` +
       `const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });\n` +
       `assert.equal(typeof brain.sessions.create, "function");\n` +
       `assert.equal(typeof brainSdk.SessionHandle.prototype.interrupt, "function");\n` +
-      `assert.deepEqual(Object.keys(simple({ env: runtime })), []);\n` +
-      `await assert.rejects(brain.sessions.create({ model: { provider: "vercel-ai-gateway", name: "openai/test", apiKey: "test" }, agentloop: simple({ env: runtime }) }), /validated Brain reached fetch/u);\n` +
+      `assert.equal(typeof serveHarness, "function");\n` +
+      `await assert.rejects(brain.sessions.create({ model: { provider: "vercel-ai-gateway", name: "openai/test", apiKey: "test" } }), /validated Brain reached fetch/u);\n` +
       `assert.equal(typeof brainSdk.tool, "function");\n` +
       `assert.equal(typeof brainSdk.environment, "function");\n` +
       `assert.equal("DurableEventBridge" in brainSdk, false);\n` +

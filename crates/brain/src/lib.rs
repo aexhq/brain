@@ -10,7 +10,7 @@ pub mod model;
 pub mod session;
 pub mod tool;
 
-pub use agentloop::LoopExecutor;
+pub use agentloop::AgentHarness;
 pub use error::Error;
 pub use journal::{
     AppendRecord, CommitHandle, Feed, Folded, JournalEntry, LocalSessionStore, SessionRecord,

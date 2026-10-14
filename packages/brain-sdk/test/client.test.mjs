@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { z } from "zod";
-import { Brain, BrainError, agentloop, brainEnv, component, environment, hostEnv, tool } from "../dist/index.js";
+import { Brain, BrainError, brainEnv, component, environment, hostEnv, tool } from "../dist/index.js";
 
 const sessionResponse = { session_id: "ses_12345678901234567890", status: "idle", last_sequence: 1 };
 
@@ -52,11 +52,9 @@ test("remote implementations need no Brain admission and a Tool can have two pla
   const remote = environment({ url: () => "https://sandbox.example" });
   const first = remote({ name: "first" });
   const second = remote({ name: "second" });
-  const loop = agentloop({ implementation: { runtime: "python", module: "loop.py" } });
   const read = tool({ name: "read", description: "Read", input: z.object({ path: z.string() }), implementation: { runtime: "python", module: "read.py" } });
-  const options = { model: { provider: "openai", name: "gpt-5", apiKey: "key" }, agentloop: loop({ env: first }), tools: [read({ env: first }), read({ env: second })] };
+  const options = { model: { provider: "openai", name: "gpt-5", apiKey: "key" },  tools: [read({ env: first }), read({ env: second })] };
   await client.sessions.create(options);
-  assert.deepEqual(requests[0].agentloop.implementation, { runtime: "python", module: "loop.py" });
   assert.equal(requests[0].tools.length, 1);
   assert.deepEqual(Object.keys(requests[0].tools[0].placements), ["first", "second"]);
   await assert.rejects(client.sessions.create({ ...options, tools: [read({ env: first }), read({ env: first })] }), /duplicate|already/iu);
@@ -79,7 +77,6 @@ test("session creation admits Components and names every placement", async () =>
   const fetchStub = async (input, init) => {
     const request = new Request(input, init);
     requests.push(request);
-    if (request.url.endsWith("/v1/agentloops")) return Response.json({ id: "a".repeat(64), status: "admitted" });
     if (request.url.endsWith("/v1/tools")) return Response.json({ id: "b".repeat(64), status: "admitted" });
     if (request.url.endsWith("/v1/sessions")) return Response.json(sessionResponse);
     throw new Error(`unexpected request ${request.url}`);
@@ -91,7 +88,6 @@ test("session creation admits Components and names every placement", async () =>
     credential: ({ token }) => token,
     configure: ({ region }) => ({ region }),
   })({ name: "sandbox", url: "https://sandbox.example", region: "eu", token: "sandbox-key" });
-  const pi = agentloop({ implementation: component(new Uint8Array([1])) });
   const read = tool({
     name: "read",
     description: "Read one file.",
@@ -107,20 +103,18 @@ test("session creation admits Components and names every placement", async () =>
   const client = new Brain({ baseUrl: "https://brain.example/", token: "brain-token", fetch: fetchStub });
   const session = await client.sessions.create({
     model: { provider: "openai", name: "gpt-5", apiKey: "model-token" },
-    agentloop: pi({ env: runtime }),
+
     tools: [read({ env: runtime }), bash({ env: sandbox })],
   });
 
   assert.equal(session.id, sessionResponse.session_id);
-  assert.deepEqual(requests.map((request) => new URL(request.url).pathname), ["/v1/agentloops", "/v1/tools", "/v1/sessions"]);
+  assert.deepEqual(requests.map((request) => new URL(request.url).pathname), ["/v1/tools", "/v1/sessions"]);
   assert.equal(requests[0].headers.get("content-type"), "application/octet-stream");
-  assert.equal(requests[1].headers.get("content-type"), "application/octet-stream");
-  const body = await requests[2].json();
+  const body = await requests[1].json();
   assert.deepEqual(body.environments, [
     { name: "brain", lifecycle: "automatic", driver: "brain", configuration: { secrets: ["MODEL_TOKEN"] } },
     { name: "sandbox", lifecycle: "automatic", driver: "http", url: "https://sandbox.example", credential: "sandbox-key", configuration: { region: "eu" } },
   ]);
-  assert.deepEqual(body.agentloop, { implementation: { type: "brain_component", entrypoint: "turn", id: "a".repeat(64) }, configuration: {}, environment: "brain" });
   assert.deepEqual(body.tools[0], {
     name: "read",
     description: "Read one file.",
@@ -136,21 +130,20 @@ test("one name for two different Environments is refused before any request", as
   const client = new Brain({ baseUrl: "https://brain.example", fetch: async (input, init) => {
     const request = new Request(input, init);
     requests.push(request);
-    if (request.url.endsWith("/v1/agentloops")) return Response.json({ id: "a".repeat(64), status: "admitted" });
     return Response.json(sessionResponse);
   } });
-  const pi = agentloop({ implementation: component(new Uint8Array([1])) });
   const read = tool({ name: "read", description: "Read.", input: z.object({}), implementation: { kind: "test" } });
   await assert.rejects(client.sessions.create({
     model: { provider: "openai", name: "gpt-5", apiKey: "key" },
-    agentloop: pi({ env: brainEnv({ name: "brain" }) }),
+
+    environments: [brainEnv({ name: "brain" })],
     tools: [read({ env: brainEnv({ name: "brain", secrets: ["TOKEN"] }) })],
   }), /two Environments are named brain/u);
   assert.equal(requests.length, 0);
   // Two values that say the same thing are one declaration.
   await client.sessions.create({
     model: { provider: "openai", name: "gpt-5", apiKey: "key" },
-    agentloop: pi({ env: brainEnv({ name: "brain" }) }),
+
     tools: [read({ env: brainEnv({ name: "brain" }) })],
   });
   const body = await requests.at(-1).json();
@@ -159,18 +152,17 @@ test("one name for two different Environments is refused before any request", as
 
 test("a Tool with run belongs in a hostEnv and a Tool with an implementation does not", async () => {
   const client = new Brain({ baseUrl: "https://brain.example", fetch: async () => { throw new Error("no request expected"); } });
-  const pi = agentloop({ implementation: component(new Uint8Array([1])) });
   const brain = brainEnv({ name: "brain" });
   const lookup = tool({ name: "lookup", description: "Lookup.", input: z.object({}), run: async () => null });
   await assert.rejects(client.sessions.create({
     model: { provider: "openai", name: "gpt-5", apiKey: "key" },
-    agentloop: pi({ env: brain }),
+
     tools: [lookup({ env: brain })],
   }), /must be placed in a hostEnv/u);
   const read = tool({ name: "read", description: "Read.", input: z.object({}), implementation: { kind: "test" } });
   await assert.rejects(client.sessions.create({
     model: { provider: "openai", name: "gpt-5", apiKey: "key" },
-    agentloop: pi({ env: brain }),
+
     tools: [read({ env: hostEnv({ name: "app" }) })],
   }), /must have run/u);
 });
@@ -182,11 +174,10 @@ test("failed admission is not cached and successful admission is", async () => {
     if (calls === 1) return Response.json({ code: "internal", message: "boom", retryable: false }, { status: 500 });
     return Response.json({ id: "a".repeat(64), status: "admitted" });
   } });
-  const pi = agentloop({ implementation: component(new Uint8Array([1])) });
-  const loop = pi({ env: brainEnv({ name: "brain" }) });
-  await assert.rejects(client.admit(loop), (error) => error instanceof BrainError && error.status === 500);
-  assert.equal(await client.admit(loop), "a".repeat(64));
-  assert.equal(await client.admit(loop), "a".repeat(64));
+  const artifact = component(new Uint8Array([1]));
+  await assert.rejects(client.admitTool(artifact), (error) => error instanceof BrainError && error.status === 500);
+  assert.equal(await client.admitTool(artifact), "a".repeat(64));
+  assert.equal(await client.admitTool(artifact), "a".repeat(64));
   assert.equal(calls, 2);
 });
 
@@ -194,13 +185,11 @@ test("retrying create with the same key sends the same body", async () => {
   const bodies = [];
   const client = new Brain({ baseUrl: "https://brain.example", fetch: async (input, init) => {
     const request = new Request(input, init);
-    if (request.url.endsWith("/v1/agentloops")) return Response.json({ id: "a".repeat(64), status: "admitted" });
     bodies.push(await request.json());
     if (bodies.length === 1) throw new TypeError("response lost after server accepted create");
     return Response.json(sessionResponse);
   } });
-  const pi = agentloop({ implementation: component(new Uint8Array([1])) });
-  const options = { model: { provider: "openai", name: "gpt-5", apiKey: "key" }, agentloop: pi({ env: brainEnv({ name: "brain" }) }) };
+  const options = { model: { provider: "openai", name: "gpt-5", apiKey: "key" }, };
   await assert.rejects(client.sessions.create(options, { idempotencyKey: "create-once" }));
   await client.sessions.create(options, { idempotencyKey: "create-once" });
   assert.deepEqual(bodies[1], bodies[0]);

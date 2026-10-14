@@ -1,9 +1,10 @@
-//! Brain's v1 data directory.
+//! Brain's startup-harness data directory.
 //!
 //! ```text
-//! {data_dir}/format             "brain-data/1"
+//! {data_dir}/format             "brain-data/2"
 //! {data_dir}/sessions/{id}/     one directory per session (see brain::LocalSessionStore)
-//! {data_dir}/agentloops         admitted Agentloop and Tool Components
+//! {data_dir}/components        admitted Tool Components
+//! {data_dir}/harness           harness identity and opaque native session state
 //! {data_dir}/native-workspaces  session workspaces of the brain env
 //! {data_dir}/hosts              host registrations
 //! {data_dir}/requests           idempotency claims and answers
@@ -13,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-pub const FORMAT: &str = "brain-data/1";
+pub const FORMAT: &str = "brain-data/2";
 
 /// Hold this handle for the server lifetime, before initializing any mutable stores.
 pub fn lock(data_dir: &Path) -> Result<std::fs::File, brain::Error> {

@@ -142,7 +142,7 @@ impl ToolExecutor for OutcomeTools {
 
 fn runtime(
     data_dir: &std::path::Path,
-    loop_executor: Arc<dyn brain::LoopExecutor>,
+    harness: Arc<dyn brain::AgentHarness>,
     model_executor: Arc<dyn brain::ModelExecutor>,
     tool_executor: Arc<dyn ToolExecutor>,
 ) -> Runtime {
@@ -152,7 +152,7 @@ fn runtime(
         publisher,
         8,
         120,
-        loop_executor,
+        harness,
         model_executor,
         tool_executor,
     )
@@ -160,7 +160,7 @@ fn runtime(
 
 fn runtime_with_deadline(
     data_dir: &std::path::Path,
-    loop_executor: Arc<dyn brain::LoopExecutor>,
+    harness: Arc<dyn brain::AgentHarness>,
     tool_executor: Arc<dyn ToolExecutor>,
     max_tool_secs: u64,
 ) -> Runtime {
@@ -170,7 +170,7 @@ fn runtime_with_deadline(
         publisher,
         8,
         max_tool_secs,
-        loop_executor,
+        harness,
         Arc::new(NoModels),
         tool_executor,
     )
@@ -224,7 +224,7 @@ async fn the_started_record_precedes_the_model_effect() {
         seen_started: AtomicUsize::new(0),
         feed: Mutex::new(None),
     });
-    let loop_executor = scripted(|input, services| async move {
+    let harness = scripted(|input, services| async move {
         let mut transcript = input.transcript;
         transcript.push(user(
             &input.input.as_ref().expect("user activation").message,
@@ -233,7 +233,7 @@ async fn the_started_record_precedes_the_model_effect() {
         transcript.push(result.message);
         done(&*services, transcript).await
     });
-    let runtime = runtime(&data_dir, loop_executor, model.clone(), Arc::new(NoTools));
+    let runtime = runtime(&data_dir, harness, model.clone(), Arc::new(NoTools));
     let handle = runtime.create(&config(), &[]).unwrap();
     *model.feed.lock().unwrap() = Some(runtime.subscribe(handle.id()));
     handle
@@ -265,7 +265,7 @@ async fn the_started_record_precedes_the_model_effect() {
 #[tokio::test]
 async fn cancel_interrupts_an_inflight_model_request() {
     let data_dir = temporary_directory("cancel-model");
-    let loop_executor = scripted(|input, services| async move {
+    let harness = scripted(|input, services| async move {
         let mut transcript = input.transcript;
         transcript.push(user(
             &input.input.as_ref().expect("user activation").message,
@@ -274,12 +274,7 @@ async fn cancel_interrupts_an_inflight_model_request() {
         transcript.push(result.message);
         done(&*services, transcript).await
     });
-    let runtime = runtime(
-        &data_dir,
-        loop_executor,
-        Arc::new(SlowModel),
-        Arc::new(NoTools),
-    );
+    let runtime = runtime(&data_dir, harness, Arc::new(SlowModel), Arc::new(NoTools));
     let handle = runtime.create(&config(), &[]).unwrap();
     let mut feed = runtime.subscribe(handle.id());
     let turning = {
@@ -338,7 +333,7 @@ async fn cancel_forwards_inflight_tool_cancellation_to_the_environment_port() {
         entered: tokio::sync::Notify::new(),
         cancelled: Mutex::new(Vec::new()),
     });
-    let loop_executor = scripted(|input, services| async move {
+    let harness = scripted(|input, services| async move {
         let results = services
             .dispatch(vec![invocation("slow", "call_1")])
             .await?;
@@ -346,7 +341,7 @@ async fn cancel_forwards_inflight_tool_cancellation_to_the_environment_port() {
         transcript.push(user(&format!("{} results", results.len())));
         done(&*services, transcript).await
     });
-    let runtime = runtime_with_deadline(&data_dir, loop_executor, tools.clone(), 120);
+    let runtime = runtime_with_deadline(&data_dir, harness, tools.clone(), 120);
     let handle = runtime.create(&tool_config("slow"), &[]).unwrap();
     let turning = {
         let handle = handle.clone();
@@ -457,7 +452,7 @@ async fn wall_deadline_keeps_completed_tool_results_and_records_unknown_cancella
 #[tokio::test]
 async fn a_subscriber_sees_model_output_while_the_turn_is_running() {
     let data_dir = temporary_directory("streaming");
-    let loop_executor = scripted(|input, services| async move {
+    let harness = scripted(|input, services| async move {
         let mut transcript = input.transcript;
         transcript.push(user(
             &input.input.as_ref().expect("user activation").message,
@@ -468,7 +463,7 @@ async fn a_subscriber_sees_model_output_while_the_turn_is_running() {
     });
     let runtime = runtime(
         &data_dir,
-        loop_executor,
+        harness,
         Arc::new(ScriptedModel),
         Arc::new(NoTools),
     );
@@ -503,7 +498,7 @@ async fn a_subscriber_sees_model_output_while_the_turn_is_running() {
 async fn a_session_can_be_created_with_a_transcript() {
     let data_dir = temporary_directory("seed");
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let loop_executor = {
+    let harness = {
         let seen = seen.clone();
         scripted(move |input, services| {
             let seen = seen.clone();
@@ -517,12 +512,7 @@ async fn a_session_can_be_created_with_a_transcript() {
             }
         })
     };
-    let runtime = runtime(
-        &data_dir,
-        loop_executor,
-        Arc::new(NoModels),
-        Arc::new(NoTools),
-    );
+    let runtime = runtime(&data_dir, harness, Arc::new(NoModels), Arc::new(NoTools));
     let seed = vec![user("earlier"), user("and earlier still")];
     let handle = runtime.create(&config(), &seed).unwrap();
     handle
@@ -543,7 +533,7 @@ async fn a_session_can_be_created_with_a_transcript() {
 #[tokio::test]
 async fn a_loop_cannot_append_brains_own_kinds() {
     let data_dir = temporary_directory("reserved");
-    let loop_executor = scripted(|input, services| async move {
+    let harness = scripted(|input, services| async move {
         for kind in [
             "turn_ended",
             "session_ended",
@@ -565,12 +555,7 @@ async fn a_loop_cannot_append_brains_own_kinds() {
             .await?;
         done(&*services, input.transcript).await
     });
-    let runtime = runtime(
-        &data_dir,
-        loop_executor,
-        Arc::new(NoModels),
-        Arc::new(NoTools),
-    );
+    let runtime = runtime(&data_dir, harness, Arc::new(NoModels), Arc::new(NoTools));
     let handle = runtime.create(&config(), &[]).unwrap();
     handle
         .message(MessageRequest { input: "go".into() })
@@ -589,7 +574,7 @@ async fn a_loop_cannot_append_brains_own_kinds() {
 #[tokio::test]
 async fn the_journal_is_the_only_thing_written() {
     let data_dir = temporary_directory("files");
-    let loop_executor = scripted(|input, services| async move {
+    let harness = scripted(|input, services| async move {
         let mut transcript = input.transcript;
         transcript.push(user(
             &input.input.as_ref().expect("user activation").message,
@@ -600,7 +585,7 @@ async fn the_journal_is_the_only_thing_written() {
     });
     let runtime = runtime(
         &data_dir,
-        loop_executor,
+        harness,
         Arc::new(ScriptedModel),
         Arc::new(NoTools),
     );
@@ -659,13 +644,13 @@ async fn a_tool_call_record_names_the_tool_and_nothing_else_about_it() {
         entered: tokio::sync::Notify::new(),
         cancelled: Mutex::new(Vec::new()),
     });
-    let loop_executor = scripted(|input, services| async move {
+    let harness = scripted(|input, services| async move {
         services
             .dispatch(vec![invocation("bash", "call_1")])
             .await?;
         done(&*services, input.transcript).await
     });
-    let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 5);
+    let runtime = runtime_with_deadline(&data_dir, harness, tools, 5);
     let handle = runtime.create(&tool_config("bash"), &[]).unwrap();
     handle
         .message(MessageRequest { input: "go".into() })
@@ -732,7 +717,7 @@ async fn invoke_outcomes_map_onto_tool_results() {
             cancelled: Mutex::new(Vec::new()),
         });
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let loop_executor = {
+        let harness = {
             let seen = seen.clone();
             scripted(move |input, services| {
                 let seen = seen.clone();
@@ -745,7 +730,7 @@ async fn invoke_outcomes_map_onto_tool_results() {
                 }
             })
         };
-        let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 5);
+        let runtime = runtime_with_deadline(&data_dir, harness, tools, 5);
         let handle = runtime.create(&tool_config("tool"), &[]).unwrap();
         handle
             .message(MessageRequest { input: "go".into() })
@@ -780,7 +765,7 @@ async fn an_overdue_invoke_is_cancelled_and_recorded_as_timeout() {
         cancelled: Mutex::new(Vec::new()),
     });
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let loop_executor = {
+    let harness = {
         let seen = seen.clone();
         scripted(move |input, services| {
             let seen = seen.clone();
@@ -793,7 +778,7 @@ async fn an_overdue_invoke_is_cancelled_and_recorded_as_timeout() {
             }
         })
     };
-    let runtime = runtime_with_deadline(&data_dir, loop_executor, tools.clone(), 1);
+    let runtime = runtime_with_deadline(&data_dir, harness, tools.clone(), 1);
     let handle = runtime.create(&tool_config("slow"), &[]).unwrap();
     let started = std::time::Instant::now();
     handle
@@ -820,7 +805,7 @@ async fn an_overdue_invoke_is_cancelled_and_recorded_as_timeout() {
 async fn a_tool_in_a_host_env_uses_the_configured_executor() {
     let data_dir = temporary_directory("host-tool");
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let loop_executor = {
+    let harness = {
         let seen = seen.clone();
         scripted(move |input, services| {
             let seen = seen.clone();
@@ -845,7 +830,7 @@ async fn a_tool_in_a_host_env_uses_the_configured_executor() {
         entered: tokio::sync::Notify::new(),
         cancelled: Mutex::new(Vec::new()),
     });
-    let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 5);
+    let runtime = runtime_with_deadline(&data_dir, harness, tools, 5);
     let handle = runtime.create(&host_tool_config("pick_file"), &[]).unwrap();
     handle
         .message(MessageRequest { input: "go".into() })
@@ -861,7 +846,7 @@ async fn a_tool_in_a_host_env_uses_the_configured_executor() {
 async fn an_unanswered_host_call_times_out_and_journals_the_cancellation() {
     let data_dir = temporary_directory("host-timeout");
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let loop_executor = {
+    let harness = {
         let seen = seen.clone();
         scripted(move |input, services| {
             let seen = seen.clone();
@@ -886,7 +871,7 @@ async fn an_unanswered_host_call_times_out_and_journals_the_cancellation() {
         entered: tokio::sync::Notify::new(),
         cancelled: Mutex::new(Vec::new()),
     });
-    let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 1);
+    let runtime = runtime_with_deadline(&data_dir, harness, tools, 1);
     let handle = runtime.create(&host_tool_config("pick_file"), &[]).unwrap();
     handle
         .message(MessageRequest { input: "go".into() })
@@ -907,7 +892,7 @@ async fn an_unanswered_host_call_times_out_and_journals_the_cancellation() {
 #[tokio::test]
 async fn the_transcript_folds_back_from_its_deltas() {
     let data_dir = temporary_directory("deltas");
-    let loop_executor = scripted(|input, services| async move {
+    let harness = scripted(|input, services| async move {
         let mut transcript = input.transcript;
         transcript.push(user(
             &input.input.as_ref().expect("user activation").message,
@@ -928,7 +913,7 @@ async fn the_transcript_folds_back_from_its_deltas() {
     });
     let runtime = runtime(
         &data_dir,
-        loop_executor,
+        harness,
         Arc::new(ScriptedModel),
         Arc::new(NoTools),
     );
@@ -953,7 +938,7 @@ async fn the_transcript_folds_back_from_its_deltas() {
 async fn a_session_resumes_from_its_store_after_its_task_is_dropped() {
     let data_dir = temporary_directory("resume");
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let loop_executor = {
+    let harness = {
         let seen = seen.clone();
         scripted(move |input, services| {
             let seen = seen.clone();
@@ -971,7 +956,7 @@ async fn a_session_resumes_from_its_store_after_its_task_is_dropped() {
     };
     let runtime = runtime(
         &data_dir,
-        loop_executor,
+        harness,
         Arc::new(ScriptedModel),
         Arc::new(NoTools),
     );
@@ -1019,7 +1004,7 @@ async fn a_session_resumes_from_its_store_after_its_task_is_dropped() {
 async fn events_since_the_last_activation_reach_the_loop() {
     let data_dir = temporary_directory("since");
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let loop_executor = {
+    let harness = {
         let seen = seen.clone();
         scripted(move |input, services| {
             let seen = seen.clone();
@@ -1033,12 +1018,7 @@ async fn events_since_the_last_activation_reach_the_loop() {
             }
         })
     };
-    let runtime = runtime(
-        &data_dir,
-        loop_executor,
-        Arc::new(NoModels),
-        Arc::new(NoTools),
-    );
+    let runtime = runtime(&data_dir, harness, Arc::new(NoModels), Arc::new(NoTools));
     let handle = runtime.create(&config(), &[]).unwrap();
     handle
         .message(MessageRequest {
@@ -1071,7 +1051,7 @@ async fn events_since_the_last_activation_reach_the_loop() {
 #[tokio::test]
 async fn one_activation_can_read_more_than_the_initial_event_page() {
     let data_dir = temporary_directory("event-pages");
-    let loop_executor = scripted(|input, services| async move {
+    let harness = scripted(|input, services| async move {
         let mut events = input.events;
         loop {
             let after = events.last().map_or(0, |event| event.sequence);
@@ -1093,12 +1073,7 @@ async fn one_activation_can_read_more_than_the_initial_event_page() {
         );
         done(&*services, input.transcript).await
     });
-    let runtime = runtime(
-        &data_dir,
-        loop_executor,
-        Arc::new(NoModels),
-        Arc::new(NoTools),
-    );
+    let runtime = runtime(&data_dir, harness, Arc::new(NoModels), Arc::new(NoTools));
     let handle = runtime.create(&config(), &[]).unwrap();
     let mut records = (0..1100)
         .map(|_| brain::AppendRecord::new("observation", serde_json::json!({})))
@@ -1126,7 +1101,7 @@ async fn transcript_replacement_reaches_the_live_feed_and_next_activation() {
     let data_dir = temporary_directory("transcript-replaced-event");
     let turn = Arc::new(AtomicUsize::new(0));
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let loop_executor = {
+    let harness = {
         let turn = turn.clone();
         let seen = seen.clone();
         scripted(move |input, services| {
@@ -1148,12 +1123,7 @@ async fn transcript_replacement_reaches_the_live_feed_and_next_activation() {
             }
         })
     };
-    let runtime = runtime(
-        &data_dir,
-        loop_executor,
-        Arc::new(NoModels),
-        Arc::new(NoTools),
-    );
+    let runtime = runtime(&data_dir, harness, Arc::new(NoModels), Arc::new(NoTools));
     let handle = runtime
         .create(&config(), &[user("old one"), user("old two")])
         .unwrap();
@@ -1191,7 +1161,7 @@ async fn transcript_replacement_reaches_the_live_feed_and_next_activation() {
 async fn a_bounded_event_page_does_not_skip_the_rest() {
     let data_dir = temporary_directory("event-page");
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let loop_executor = {
+    let harness = {
         let seen = seen.clone();
         scripted(move |input, services| {
             let seen = seen.clone();
@@ -1207,12 +1177,7 @@ async fn a_bounded_event_page_does_not_skip_the_rest() {
             }
         })
     };
-    let runtime = runtime(
-        &data_dir,
-        loop_executor,
-        Arc::new(NoModels),
-        Arc::new(NoTools),
-    );
+    let runtime = runtime(&data_dir, harness, Arc::new(NoModels), Arc::new(NoTools));
     let handle = runtime.create(&config(), &[]).unwrap();
     handle
         .message(MessageRequest {
@@ -1247,7 +1212,7 @@ async fn a_bounded_event_page_does_not_skip_the_rest() {
 #[tokio::test]
 async fn a_turn_that_exceeds_its_model_call_budget_fails_with_model_call_limit() {
     let data_dir = temporary_directory("budget");
-    let loop_executor = scripted(|input, services| async move {
+    let harness = scripted(|input, services| async move {
         let mut transcript = input.transcript;
         transcript.push(user(
             &input.input.as_ref().expect("user activation").message,
@@ -1259,7 +1224,7 @@ async fn a_turn_that_exceeds_its_model_call_budget_fails_with_model_call_limit()
     });
     let runtime = runtime(
         &data_dir,
-        loop_executor,
+        harness,
         Arc::new(ScriptedModel),
         Arc::new(NoTools),
     );

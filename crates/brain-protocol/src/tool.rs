@@ -27,7 +27,7 @@ pub struct ToolDefinition {
     pub description: String,
     #[schemars(schema_with = "crate::schema::json_object")]
     pub input_schema: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "crate::schema::json_object")]
     pub output_schema: Option<serde_json::Value>,
 }

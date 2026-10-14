@@ -1,6 +1,7 @@
-import { defineAgentloop } from "@aexhq/brain/agentloop";
+import type { HarnessSession } from "@aexhq/brain/harness";
+const defineRun = (run: HarnessSession["run"]) => run;
 
-export const turn = defineAgentloop(async ctx => {
+export const turn = defineRun(async ctx => {
   const count = await ctx.kv.get<number>("turns") ?? 0;
   await ctx.kv.set("turns", count + 1);
   if (!ctx.input) return;
@@ -13,7 +14,7 @@ export const turn = defineAgentloop(async ctx => {
   return { finished, count };
 });
 
-defineAgentloop(async ctx => {
+defineRun(async ctx => {
   // @ts-expect-error A background activation has no user input.
   ctx.input.message;
   // @ts-expect-error Tool calls require an explicit authorized placement.

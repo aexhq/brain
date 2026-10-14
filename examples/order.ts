@@ -1,5 +1,4 @@
 import { Brain, tool } from "@aexhq/brain";
-import { pi } from "@aexhq/agentloop-pi";
 import { z } from "zod";
 
 const apiKey = process.env.OPENAI_API_KEY;
@@ -15,7 +14,6 @@ const lookupOrder = tool({
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080", token: "quickstart" });
 brain.sessions.create({
   model: { provider: "openai", name: "gpt-5-mini", apiKey },
-  agentloop: pi(),
   tools: [lookupOrder()],
 }).then(async session => {
   const after = session.state.lastSequence;

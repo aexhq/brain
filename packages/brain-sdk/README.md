@@ -1,8 +1,8 @@
 # Brain SDK
 
 Connect your TypeScript or JavaScript application to [Brain](https://aex.dev/brain), the
-open-source agent runtime. Choose the agent loop and model, connect your tools, and drive the
-agent through one session API.
+open-source agent runtime. Connect models and tools, and drive agents through one session API. The operator selects
+Pi, Codex, OpenCode, or a custom harness when starting Brain.
 
 ## Get started
 
@@ -31,7 +31,7 @@ app and prints the result.
 - **Know what each call stops.** `session.interrupt()` stops current work, `session.end()` finishes
   the conversation, `session.delete()` removes its history and `brain.close()` permanently releases
   the client's connections.
-- **Prepare at startup.** `await brain.prepare(placed)` prepares Agentloop and Tool code once so
+- **Prepare at startup.** `await brain.prepare(placed)` prepares Tool code once so
   sessions can reuse it. See [Environment preparation](https://aex.dev/brain/docs/reference/environment-runtime#prepare-before-creating-sessions).
 
 Prompt-based typed answers live in Aex's SDK, so Brain's `send()` and `submit()` reject `output` options.

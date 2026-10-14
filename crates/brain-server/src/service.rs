@@ -6,10 +6,10 @@ use brain_env::LoopError;
 use brain_env::WorkerPool;
 use brain_http::BrainApi;
 use brain_protocol::{
-    AdmissionStatus, AgentloopAdmission, AgentloopId, ApiError, CreateSessionRequest, Driver,
-    EnvironmentCallRequest, EnvironmentCallResult, EnvironmentName, EventPage, ExecutionCall,
-    HostEvent, HostEventAck, HostId, HostRegistration, HostResult, MessageRequest, ModelBinding,
-    SessionConfig, SessionId, SessionList, SessionSummary, ToolAdmission, ToolAdmissionStatus,
+    AdmissionStatus, ApiError, CreateSessionRequest, Driver, EnvironmentCallRequest,
+    EnvironmentCallResult, EnvironmentName, EventPage, ExecutionCall, HostEvent, HostEventAck,
+    HostId, HostRegistration, HostResult, MessageRequest, ModelBinding, SessionConfig, SessionId,
+    SessionList, SessionSummary, ToolAdmission, ToolAdmissionStatus,
 };
 use tokio::sync::Mutex;
 
@@ -39,7 +39,7 @@ pub struct ServerResources {
     pub session_idle_ttl: Option<Duration>,
     /// Answers already given to keyed requests, so a retry replays instead of repeats.
     pub idempotency: IdempotencyStore,
-    /// Admits Agentloop and Tool Components; the brain env runs them.
+    /// Admits Tool Components; the brain env runs them.
     pub loops: Arc<WorkerPool>,
     pub environments: Arc<EnvironmentRegistry>,
     pub hosts: crate::HostEnvironment,
@@ -68,6 +68,7 @@ impl ServerApi {
     }
     pub async fn shutdown(&self) {
         self.drain().await;
+        self.resources.session_runtime.harness.shutdown().await;
         self.resources.loops.shutdown().await;
     }
     pub fn new(resources: ServerResources) -> Result<Self, brain::Error> {
@@ -313,44 +314,6 @@ impl BrainApi for ServerApi {
             .map_err(api_error)
     }
 
-    async fn admit_agentloop(
-        &self,
-        idempotency_key: String,
-        package: Vec<u8>,
-    ) -> Result<AgentloopAdmission, ApiError> {
-        let lock = self.idempotency_lock("admit_agentloop", &idempotency_key)?;
-        let _guard = lock.lock().await;
-        if let Some(saved) = self
-            .resources
-            .idempotency
-            .replay("admit_agentloop", &idempotency_key, &package)
-            .map_err(api_error)?
-        {
-            return Self::replay(saved);
-        }
-        let id = self
-            .resources
-            .loops
-            .admit(package.clone())
-            .await
-            .map_err(loop_error)?;
-        let admission = AgentloopAdmission {
-            id,
-            status: AdmissionStatus::Admitted,
-            error: None,
-        };
-        self.resources
-            .idempotency
-            .put(
-                "admit_agentloop",
-                &idempotency_key,
-                &package,
-                &serde_json::to_value(&admission).map_err(|error| internal(error.to_string()))?,
-            )
-            .map_err(api_error)?;
-        Ok(admission)
-    }
-
     async fn admit_tool(
         &self,
         idempotency_key: String,
@@ -387,22 +350,6 @@ impl BrainApi for ServerApi {
             )
             .map_err(api_error)?;
         Ok(admission)
-    }
-
-    async fn get_agentloop(&self, id: AgentloopId) -> Result<AgentloopAdmission, ApiError> {
-        if !valid_sha256(id.as_str()) {
-            return Err(ApiError::invalid_request(
-                "an Agentloop is named by 64 lowercase hexadecimal characters",
-            ));
-        }
-        if !self.resources.loops.status(&id).await.map_err(loop_error)? {
-            return Err(not_found("Agentloop is not admitted"));
-        }
-        Ok(AgentloopAdmission {
-            id,
-            status: AdmissionStatus::Admitted,
-            error: None,
-        })
     }
 
     async fn create_session(
@@ -444,7 +391,7 @@ impl BrainApi for ServerApi {
             }
         }
         let config = SessionConfig {
-            agentloop: request.agentloop.clone(),
+            harness: request.harness.clone(),
             model: ModelBinding {
                 provider: request.model.provider.clone(),
                 name: request.model.name.clone(),
@@ -761,15 +708,8 @@ impl BrainApi for ServerApi {
     }
 
     async fn ready(&self) -> bool {
-        self.resources.loops.ready().await.is_ok()
+        self.resources.session_runtime.harness.ready() && self.resources.loops.ready().await.is_ok()
     }
-}
-
-fn valid_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn valid_identifier(value: &str) -> bool {
@@ -835,11 +775,8 @@ mod tests {
         let registry = brain::model::ProviderRegistry::default_set();
         let request = |provider: &str, name: &str, response_format: bool| {
             serde_json::from_value::<brain_protocol::CreateSessionRequest>(serde_json::json!({
-                "agentloop": {
-                    "implementation": {"type": "brain_component", "entrypoint": "turn", "id": "a".repeat(64)},
-                    "configuration": {},
-                    "environment": "brain",
-                },
+                "harness": {
+                    "configuration": {}},
                 "model": { "provider": provider, "name": name, "api_key": "k" },
                 "tools": [],
                 "response_format": if response_format { Some(serde_json::json!({"type": "json_object"})) } else { None },

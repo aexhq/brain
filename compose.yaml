@@ -11,6 +11,7 @@ services:
       BRAIN_LISTEN: 0.0.0.0:8080
       BRAIN_DATA_DIR: /var/lib/brain
       BRAIN_API_TOKEN: ${BRAIN_API_TOKEN:?set BRAIN_API_TOKEN to a nonempty token}
+      BRAIN_HARNESS: ${BRAIN_HARNESS:?set BRAIN_HARNESS to a harness command JSON object}
       BRAIN_PUBLIC_URL:
     ports:
       - 127.0.0.1:8080:8080

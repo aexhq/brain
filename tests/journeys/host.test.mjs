@@ -93,7 +93,8 @@ test("graceful shutdown lets a host Tool finish and saves the completed turn", {
   for (const extra of admitted) { await extra.end(); await extra.delete(); }
   const events = await collect(session.events());
   assert.ok(events.some((event) => event.type === "finished_during_drain"));
-  assert.equal(events.at(-1).type, "turn_ended");
+  assert.ok(events.some(event => event.type === "turn_ended"));
+  assert.equal(events.some(event => event.type === "turn_failed"), false);
   assert.equal((await session.transcript()).messages.at(-1).content[0].text, "answered");
   // Server readiness does not wait for the previous client's host stream to reconnect.
   await f.brain.close();
@@ -141,11 +142,11 @@ for (const mode of ["input", "output", "throw"]) {
         if (mode === "throw") throw new Error("lookup unavailable");
         return { value: 42 };
       } });
-    f.model = dispatch("lookup", { id: mode === "input" ? 42 : "42" });
+    f.model = dispatch("lookup", mode === "input" ? {} : { id: "42" });
     const session = await f.create(t, { tools: [lookup({ env: app })] });
     await session.send("lookup");
     assert.equal(calls, mode === "input" ? 0 : 1);
-    const expected = mode === "throw" ? "tool_error" : `invalid_${mode}`;
+    const expected = mode === "throw" ? "tool_error" : mode === "input" ? "Validation failed" : "invalid_output";
     assert.ok(JSON.stringify(f.modelRequests.at(-1).input).includes(expected));
     assert.equal(f.modelRequests.length, 2);
   });
@@ -185,7 +186,7 @@ for (const strict of [false, true]) {
     await session.send("find blue");
     if (strict) {
       assert.equal(seen.length, 1);
-      assert.match(f.modelRequests.at(-1).input.at(-1).output, /invalid_input/u);
+      assert.match(f.modelRequests.at(-1).input.at(-1).output, /Validation failed/u);
     } else assert.deepEqual(seen[1], { query: "blue", limit: 10 });
   });
 }

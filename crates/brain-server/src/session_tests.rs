@@ -1,7 +1,7 @@
 use super::*;
-use brain::LoopExecutor;
+use brain::AgentHarness;
 use brain_protocol::SessionStatus;
-use brain_protocol::{AgentloopRef, Environment};
+
 use brain_protocol::{
     Message, ModelRequest, ModelResult, ModelStreamEvent, Outcome, ToolCancellation, ToolDispatch,
     TurnInput, TurnOutput,
@@ -14,11 +14,12 @@ async fn submission_sequence_replays_after_restart_without_another_turn() {
     let root = root("submission-replay");
     let server = api(&root);
     let create: CreateSessionRequest = serde_json::from_value(serde_json::json!({
-        "agentloop": {"implementation": {"type":"brain_component","entrypoint":"turn","id":"a".repeat(64)}, "configuration":{}, "environment":"brain"},
+        "harness": { "configuration":{}},
         "model": {"provider":"openai","name":"gpt-5-mini","api_key":"model-key"},
         "tools": [],
         "environments": [{"name":"brain","lifecycle": "automatic", "driver": "brain"}]
-    })).unwrap();
+    }))
+    .unwrap();
     let session = server
         .create_session("create".into(), create)
         .await
@@ -73,13 +74,12 @@ async fn submission_sequence_replays_after_restart_without_another_turn() {
 }
 
 #[async_trait]
-impl LoopExecutor for Echo {
+impl AgentHarness for Echo {
     async fn turn(
         &self,
         _: &SessionId,
         _: u64,
-        _: &AgentloopRef,
-        _: &Environment,
+        _config: &brain_protocol::SessionConfig,
         input: TurnInput,
         services: Arc<dyn brain::TurnServices>,
     ) -> Result<TurnOutput, brain::Error> {
@@ -124,7 +124,7 @@ fn api(root: &std::path::Path) -> ServerApi {
     api_with_loop(root, Arc::new(Echo))
 }
 
-fn api_with_loop(root: &std::path::Path, loop_executor: Arc<dyn LoopExecutor>) -> ServerApi {
+fn api_with_loop(root: &std::path::Path, harness: Arc<dyn AgentHarness>) -> ServerApi {
     let (telemetry, _) = brain_telemetry::telemetry_channel();
     let feed = Arc::new(Feed::new(telemetry.clone()));
     let credentials =
@@ -151,7 +151,7 @@ fn api_with_loop(root: &std::path::Path, loop_executor: Arc<dyn LoopExecutor>) -
                 max_tool_secs: 1,
                 ..Default::default()
             },
-            loop_executor,
+            harness,
             model_executor: Arc::new(Echo),
             tool_executor: Arc::new(Echo),
             live: feed,
@@ -196,16 +196,13 @@ async fn unsuccessful_artifact_preparation_does_not_claim_an_agent_effect() {
     let root = root("admission");
     let api = api(&root);
     for _ in 0..2 {
-        let error = api
-            .admit_agentloop("prepare".into(), vec![1])
-            .await
-            .unwrap_err();
+        let error = api.admit_tool("prepare".into(), vec![1]).await.unwrap_err();
         assert!(!error.message.contains("already accepted"));
     }
     assert!(
         api.resources
             .idempotency
-            .replay("admit_agentloop", "prepare", &vec![1_u8])
+            .replay("admit_tool", "prepare", &vec![1_u8])
             .unwrap()
             .is_none()
     );
@@ -221,7 +218,7 @@ async fn a_session_is_created_set_up_and_deleted_through_its_environments() {
     let root = root("create");
     let api = api(&root);
     let request: CreateSessionRequest = serde_json::from_value(serde_json::json!({
-        "agentloop": {"implementation": {"type": "brain_component", "entrypoint": "turn", "id": "a".repeat(64)}, "configuration": {}, "environment": "brain"},
+        "harness": { "configuration": {}},
         "model": {"provider": "openai", "name": "gpt-5-mini", "api_key": "model-key"},
         "tools": [],
         "environments": [
@@ -305,29 +302,28 @@ async fn a_session_is_created_set_up_and_deleted_through_its_environments() {
 async fn a_busy_submission_can_retry_its_key_after_restart() {
     struct Held(tokio::sync::Notify);
     #[async_trait]
-    impl LoopExecutor for Held {
+    impl AgentHarness for Held {
         async fn turn(
             &self,
             id: &SessionId,
             sequence: u64,
-            loop_ref: &AgentloopRef,
-            environment: &Environment,
+            _config: &brain_protocol::SessionConfig,
             input: TurnInput,
             services: Arc<dyn brain::TurnServices>,
         ) -> Result<TurnOutput, brain::Error> {
             self.0.notified().await;
-            Echo.turn(id, sequence, loop_ref, environment, input, services)
-                .await
+            Echo.turn(id, sequence, _config, input, services).await
         }
     }
     let root = root("busy-retry");
     let held = Arc::new(Held(tokio::sync::Notify::new()));
     let server = api_with_loop(&root, held.clone());
     let create = serde_json::from_value(serde_json::json!({
-        "agentloop": {"implementation": {"type":"brain_component","entrypoint":"turn","id":"a".repeat(64)}, "configuration":{}, "environment":"brain"},
+        "harness": { "configuration":{}},
         "model": {"provider":"openai","name":"gpt-5-mini","api_key":"model-key"},
         "tools": [], "environments": [{"name":"brain","lifecycle": "automatic", "driver": "brain"}]
-    })).unwrap();
+    }))
+    .unwrap();
     let id = server
         .create_session("create".into(), create)
         .await

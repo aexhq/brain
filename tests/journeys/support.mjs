@@ -7,8 +7,8 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { before, beforeEach, after } from "node:test";
-import { pathToFileURL } from "node:url";
-import { Brain, BrainError, agentloop, brainEnv, component, environment } from "@aexhq/brain";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { Brain, BrainError, component, environment } from "@aexhq/brain";
 import { z } from "zod";
 
 export const collect = async (events) => { const result = []; for await (const event of events) result.push(event); return result; };
@@ -46,18 +46,16 @@ export function fixture({ providers = {} } = {}) {
     f.model = (_request, response) => reply(response);
   });
   before(async () => {
-    for (const name of ["BRAIN_TEST_SERVER", "BRAIN_TEST_WORKER", "BRAIN_TEST_REFERENCE_AGENTLOOP", "BRAIN_TEST_AGENTLOOP_PACKAGE", "BRAIN_TEST_TOOL_COMPONENT"]) {
+    for (const name of ["BRAIN_TEST_SERVER", "BRAIN_TEST_WORKER", "BRAIN_TEST_TOOL_COMPONENT"]) {
       assert.ok(process.env[name], `${name} is required; see tests/journeys/README.md`);
     }
     directory = await mkdtemp(join(tmpdir(), "brain-sdk-journey-"));
     f.token = randomUUID();
-    f.reference = component(pathToFileURL(process.env.BRAIN_TEST_REFERENCE_AGENTLOOP));
-    f.diagnostic = component(pathToFileURL(process.env.BRAIN_TEST_AGENTLOOP_PACKAGE));
     f.toolComponent = component(pathToFileURL(process.env.BRAIN_TEST_TOOL_COMPONENT));
     upstream = createServer(async (request, response) => {
       try {
         if (request.url === "/artifact.wasm") {
-          response.end(await readFile(process.env.BRAIN_TEST_REFERENCE_AGENTLOOP));
+          response.end(await readFile(process.env.BRAIN_TEST_TOOL_COMPONENT));
           return;
         }
         const chunks = [];
@@ -96,7 +94,6 @@ export function fixture({ providers = {} } = {}) {
     f.brain = f.client();
     f.options = (extra = {}) => ({
       model: { provider: "vercel-ai-gateway", name: "test/journey", apiKey: "journey-model-token" },
-      agentloop: agentloop({ implementation: f.reference })({ env: brainEnv({ name: "brain" }) }),
       ...extra,
     });
   }, { timeout: 60_000 });
@@ -111,6 +108,7 @@ export function fixture({ providers = {} } = {}) {
       BRAIN_LISTEN: new URL(f.baseUrl).host, BRAIN_DATA_DIR: join(directory, "data"),
       BRAIN_API_TOKEN: f.token, BRAIN_ENV_WORKER: process.env.BRAIN_TEST_WORKER,
       BRAIN_MODEL_BASE_URL: `${f.upstreamUrl}/v1`,
+      BRAIN_HARNESS: JSON.stringify({ command: process.execPath, args: [fileURLToPath(new URL("../fixtures/harness.mjs", import.meta.url))] }),
       BRAIN_ENV_FILESYSTEM_ALLOW: "scratch,workspace",
     }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     child.stdout.on("data", (chunk) => { logs += chunk; });

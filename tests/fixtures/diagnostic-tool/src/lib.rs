@@ -7,15 +7,17 @@ struct Diagnostic;
 
 impl Guest for Diagnostic {
     fn run(input: Invocation) -> Result<String, ToolError> {
+        let value: serde_json::Value =
+            serde_json::from_str(&input.input_json).map_err(|error| ToolError {
+                code: "invalid_input".into(), message: error.to_string(),
+            })?;
+        if value.get("program").is_some() {
+            return Ok(input.configuration_json);
+        }
         brain::tool::host::emit(
             "tool_progress",
             &serde_json::json!({"phase": "started"}).to_string(),
         )?;
-        let value: serde_json::Value =
-            serde_json::from_str(&input.input_json).map_err(|error| ToolError {
-                code: "invalid_input".into(),
-                message: error.to_string(),
-            })?;
         if value.get("background").and_then(serde_json::Value::as_bool) == Some(true) {
             brain::tool::host::returned(None)?;
             std::thread::sleep(std::time::Duration::from_millis(100));

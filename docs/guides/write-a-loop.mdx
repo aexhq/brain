@@ -1,173 +1,76 @@
 ---
-title: Write an agent loop
-description: Customize model calls, tool use and conversation history, then run your loop in a session.
+title: Write an agent harness
+description: Supply an implementation when starting Brain and use its journaled services.
 ---
 
-An agent loop decides what the model sees and what happens next. If you only need a different
-prompt or tools, a ready-made loop is enough: [choose Pi or Codex](/brain/docs/concepts/agent-loop)
-first. Write your own when you need different context management, tool sequencing or stopping rules.
+A harness gives Brain an agent implementation. Start with an upstream adapter when you
+want its loop and compaction behavior; implement this interface when your application
+needs different behavior.
 
-## A minimal JavaScript loop
-
-Start from the [quickstart app](/brain/docs/quickstart) with Node.js 22 or newer and save this as
-`loop.mjs`. It calls the model once per message and saves the conversation. It doesn't call tools.
+This complete JavaScript example makes one model call per user message. Save it as
+`harness.mjs` beside an installed `@aexhq/brain@0.40.0`:
 
 ```js
-import { defineAgentloop } from "@aexhq/brain/agentloop";
+import { serveHarness } from "@aexhq/brain/harness";
 
-export const turn = defineAgentloop(async ctx => {
-  if (!ctx.input) return;
-  const messages = ctx.transcript;
-  messages.push({
-    role: "user",
-    content: [{ type: "text", text: ctx.input.message }, ...(ctx.input.media ?? [])],
-  });
-  await ctx.setTranscript(messages);
-  const reply = await ctx.model({ messages, system: ctx.system, tools: [] });
-  messages.push(reply.message);
-  await ctx.setTranscript(messages);
+await serveHarness({
+  name: "single-call",
+  stateVersion: "1",
+  open() {
+    return {
+      async run(ctx) {
+        if (!ctx.input) return;
+        const messages = [...ctx.transcript, {
+          role: "user",
+          content: [{ type: "text", text: ctx.input.message }],
+        }];
+        const reply = await ctx.model({ messages, tools: [] });
+        await ctx.setTranscript([...messages, reply.message]);
+      },
+      close() {},
+    };
+  },
 });
 ```
 
-## Build it
+TypeScript uses the same API and can annotate the implementation with `AgentHarness`.
+Other languages implement the [stdio protocol](/brain/docs/reference/agentloop-contract).
+The repository includes a [Python protocol fixture](https://github.com/aexhq/brain/blob/main/tests/fixtures/harness.py)
+and a [runnable JavaScript example](https://github.com/aexhq/brain/blob/main/examples/harness.mjs).
 
-Install the builder:
+## Start Brain with it
 
 ```sh
-npm install --save-dev esbuild@0.25.9 @bytecodealliance/componentize-js@0.19.3 @bytecodealliance/jco@1.17.9
+export BRAIN_HARNESS='{"command":"node","args":["/absolute/path/harness.mjs"]}'
+brain --data-dir ./brain-data --api-token local-development
 ```
 
-Save as `build-loop.mjs`:
+In PowerShell, assign the same JSON string to `$env:BRAIN_HARNESS`. The command is an
+executable with an argument array; Brain does not evaluate a shell command. Write
+diagnostics to stderr and reserve stdout for protocol frames.
 
-```js
-import { build } from "esbuild";
-import { componentize } from "@bytecodealliance/componentize-js";
-import { writeFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+A process serves multiple sessions. `open` receives a session id, an isolated native
+state directory, and deployment configuration. Its session object runs at most one
+activation at a time. `ctx.configuration` contains session options. `close` releases
+resources while retaining state; deletion removes the state directory.
 
-const [entry = "loop.mjs", output = "loop.wasm"] = process.argv.slice(2);
-const bundled = await build({
-  entryPoints: [entry], bundle: true, format: "esm", platform: "neutral", write: false,
-  external: ["brain:agentloop/host@0.2.0"],
-});
-const { component } = await componentize(bundled.outputFiles[0].text, {
-  witPath: fileURLToPath(import.meta.resolve("@aexhq/brain/contracts/agentloop.wit")),
-  worldName: "agentloop",
-  disableFeatures: ["stdio", "random", "clocks", "http", "fetch-event"],
-});
-await writeFile(output, component);
-```
+## Use Brain's services
 
-Run `node build-loop.mjs`. The resulting `loop.wasm` is the file you hand to Brain. For TypeScript,
-run `node build-loop.mjs loop.ts`; the builder bundles your source together with the context
-adapter. The [official loop build](https://github.com/aexhq/extensions/blob/main/tools/build-agentloop.mjs)
-shows TypeScript bundling with esbuild.
+Await `ctx.model` and `ctx.callTool` or `ctx.callTools` for external effects. Brain
+commits intent before dispatch and the terminal outcome before returning. A Tool
+invocation names its canonical tool and admitted environment; use the current
+`environment_sequence` for a replacement instance.
 
-## Use your built loop
+`ctx.kv` stores small journaled values. `ctx.setTranscript` publishes the conversation
+view, and `ctx.emit` publishes custom events. `ctx.events` contains pending runtime
+observations; background activations have no `ctx.input`. Environment control is
+available through `ctx.environments` under the session's harness grants.
 
-In the [quickstart](/brain/docs/quickstart), swap the Pi import for this declaration:
+Treat a fatal callback error or an aborted signal as the end of the activation.
+Brain rejects further effects and will not resume an unsuccessful native activation.
+Reserve keys beginning with `brain.harness.` for the runtime.
 
-```js
-import { agentloop, brainEnv, component } from "@aexhq/brain";
-
-const custom = agentloop({
-  implementation: component(new URL("./loop.wasm", import.meta.url)),
-});
-```
-
-Change `agentloop: pi()` to `agentloop: custom({ env: brainEnv({ name: "brain" }) })`, remove the
-`tools` setting and change the prompt to `"Say hello in one sentence."`. Run `npx tsx order.ts`
-(or `node order.mjs` for JavaScript), and the transcript shows your message and the model's reply.
-To try each change, rebuild and create a new session; existing sessions keep their original loop.
-
-A published factory can supply a default Environment, as Pi does, while letting callers override
-it. Keep the underlying `agentloop()` declaration and Component object outside the factory so
-repeated calls reuse the same admitted code.
-
-## Language choices
-
-| Language | Working source | Build |
-| --- | --- | --- |
-| JavaScript / TypeScript | The example above | `node build-loop.mjs loop.mjs` or `node build-loop.mjs loop.ts` |
-| Rust | Reference loop below | Cargo with `wasm32-wasip2` |
-| Python | Minimal stateful loop below | `tools/build-python-fixtures.sh` |
-| A language in your own service | [HTTP loop example](https://github.com/aexhq/brain/blob/main/examples/loop-environment.mjs) | Your environment's deployment tools |
-
-Your client SDK and your loop's language are independent. These packaged examples produce a
-`.wasm` file for Brain; a custom environment can instead run code in its own runtime.
-
-## Rust
-
-The [reference loop](https://github.com/aexhq/brain/tree/main/examples/reference-agentloop) is a
-complete model-and-tool loop. Its model step reads and saves typed messages (excerpt):
-
-```rust
-let request = ModelRequest {
-    options: Default::default(),
-    messages: transcript.clone(),
-    system: None,
-    tools: None,
-    response_format: None,
-    max_output_tokens: None,
-};
-let result: ModelResult = decode(&brain::agentloop::host::model(&encode(&request)?)?)?;
-transcript.push(result.message);
-brain::agentloop::host::set_transcript(&encode(&transcript)?)?;
-```
-
-Build from the complete linked project. Clone Brain, edit
-`examples/reference-agentloop/src/lib.rs`, and run this from the checkout with Rust 1.97 or newer:
-
-```sh
-rustup target add wasm32-wasip2
-cargo build --manifest-path examples/reference-agentloop/Cargo.toml --target wasm32-wasip2 --release
-```
-
-Copy `examples/reference-agentloop/target/wasm32-wasip2/release/reference_agentloop.wasm` into your
-app as `loop.wasm`, then use the session example above. This reference loop supports tools too:
-restore the quickstart's `tools` setting to try its order lookup.
-
-## Python
-
-This minimal loop saves a counter and emits an event on each activation. It shows state and
-events only; it doesn't call a model or use tools.
-
-```python
-import json
-from wit_world import WitWorld
-from wit_world.imports import host
-from wit_world.imports.types import TurnOutput
-
-class WitWorld(WitWorld):
-    def turn(self, input):
-        kv = json.loads(input.kv_json)
-        calls = kv.get("calls", 0) + 1
-        host.kv_put("calls", json.dumps(calls))
-        sequence = host.emit("python_ran", json.dumps({"calls": calls}))
-        return TurnOutput(json.dumps({"sequence": sequence, "calls": calls}))
-```
-
-Edit [tests/fixtures/python/agentloop.py](https://github.com/aexhq/brain/blob/main/tests/fixtures/python/agentloop.py)
-in a Brain checkout. With Python 3, venv and Bash (Linux or WSL), build it:
-
-```sh
-bash tools/build-python-fixtures.sh "$PWD/build/python"
-```
-
-Copy `build/python/python-agentloop.wasm` into your app as `loop.wasm`. Add
-`BRAIN_MAX_CORE_INSTANCES=1024` to a Brain server you control, then create a session with `custom`
-as above. After sending a message, read `session.events()` to find `python_ran` and the saved
-count. This example covers computation and Brain callbacks, not Python file or network APIs.
-
-## Add your own behavior
-
-The [loop API](/brain/docs/reference/agentloop-contract) covers model calls, tool dispatch and saved
-state. Save conversation changes explicitly, because local variables don't survive to the next
-activation. Returning successfully completes the delivered event batch, including events you chose
-to ignore. Use `ctx.kv.get/set/delete` for any progress or skipped observations your loop needs to
-remember.
-
-For a complete JavaScript loop with tool dispatch and context management, start from
-[Pi's source](https://github.com/aexhq/extensions/tree/main/packages/loop-pi). Test your policy
-against fake model and tool responses, then run it against Brain. Check tool failures,
-cancellation and a second message, not just the first successful answer.
+When wrapping an upstream agent, keep its session persistence and compaction upstream.
+Replace its provider and tool execution at awaited boundaries, disable network retries,
+and exclude built-in tools. An observer hook that runs after an effect cannot enforce
+Brain's journal ordering.

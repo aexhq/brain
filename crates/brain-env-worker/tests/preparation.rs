@@ -1,7 +1,7 @@
 use brain_env::{
     ComponentKind, EnvLimits, HostCall, NativeEnvironment, TurnBridge, WorkerCode, WorkerPool,
 };
-use brain_protocol::{BrainPreparation, RuntimeEnvelope, SessionId, TurnError, TurnInput};
+use brain_protocol::{BrainPreparation, TurnError};
 
 struct NoEffects;
 
@@ -26,10 +26,10 @@ async fn preparation_loads_every_worker_and_programs_keep_invocation_configurati
         limits.clone(),
         std::num::NonZeroUsize::new(2).unwrap(),
     );
-    let path = std::env::var("BRAIN_TEST_AGENTLOOP_PACKAGE")
-        .expect("diagnostic Agentloop fixture is required");
+    let path =
+        std::env::var("BRAIN_TEST_TOOL_COMPONENT").expect("diagnostic Tool fixture is required");
     let runtime = pool
-        .admit(tokio::fs::read(path).await.unwrap())
+        .admit_tool(tokio::fs::read(path).await.unwrap())
         .await
         .unwrap();
     let program = pool
@@ -37,7 +37,7 @@ async fn preparation_loads_every_worker_and_programs_keep_invocation_configurati
         .await
         .unwrap();
     let preparation = BrainPreparation {
-        agentloops: vec![runtime.clone()],
+        tools: vec![runtime.clone()],
         programs: vec![program.clone()],
         ..Default::default()
     };
@@ -45,20 +45,15 @@ async fn preparation_loads_every_worker_and_programs_keep_invocation_configurati
     first.unwrap();
     second.unwrap();
     for session in ["first", "second"] {
-        let input = TurnInput {
-            input: Some("program-envelope".into()),
-            transcript: Vec::new(),
-            kv: Default::default(),
-            events: Vec::new(),
+        let input = brain_env::NativeToolInput {
+            input: serde_json::json!({"program": true}),
             configuration: serde_json::json!({"session": session}),
-            system: String::new(),
-            tools: Vec::new(),
-            runtime: RuntimeEnvelope::at(&SessionId::new(format!("ses_{session}")), 1),
+            deadline_at_ms: 0,
         };
         let output = pool
             .execute(
                 WorkerCode {
-                    kind: ComponentKind::Agentloop,
+                    kind: ComponentKind::Tool,
                     digest: runtime.to_string(),
                     program: Some(program.to_string()),
                 },
@@ -68,8 +63,8 @@ async fn preparation_loads_every_worker_and_programs_keep_invocation_configurati
             )
             .await
             .unwrap();
-        assert_eq!(output["result"]["source"], "new program source");
-        assert_eq!(output["result"]["configuration"]["session"], session);
+        assert_eq!(output["source"], "new program source");
+        assert_eq!(output["configuration"]["session"], session);
     }
     for index in 0..2 {
         let client = brain_env::WorkerClient::new(
@@ -81,24 +76,19 @@ async fn preparation_loads_every_worker_and_programs_keep_invocation_configurati
             &limits,
         );
         let output = client
-            .turn(
+            .tool(
                 runtime.clone(),
                 NativeEnvironment::default(),
-                TurnInput {
-                    input: Some("program-envelope".into()),
-                    transcript: Vec::new(),
-                    kv: Default::default(),
-                    events: Vec::new(),
+                brain_env::NativeToolInput {
+                    input: serde_json::json!({"program": true}),
                     configuration: serde_json::json!({"direct": index}),
-                    system: String::new(),
-                    tools: Vec::new(),
-                    runtime: RuntimeEnvelope::at(&SessionId::new("ses_direct"), 1),
+                    deadline_at_ms: 0,
                 },
                 &NoEffects,
             )
             .await
             .unwrap();
-        assert_eq!(output.result.unwrap()["direct"], index);
+        assert_eq!(output["direct"], index);
     }
     pool.shutdown().await;
     assert!(pool.prepare(&preparation).await.is_err());

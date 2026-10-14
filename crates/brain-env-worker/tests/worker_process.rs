@@ -8,13 +8,12 @@ use brain_env::{
     Access, EnvLimits, HostCall, NativeEnvironment, NativeToolInput, TurnBridge, WorkerPool,
     Workspace,
 };
-use brain_protocol::{RuntimeEnvelope, TurnError, TurnInput};
+use brain_protocol::TurnError;
 
 /// A bridge that answers every model call with a fixed assistant message and records
 /// what the guest asked for.
 struct RecordingBridge {
     calls: Mutex<Vec<String>>,
-    kv: Mutex<std::collections::BTreeMap<String, serde_json::Value>>,
     cancelled: AtomicBool,
 }
 
@@ -30,36 +29,6 @@ impl TurnBridge for RecordingBridge {
                 self.calls.lock().unwrap().push("environments list".into());
                 Ok("[]".into())
             }
-            HostCall::KvPut { key, value_json } => {
-                self.kv
-                    .lock()
-                    .unwrap()
-                    .insert(key.clone(), serde_json::from_str(&value_json).unwrap());
-                self.calls
-                    .lock()
-                    .unwrap()
-                    .push(format!("kv {key} {value_json}"));
-                Ok("7".into())
-            }
-            HostCall::KvRead { key } => Ok(match self.kv.lock().unwrap().get(&key) {
-                Some(value) => serde_json::json!({"value": value}),
-                None => serde_json::json!({}),
-            }
-            .to_string()),
-            HostCall::KvDelete { key } => {
-                self.kv.lock().unwrap().remove(&key);
-                Ok("7".into())
-            }
-            HostCall::SetTranscript { messages_json } => {
-                self.calls
-                    .lock()
-                    .unwrap()
-                    .push(format!("transcript {messages_json}"));
-                Ok("7".into())
-            }
-            HostCall::Events { after } => {
-                Ok(serde_json::json!({"events": [], "next_cursor": after}).to_string())
-            }
             HostCall::Model { request_json } => {
                 self.calls
                     .lock()
@@ -71,13 +40,6 @@ impl TurnBridge for RecordingBridge {
                     "usage": {}
                 })
                 .to_string())
-            }
-            HostCall::Dispatch { calls_json } => {
-                self.calls
-                    .lock()
-                    .unwrap()
-                    .push(format!("dispatch {calls_json}"));
-                Ok("[]".into())
             }
             HostCall::Emit { kind, payload_json } => {
                 self.calls
@@ -104,153 +66,21 @@ impl TurnBridge for RecordingBridge {
     }
 }
 
-fn input(message: &str) -> TurnInput {
-    TurnInput {
-        input: Some(message.into()),
-        transcript: Vec::new(),
-        kv: Default::default(),
-        events: Vec::new(),
-        configuration: serde_json::json!({}),
-        system: String::new(),
-        tools: Vec::new(),
-        runtime: RuntimeEnvelope::at(&brain_protocol::SessionId::new("ses_test"), 1),
-    }
+fn environment() -> NativeEnvironment {
+    NativeEnvironment::default()
 }
 
-fn package_path() -> String {
-    std::env::var("BRAIN_TEST_AGENTLOOP_PACKAGE")
-        .expect("BRAIN_TEST_AGENTLOOP_PACKAGE must name the built diagnostic package")
+fn input(message: &str) -> NativeToolInput {
+    NativeToolInput {
+        input: serde_json::json!({"message":message}),
+        configuration: serde_json::json!({}),
+        deadline_at_ms: 0,
+    }
 }
 
 fn tool_path() -> String {
     std::env::var("BRAIN_TEST_TOOL_COMPONENT")
         .expect("BRAIN_TEST_TOOL_COMPONENT must name the built diagnostic Tool")
-}
-
-#[tokio::test]
-async fn reference_loop_reads_interruptions_and_hands_tool_failures_to_the_model() {
-    struct Model {
-        kv: Mutex<serde_json::Value>,
-        transcript: Mutex<Vec<brain_protocol::Message>>,
-        calls: std::sync::atomic::AtomicUsize,
-    }
-    #[async_trait]
-    impl TurnBridge for Model {
-        async fn call(&self, call: HostCall) -> Result<String, TurnError> {
-            let answer = match call {
-                HostCall::KvPut { key, value_json } => {
-                    self.kv.lock().unwrap()[key] = serde_json::from_str(&value_json).unwrap();
-                    serde_json::json!(7)
-                }
-                HostCall::KvRead { key } => match self.kv.lock().unwrap().get(&key) {
-                    Some(value) => serde_json::json!({"value": value}),
-                    None => serde_json::json!({}),
-                },
-                HostCall::KvDelete { key } => {
-                    self.kv
-                        .lock()
-                        .unwrap()
-                        .as_object_mut()
-                        .unwrap()
-                        .remove(&key);
-                    serde_json::json!(7)
-                }
-                HostCall::SetTranscript { messages_json } => {
-                    *self.transcript.lock().unwrap() =
-                        serde_json::from_str(&messages_json).unwrap();
-                    serde_json::json!(7)
-                }
-                HostCall::Events { after: 0 } => {
-                    serde_json::json!({"events": [{"sequence": 3, "recorded_at_ms": 1, "event_type": "turn_failed", "data": {"code": "interrupted"}}], "next_cursor": 3})
-                }
-                HostCall::Events { after } => {
-                    serde_json::json!({"events": [], "next_cursor": after})
-                }
-                HostCall::Model { request_json } => {
-                    let request: brain_protocol::ModelRequest =
-                        serde_json::from_str(&request_json).unwrap();
-                    assert!(
-                        serde_json::to_string(&request.messages)
-                            .unwrap()
-                            .contains("interrupted")
-                    );
-                    let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
-                    if !first {
-                        assert!(
-                            serde_json::to_string(&request.messages)
-                                .unwrap()
-                                .contains("\"is_error\":true")
-                        );
-                    }
-                    serde_json::json!({"message": {"role": "assistant", "content": if first { serde_json::json!([{"type": "tool_use", "id": "call_one", "name": "echo", "input": {}}]) } else { serde_json::json!([{"type": "text", "text": "Environment is unavailable"}]) }}, "stop_reason": if first { "tool_use" } else { "end_turn" }, "usage": {}})
-                }
-                HostCall::Dispatch { .. } => {
-                    serde_json::json!([{"call_id": "call_one", "sequence": 4, "finished": true, "events": [
-                        {"sequence": 5, "recorded_at_ms": 1, "event_type": "tool_call_ended", "data": {
-                            "sequence": 4, "outcome": {"status": "error", "error": {"code": "expired", "message": "Environment expired", "retryable": false}}
-                        }}
-                    ]}])
-                }
-                _ => {
-                    return Err(TurnError::new(
-                        "unexpected",
-                        "unexpected reference host call",
-                    ));
-                }
-            };
-            Ok(answer.to_string())
-        }
-        fn cancelled(&self) -> bool {
-            false
-        }
-    }
-    let directory = tempfile::tempdir().unwrap();
-    let pool = WorkerPool::new(
-        env!("CARGO_BIN_EXE_brain-env-worker"),
-        directory.path().join("run"),
-        directory.path().join("packages"),
-        EnvLimits::default(),
-        std::num::NonZeroUsize::new(1).unwrap(),
-    );
-    let path = std::env::var("BRAIN_TEST_REFERENCE_AGENTLOOP")
-        .expect("BRAIN_TEST_REFERENCE_AGENTLOOP must name the reference Component");
-    let digest = pool
-        .admit(tokio::fs::read(path).await.unwrap())
-        .await
-        .unwrap();
-    let model = Model {
-        kv: Mutex::new(serde_json::json!({})),
-        transcript: Mutex::new(Vec::new()),
-        calls: std::sync::atomic::AtomicUsize::new(0),
-    };
-    let _output = pool
-        .turn(
-            digest,
-            environment(),
-            TurnInput {
-                tools: vec![brain_protocol::ActivationTool {
-                    environment_refs: vec![],
-                    definition: brain_protocol::ToolDefinition {
-                        name: "echo".into(),
-                        description: "Echo".into(),
-                        input_schema: serde_json::json!({"type":"object"}),
-                        output_schema: None,
-                    },
-                    environments: vec![brain_protocol::EnvironmentName::new("remote")],
-                }],
-                ..input("continue")
-            },
-            &model,
-        )
-        .await
-        .unwrap();
-    assert_eq!(model.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(model.kv.lock().unwrap()["observed"], 3);
-    assert_eq!(model.transcript.lock().unwrap().len(), 5);
-}
-
-fn environment() -> NativeEnvironment {
-    NativeEnvironment::default()
 }
 
 #[cfg(target_os = "linux")]
@@ -264,17 +94,13 @@ async fn a_worker_crash_does_not_replay_or_stop_its_sibling_and_shutdown_reaps_b
     impl TurnBridge for Held {
         async fn call(&self, call: HostCall) -> Result<String, TurnError> {
             match call {
-                HostCall::KvPut { .. } => Ok("7".into()),
-                HostCall::KvRead { .. } => Ok("{}".into()),
-                HostCall::Events { after } => {
-                    Ok(serde_json::json!({"events": [], "next_cursor": after}).to_string())
-                }
                 HostCall::Emit { .. } => {
                     let released = self.release.notified();
                     self.entered.wait().await;
                     released.await;
                     Ok("7".into())
                 }
+                HostCall::ToolFinish { .. } => Ok("7".into()),
                 _ => unreachable!(),
             }
         }
@@ -305,11 +131,11 @@ async fn a_worker_crash_does_not_replay_or_stop_its_sibling_and_shutdown_reaps_b
     let second = pid(1).await;
     assert_ne!(first, second);
     let digest = pool
-        .admit(tokio::fs::read(package_path()).await.unwrap())
+        .admit_tool(tokio::fs::read(tool_path()).await.unwrap())
         .await
         .unwrap();
     let preparation = brain_protocol::BrainPreparation {
-        agentloops: vec![digest.clone()],
+        tools: vec![digest.clone()],
         ..Default::default()
     };
     pool.prepare(&preparation).await.unwrap();
@@ -321,7 +147,7 @@ async fn a_worker_crash_does_not_replay_or_stop_its_sibling_and_shutdown_reaps_b
     for _ in 0..2 {
         let (pool, digest, bridge) = (pool.clone(), digest.clone(), bridge.clone());
         tasks.spawn(async move {
-            pool.turn(digest, environment(), input("held"), &*bridge)
+            pool.tool(digest, environment(), input("held"), &*bridge)
                 .await
         });
     }
@@ -352,7 +178,6 @@ async fn a_worker_crash_does_not_replay_or_stop_its_sibling_and_shutdown_reaps_b
     pool.start().await.unwrap();
     let bridge = RecordingBridge {
         calls: Mutex::new(Vec::new()),
-        kv: Mutex::new(Default::default()),
         cancelled: AtomicBool::new(false),
     };
     for index in 0..2 {
@@ -361,7 +186,7 @@ async fn a_worker_crash_does_not_replay_or_stop_its_sibling_and_shutdown_reaps_b
             &EnvLimits::default(),
         );
         worker
-            .turn(
+            .tool(
                 digest.clone(),
                 environment(),
                 input("prepared after replacement"),
@@ -371,7 +196,7 @@ async fn a_worker_crash_does_not_replay_or_stop_its_sibling_and_shutdown_reaps_b
             .unwrap();
     }
     for _ in 0..2 {
-        pool.turn(digest.clone(), environment(), input("fresh"), &bridge)
+        pool.tool(digest.clone(), environment(), input("fresh"), &bridge)
             .await
             .unwrap();
     }
@@ -399,11 +224,6 @@ async fn saturated_parent_turns_can_all_invoke_native_tools() {
         }
         async fn call(&self, call: HostCall) -> Result<String, TurnError> {
             match call {
-                HostCall::KvPut { .. } => Ok("7".into()),
-                HostCall::KvRead { .. } => Ok("{}".into()),
-                HostCall::Events { after } => {
-                    Ok(serde_json::json!({"events": [], "next_cursor": after}).to_string())
-                }
                 HostCall::Emit { .. } => {
                     self.parents.wait().await;
                     self.pool
@@ -422,7 +242,6 @@ async fn saturated_parent_turns_can_all_invoke_native_tools() {
                             },
                             &RecordingBridge {
                                 calls: Mutex::new(Vec::new()),
-                                kv: Mutex::new(Default::default()),
                                 cancelled: AtomicBool::new(false),
                             },
                         )
@@ -431,6 +250,7 @@ async fn saturated_parent_turns_can_all_invoke_native_tools() {
                     assert_eq!(answer["echo"]["nested"], true);
                     Ok("7".into())
                 }
+                HostCall::ToolFinish { .. } => Ok("7".into()),
                 _ => Err(TurnError::new(
                     "unexpected_host_call",
                     "diagnostic turn only emits",
@@ -451,8 +271,8 @@ async fn saturated_parent_turns_can_all_invoke_native_tools() {
         limits,
         std::num::NonZeroUsize::new(2).unwrap(),
     ));
-    let agentloop = pool
-        .admit(tokio::fs::read(package_path()).await.unwrap())
+    let parent_tool = pool
+        .admit_tool(tokio::fs::read(tool_path()).await.unwrap())
         .await
         .unwrap();
     let tool = pool
@@ -466,10 +286,10 @@ async fn saturated_parent_turns_can_all_invoke_native_tools() {
     });
     let mut tasks = tokio::task::JoinSet::new();
     for index in 0..count {
-        let (pool, agentloop, bridge) = (pool.clone(), agentloop.clone(), bridge.clone());
+        let (pool, parent_tool, bridge) = (pool.clone(), parent_tool.clone(), bridge.clone());
         tasks.spawn(async move {
             let _ = index;
-            pool.turn(agentloop, environment(), input("nested"), &*bridge)
+            pool.tool(parent_tool, environment(), input("nested"), &*bridge)
                 .await
         });
     }
@@ -497,8 +317,8 @@ fn workspace_environment(root: &std::path::Path, session: &str) -> NativeEnviron
 }
 
 #[tokio::test]
-async fn real_worker_admits_and_runs_a_turn_of_the_diagnostic_loop() {
-    let package = tokio::fs::read(package_path()).await.unwrap();
+async fn real_worker_admits_and_runs_a_turn_of_the_diagnostic_tool() {
+    let package = tokio::fs::read(tool_path()).await.unwrap();
     let directory = tempfile::tempdir().unwrap();
     let pool = WorkerPool::new(
         env!("CARGO_BIN_EXE_brain-env-worker"),
@@ -507,34 +327,21 @@ async fn real_worker_admits_and_runs_a_turn_of_the_diagnostic_loop() {
         EnvLimits::default(),
         std::num::NonZeroUsize::new(1).unwrap(),
     );
-    let digest = pool.admit(package).await.unwrap();
+    let digest = pool.admit_tool(package).await.unwrap();
     let bridge = RecordingBridge {
         calls: Mutex::new(Vec::new()),
-        kv: Mutex::new(Default::default()),
         cancelled: AtomicBool::new(false),
     };
     let output = pool
-        .turn(digest, environment(), input("kv"), &bridge)
+        .tool(digest, environment(), input("kv"), &bridge)
         .await
         .unwrap();
-    assert!(
-        bridge
-            .calls
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|call| call == "kv memory {\"turns\":1}")
-    );
-    assert_eq!(
-        output.result,
-        Some(serde_json::json!({"turns": 1, "message": "kv"}))
-    );
-    // The diagnostic loop emits one note through the host before it finishes.
+    assert_eq!(output, serde_json::json!({"echo":{"message":"kv"}}));
     let calls = bridge.calls.lock().unwrap();
-    assert!(calls.iter().any(|call| call == "environments list"));
     assert!(
-        calls.iter().any(|call| call.starts_with("emit note")),
-        "the guest's host call must reach the bridge: {calls:?}"
+        calls
+            .iter()
+            .any(|call| call.starts_with("emit tool_progress"))
     );
 }
 
@@ -552,7 +359,6 @@ async fn tool_workspaces_are_shared_within_a_session_and_isolated_between_sessio
     let digest = pool.admit_tool(component).await.unwrap();
     let bridge = RecordingBridge {
         calls: Mutex::new(Vec::new()),
-        kv: Mutex::new(Default::default()),
         cancelled: AtomicBool::new(false),
     };
     let invoke = |input: serde_json::Value| NativeToolInput {
@@ -597,10 +403,10 @@ async fn tool_workspaces_are_shared_within_a_session_and_isolated_between_sessio
 
 /// Turns from many sessions run at once; every one of them completes.
 #[tokio::test]
-async fn concurrent_turns_all_reach_the_agentloop() {
+async fn concurrent_turns_all_reach_the_parent_tool() {
     const AT_ONCE: usize = 8;
 
-    let package = tokio::fs::read(package_path()).await.unwrap();
+    let package = tokio::fs::read(tool_path()).await.unwrap();
     let directory = tempfile::tempdir().unwrap();
     let pool = Arc::new(WorkerPool::new(
         env!("CARGO_BIN_EXE_brain-env-worker"),
@@ -609,7 +415,7 @@ async fn concurrent_turns_all_reach_the_agentloop() {
         EnvLimits::default(),
         std::num::NonZeroUsize::new(1).unwrap(),
     ));
-    let digest = pool.admit(package).await.unwrap();
+    let digest = pool.admit_tool(package).await.unwrap();
 
     let mut turns = Vec::with_capacity(AT_ONCE);
     for index in 0..AT_ONCE {
@@ -618,11 +424,10 @@ async fn concurrent_turns_all_reach_the_agentloop() {
         turns.push(tokio::spawn(async move {
             let bridge = RecordingBridge {
                 calls: Mutex::new(Vec::new()),
-                kv: Mutex::new(Default::default()),
                 cancelled: AtomicBool::new(false),
             };
             let output = pool
-                .turn(
+                .tool(
                     digest,
                     environment(),
                     input(&format!("turn {index}")),
@@ -635,7 +440,7 @@ async fn concurrent_turns_all_reach_the_agentloop() {
                     .lock()
                     .unwrap()
                     .iter()
-                    .any(|call| call == "kv memory {\"turns\":1}")
+                    .any(|call| call.starts_with("emit tool_progress"))
             );
             Ok(output)
         }));
@@ -653,7 +458,7 @@ async fn concurrent_turns_all_reach_the_agentloop() {
     }
     assert_eq!(
         reached, AT_ONCE,
-        "only {reached} of {AT_ONCE} concurrent turns reached the Agentloop; the rest were refused: {refused:?}"
+        "only {reached} of {AT_ONCE} concurrent turns reached the Tool; the rest were refused: {refused:?}"
     );
 }
 
@@ -661,7 +466,7 @@ async fn concurrent_turns_all_reach_the_agentloop() {
 /// cancellation instead of finishing.
 #[tokio::test]
 async fn a_cancelled_turn_ends_at_its_next_host_call() {
-    let package = tokio::fs::read(package_path()).await.unwrap();
+    let package = tokio::fs::read(tool_path()).await.unwrap();
     let directory = tempfile::tempdir().unwrap();
     let pool = WorkerPool::new(
         env!("CARGO_BIN_EXE_brain-env-worker"),
@@ -670,14 +475,13 @@ async fn a_cancelled_turn_ends_at_its_next_host_call() {
         EnvLimits::default(),
         std::num::NonZeroUsize::new(1).unwrap(),
     );
-    let digest = pool.admit(package).await.unwrap();
+    let digest = pool.admit_tool(package).await.unwrap();
     let bridge = RecordingBridge {
         calls: Mutex::new(Vec::new()),
-        kv: Mutex::new(Default::default()),
         cancelled: AtomicBool::new(true),
     };
     let error = pool
-        .turn(digest, environment(), input("hello"), &bridge)
+        .tool(digest, environment(), input("hello"), &bridge)
         .await
         .unwrap_err()
         .to_string();
@@ -735,12 +539,11 @@ async fn host_calls_queued_before_cancel_are_not_answered_after_cancel() {
     });
     let bridge = RecordingBridge {
         calls: Mutex::new(Vec::new()),
-        kv: Mutex::new(Default::default()),
         cancelled: AtomicBool::new(true),
     };
     let error = WorkerClient::new(socket, &EnvLimits::default())
-        .turn(
-            brain_protocol::AgentloopId::new("diagnostic"),
+        .tool(
+            brain_protocol::ToolId::new("diagnostic"),
             NativeEnvironment::default(),
             input("hello"),
             &bridge,

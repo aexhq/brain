@@ -21,7 +21,7 @@ let runtime = Arc::new(brain::SessionRuntime {
     environment_control: None,
     tool_executions: Arc::default(),
     limits: limits.clone(),
-    loop_executor,
+    harness,
     model_executor,
     tool_executor,
     live: feed.clone(),
@@ -59,12 +59,13 @@ platform.
 
 ## You supply the ports
 
-Provide `loop_executor`, `model_executor` and `tool_executor` implementations for your deployment.
+Provide `harness`, `model_executor` and `tool_executor` implementations for your deployment.
 Set `environment_control` if your host supports resource operations; `None` leaves them unavailable.
 
-- **Loop executor:** receives the Agentloop, the Environment entry it's placed in and the
-  session's `TurnServices`, then runs the loop against them. The server's executor resolves the
-  entry to its Environment adapter; yours could run a trusted loop in-process.
+- **Harness:** an `Arc<dyn brain::AgentHarness>` selected at startup. It receives the session
+  identity, activation input, and `TurnServices`. The stock server uses
+  `brain_sessions::StdioHarness`; an embedding can implement the same Rust trait in-process.
+  The implementation owns native state, compaction, and recovery policy.
 - **Model executor:** receives the session id and resolves the credential it sealed for it.
 - **Tool executor:** receives the Tool and its Environment entry.
 

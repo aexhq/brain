@@ -1,7 +1,6 @@
 export { BrainClient as Brain, BrainClient, SessionHandle, Sessions } from "./client.js";
 export type { BrainOptions, HostCredentials } from "./client.js";
 export {
-  agentloop,
   bindTool,
   brainEnv,
   clientBrowser,
@@ -10,7 +9,6 @@ export {
   inspectProgram,
   environment,
   hostEnv,
-  inspectAgentloop,
   inspectComponent,
   inspectEnvironment,
   inspectTool,
@@ -18,7 +16,6 @@ export {
   toolMetadata,
 } from "./extensions.js";
 export type {
-  AgentloopContract,
   BrainEnvOptions,
   EnvironmentContract,
   EnvironmentDriver,
@@ -32,7 +29,6 @@ export type { HostToolCall, ToolResultOptions } from "./host.js";
 export { BrainError } from "./errors.js";
 export type { BrainPreparation, ProgramAdmission, EventPage, ModelList, ModelProvider, ModelDef, ModelRequest, ModelResult, SessionTranscript, ToolResult } from "./generated/session.js";
 export type {
-  AgentloopAdmission,
   Component,
   Program,
   CreateSessionOptions,
@@ -51,7 +47,6 @@ export type {
   Media,
   UserInput,
   Outcome,
-  PlacedAgentloop,
   PlacedTool,
   Schema,
   SchemaInput,

@@ -1,9 +1,7 @@
 use std::process::Stdio;
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
-use brain_protocol::{
-    AgentloopId, BrainPreparation, ProgramId, ToolId, TurnError, TurnInput, TurnOutput,
-};
+use brain_protocol::{BrainPreparation, ProgramId, ToolId, TurnError};
 use tokio::sync::{Mutex, Semaphore};
 
 use crate::{
@@ -136,20 +134,10 @@ impl WorkerPool {
         }
     }
 
-    pub async fn admit(&self, package: Vec<u8>) -> Result<AgentloopId, LoopError> {
-        let _admission = self.admission.lock().await;
-        let (worker, _permit) = self.select(false)?;
-        worker.admit(package).await
-    }
-
     pub async fn admit_tool(&self, component: Vec<u8>) -> Result<ToolId, LoopError> {
         let _admission = self.admission.lock().await;
         let (worker, _permit) = self.select(false)?;
         worker.admit_tool(component).await
-    }
-
-    pub async fn status(&self, digest: &AgentloopId) -> Result<bool, LoopError> {
-        self.workers[0].status(digest).await
     }
 
     pub async fn tool_status(&self, digest: &ToolId) -> Result<bool, LoopError> {
@@ -193,11 +181,7 @@ impl WorkerPool {
             let mut state = worker.state.lock().await;
             worker.ensure_worker(&mut state).await?;
             worker.load(&mut state, preparation).await?;
-            for id in &preparation.agentloops {
-                if !state.required.agentloops.contains(id) {
-                    state.required.agentloops.push(id.clone());
-                }
-            }
+
             for id in &preparation.tools {
                 if !state.required.tools.contains(id) {
                     state.required.tools.push(id.clone());
@@ -221,9 +205,6 @@ impl WorkerPool {
     ) -> Result<serde_json::Value, LoopError> {
         let mut preparation = BrainPreparation::default();
         match code.kind {
-            crate::ComponentKind::Agentloop => {
-                preparation.agentloops.push(AgentloopId::new(&code.digest))
-            }
             crate::ComponentKind::Tool => preparation.tools.push(ToolId::new(&code.digest)),
         }
         if let Some(id) = &code.program {
@@ -264,28 +245,6 @@ impl WorkerPool {
         outcome
     }
 
-    pub async fn turn(
-        &self,
-        digest: AgentloopId,
-        environment: NativeEnvironment,
-        input: TurnInput,
-        bridge: &dyn TurnBridge,
-    ) -> Result<TurnOutput, LoopError> {
-        let output = self
-            .execute(
-                crate::WorkerCode {
-                    kind: crate::ComponentKind::Agentloop,
-                    digest: digest.to_string(),
-                    program: None,
-                },
-                environment,
-                serde_json::to_value(input).map_err(|error| error.to_string())?,
-                bridge,
-            )
-            .await?;
-        serde_json::from_value(output).map_err(|error| LoopError::Failed(error.to_string()))
-    }
-
     pub async fn tool(
         &self,
         digest: ToolId,
@@ -320,7 +279,6 @@ struct WorkerSlot {
 #[derive(Default)]
 struct WorkerState {
     incarnation: u64,
-    agentloops: HashSet<AgentloopId>,
     tools: HashSet<ToolId>,
     programs: HashSet<ProgramId>,
     required: BrainPreparation,
@@ -348,20 +306,6 @@ impl WorkerSlot {
         }
     }
 
-    pub async fn admit(&self, package: Vec<u8>) -> Result<AgentloopId, LoopError> {
-        if package.len() > ceiling(self.limits.max_package_bytes) {
-            return Err("Agentloop package exceeds the configured admission limit".into());
-        }
-        let mut state = self.state.lock().await;
-        self.ensure_worker(&mut state).await?;
-        let digest = WorkerClient::new(&self.socket, &self.limits)
-            .admit(&package)
-            .await?;
-        persist_component(&self.packages, "agentloop", digest.as_str(), &package).await?;
-        state.agentloops.insert(digest.clone());
-        Ok(digest)
-    }
-
     pub async fn admit_tool(&self, component: Vec<u8>) -> Result<ToolId, LoopError> {
         if component.len() > ceiling(self.limits.max_package_bytes) {
             return Err("Tool Component exceeds the configured admission limit".into());
@@ -374,12 +318,6 @@ impl WorkerSlot {
         persist_component(&self.packages, "tool", digest.as_str(), &component).await?;
         state.tools.insert(digest.clone());
         Ok(digest)
-    }
-
-    pub async fn status(&self, digest: &AgentloopId) -> Result<bool, LoopError> {
-        tokio::fs::try_exists(component_path(&self.packages, "agentloop", digest.as_str()))
-            .await
-            .map_err(|error| LoopError::Failed(error.to_string()))
     }
 
     pub async fn tool_status(&self, digest: &ToolId) -> Result<bool, LoopError> {
@@ -411,18 +349,7 @@ impl WorkerSlot {
         preparation: &BrainPreparation,
     ) -> Result<(), String> {
         let client = WorkerClient::new(&self.socket, &self.limits);
-        for id in &preparation.agentloops {
-            if state.agentloops.contains(id) {
-                continue;
-            }
-            let bytes = tokio::fs::read(component_path(&self.packages, "agentloop", id.as_str()))
-                .await
-                .map_err(|error| format!("Agentloop {id} is unavailable: {error}"))?;
-            if client.admit(&bytes).await? != *id {
-                return Err("persisted Agentloop package changed digest".into());
-            }
-            state.agentloops.insert(id.clone());
-        }
+
         for id in &preparation.tools {
             if state.tools.contains(id) {
                 continue;
@@ -489,7 +416,6 @@ impl WorkerSlot {
             tie_to_this_process(&child)?;
             state.child = Some(child);
             state.incarnation = state.incarnation.wrapping_add(1);
-            state.agentloops.clear();
             state.tools.clear();
             state.programs.clear();
             let client = WorkerClient::new(&self.socket, &self.limits);
@@ -524,7 +450,6 @@ impl WorkerSlot {
             let _ = child.kill().await;
             let _ = child.wait().await;
         }
-        state.agentloops.clear();
         state.tools.clear();
         state.programs.clear();
         let _ = crate::socket::unlink(&self.socket);

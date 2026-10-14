@@ -8,4 +8,5 @@ pub use service::{ActivityObserver, MessageAdmission, SessionResources, Sessions
 pub mod locks;
 
 mod execution;
-pub use execution::{EnvironmentLoopExecutor, SessionServices, SessionToolExecutor};
+pub use execution::{SessionServices, SessionToolExecutor};
+pub mod harness;

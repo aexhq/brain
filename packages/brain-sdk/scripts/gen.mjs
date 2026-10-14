@@ -1,5 +1,5 @@
 import { compile } from "json-schema-to-typescript";
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -38,7 +38,7 @@ function includeDefinition(name) {
   }
   visit(definition);
 }
-for (const name of ["EnvironmentCommand", "EnvironmentResponse"]) includeDefinition(name);
+for (const name of ["EnvironmentCommand", "EnvironmentResponse", "HarnessInitialize", "HarnessSession", "HarnessRun"]) includeDefinition(name);
 await writeFile(path.join(output, "environment-schema.ts"),
   `${banner}import type { JSONSchema } from "zod/v4/core";\nexport const environmentDefinitions: Record<string, JSONSchema.JSONSchema> = ${JSON.stringify(environmentDefinitions, null, 2)};\n`);
 
@@ -64,6 +64,6 @@ await writeFile(path.join(output, "providers.ts"), providersTs);
 const wit = path.resolve(here, "../contracts");
 await mkdir(wit, { recursive: true });
 const loophostWit = path.join(root, "crates/brain-env/wit");
-await copyFile(path.join(loophostWit, "agentloop/agentloop.wit"), path.join(wit, "agentloop.wit"));
+await rm(path.join(wit, "agentloop.wit"), { force: true });
 await copyFile(path.join(loophostWit, "tool/tool.wit"), path.join(wit, "tool.wit"));
 await copyFile(schemaPath, path.join(wit, "session.json"));

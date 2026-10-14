@@ -17,7 +17,8 @@ For deployment, remote callbacks, backups and upgrades, start with
 | --- | --- | --- | --- |
 | `BRAIN_LISTEN` | `--listen` | `127.0.0.1:8080` | Address to bind |
 | `BRAIN_DATA_DIR` | `--data-dir` | `brain-data` | Where journals, admitted Components, and local state live |
-| `BRAIN_ENV_WORKER` | `--env-worker` | `brain-env-worker` | Path to the loop worker executable |
+| `BRAIN_HARNESS` | `--harness` | none | Startup harness as JSON: {"command":"node","args":["harness.mjs"]} |
+| `BRAIN_ENV_WORKER` | `--env-worker` | `brain-env-worker` | Path to the Tool worker executable |
 | `BRAIN_ENV_WORKERS` | `--env-workers` | `2` | OS worker processes in the built-in Environment pool |
 | `BRAIN_ENV_PREPARATION` | `--env-preparation` | none | JSON file of Components and program sources to prepare before serving execution |
 | `BRAIN_ENV_NETWORK_ALLOW` | `--env-network-allow` | none | Origins the brain env may grant through Environment configuration: exact, or `https://*.example.com` for a family of hosts |
@@ -46,8 +47,8 @@ For deployment, remote callbacks, backups and upgrades, start with
 | `BRAIN_MAX_SESSION_QUEUE_BYTES` | `--max-session-queue-bytes` | `8388608` | Bytes the journal writer may hold queued for one session before its appends wait |
 | `BRAIN_MAX_JOURNAL_OPEN_FILES` | `--max-journal-open-files` | `256` | Journal segment files the writer keeps open at once |
 | `BRAIN_MAX_LIVE_BACKLOG` | `--max-live-backlog` | `1024` | Records a live subscriber may fall behind before it loses them; at least 1 |
-| `BRAIN_MAX_PACKAGE_BYTES` | `--max-package-bytes` | `33554432` | Bytes an Agentloop or Tool Component package may hold |
-| `BRAIN_MAX_EXECUTION_INPUT_BYTES` | `--max-execution-input-bytes` | `33554432` | Bytes one execution input may hold, including an Agentloop's transcript and events |
+| `BRAIN_MAX_PACKAGE_BYTES` | `--max-package-bytes` | `33554432` | Bytes an Tool Component package may hold |
+| `BRAIN_MAX_EXECUTION_INPUT_BYTES` | `--max-execution-input-bytes` | `33554432` | Bytes one execution input may hold, including invocation configuration |
 | `BRAIN_MAX_EXECUTION_OUTPUT_BYTES` | `--max-execution-output-bytes` | `33554432` | Bytes one execution output may hold |
 | `BRAIN_MAX_LINEAR_MEMORY_BYTES` | `--max-linear-memory-bytes` | `134217728` | Bytes of linear memory one Wasm instance may grow to |
 | `BRAIN_MAX_FUEL` | `--max-fuel` | `10000000000` | Wasmtime work units one invocation may consume; host and WASI waits consume none. A stable ceiling within one Wasmtime version, not a duration |
@@ -74,7 +75,7 @@ Environment routes, endpoints, or credentials of its own.
 ## The data directory
 
 Brain owns everything under `BRAIN_DATA_DIR`. Use an empty directory for a new installation;
-Brain writes the `brain-data/1` layout marker on initialization. One server process may own it
+Brain writes the `brain-data/2` layout marker on initialization. One server process may own it
 at a time. A matching marker does not establish compatibility with every earlier contract:
 pre-1.0 releases can change retained session and executable formats, and Brain does not
 automatically migrate old data. Follow the [upgrade and restore procedure](/brain/docs/guides/operate#back-up-and-upgrade)
@@ -83,10 +84,12 @@ before changing the runtime on existing data.
 ```
 brain-data/
   .lock                               process-held single-writer lock
-  format                              layout marker (`brain-data/1`)
+  format                              layout marker (`brain-data/2`)
   sessions/{session_id}/journal/      one canonical journal per session
   sessions/{session_id}/checkpoint    disposable current-state/index projection
-  agentloops/                         admitted Agentloop and Tool Components
+  components/                         admitted Tool Components and programs
+  harness/identity.json               startup harness and native-state version
+  harness/{session_id}/               upstream native session state
   native-workspaces/{session_id}/{environment}/   retained native Environment workspace
   hosts/hosts.log                     host registrations and token hashes
   requests/requests.log               durable HTTP request claims and answers
@@ -94,8 +97,9 @@ brain-data/
   server-metadata/                    sealed model and Environment credentials
 ```
 
-Session configuration, status, public Events, transcript, and Agentloop kv are projections of
-the canonical journal. Brain does not keep a second event or state log.
+Session configuration, status, public Events, transcript, and harness KV are projections of
+the canonical journal. Upstream native files are separate continuation state; include them in
+backups. Version 0.40 requires a new data directory and refuses the previous layout.
 
 ## Listening beyond loopback
 

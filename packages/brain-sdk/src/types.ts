@@ -3,7 +3,6 @@ import type { EventOrigin, Outcome as WireOutcome, Media as WireMedia } from "./
 
 declare const componentBrand: unique symbol;
 declare const programBrand: unique symbol;
-declare const agentloopBrand: unique symbol;
 declare const environmentBrand: unique symbol;
 declare const toolBrand: unique symbol;
 
@@ -17,8 +16,6 @@ export interface Component { readonly [componentBrand]: true }
 export interface Program { readonly [programBrand]: true }
 /** One named Environment of a session: the brain env, the host env, or one reached over HTTP. */
 export interface Environment { readonly [environmentBrand]: true }
-/** An Agentloop placed in the Environment that runs it. */
-export interface PlacedAgentloop { readonly [agentloopBrand]: true }
 /** A Tool placed in the Environment that runs it. */
 export interface PlacedTool<Input = unknown, Output = unknown> {
   readonly [toolBrand]: { readonly input: Input; readonly output: Output };
@@ -94,7 +91,7 @@ export interface CreateSessionOptions {
   };
   readonly environments?: readonly Environment[];
   readonly model: ModelSelection;
-  readonly agentloop: PlacedAgentloop;
+  readonly harness?: import("./generated/session.js").HarnessOptions;
   readonly tools?: readonly SessionTool[];
   readonly system?: string;
   readonly responseFormat?: unknown;
@@ -132,10 +129,4 @@ export interface SessionStreamEvent<Data = unknown> {
   readonly sequence?: number;
   readonly type: string;
   readonly data: Data;
-}
-
-export interface AgentloopAdmission {
-  readonly id: string;
-  readonly status: "admitted" | "rejected";
-  readonly error?: { readonly code: string; readonly message: string; readonly retryable: boolean; readonly details?: unknown };
 }

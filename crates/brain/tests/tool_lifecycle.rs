@@ -51,7 +51,7 @@ fn call() -> ToolInvocation {
     .unwrap()
 }
 fn runtime(
-    loop_executor: Arc<dyn brain::LoopExecutor>,
+    harness: Arc<dyn brain::AgentHarness>,
     tools: Arc<dyn ToolExecutor>,
     seconds: u64,
 ) -> Runtime {
@@ -62,7 +62,7 @@ fn runtime(
         telemetry,
         8,
         seconds,
-        loop_executor,
+        harness,
         Arc::new(NoModels),
         tools,
     )

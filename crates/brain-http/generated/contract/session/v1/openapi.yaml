@@ -24,7 +24,6 @@ components:
       - name
       - description
       - input_schema
-      - output_schema
       - environments
       type: object
     AdmissionStatus:
@@ -32,40 +31,6 @@ components:
       - admitted
       - rejected
       type: string
-    AgentloopAdmission:
-      properties:
-        error:
-          $ref: '#/components/schemas/ApiError'
-        id:
-          $ref: '#/components/schemas/AgentloopId'
-        status:
-          $ref: '#/components/schemas/AdmissionStatus'
-      required:
-      - id
-      - status
-      type: object
-    AgentloopId:
-      pattern: ^[0-9a-f]{64}$
-      type: string
-    AgentloopRef:
-      additionalProperties: false
-      description: |-
-        The admitted Agentloop a session runs: which one, how it is configured, which
-        Environment of the session runs it.
-      properties:
-        configuration: true
-        environment:
-          $ref: '#/components/schemas/EnvironmentName'
-        environments:
-          items:
-            $ref: '#/components/schemas/EnvironmentGrant'
-          type: array
-        implementation: true
-      required:
-      - implementation
-      - configuration
-      - environment
-      type: object
     ApiError:
       properties:
         code:
@@ -87,11 +52,6 @@ components:
       additionalProperties: false
       description: Reusable artifacts to load on the built-in Environment's execution workers.
       properties:
-        agentloops:
-          default: []
-          items:
-            $ref: '#/components/schemas/AgentloopId'
-          type: array
         programs:
           default: []
           items:
@@ -199,15 +159,17 @@ components:
     CreateSessionRequest:
       additionalProperties: false
       properties:
-        agentloop:
-          $ref: '#/components/schemas/AgentloopRef'
         environments:
           description: |-
-            The Environments of this session, set up as part of this create. Every Tool and
-            the Agentloop name one of them.
+            The Environments of this session, set up as part of this create. Every Tool placement
+            names one of them. The harness is deployment-owned.
           items:
             $ref: '#/components/schemas/Environment'
           type: array
+        harness:
+          $ref: '#/components/schemas/HarnessOptions'
+          default:
+            configuration: null
         idle_ttl_ms:
           description: |-
             How long the session may sit idle before Brain suspends it: its task and memory
@@ -242,7 +204,6 @@ components:
             $ref: '#/components/schemas/Message'
           type: array
       required:
-      - agentloop
       - model
       - tools
       - environments
@@ -1002,6 +963,105 @@ components:
       enum:
       - application/pdf
       type: string
+    HarnessCallback:
+      additionalProperties: false
+      properties:
+        input: true
+        method:
+          type: string
+        sequence:
+          format: uint64
+          minimum: 0
+          type: integer
+        session_id:
+          $ref: '#/components/schemas/SessionId'
+      required:
+      - session_id
+      - sequence
+      - method
+      - input
+      type: object
+    HarnessCommand:
+      additionalProperties: false
+      properties:
+        args:
+          default: []
+          items:
+            type: string
+          type: array
+        command:
+          type: string
+        configuration:
+          default: null
+      required:
+      - command
+      type: object
+    HarnessIdentity:
+      additionalProperties: false
+      properties:
+        name:
+          description: Stable adapter and native-state format identity. Changes require a new data directory.
+          type: string
+        protocol:
+          type: string
+        state_version:
+          type: string
+      required:
+      - protocol
+      - name
+      - state_version
+      type: object
+    HarnessInitialize:
+      additionalProperties: false
+      properties:
+        configuration: true
+        protocol:
+          type: string
+        state_directory:
+          type: string
+      required:
+      - protocol
+      - state_directory
+      - configuration
+      type: object
+    HarnessOptions:
+      additionalProperties: false
+      description: Options for the deployment's harness. Executable code is selected at server startup.
+      properties:
+        configuration:
+          default: null
+        environments:
+          items:
+            $ref: '#/components/schemas/EnvironmentGrant'
+          type: array
+      type: object
+    HarnessRun:
+      additionalProperties: false
+      properties:
+        input:
+          $ref: '#/components/schemas/TurnInput'
+        model:
+          $ref: '#/components/schemas/ModelDef'
+        sequence:
+          format: uint64
+          minimum: 0
+          type: integer
+        session_id:
+          $ref: '#/components/schemas/SessionId'
+      required:
+      - session_id
+      - sequence
+      - model
+      - input
+      type: object
+    HarnessSession:
+      additionalProperties: false
+      properties:
+        session_id:
+          $ref: '#/components/schemas/SessionId'
+      required:
+      - session_id
+      type: object
     HostActivity:
       additionalProperties: false
       description: Connection-scoped transport activity; this is not a journal Event.
@@ -1630,7 +1690,6 @@ components:
       - name
       - description
       - input_schema
-      - output_schema
       type: object
     ToolExecutionUpdate:
       oneOf:
@@ -1954,69 +2013,6 @@ paths:
       summary: Check readiness
       tags:
       - Health
-  /v1/agentloops:
-    post:
-      operationId: admitAgentloop
-      parameters:
-      - in: header
-        name: Idempotency-Key
-        required: true
-        schema:
-          maxLength: 256
-          minLength: 1
-          type: string
-      requestBody:
-        content:
-          application/octet-stream:
-            schema:
-              format: binary
-              type: string
-        required: true
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AgentloopAdmission'
-          description: Agentloop admitted
-        default:
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiError'
-          description: Structured error
-      security:
-      - serverToken: []
-      summary: Upload an agent loop
-      tags:
-      - Components
-  /v1/agentloops/{id}:
-    get:
-      operationId: getAgentloop
-      parameters:
-      - in: path
-        name: id
-        required: true
-        schema:
-          $ref: '#/components/schemas/AgentloopId'
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AgentloopAdmission'
-          description: Admission status
-        default:
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiError'
-          description: Structured error
-      security:
-      - serverToken: []
-      summary: Read agent loop admission
-      tags:
-      - Components
   /v1/brain-env/prepare:
     post:
       description: Waits until the declared artifacts are loaded on eligible workers. Preparation is retained for this server process, restored after worker replacement, and independent of session lifetime. Repeating the request checks current resources again. It grants no session authority.
@@ -2358,7 +2354,7 @@ paths:
       tags:
       - Sessions
     post:
-      description: Create a conversation using an admitted agent loop. In this example, replace the component id with the id returned by uploading your loop to POST /v1/agentloops, and replace the model API key. Loop configuration depends on the chosen package; the empty object suits the reference loop.
+      description: Create a conversation using the harness supplied at Brain startup. Supply the model credential and the tools this session may use.
       operationId: createSession
       parameters:
       - in: header
@@ -2372,18 +2368,13 @@ paths:
         content:
           application/json:
             example:
-              agentloop:
-                configuration: {}
-                environment: brain
-                implementation:
-                  entrypoint: turn
-                  id: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-                  type: brain_component
               environments:
               - configuration: {}
                 driver: brain
                 lifecycle: automatic
                 name: brain
+              harness:
+                configuration: {}
               model:
                 api_key: YOUR_MODEL_API_KEY
                 name: gpt-4.1-mini

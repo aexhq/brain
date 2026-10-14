@@ -173,7 +173,6 @@ impl BrainEnvironment {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "snake_case")]
         enum Entrypoint {
-            Turn,
             Run,
         }
         let implementation: Implementation = serde_json::from_value(implementation.clone())
@@ -209,15 +208,6 @@ impl BrainEnvironment {
             .await?;
         let bridge = ServicesBridge(services);
         let (kind, input) = match entrypoint {
-            Entrypoint::Turn => {
-                let input: brain_protocol::TurnInput = serde_json::from_value(input.clone())
-                    .map_err(|error| brain::Error::InvalidState(error.to_string()))?;
-                (
-                    crate::ComponentKind::Agentloop,
-                    serde_json::to_value(input)
-                        .map_err(|error| brain::Error::InvalidState(error.to_string()))?,
-                )
-            }
             Entrypoint::Run => (
                 crate::ComponentKind::Tool,
                 serde_json::to_value(NativeToolInput {
@@ -346,14 +336,6 @@ impl TurnBridge for ServicesBridge {
         let parse =
             |text: &str| serde_json::from_str(text).map_err(|e| bridge_error("invalid_request", e));
         let (method, input) = match call {
-            HostCall::SetTranscript { messages_json } => ("set_transcript", parse(&messages_json)?),
-            HostCall::KvPut { key, value_json } => (
-                "kv_put",
-                serde_json::json!({"key": key, "value": parse(&value_json)?}),
-            ),
-            HostCall::KvRead { key } => ("kv_read", serde_json::json!(key)),
-            HostCall::KvDelete { key } => ("kv_delete", serde_json::json!(key)),
-            HostCall::Events { after } => ("events", serde_json::json!(after)),
             HostCall::ToolResult { outcome_json } => ("result", parse(&outcome_json)?),
             HostCall::ToolReturned { outcome_json } => (
                 "returned",
@@ -373,7 +355,6 @@ impl TurnBridge for ServicesBridge {
             ),
             HostCall::Model { request_json } => ("model", parse(&request_json)?),
             HostCall::Environments { request_json } => ("environments", parse(&request_json)?),
-            HostCall::Dispatch { calls_json } => ("dispatch", parse(&calls_json)?),
             HostCall::Emit { kind, payload_json } => (
                 "emit",
                 serde_json::json!({"event_type": kind, "data": parse(&payload_json)?}),
@@ -431,7 +412,7 @@ mod tests {
             Arc::new(WorkerPool::new(
                 "unused",
                 root.join("run"),
-                root.join("agentloops"),
+                root.join("components"),
                 Default::default(),
                 std::num::NonZeroUsize::new(1).unwrap(),
             )),

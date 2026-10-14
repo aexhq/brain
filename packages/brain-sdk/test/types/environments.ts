@@ -6,7 +6,7 @@ const protocol = environmentProtocol(() => ({ type: "accepted" }));
 void protocol({});
 void serveEnvironment(protocol, { token: "test" });
 
-declare const required: Pick<CreateSessionOptions, "model" | "agentloop">;
+declare const required: Pick<CreateSessionOptions, "model">;
 const automatic: CreateSessionOptions = required;
 const manual: CreateSessionOptions = { ...required, environment: { lifecycle: { default: "manual" } } };
 const mixed: CreateSessionOptions = { ...required, environment: { lifecycle: { bindings: { workspace: "manual" } } } };

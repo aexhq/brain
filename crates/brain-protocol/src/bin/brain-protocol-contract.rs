@@ -10,12 +10,16 @@ use brain_protocol::contract;
 
 fn main() {
     let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("generated/contract");
+    let obsolete = out.join("agentloop");
+    if obsolete.exists() {
+        fs::remove_dir_all(obsolete).unwrap();
+    }
     for (path, document) in [
         ("session/v1/schemas.json", contract::session()),
         ("session/v1/codes.json", contract::codes()),
         ("environment/v1/schemas.json", contract::environment()),
         ("tool/v1/schemas.json", contract::tool()),
-        ("agentloop/v1/contract.json", contract::agentloop()),
+        ("harness/v1/contract.json", contract::harness()),
     ] {
         let path = out.join(path);
         let mut text = serde_json::to_string_pretty(&document).expect("a contract serializes");

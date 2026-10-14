@@ -24,7 +24,7 @@ fn checker_requires_a_stopped_writer_and_checks_history_removed_from_the_project
     let lock = brain_server::data_layout::lock(directory.path()).unwrap();
     let sessions = brain_server::data_layout::prepare(directory.path()).unwrap();
     let config = json!({
-        "agentloop":{"implementation":{}, "configuration":{}, "environment":"brain"},
+        "harness": { "configuration":{}},
         "model":{"provider":"openai", "name":"model"}, "tools":[], "environments":[]
     });
     let store = LocalSessionStore::create(

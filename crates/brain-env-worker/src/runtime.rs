@@ -1,6 +1,6 @@
 use std::{future::Future, sync::Arc};
 
-use brain_protocol::{AgentloopId, ToolId, TurnError, TurnInput, TurnOutput, codes};
+use brain_protocol::{ToolId, TurnError, codes};
 use http_body_util::BodyExt as _;
 use sha2::{Digest as _, Sha256};
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
@@ -17,15 +17,6 @@ use brain_env::{Access, EnvLimits, HostCall, NativeEnvironment, NativeToolInput,
 /// total fuel budget.
 const FUEL_YIELD_INTERVAL: u64 = 10_000_000;
 
-mod bindings {
-    wasmtime::component::bindgen!({
-        path: "../brain-env/wit/agentloop",
-        world: "agentloop",
-        imports: { default: async },
-        exports: { default: async },
-    });
-}
-
 mod tool_bindings {
     wasmtime::component::bindgen!({
         path: "../brain-env/wit/tool",
@@ -34,8 +25,6 @@ mod tool_bindings {
         exports: { default: async },
     });
 }
-
-use bindings::brain::agentloop::types as wit;
 
 /// What answers the guest's host calls while a turn runs.
 #[async_trait::async_trait]
@@ -46,12 +35,6 @@ pub trait GuestHost: Send + Sync {
 pub struct AdmissionEngine {
     engine: Engine,
     limits: EnvLimits,
-    allowed_imports: Vec<String>,
-}
-
-pub struct AdmittedAgentloop {
-    pub digest: AgentloopId,
-    pre: bindings::AgentloopPre<HostState>,
 }
 
 pub struct AdmittedTool {
@@ -60,7 +43,7 @@ pub struct AdmittedTool {
 }
 
 impl AdmissionEngine {
-    pub fn new(limits: EnvLimits, allowed_imports: Vec<String>) -> Result<Self, String> {
+    pub fn new(limits: EnvLimits) -> Result<Self, String> {
         let mut config = Config::new();
         config.wasm_component_model(true).consume_fuel(true);
         let cache = Cache::from_file(None).map_err(|error| {
@@ -68,50 +51,7 @@ impl AdmissionEngine {
         })?;
         config.cache(Some(cache));
         let engine = Engine::new(&config).map_err(|error| error.to_string())?;
-        Ok(Self {
-            engine,
-            limits,
-            allowed_imports,
-        })
-    }
-
-    pub fn admit(&self, package_bytes: &[u8]) -> Result<AdmittedAgentloop, String> {
-        if package_bytes.len() > ceiling(self.limits.max_package_bytes) {
-            return Err("Agentloop package exceeds the configured admission limit".into());
-        }
-        let actual = AgentloopId::new(hex_digest(package_bytes));
-        let component = Component::new(&self.engine, package_bytes)
-            .map_err(|error| format!("Agentloop component is invalid: {error}"))?;
-        for (name, _) in component.component_type().imports(&self.engine) {
-            if !self.allowed_imports.iter().any(|allowed| name == allowed) {
-                return Err(format!("Agentloop import {name:?} is not allowed"));
-            }
-        }
-        if component
-            .component_type()
-            .get_export(&self.engine, "turn")
-            .is_none()
-        {
-            return Err("Agentloop component does not export turn".into());
-        }
-        let mut linker = Linker::<HostState>::new(&self.engine);
-        wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(|error| error.to_string())?;
-        wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)
-            .map_err(|error| error.to_string())?;
-        bindings::brain::agentloop::host::add_to_linker::<_, HasSelf<HostState>>(
-            &mut linker,
-            |state| state,
-        )
-        .map_err(|error| error.to_string())?;
-        let instance = linker
-            .instantiate_pre(&component)
-            .map_err(|error| format!("Agentloop imports do not match its world: {error}"))?;
-        let pre = bindings::AgentloopPre::new(instance)
-            .map_err(|error| format!("Agentloop exports do not match its world: {error}"))?;
-        Ok(AdmittedAgentloop {
-            digest: actual,
-            pre,
-        })
+        Ok(Self { engine, limits })
     }
 
     pub fn admit_tool(&self, component_bytes: &[u8]) -> Result<AdmittedTool, String> {
@@ -318,82 +258,6 @@ fn bounded_http_options(options: Option<RequestOptions>, limits: &EnvLimits) -> 
     }
 }
 
-impl bindings::brain::agentloop::host::Host for HostState {
-    async fn set_transcript(&mut self, messages_json: String) -> Result<u64, wit::TurnError> {
-        let answer = self
-            .call(HostCall::SetTranscript { messages_json })
-            .await
-            .map_err(wit_error)?;
-        serde_json::from_str(&answer).map_err(|error| wit_error(host_failure(error)))
-    }
-
-    async fn kv_put(&mut self, key: String, value_json: String) -> Result<u64, wit::TurnError> {
-        let answer = self
-            .call(HostCall::KvPut { key, value_json })
-            .await
-            .map_err(wit_error)?;
-        serde_json::from_str(&answer).map_err(|error| wit_error(host_failure(error)))
-    }
-
-    async fn kv_read(&mut self, key: String) -> Result<Option<String>, wit::TurnError> {
-        let answer = self
-            .call(HostCall::KvRead { key })
-            .await
-            .map_err(wit_error)?;
-        let value: serde_json::Value =
-            serde_json::from_str(&answer).map_err(|error| wit_error(host_failure(error)))?;
-        Ok(value.get("value").map(serde_json::Value::to_string))
-    }
-
-    async fn kv_delete(&mut self, key: String) -> Result<u64, wit::TurnError> {
-        let answer = self
-            .call(HostCall::KvDelete { key })
-            .await
-            .map_err(wit_error)?;
-        serde_json::from_str(&answer).map_err(|error| wit_error(host_failure(error)))
-    }
-    async fn events(&mut self, after: u64) -> Result<String, wit::TurnError> {
-        self.call(HostCall::Events { after })
-            .await
-            .map_err(wit_error)
-    }
-
-    async fn model(&mut self, request_json: String) -> Result<String, wit::TurnError> {
-        self.call(HostCall::Model { request_json })
-            .await
-            .map_err(wit_error)
-    }
-
-    async fn environments(&mut self, request_json: String) -> Result<String, wit::TurnError> {
-        self.call(HostCall::Environments { request_json })
-            .await
-            .map_err(wit_error)
-    }
-
-    async fn dispatch(&mut self, calls_json: String) -> Result<String, wit::TurnError> {
-        self.call(HostCall::Dispatch { calls_json })
-            .await
-            .map_err(wit_error)
-    }
-
-    async fn emit(&mut self, kind: String, payload_json: String) -> Result<u64, wit::TurnError> {
-        let answer = self
-            .call(HostCall::Emit { kind, payload_json })
-            .await
-            .map_err(wit_error)?;
-        answer.trim().parse().map_err(|_| {
-            wit_error(TurnError::new(
-                "internal",
-                "emit answered without a sequence",
-            ))
-        })
-    }
-
-    async fn telemetry(&mut self, record_json: String) {
-        let _ = self.call(HostCall::Telemetry { record_json }).await;
-    }
-}
-
 impl tool_bindings::brain::tool::host::Host for HostState {
     async fn environments(
         &mut self,
@@ -452,14 +316,6 @@ impl tool_bindings::brain::tool::host::Host for HostState {
 
     async fn telemetry(&mut self, record_json: String) {
         let _ = self.call(HostCall::Telemetry { record_json }).await;
-    }
-}
-
-fn wit_error(error: TurnError) -> wit::TurnError {
-    wit::TurnError {
-        code: error.code,
-        message: error.message,
-        retryable: error.retryable,
     }
 }
 
@@ -563,47 +419,6 @@ impl ResourceLimiter for StoreBudget {
     }
 }
 
-impl AdmittedAgentloop {
-    /// Runs one turn in a fresh Store and Component instance. Only compiled code is
-    /// retained between invocations.
-    pub async fn turn(
-        &self,
-        engine: &Engine,
-        limits: &EnvLimits,
-        environment: NativeEnvironment,
-        input: TurnInput,
-        bridge: Arc<dyn GuestHost>,
-    ) -> Result<TurnOutput, TurnError> {
-        let state = HostState::new(limits, bridge, environment)?;
-        let mut store = Store::new(engine, state);
-        store.limiter(|state| &mut state.limits);
-        configure_fuel(&mut store, limits)?;
-        let bindings = self
-            .pre
-            .instantiate_async(&mut store)
-            .await
-            .map_err(host_failure)?;
-        let input = to_wit_input(input).map_err(host_failure)?;
-        let called = bindings.call_turn(&mut store, &input).await;
-        let output = match called {
-            Ok(Ok(output)) => output,
-            // The loop's own failure, with the code it chose.
-            Ok(Err(error)) => {
-                return Err(TurnError {
-                    code: error.code,
-                    message: error.message,
-                    retryable: error.retryable,
-                });
-            }
-            // A trapped guest's heap is not a state anyone can vouch for: the entry is
-            // dropped rather than kept.
-            Err(error) => return Err(host_failure(turn_error(error))),
-        };
-        let output = from_wit_output(output).map_err(host_failure)?;
-        Ok(output)
-    }
-}
-
 impl AdmittedTool {
     pub async fn run(
         &self,
@@ -661,7 +476,7 @@ fn store_budget(limits: &EnvLimits) -> StoreBudget {
 /// A turn that failed on this side of the guest: a trap, a budget, an output the
 /// contract refuses. The loop did not choose a code, so it gets the one that says so.
 fn host_failure(message: impl std::fmt::Display) -> TurnError {
-    TurnError::new(codes::failure::AGENTLOOP_FAILED, message.to_string())
+    TurnError::new(codes::failure::TOOL_ERROR, message.to_string())
 }
 
 /// A guest stopped by fuel exhaustion reports the budget it exceeded, not Wasmtime's trap.
@@ -670,48 +485,6 @@ fn turn_error(error: wasmtime::Error) -> String {
         return COMPUTE_BUDGET_EXCEEDED.into();
     }
     error.to_string()
-}
-
-fn to_wit_input(input: TurnInput) -> Result<wit::TurnInput, String> {
-    let json = |value: &dyn erased_serialize::Serialize| -> Result<String, String> {
-        value.to_json().map_err(|error| error.to_string())
-    };
-    Ok(wit::TurnInput {
-        input_json: json(&input.input)?,
-        transcript_json: json(&input.transcript)?,
-        kv_json: json(&input.kv)?,
-        events_json: json(&input.events)?,
-        configuration_json: json(&input.configuration)?,
-        system: input.system,
-        tools_json: json(&input.tools)?,
-        runtime: wit::RuntimeEnvelope {
-            logical_time_ms: input.runtime.logical_time_ms,
-            deterministic_seed: input.runtime.deterministic_seed,
-        },
-    })
-}
-
-/// A tiny shim so `to_wit_input` can serialise fields of different types through one
-/// closure without a generic bound per call.
-mod erased_serialize {
-    pub trait Serialize {
-        fn to_json(&self) -> Result<String, serde_json::Error>;
-    }
-    impl<T: serde::Serialize> Serialize for T {
-        fn to_json(&self) -> Result<String, serde_json::Error> {
-            serde_json::to_string(self)
-        }
-    }
-}
-
-fn from_wit_output(output: wit::TurnOutput) -> Result<TurnOutput, String> {
-    Ok(TurnOutput {
-        result: output
-            .result_json
-            .map(|value| serde_json::from_str(&value))
-            .transpose()
-            .map_err(|error| format!("Agentloop result is invalid JSON: {error}"))?,
-    })
 }
 
 pub(crate) fn hex_digest(bytes: &[u8]) -> String {
@@ -836,7 +609,7 @@ mod tests {
     async fn a_guest_that_never_returns_is_trapped_within_its_budget() {
         let limits = EnvLimits::default();
         let fuel = limits.max_fuel;
-        let admission = AdmissionEngine::new(limits, Vec::new()).unwrap();
+        let admission = AdmissionEngine::new(limits).unwrap();
         let engine = admission.engine();
 
         let module = CoreModule::new(engine, spinning_module()).unwrap();
@@ -873,7 +646,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_slow_async_host_wait_consumes_no_guest_fuel() {
-        let admission = AdmissionEngine::new(EnvLimits::default(), Vec::new()).unwrap();
+        let admission = AdmissionEngine::new(EnvLimits::default()).unwrap();
         let engine = admission.engine();
         let state = HostState::new(
             &EnvLimits::default(),

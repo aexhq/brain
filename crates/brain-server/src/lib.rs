@@ -12,7 +12,7 @@ pub mod model;
 mod persistence;
 mod service;
 
-pub use brain_sessions::{EnvironmentLoopExecutor, SessionToolExecutor};
+pub use brain_sessions::SessionToolExecutor;
 pub use config::ServerConfig;
 pub use environment::{
     BrainEnvironment, EnvironmentAdapter, EnvironmentRegistry, HostEnvironment,

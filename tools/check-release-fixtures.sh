@@ -10,14 +10,14 @@ cleanup() {
 }
 trap cleanup EXIT
 cp "$root"/tests/release/{sdk,http,sdk-turns,sdk-events,http-contract}.mjs "$work/"
-cp "${BRAIN_TEST_AGENTLOOP_PACKAGE:?}" "$work/diagnostic-agentloop.wasm"
+export BRAIN_HARNESS="$(node -e 'console.log(JSON.stringify({command:process.execPath,args:[process.argv[1]]}))' "$root/tests/fixtures/harness.mjs")"
 export BRAIN_API_TOKEN=release-fixture-token
 export BRAIN_BASE_URL=http://127.0.0.1:18089
 BRAIN_LISTEN=127.0.0.1:18089 BRAIN_DATA_DIR="$data" BRAIN_ENV_WORKER="${BRAIN_TEST_WORKER:?}" \
   "${BRAIN_TEST_SERVER:?}" > "$work/server.log" 2>&1 &
 server_pid=$!
 for attempt in $(seq 1 120); do
-  if curl --fail --silent "$BRAIN_BASE_URL/health/ready" >/dev/null; then break; fi
+  if node --input-type=module -e 'try { process.exit((await fetch(process.env.BRAIN_BASE_URL + "/health/ready")).ok ? 0 : 1); } catch { process.exit(1); }'; then break; fi
   if [[ "$attempt" == 120 ]]; then cat "$work/server.log"; exit 1; fi
   sleep 0.1
 done

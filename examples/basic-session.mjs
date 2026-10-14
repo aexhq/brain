@@ -1,7 +1,6 @@
 import { inspect } from "node:util";
 
-import { Brain, brainEnv } from "@aexhq/brain";
-import { example } from "./example-brain.mjs";
+import { Brain } from "@aexhq/brain";
 
 const apiKey = process.env.VERCEL_AI_GATEWAY_API_KEY;
 if (!apiKey) throw new Error("VERCEL_AI_GATEWAY_API_KEY is required");
@@ -18,7 +17,6 @@ try {
       name: process.env.BRAIN_MODEL ?? "openai/gpt-5-mini",
       apiKey,
     },
-    agentloop: example({ env: brainEnv({ name: "brain" }) }),
     system: "Answer briefly and directly.",
   });
 

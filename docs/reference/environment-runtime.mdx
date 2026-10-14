@@ -4,7 +4,7 @@ description: Resource grants, runtime limits and worker configuration.
 ---
 
 An Environment is anything that implements the Environment protocol. A session names each one
-once; Tool placements and the Agentloop refer to those names; explicit lifecycle policy controls setup
+once; Tool placements refer to those names; explicit lifecycle policy controls setup
 and reaches them for every operation after. Where the code behind the protocol runs is the
 Environment's concern. Brain ships two, and any other is an extension.
 
@@ -12,7 +12,7 @@ Environment's concern. Brain ships two, and any other is an extension.
 
 `brainEnv({ name })` is Brain's own Environment, managed by the server in a separate pool of OS worker processes. A Tool placed here is a
 Component admitted through `POST /v1/tools`, or a program paired with a compatible runtime
-Component. Agentloop runtimes use `POST /v1/agentloops`; program sources use `POST /v1/programs`.
+Component. Program sources use `POST /v1/programs`. The startup harness runs outside Environments.
 Each invocation receives this Environment's configured grants,
 bounded by the deployment's allow-lists:
 
@@ -46,17 +46,19 @@ HTTP, and filesystem waits consume no fuel. `BRAIN_MAX_TURN_SECS` still bounds t
 ## Prepare before creating sessions
 
 Move reusable loading work out of the first request with `await brain.prepare(placed)`.
-The returned Agentloop or Tool retains its placement and configuration and can be reused by
+The returned Tool retains its placement and configuration and can be reused by
 several sessions or clients connected to the same server:
 
 ```ts
-import { Brain, brainEnv } from "@aexhq/brain";
-import { pi } from "@aexhq/agentloop-pi";
+import { Brain, brainEnv, component, tool } from "@aexhq/brain";
+import { z } from "zod";
 
 const brain = new Brain({ baseUrl: "http://localhost:8080", token: process.env.BRAIN_API_TOKEN });
-const loop = await brain.prepare(pi({ env: brainEnv({ name: "brain" }) }));
-const first = await brain.sessions.create({ model, agentloop: loop });
-const second = await brain.sessions.create({ model, agentloop: loop });
+const lookup = tool({ name: "lookup", description: "Look up a value",
+  input: z.object({ id: z.string() }), implementation: component(new URL("./lookup.wasm", import.meta.url)) });
+const prepared = await brain.prepare(lookup({ env: brainEnv({ name: "brain" }) }));
+const first = await brain.sessions.create({ model, tools: [prepared] });
+const second = await brain.sessions.create({ model, tools: [prepared] });
 ```
 
 Imports and factories perform no I/O. `prepare` admits any missing artifacts and loads them on
@@ -64,18 +66,17 @@ all eligible workers before resolving. It works without a session, grants no exe
 and rejects placements outside `brainEnv`. Brain also loads on first execution when explicit
 preparation is omitted. Preparing again checks current readiness; it does not replay a turn.
 
-For artifacts already admitted, `brain.prepareEnvironment({ agentloops: [runtimeId],
-programs: [programId], tools: [] })` calls `POST /v1/brain-env/prepare` directly. IDs are immutable
-SHA-256 content addresses. `GET /v1/agentloops/{id}`, `/v1/tools/{id}`, and `/v1/programs/{id}`
+For artifacts already admitted, `brain.prepareEnvironment({ tools: [runtimeId],
+programs: [programId] })` calls `POST /v1/brain-env/prepare` directly. IDs are immutable
+SHA-256 content addresses. `GET /v1/tools/{id}` and `/v1/programs/{id}`
 report admission, not worker readiness. Preparation errors use `preparation_failed`.
 
 To prepare during deployment, set `BRAIN_ENV_PREPARATION` to a JSON file:
 
 ```json
 {
-  "agentloops": ["./runtime.component.wasm"],
-  "programs": ["./loop.program.js"],
-  "tools": []
+  "tools": ["./runtime.component.wasm"],
+  "programs": ["./tool.program.js"]
 }
 ```
 
@@ -93,20 +94,19 @@ memory, and preparation does not guarantee free execution capacity or zero initi
 
 `program({ runtime, source })` packages a small UTF-8 source artifact separately from a compatible
 Wasm runtime. `runtime` is a `component(...)` or an admitted runtime digest; `source` is a URL or
-`Uint8Array`. Use the result as an Agentloop's or Tool's `implementation`, just like a Component.
+`Uint8Array`. Use the result as a Tool's `implementation`, just like a Component.
 The SDK checks admission before uploading either artifact, including from a fresh client.
 
-The resolved implementation is `{ type: "brain_program", entrypoint: "turn" | "run", id,
-runtime }`, with optional Tool `configuration`. The runtime uses the existing Agentloop or Tool
-WIT entrypoint. The worker supplies `{ source, configuration }` as its configuration: `source`
+The resolved implementation is `{ type: "brain_program", entrypoint: "run", id,
+runtime }`, with optional Tool `configuration`. The runtime uses the Tool WIT entrypoint. The worker supplies `{ source, configuration }` as its configuration: `source`
 is the admitted UTF-8 text and `configuration` is the invocation's original configuration.
 The source is loaded inside the worker and is not copied into the session configuration or journal.
 Runtime authors own source syntax, import support and validation; source admission validates
 UTF-8 and size, not language compatibility. Parsing and guest initialization may still happen
 at invocation time.
 
-Pi and Codex packages use this interface with the same JavaScript runtime and separate program
-bundles. Ordinary Wasm Components keep their existing descriptor and WIT contract.
+Agent harnesses use a separate [startup protocol](/brain/docs/reference/agentloop-contract).
+They are not Components or source artifacts admitted by clients.
 
 ## The host env
 
@@ -144,7 +144,6 @@ The same Environment object places several Tools in one session:
 ```ts
 const session = await brain.sessions.create({
   model,
-  agentloop: loop({ env: brainEnv({ name: "brain" }) }),
   tools: [read({ env }), write({ env })],
 });
 ```
@@ -185,10 +184,10 @@ their results return.
 
 ## Worker pool
 
-`BRAIN_ENV_WORKERS` selects a positive worker count (default two). Every worker can execute both
-Agentloop and Tool Components in fresh Stores. Compiled code is cached per process; guest heaps
+`BRAIN_ENV_WORKERS` selects a positive worker count (default two). Every worker executes
+Tool Components in fresh Stores. Compiled code is cached per process; guest heaps
 are not retained. Calls that may dispatch nested work use separate capacity from leaf executions,
-so a pool full of Agentloops can still run their Tools. Saturation fails explicitly.
+so nested invocations can make progress. Saturation fails explicitly.
 
 A failed worker affects its own invocations. Brain reports uncertain outcomes, restarts that worker
 for later requests, and never replays the interrupted work. Shutdown stops and reaps every worker.

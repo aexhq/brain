@@ -33,7 +33,6 @@
         "name",
         "description",
         "input_schema",
-        "output_schema",
         "environments"
       ],
       "type": "object"
@@ -290,6 +289,107 @@
       ],
       "type": "string"
     },
+    "HarnessCallback": {
+      "additionalProperties": false,
+      "properties": {
+        "input": true,
+        "method": {
+          "type": "string"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "required": [
+        "session_id",
+        "sequence",
+        "method",
+        "input"
+      ],
+      "type": "object"
+    },
+    "HarnessIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Stable adapter and native-state format identity. Changes require a new data directory.",
+          "type": "string"
+        },
+        "protocol": {
+          "type": "string"
+        },
+        "state_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol",
+        "name",
+        "state_version"
+      ],
+      "type": "object"
+    },
+    "HarnessInitialize": {
+      "additionalProperties": false,
+      "properties": {
+        "configuration": true,
+        "protocol": {
+          "type": "string"
+        },
+        "state_directory": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol",
+        "state_directory",
+        "configuration"
+      ],
+      "type": "object"
+    },
+    "HarnessRun": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "$ref": "#/$defs/TurnInput"
+        },
+        "model": {
+          "$ref": "#/$defs/ModelDef"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "required": [
+        "session_id",
+        "sequence",
+        "model",
+        "input"
+      ],
+      "type": "object"
+    },
+    "HarnessSession": {
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
     "Media": {
       "oneOf": [
         {
@@ -351,6 +451,82 @@
       ],
       "type": "object"
     },
+    "ModelCost": {
+      "additionalProperties": false,
+      "description": "USD per million tokens.",
+      "properties": {
+        "cache_read": {
+          "format": "double",
+          "type": "number"
+        },
+        "cache_write": {
+          "format": "double",
+          "type": "number"
+        },
+        "input": {
+          "format": "double",
+          "type": "number"
+        },
+        "output": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "input",
+        "output"
+      ],
+      "type": "object"
+    },
+    "ModelDef": {
+      "additionalProperties": false,
+      "properties": {
+        "attachment": {
+          "type": "boolean"
+        },
+        "context_window_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cost": {
+          "$ref": "#/$defs/ModelCost"
+        },
+        "id": {
+          "type": "string"
+        },
+        "input_modalities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "max_output_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "output_modalities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reasoning": {
+          "type": "boolean"
+        },
+        "structured_output": {
+          "type": "boolean"
+        },
+        "tool_call": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
     "Role": {
       "enum": [
         "user",
@@ -383,6 +559,10 @@
         "deterministic_seed"
       ],
       "type": "object"
+    },
+    "SessionId": {
+      "pattern": "^ses_[A-Za-z0-9]{20,32}$",
+      "type": "string"
     },
     "TurnInput": {
       "description": "What Brain hands the loop for one turn.",
@@ -467,12 +647,12 @@
       "type": "object"
     }
   },
-  "$id": "https://github.com/aexhq/brain/crates/brain-protocol/generated/contract/agentloop/v1/contract.json",
+  "$id": "https://github.com/aexhq/brain/crates/brain-protocol/generated/contract/harness/v1/contract.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
     "contract": {
-      "const": "agentloop/v1"
+      "const": "brain/harness/v1"
     },
     "input": {
       "$ref": "#/$defs/TurnInput"
@@ -486,6 +666,6 @@
     "input",
     "output"
   ],
-  "title": "Brain Agentloop",
+  "title": "Brain Harness",
   "type": "object"
 }
