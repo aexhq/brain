@@ -9,7 +9,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { registryValue as readRegistry, waitFor } from "./npm-registry.mjs";
+import { assertReleaseProvenance, registryValue as readRegistry, waitFor } from "./npm-registry.mjs";
 
 const npmCli = [
   process.env.npm_execpath,
@@ -76,26 +76,7 @@ const assertOriginalProvenance = async (item) => {
   const payload = JSON.parse(
     Buffer.from(attestation.bundle?.dsseEnvelope?.payload ?? "", "base64").toString("utf8"),
   );
-  const sha512 = Buffer.from(item.integrity.slice("sha512-".length), "base64").toString("hex");
-  const purl = `pkg:npm/${item.name.replace(/^@/u, "%40")}@${item.version}`;
-  if (
-    payload.predicateType !== "https://slsa.dev/provenance/v1" ||
-    !payload.subject?.some(
-      ({ name, digest }) => name === purl && digest?.sha512 === sha512,
-    )
-  ) {
-    throw new Error(`${spec} provenance does not identify the reviewed archive`);
-  }
-  const workflow = payload.predicate?.buildDefinition?.externalParameters?.workflow;
-  const dependencies = payload.predicate?.buildDefinition?.resolvedDependencies ?? [];
-  if (
-    workflow?.repository !== "https://github.com/aexhq/brain" ||
-    workflow?.path !== ".github/workflows/npm-publish.yml" ||
-    workflow?.ref !== `refs/tags/release/sha-${expectedCommit}` ||
-    !dependencies.some(({ digest }) => digest?.gitCommit === expectedCommit)
-  ) {
-    throw new Error(`${spec} provenance does not bind the selected Brain commit and workflow`);
-  }
+  assertReleaseProvenance(payload, item);
 };
 
 const verifyRegistrySignatures = () => {
@@ -113,7 +94,7 @@ const verifyRegistrySignatures = () => {
     );
     run(["install", "--ignore-scripts", "--no-audit", "--no-fund"], "inherit", auditDirectory);
     // npm verifies the registry signature and the Sigstore provenance attestation for every
-    // downloaded release object. The explicit payload checks above bind that proof to this SHA.
+    // downloaded release object. The payload binds its original release to this exact archive.
     run(["audit", "signatures"], "inherit", auditDirectory);
   } finally {
     rmSync(auditDirectory, { recursive: true, force: true });
