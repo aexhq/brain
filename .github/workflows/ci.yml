@@ -124,7 +124,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace-debug
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - run: cargo test --workspace --all-targets
@@ -144,7 +144,7 @@ jobs:
           toolchain: "1.97.1"
           targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - run: cargo test --workspace --all-targets
