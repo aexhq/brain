@@ -1,0 +1,489 @@
+{
+  "components": {
+    "schemas": {
+      "Call": {
+        "additionalProperties": false,
+        "properties": {
+          "arguments": {},
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "arguments"
+        ],
+        "type": "object"
+      },
+      "Checkpoint": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "time": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "offset",
+          "time"
+        ],
+        "type": "object"
+      },
+      "Content": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "CreateSession": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/SessionConfig"
+          },
+          "harness": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "harness",
+          "config"
+        ],
+        "type": "object"
+      },
+      "ErrorDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "Event": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "data": {},
+          "id": {
+            "type": "string"
+          },
+          "input_id": {
+            "type": "string"
+          },
+          "time": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "time",
+          "data"
+        ],
+        "type": "object"
+      },
+      "Input": {
+        "additionalProperties": false,
+        "properties": {
+          "delivery": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "Result": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/components/schemas/Content"
+            },
+            "type": "array"
+          },
+          "is_error": {
+            "type": "boolean"
+          },
+          "unknown_outcome": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "type": "object"
+      },
+      "Session": {
+        "additionalProperties": false,
+        "properties": {
+          "checkpoint": {
+            "$ref": "#/components/schemas/Checkpoint"
+          },
+          "config": {
+            "$ref": "#/components/schemas/SessionConfig"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "harness": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "harness",
+          "config",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "SessionConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "instructions": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "reasoning_effort": {
+            "type": "string"
+          },
+          "tools": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "model",
+          "tools"
+        ],
+        "type": "object"
+      },
+      "Tool": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "input_schema": {},
+          "name": {
+            "type": "string"
+          },
+          "output_schema": {}
+        },
+        "required": [
+          "name",
+          "description",
+          "input_schema"
+        ],
+        "type": "object"
+      },
+      "ToolResult": {
+        "additionalProperties": false,
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "result": {
+            "$ref": "#/components/schemas/Result"
+          }
+        },
+        "required": [
+          "call_id",
+          "result"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "title": "Brain",
+    "version": "current"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/catalog": {
+      "get": {
+        "operationId": "catalog",
+        "responses": {
+          "2XX": {
+            "description": "Operation result"
+          },
+          "default": {
+            "description": "Error with code, message, and request_id"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/sessions": {
+      "get": {
+        "operationId": "list",
+        "responses": {
+          "2XX": {
+            "description": "Operation result"
+          },
+          "default": {
+            "description": "Error with code, message, and request_id"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSession"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Operation result"
+          },
+          "default": {
+            "description": "Error with code, message, and request_id"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/sessions/{id}": {
+      "get": {
+        "operationId": "get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Operation result"
+          },
+          "default": {
+            "description": "Error with code, message, and request_id"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/sessions/{id}/close": {
+      "post": {
+        "operationId": "close",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Operation result"
+          },
+          "default": {
+            "description": "Error with code, message, and request_id"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/sessions/{id}/events": {
+      "get": {
+        "operationId": "events",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Operation result"
+          },
+          "default": {
+            "description": "Error with code, message, and request_id"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "send",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Input"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Operation result"
+          },
+          "default": {
+            "description": "Error with code, message, and request_id"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/sessions/{id}/resume": {
+      "post": {
+        "operationId": "resume",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Operation result"
+          },
+          "default": {
+            "description": "Error with code, message, and request_id"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    }
+  }
+}

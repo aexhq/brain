@@ -1,0 +1,8 @@
+.git
+.brain
+brain.json
+.env
+**/node_modules
+**/dist
+bin
+

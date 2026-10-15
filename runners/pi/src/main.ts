@@ -6,23 +6,7 @@ import {
   SettingsManager, type AgentSession, type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
-
-interface OpenOptions {
-  session_id: string;
-  dir: string;
-  config: { model: string; reasoning_effort?: string; instructions?: string; tools: string[] };
-  tools: { name: string; description: string; input_schema: unknown }[];
-  provider: { api_key?: string; base_url?: string; api?: string };
-}
-interface Result {
-  content: { type: string; text?: string; data?: string; mime_type?: string }[];
-  is_error?: boolean;
-  unknown_outcome?: boolean;
-}
-interface Frame {
-  id?: string; method?: string; params?: unknown; result?: unknown;
-  error?: { code: string; message: string };
-}
+import type { OpenOptions, Result, RunnerFrame as Frame } from "./generated.js";
 
 const maxFrame = 4 << 20;
 let session: AgentSession | undefined;

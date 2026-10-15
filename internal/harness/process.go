@@ -27,7 +27,7 @@ type ProcessFactory struct {
 
 func (f *ProcessFactory) SupportsSteering() bool { return f.Steering }
 
-type frame struct {
+type RunnerFrame struct {
 	ID     string          `json:"id,omitempty"`
 	Method string          `json:"method,omitempty"`
 	Params json.RawMessage `json:"params,omitempty"`
@@ -42,7 +42,7 @@ type process struct {
 	in       io.WriteCloser
 	writeMu  sync.Mutex
 	mu       sync.Mutex
-	pending  map[string]chan frame
+	pending  map[string]chan RunnerFrame
 	ctx      context.Context
 	cancel   context.CancelFunc
 	done     chan struct{}
@@ -84,7 +84,7 @@ func (f *ProcessFactory) Open(ctx context.Context, opts Options) (Runner, error)
 		cancel()
 		return nil, err
 	}
-	p := &process{cmd: cmd, in: in, pending: make(map[string]chan frame), ctx: procCtx, cancel: cancel, done: make(chan struct{}), waited: make(chan struct{}), readDone: make(chan struct{}), opts: opts, tools: make(chan struct{}, 32)}
+	p := &process{cmd: cmd, in: in, pending: make(map[string]chan RunnerFrame), ctx: procCtx, cancel: cancel, done: make(chan struct{}), waited: make(chan struct{}), readDone: make(chan struct{}), opts: opts, tools: make(chan struct{}, 32)}
 	if err := cmd.Start(); err != nil {
 		cancel()
 		return nil, err
@@ -125,11 +125,11 @@ func (p *process) read(r io.Reader) {
 	s := bufio.NewScanner(r)
 	s.Buffer(make([]byte, 64<<10), MaxFrame)
 	for s.Scan() {
-		var f frame
+		var f RunnerFrame
 		d := json.NewDecoder(strings.NewReader(s.Text()))
 		d.DisallowUnknownFields()
 		if err := d.Decode(&f); err != nil || d.Decode(new(any)) != io.EOF {
-			p.fail(errors.New("invalid harness protocol frame"))
+			p.fail(errors.New("invalid harness protocol RunnerFrame"))
 			return
 		}
 		switch {
@@ -155,7 +155,7 @@ func (p *process) read(r io.Reader) {
 				return
 			}
 			p.callWG.Add(1)
-			go func(f frame, call core.Call) {
+			go func(f RunnerFrame, call core.Call) {
 				defer p.callWG.Done()
 				defer func() { <-p.tools }()
 				result, err := p.opts.Call(p.ctx, call)
@@ -168,7 +168,7 @@ func (p *process) read(r io.Reader) {
 					p.fail(err)
 					return
 				}
-				if err := p.write(frame{ID: f.ID, Result: b}); err != nil {
+				if err := p.write(RunnerFrame{ID: f.ID, Result: b}); err != nil {
 					p.fail(err)
 				}
 			}(f, call)
@@ -183,7 +183,7 @@ func (p *process) read(r io.Reader) {
 			}
 			ch <- f
 		default:
-			p.fail(errors.New("unknown harness protocol frame"))
+			p.fail(errors.New("unknown harness protocol RunnerFrame"))
 			return
 		}
 	}
@@ -194,13 +194,13 @@ func (p *process) read(r io.Reader) {
 	p.fail(err)
 }
 
-func (p *process) write(f frame) error {
+func (p *process) write(f RunnerFrame) error {
 	b, err := json.Marshal(f)
 	if err != nil {
 		return err
 	}
 	if len(b)+1 > MaxFrame {
-		return errors.New("harness frame too large")
+		return errors.New("harness RunnerFrame too large")
 	}
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
@@ -216,7 +216,7 @@ func (p *process) request(ctx context.Context, method string, params any) (json.
 		return nil, err
 	}
 	id := core.ID()
-	ch := make(chan frame, 1)
+	ch := make(chan RunnerFrame, 1)
 	p.mu.Lock()
 	if p.err != nil {
 		err = p.err
@@ -225,7 +225,7 @@ func (p *process) request(ctx context.Context, method string, params any) (json.
 	}
 	p.pending[id] = ch
 	p.mu.Unlock()
-	if err := p.write(frame{ID: id, Method: method, Params: b}); err != nil {
+	if err := p.write(RunnerFrame{ID: id, Method: method, Params: b}); err != nil {
 		p.fail(err)
 		return nil, err
 	}

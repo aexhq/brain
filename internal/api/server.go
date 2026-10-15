@@ -47,16 +47,9 @@ func (s *Server) Handler() http.Handler {
 		}
 		write(w, 200, map[string]string{"status": "ready"})
 	})
-	m.HandleFunc("POST /sessions", s.authorize(s.create))
-	m.HandleFunc("GET /sessions", s.authorize(s.list))
-	m.HandleFunc("GET /sessions/{id}", s.authorize(s.get))
-	m.HandleFunc("POST /sessions/{id}/events", s.authorize(s.send))
-	m.HandleFunc("GET /sessions/{id}/events", s.authorize(s.events))
-	m.HandleFunc("POST /sessions/{id}/resume", s.authorize(s.resume))
-	m.HandleFunc("POST /sessions/{id}/close", s.authorize(s.close))
-	m.HandleFunc("GET /catalog", s.authorize(func(w http.ResponseWriter, r *http.Request, g core.Grant) {
-		write(w, 200, map[string]any{"tools": s.Tools.Catalog(g.Tenant)})
-	}))
+	for _, route := range s.routes() {
+		m.HandleFunc(route.Method+" "+route.Path, s.authorize(route.handler))
+	}
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { s.fail(w, r, core.E(core.NotFound, "route not found")) })
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := core.ID()
@@ -126,6 +119,7 @@ func public(session core.Session) core.Session {
 	if session.Checkpoint != nil {
 		cp := *session.Checkpoint
 		cp.Files = nil
+		cp.Config = core.Config{}
 		session.Checkpoint = &cp
 	}
 	return session
