@@ -1,4 +1,4 @@
-import { Fault, decode, encode, initialize, need } from "./domain.mjs";
+import { Fault, ScopeChanged, decode, encode, initialize, need } from "./domain.mjs";
 import { controlHandlers } from "./control.mjs";
 import { effectHandlers } from "./effects.mjs";
 import { resourceHandlers } from "./resources.mjs";
@@ -28,8 +28,39 @@ const counts = {
 };
 const status = { invalid: 400, unauthorized: 401, forbidden: 403, not_found: 404, conflict: 409, overloaded: 429,
   unsupported: 422, unavailable: 503, uncertain: 503, corrupt: 500, internal: 500 };
-let active = 0;
-let leaseRequests = 0;
+class Admission {
+  constructor(limit, waiting) { this.limit = limit; this.waiting = waiting; this.active = 0; this.queue = []; }
+  async enter(signal) {
+    need(!signal.aborted, "overloaded", "D1 request was cancelled before admission");
+    if (this.active < this.limit) this.active++;
+    else {
+      need(this.queue.length < this.waiting, "overloaded", "D1 request admission queue is occupied");
+      await new Promise((resolve, reject) => {
+        const cleanup = () => { clearTimeout(timer); signal.removeEventListener("abort", abort); };
+        const entry = { ready: () => { cleanup(); resolve(); } };
+        const fail = message => {
+          const index = this.queue.indexOf(entry);
+          if (index < 0) return;
+          this.queue.splice(index, 1);
+          cleanup();
+          reject(new Fault("overloaded", message));
+        };
+        const abort = () => fail("D1 request was cancelled before admission");
+        const timer = setTimeout(() => fail("D1 request admission deadline expired"), 5000);
+        this.queue.push(entry);
+        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) abort();
+      });
+    }
+    return () => {
+      const next = this.queue.shift();
+      if (next) next.ready();
+      else this.active--;
+    };
+  }
+}
+const ordinary = new Admission(4, 16);
+const leases = new Admission(2, 4);
 const leaseOperations = new Set(["Clock", "RegisterNode", "RenewNode", "RetireNode"]);
 const bytes = new TextEncoder();
 
@@ -85,17 +116,13 @@ export default {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health/live") return new Response(null, { status: 204 });
     const headers = { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
-    let admitted = false;
-    let lease = false;
+    let release;
     try {
       const operation = url.pathname.slice("/control/v1/".length);
       need(request.method === "POST" && url.pathname.startsWith("/control/v1/") && Object.hasOwn(counts, operation) && !url.search,
         "not_found", "unknown control operation");
-      lease = leaseOperations.has(operation);
-      need(lease ? leaseRequests < 2 : active < 4, "overloaded", "D1 request decoding capacity is occupied");
-      if (lease) leaseRequests++;
-      else active++;
-      admitted = true;
+      const lease = leaseOperations.has(operation);
+      release = await (lease ? leases : ordinary).enter(request.signal);
       const text = await body(request, lease ? 4096 : 2 * 1024 * 1024);
       await authenticate(request, env, text);
       const envelope = JSON.parse(text);
@@ -111,9 +138,19 @@ export default {
       }
       const values = envelope.arguments.map(decode);
       depth(values);
-      const db = { authority, prepare: sql => env.DB.prepare(sql), batch: statements => env.DB.batch(statements),
+      const db = { authority, planReads: { count: 0 }, prepare: sql => env.DB.prepare(sql), batch: statements => env.DB.batch(statements),
         withSession: mode => env.DB.withSession(mode) };
-      const value = await handlers[operation](db, values, envelope.arguments);
+      let value;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          value = await handlers[operation](db, attempt === 0 ? values : envelope.arguments.map(decode), envelope.arguments);
+          break;
+        } catch (error) {
+          if (!(error instanceof ScopeChanged)) throw error;
+          need(attempt < 7, "overloaded", "D1 contention exceeds the bounded atomic-plan attempts");
+          await new Promise(resolve => setTimeout(resolve, 2 ** attempt));
+        }
+      }
       const response = encode({ value: value ?? null });
       need(bytes.encode(response).byteLength <= 4 * 1024 * 1024, "overloaded", "control response exceeds its page bound");
       return new Response(response, { status: 200, headers });
@@ -122,10 +159,7 @@ export default {
       return new Response(encode({ code: errorResponse.code, message: errorResponse.message, retryable: errorResponse.code === "overloaded" }),
         { status: status[errorResponse.code] ?? 500, headers });
     } finally {
-      if (admitted) {
-        if (lease) leaseRequests--;
-        else active--;
-      }
+      release?.();
     }
   },
 };

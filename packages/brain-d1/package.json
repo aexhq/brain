@@ -16,8 +16,6 @@
     "lossless-json": "4.3.1"
   },
   "devDependencies": {
-    "esbuild": "0.25.9",
-    "miniflare": "4.20260730.0",
-    "wrangler": "4.151.0"
+    "esbuild": "0.25.9"
   }
 }

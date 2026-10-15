@@ -7,6 +7,9 @@ export const maximumInteger = 9223372036854775807n;
 export class Fault extends Error {
   constructor(code, message) { super(message); this.code = code; }
 }
+export class ScopeChanged extends Fault {
+  constructor() { super("conflict", "D1 atomic-plan read scope changed before commit"); }
+}
 export function need(condition, code, message) {
   if (!condition) throw new Fault(code, message);
 }
@@ -132,6 +135,7 @@ export async function initialize(db) {
     "CREATE INDEX IF NOT EXISTS sessions_ready ON sessions(ready,tenant,ready_ms,id)",
     "CREATE TABLE IF NOT EXISTS d1_scopes(key TEXT PRIMARY KEY,version INTEGER NOT NULL)",
     "CREATE TABLE IF NOT EXISTS d1_guards(id TEXT PRIMARY KEY,ok INTEGER NOT NULL CHECK(ok=1))",
+    "CREATE TABLE IF NOT EXISTS d1_scope_conflicts(failed INTEGER NOT NULL CONSTRAINT brain_d1_scope_changed CHECK(failed=0))",
   );
   need(statements.length <= 100, "invalid", "initial schema exceeds the D1 atomic batch bound");
   await db.batch(statements.map(sql => db.prepare(sql)));
@@ -201,7 +205,7 @@ export class Mutation {
     this.scopes = new Map();
     this.guards = [];
     this.writes = [];
-    this.reads = 0;
+    this.reads = db.planReads ?? { count: 0 };
   }
   async scope(key) {
     if (this.scopes.has(key)) return;
@@ -210,7 +214,7 @@ export class Mutation {
     this.scopes.set(key, value?.version);
   }
   async rows(sql, values = []) {
-    need(++this.reads <= 96, "overloaded", "D1 operation exceeds its bounded read plan");
+    need(++this.reads.count <= 96, "overloaded", "D1 operation exceeds its bounded read plan");
     return rows(this.db, sql, values);
   }
   async one(sql, values = [], optional = false) {
@@ -281,7 +285,8 @@ WHERE p.id=? AND p.session_id=? AND s.tenant=? AND s.lifecycle<>'deleted' AND p.
     for (const [key, version] of this.scopes) {
       if (version === undefined) batch.push(statement(this.db, "INSERT INTO d1_scopes VALUES(?,1) ON CONFLICT DO NOTHING", [key]));
       else batch.push(statement(this.db, "UPDATE d1_scopes SET version=version+1 WHERE key=? AND version=? AND version<9223372036854775807", [key, version]));
-      changed();
+      // A named constraint proves this entire batch rolled back before any permit.
+      batch.push(this.db.prepare("INSERT INTO d1_scope_conflicts SELECT 1 WHERE changes()<>1"));
     }
     for (const { predicate, values } of this.guards) {
       batch.push(statement(this.db, "INSERT INTO d1_guards SELECT ?,CASE WHEN " + predicate + " THEN 1 ELSE 0 END", ["condition:" + guardID++, ...values]));
@@ -294,7 +299,14 @@ WHERE p.id=? AND p.session_id=? AND s.tenant=? AND s.lifecycle<>'deleted' AND p.
     const firstRead = batch.length;
     for (const { sql, values = [] } of reads) batch.push(statement(this.db, sql, values));
     need(batch.length <= 100, "overloaded", "D1 operation exceeds the atomic batch statement bound");
-    const result = await this.db.batch(batch);
+    let result;
+    try {
+      result = await this.db.batch(batch);
+    } catch (error) {
+      const message = String(error?.cause?.message ?? error?.message ?? "");
+      if (/\bCHECK constraint failed: brain_d1_scope_changed\b/u.test(message)) throw new ScopeChanged();
+      throw error;
+    }
     need(result.every(value => value.success), "uncertain", "D1 mutation result is uncertain");
     return result.slice(firstRead).map(value => value.results);
   }

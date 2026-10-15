@@ -715,7 +715,7 @@ pub enum Decision {
         checkpoint: Value,
     },
     Delegate {
-        delegation: Delegation,
+        delegation: Box<Delegation>,
         checkpoint: Value,
     },
     Fork {

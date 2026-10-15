@@ -179,6 +179,36 @@ test("actual D1 binding authenticates only finite fresh domain requests", async 
   assert.equal((await f.call("Session", ["tenant", f.id])).View.id, f.id);
 });
 
+test("actual D1 reconciles proven scope rollback without losing original receipts or written positions", async t => {
+  const f = await fixture(t);
+  const original = await f.prepare("contended-result");
+  await f.call("ClaimDispatch", [f.id, f.owner, original.View.id, f.owner.Node, "original-claim"]);
+  const sequence = await f.call("Allocate", [f.id, f.owner]);
+  const digest = hash("original retained result");
+  const receipt = { request_id: "original-receipt", outcome: "completed", result: { original: true }, usage: { input_tokens: 7 } };
+  const requests = [
+    ["RecordReceipt", [f.id, original.View.id, receipt, 0, ""]],
+    ["Written", [f.id, f.owner, sequence, digest, 64]],
+    ...Array.from({ length: 6 }, (_, index) => ["Accept", [{ Tenant: "tenant", Subject: "operator" }, f.id,
+      { request_id: `concurrent-${index}`, data: { kind: "message", text: `accepted ${index}` } }]]),
+  ];
+  const responses = await Promise.all(requests.map(([method, args]) => f.rpc(method, args)));
+  for (let index = 0; index < responses.length; index++) {
+    assert.equal(responses[index].status, 200, `${requests[index][0]}: ${responses[index].text}`);
+  }
+  assert.equal((await f.call("LocateRecord", [f.id, sequence])).Status, "written");
+  assert.equal((await f.call("Operation", [f.id, original.View.id])).View.status, "completed");
+  await f.call("BindResult", [f.id, f.owner, original.View.id, sequence, digest]);
+  await f.call("RecordReceipt", [f.id, original.View.id, receipt, 0, ""]);
+  assert.equal((await f.rpc("ClaimDispatch", [f.id, f.owner, original.View.id, f.owner.Node, "original-claim"])).status, 409);
+  const commands = await f.database.prepare("SELECT COUNT(*) AS count FROM commands WHERE session_id=? AND request_key LIKE 'concurrent-%'")
+    .bind(f.id).first();
+  assert.equal(commands.count, 6);
+  assert.deepEqual(await f.database.prepare("SELECT active,reserved,calls FROM budgets WHERE id=?").bind(f.id).first(),
+    { active: 0, reserved: 0, calls: 1 });
+  assert.equal((await f.database.prepare("SELECT COUNT(*) AS count FROM d1_scope_conflicts").first()).count, 0);
+});
+
 test("actual D1 atomic claims issue one permission and preserve exact original evidence", async t => {
   const f = await fixture(t);
   const operation = await f.prepare();

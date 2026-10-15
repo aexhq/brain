@@ -99,6 +99,12 @@ $env:BRAIN_TEST_CONTROL = 'd1'
 node --test --test-concurrency=1 tests\greenfield\journeys.test.mjs
 ```
 
+After building `.build\brain-linux`, `tests\greenfield\d1-linux.ps1` runs the same
+D1 components and public journeys in an isolated Linux container with immutable
+Node/Python base images. This catches concurrency differences hidden by Windows
+emulator timing. It creates a checkout-local source copy and removes its own
+container, image tag and copied data after the run.
+
 The required CI rollup also includes `session-server`: Go diagnostics, both SDK
 journeys, real Docker-managed code, D1, PostgreSQL/Linux process faults, and native
 S3/DynamoDB emulator conformance. The existing Rust, image and live-provider gates

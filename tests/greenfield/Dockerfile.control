@@ -1,0 +1,10 @@
+FROM node@sha256:862263c612aa437e3037674b85419622a9d93bff80aa1eee5398dfe686375532 AS node
+FROM python@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
+WORKDIR /work
+ENV TMPDIR=/work/.build/scratch \
+    TMP=/work/.build/scratch \
+    TEMP=/work/.build/scratch \
+    npm_config_cache=/work/.build/npm

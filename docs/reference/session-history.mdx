@@ -134,6 +134,15 @@ Ambiguous HTTP results never return dispatch permission. D1's bounded request
 and batch limits are not a claim that it has PostgreSQL's throughput. Local D1
 emulation and the separate live-cloud gate are documented in `CONTRIBUTING.md`.
 
+The D1 Worker runs four ordinary requests and two reserved lease/clock requests
+at once. Its separate waiting queues hold at most sixteen and four requests,
+respectively, for up to five seconds before explicit overload. A named SQL
+constraint can prove that a competing scope update rolled back an entire batch.
+Only that proof permits rebuilding the named operation's plan, with at most eight
+plans within the original 96-read bound. Changed authority is rechecked;
+transport uncertainty, other constraint failures and successful dispatch claims
+are never replayed this way.
+
 Nodes register new incarnation IDs with database-clock leases. Every authoritative write and
 dispatch claim checks the current session epoch and live incarnation. SQL uncertainty stops new
 authority-dependent work. A lease cannot recall a packet or a previously issued execution permit.
