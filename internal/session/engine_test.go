@@ -171,6 +171,36 @@ func TestScopeAndPassiveResume(t *testing.T) {
 	}
 }
 
+func TestResidentReuseAndEviction(t *testing.T) {
+	e, f, g := setup(t)
+	ctx := context.Background()
+	a := create(t, e, g)
+	for range 2 {
+		if _, err := e.Submit(ctx, g, a.ID, core.Input{Type: "user.message", Text: "hello"}); err != nil {
+			t.Fatal(err)
+		}
+		waitStatus(t, e, g, a.ID, "idle")
+	}
+	if f.opens.Load() != 1 {
+		t.Fatalf("runner restarted between turns: %d", f.opens.Load())
+	}
+	b := create(t, e, g)
+	if _, err := e.Submit(ctx, g, b.ID, core.Input{Type: "user.message", Text: "other"}); err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e, g, b.ID, "idle")
+	if len(e.resident) != 1 || f.opens.Load() != 2 {
+		t.Fatalf("residency not bounded: resident=%d opened=%d", len(e.resident), f.opens.Load())
+	}
+	if _, err := e.Submit(ctx, g, a.ID, core.Input{Type: "user.message", Text: "restored"}); err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e, g, a.ID, "idle")
+	if f.opens.Load() != 3 {
+		t.Fatal("evicted runner was not reopened")
+	}
+}
+
 func TestShutdownAndAdmissionDoNotDeadlock(t *testing.T) {
 	e, _, g := setup(t)
 	s := create(t, e, g)

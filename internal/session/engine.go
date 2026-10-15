@@ -47,6 +47,7 @@ type Engine struct {
 	mu           sync.Mutex
 	entries      map[string]*entry
 	active       chan struct{}
+	resident     chan struct{}
 	wg           sync.WaitGroup
 	closed       bool
 	shutdownOnce sync.Once
@@ -77,6 +78,9 @@ type entry struct {
 	current     string
 	cancel      context.CancelFunc
 	runner      harness.Runner
+	provider    harness.Provider
+	executing   bool
+	runCtx      context.Context
 	restore     bool
 }
 
@@ -88,7 +92,7 @@ func New(opts Options) (*Engine, error) {
 		opts.Logger = slog.Default()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Engine{opts: opts, ctx: ctx, cancel: cancel, entries: make(map[string]*entry), active: make(chan struct{}, opts.MaxActive), stopped: make(chan struct{})}, nil
+	return &Engine{opts: opts, ctx: ctx, cancel: cancel, entries: make(map[string]*entry), active: make(chan struct{}, opts.MaxActive), resident: make(chan struct{}, opts.MaxActive), stopped: make(chan struct{})}, nil
 }
 
 func (e *Engine) Ready() bool { e.mu.Lock(); defer e.mu.Unlock(); return !e.closed }
@@ -443,6 +447,7 @@ func (e *Engine) work(a *entry) {
 			a.working = false
 			a.restore = true
 			a.mu.Unlock()
+			e.dropRunner(a)
 			return
 		}
 		if len(a.queue) == 0 {
@@ -455,9 +460,22 @@ func (e *Engine) work(a *entry) {
 	}
 }
 
-func (e *Engine) run(ctx context.Context, a *entry, q queued) error {
+func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 	ctx, span := otel.Tracer("github.com/aexhq/brain").Start(ctx, "session.execute", trace.WithAttributes(attribute.String("session.id", a.meta.ID), attribute.String("harness", a.meta.Harness)))
 	defer span.End()
+	a.mu.Lock()
+	a.executing = true
+	a.runCtx = ctx
+	a.mu.Unlock()
+	defer func() {
+		if runErr != nil {
+			e.dropRunner(a)
+		}
+		a.mu.Lock()
+		a.executing = false
+		a.runCtx = nil
+		a.mu.Unlock()
+	}()
 	if e.opts.Metrics != nil {
 		e.opts.Metrics.Active.Add(ctx, 1)
 		defer e.opts.Metrics.Active.Add(ctx, -1)
@@ -492,57 +510,83 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) error {
 	for _, tool := range selected {
 		selectedNames[tool.Name] = true
 	}
-	runner, err := e.opts.Factories[a.meta.Harness].Open(ctx, harness.Options{SessionID: a.meta.ID, Dir: nativeDir, Config: cfg, Tools: selected, Provider: provider,
-		Event: func(kind string, data json.RawMessage) error {
-			if kind != "assistant.message" && kind != "assistant.delta" {
-				return errors.New("unsupported native event")
-			}
-			_, err := e.emit(a, kind, q.event.ID, data)
-			return err
-		},
-		Call: func(callCtx context.Context, call core.Call) (core.Result, error) {
-			callCtx, span := otel.Tracer("github.com/aexhq/brain").Start(callCtx, "tool.call", trace.WithAttributes(attribute.String("tool.name", call.Name)))
-			defer span.End()
-			if !selectedNames[call.Name] {
-				return core.Result{}, errors.New("harness called an unbound tool")
-			}
-			call.ID = core.ID()
-			if _, err := e.emit(a, "tool.call", q.event.ID, call); err != nil {
-				return core.Result{}, err
-			}
-			scope := tools.Scope{Tenant: a.meta.Tenant, Session: a.meta.ID, Call: call.ID}
-			revoke := func() {}
-			if e.opts.Inspection != nil && e.opts.Tools.NeedsInspection(call.Name) {
-				scope.InspectionToken, scope.BrainURL, revoke = e.opts.Inspection(a.meta)
-			}
-			defer revoke()
-			started := time.Now()
-			result := e.opts.Tools.Call(callCtx, scope, call, func(data json.RawMessage) {
-				_, _ = e.emit(a, "tool.progress", q.event.ID, map[string]any{"call_id": call.ID, "data": data})
-			})
-			if e.opts.Metrics != nil {
-				outcome := "success"
-				if result.IsError {
-					outcome = "tool_error"
-				}
-				attrs := metric.WithAttributes(attribute.String("tool", call.Name), attribute.String("outcome", outcome))
-				e.opts.Metrics.ToolCalls.Add(callCtx, 1, attrs)
-				e.opts.Metrics.ToolDuration.Record(callCtx, time.Since(started).Seconds(), attrs)
-			}
-			if _, err := e.emit(a, "tool.result", q.event.ID, core.ToolResult{CallID: call.ID, Result: result}); err != nil {
-				return core.Result{}, err
-			}
-			return result, nil
-		},
-	})
-	if err != nil {
-		return err
-	}
-	defer runner.Close()
 	a.mu.Lock()
-	a.runner = runner
+	runner := a.runner
+	credentialsChanged := runner != nil && a.provider != provider
 	a.mu.Unlock()
-	defer func() { a.mu.Lock(); a.runner = nil; a.mu.Unlock() }()
+	if credentialsChanged {
+		e.dropRunner(a)
+		runner = nil
+	}
+	if runner == nil {
+		if err := e.acquireRunner(ctx); err != nil {
+			return err
+		}
+		runner, err = e.opts.Factories[a.meta.Harness].Open(ctx, harness.Options{Lifetime: e.ctx, SessionID: a.meta.ID, Dir: nativeDir, Config: cfg, Tools: selected, Provider: provider,
+			Event: func(kind string, data json.RawMessage) error {
+				if kind != "assistant.message" && kind != "assistant.delta" {
+					return errors.New("unsupported native event")
+				}
+				a.mu.Lock()
+				inputID := a.current
+				a.mu.Unlock()
+				if inputID == "" {
+					return errors.New("harness emitted output without active input")
+				}
+				_, err := e.emit(a, kind, inputID, data)
+				return err
+			},
+			Call: func(callCtx context.Context, call core.Call) (core.Result, error) {
+				a.mu.Lock()
+				inputID := a.current
+				callCtx = a.runCtx
+				a.mu.Unlock()
+				if inputID == "" || callCtx == nil {
+					return core.Result{}, errors.New("harness invoked a tool without active input")
+				}
+				callCtx, span := otel.Tracer("github.com/aexhq/brain").Start(callCtx, "tool.call", trace.WithAttributes(attribute.String("tool.name", call.Name)))
+				defer span.End()
+				if !selectedNames[call.Name] {
+					return core.Result{}, errors.New("harness called an unbound tool")
+				}
+				call.ID = core.ID()
+				if _, err := e.emit(a, "tool.call", inputID, call); err != nil {
+					return core.Result{}, err
+				}
+				scope := tools.Scope{Tenant: a.meta.Tenant, Session: a.meta.ID, Call: call.ID}
+				revoke := func() {}
+				if e.opts.Inspection != nil && e.opts.Tools.NeedsInspection(call.Name) {
+					scope.InspectionToken, scope.BrainURL, revoke = e.opts.Inspection(a.meta)
+				}
+				defer revoke()
+				started := time.Now()
+				result := e.opts.Tools.Call(callCtx, scope, call, func(data json.RawMessage) {
+					_, _ = e.emit(a, "tool.progress", inputID, map[string]any{"call_id": call.ID, "data": data})
+				})
+				if e.opts.Metrics != nil {
+					outcome := "success"
+					if result.IsError {
+						outcome = "tool_error"
+					}
+					attrs := metric.WithAttributes(attribute.String("tool", call.Name), attribute.String("outcome", outcome))
+					e.opts.Metrics.ToolCalls.Add(callCtx, 1, attrs)
+					e.opts.Metrics.ToolDuration.Record(callCtx, time.Since(started).Seconds(), attrs)
+				}
+				if _, err := e.emit(a, "tool.result", inputID, core.ToolResult{CallID: call.ID, Result: result}); err != nil {
+					return core.Result{}, err
+				}
+				return result, nil
+			},
+		})
+		if err != nil {
+			<-e.resident
+			return err
+		}
+		a.mu.Lock()
+		a.runner = runner
+		a.provider = provider
+		a.mu.Unlock()
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -576,6 +620,55 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) error {
 	defer a.mu.Unlock()
 	a.meta.Checkpoint = &core.Checkpoint{ID: core.ID(), Offset: a.log.Size(), Files: files, Config: cfg, Time: time.Now().UTC()}
 	return e.opts.Store.Save(ctx, a.meta)
+}
+
+func (e *Engine) dropRunner(a *entry) {
+	a.mu.Lock()
+	runner := a.runner
+	a.runner = nil
+	a.mu.Unlock()
+	if runner != nil {
+		runner.Close()
+		<-e.resident
+	}
+}
+
+func (e *Engine) acquireRunner(ctx context.Context) error {
+	select {
+	case e.resident <- struct{}{}:
+		return nil
+	default:
+	}
+	e.mu.Lock()
+	entries := make([]*entry, 0, len(e.entries))
+	for _, a := range e.entries {
+		entries = append(entries, a)
+	}
+	e.mu.Unlock()
+	for _, a := range entries {
+		select {
+		case <-a.ready:
+		default:
+			continue
+		}
+		a.mu.Lock()
+		if a.executing || a.runner == nil {
+			a.mu.Unlock()
+			continue
+		}
+		runner := a.runner
+		a.runner = nil
+		a.mu.Unlock()
+		runner.Close()
+		<-e.resident
+		break
+	}
+	select {
+	case e.resident <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func nativePath(dir, name string) (string, error) {
@@ -669,6 +762,9 @@ func (e *Engine) Resume(ctx context.Context, g core.Grant, id string) (core.Sess
 	if a.working || a.closing || a.meta.Status == "closed" {
 		return core.Session{}, core.E(core.Conflict, "session cannot resume in its current state")
 	}
+	if a.meta.Status == "idle" {
+		return clone(a.meta), nil
+	}
 	dir, _ := e.opts.Store.Dir(id)
 	if err := restoreNative(filepath.Join(dir, "native"), a.meta.Checkpoint); err != nil {
 		return core.Session{}, err
@@ -703,6 +799,7 @@ func (e *Engine) CloseSession(ctx context.Context, g core.Grant, id string) erro
 	if working {
 		return e.Interrupt(ctx, g, id)
 	}
+	e.dropRunner(a)
 	return err
 }
 
@@ -723,6 +820,7 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 			var errs []error
 			for _, a := range entries {
 				<-a.ready
+				e.dropRunner(a)
 				if a.log != nil {
 					errs = append(errs, a.log.Close())
 				}

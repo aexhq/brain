@@ -13,7 +13,7 @@ export class Brain {
     if (query) target.search = query.toString();
     const response = await this.requestFetch(target, {
       method: route.method, headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: signal ?? AbortSignal.timeout(30000), redirect: "error",
     });
     if (!response.ok) await this.fail(response);
     return response;
@@ -36,7 +36,7 @@ export class Brain {
   async *observe(id: string, options: { after?: string; signal?: AbortSignal } = {}): AsyncGenerator<Event> {
     const target = new URL(routes.events.path.replace("{id}", encodeURIComponent(id)), this.url);
     if (options.after) target.searchParams.set("after", options.after);
-    const response = await this.requestFetch(target, { headers: { Authorization: `Bearer ${this.token}`, Accept: "text/event-stream" }, signal: options.signal });
+    const response = await this.requestFetch(target, { headers: { Authorization: `Bearer ${this.token}`, Accept: "text/event-stream" }, signal: options.signal, redirect: "error" });
     if (!response.ok) await this.fail(response);
     if (!response.body) throw new Error("missing event stream");
     const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();

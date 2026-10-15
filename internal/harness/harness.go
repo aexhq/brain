@@ -15,6 +15,7 @@ type Provider struct {
 }
 
 type Options struct {
+	Lifetime  context.Context                                       `json:"-"`
 	SessionID string                                                `json:"session_id"`
 	Dir       string                                                `json:"dir"`
 	Config    core.Config                                           `json:"config"`

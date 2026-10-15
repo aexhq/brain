@@ -59,7 +59,11 @@ func (f *ProcessFactory) Open(ctx context.Context, opts Options) (Runner, error)
 	if len(f.Command) == 0 {
 		return nil, core.E(core.Unsupported, "harness command is not configured")
 	}
-	procCtx, cancel := context.WithCancel(ctx)
+	owner := opts.Lifetime
+	if owner == nil {
+		owner = ctx
+	}
+	procCtx, cancel := context.WithCancel(owner)
 	cmd := exec.CommandContext(procCtx, f.Command[0], f.Command[1:]...)
 	// Inherit process necessities, not ambient credentials or harness settings.
 	for _, key := range []string{"PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "TMP", "TEMP", "TMPDIR", "LANG", "LC_ALL"} {
