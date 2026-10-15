@@ -32,8 +32,8 @@ async function page(file, title, description, body) {
 }
 
 for (const [from, to, title, description] of [
-  ['docs/running-persistence.md', 'guides/persistence.mdx', 'Persistence & recovery', 'Keep local execution fast. Restore from a complete external checkpoint.'],
-  ['examples/tools/README.md', 'tools/local-tools.mdx', 'Local tools & approvals', 'Run echo, session inspection, and operator approval in a separate service.'],
+  ['docs/running-persistence.md', 'guides/persistence.mdx', 'Persistence & recovery', 'Configure background checkpoints and move sessions between servers.'],
+  ['examples/tools/README.md', 'tools/local-tools.mdx', 'Local tools & approvals', 'Run the example tool server with echo, session inspection, and operator approvals.'],
 ]) {
   const text = (await readFile(path.join(root, from), 'utf8')).replace(/^# .*\r?\n/, '');
   await page(to, title, description, text);
@@ -41,15 +41,15 @@ for (const [from, to, title, description] of [
 
 const models = JSON.parse(execFileSync(process.execPath, ['runners/pi/scripts/model-catalog.mjs'], { cwd: root, encoding: 'utf8' }));
 const runner = JSON.parse(await readFile(path.join(root, 'runners/pi/package.json'), 'utf8'));
-let inventory = `Generated from the pinned Pi ${runner.dependencies['@earendil-works/pi-coding-agent']} runtime with network refresh and local overrides disabled.\n\nThese are **catalog entries, not live-provider qualification**. Brain currently supplies API-key credentials only. OAuth and ambient-credential providers in this catalog may require integration that Brain does not yet implement. See [model configuration](/docs/reference/models).\n\n`;
+let inventory = `Extracted from the pinned Pi \`${runner.dependencies['@earendil-works/pi-coding-agent']}\` model registry.\n\n> **Note:** This list is an offline catalog inventory, **not live-provider qualification**. Brain passes API keys configured in \`providers\`; providers that require interactive OAuth or ambient host credentials are not supported out of the box. See [Models & providers](/docs/reference/models) for setup details.\n\n`;
 for (const provider of [...new Set(models.map(m => m.provider))]) {
   inventory += `## ${provider}\n\n| Model ID | Transport | Context window |\n| --- | --- | ---: |\n`;
   for (const m of models.filter(m => m.provider === provider)) inventory += `| \`${m.provider}/${m.id}\` | \`${m.api}\` | ${m.contextWindow} |\n`;
   inventory += '\n';
 }
-await page('reference/model-catalog.mdx', 'Model catalog', 'The offline model inventory bundled with Brain’s pinned Pi runtime.', inventory);
+await page('reference/model-catalog.mdx', 'Model catalog', 'Models bundled in the pinned Pi runtime registry.', inventory);
 
-let interfaces = 'These declarations are extracted from the current Go source during the documentation build. The packages are internal to the Brain repository; implementing an adapter currently means contributing to Brain.\n\n';
+let interfaces = 'Extracted from the Go source during the docs build. These packages live under `internal/`, so adding a new harness or storage adapter means modifying the Brain codebase directly.\n\n';
 for (const [pkg, symbols] of [
   ['harness', ['Factory', 'Runner', 'Options', 'RunnerFrame']],
   ['persistence', ['Objects', 'Metadata']],

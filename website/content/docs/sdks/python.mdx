@@ -1,11 +1,15 @@
 ---
 title: Python SDK
-description: A synchronous client built on the Python standard library.
+description: Zero-dependency synchronous client built on the Python standard library.
 ---
 
-Use Python 3.11+. The client lives in `sdks/python`; it is not published on PyPI. From the repository root, set `PYTHONPATH=sdks/python` (PowerShell: `$env:PYTHONPATH = "sdks/python"`).
+Requires Python 3.11+. The client lives in `sdks/python` in this repository. Add `sdks/python` to your `PYTHONPATH` before running:
 
-## Conversation
+```powershell
+$env:PYTHONPATH = "sdks/python"
+```
+
+## Example
 
 ```python
 import os
@@ -34,12 +38,15 @@ finally:
 
 ## Methods
 
-The client exposes `create`, `get`, `list`, `send`, `history`, `observe`, `interrupt`, `resume`, `close`, `flush`, `sync`, `restore`, and `catalog`. Return shapes follow the [HTTP API](/docs/api).
+The `Brain` client provides `create`, `get`, `list`, `send`, `history`, `observe`, `interrupt`, `resume`, `close`, `flush`, `sync`, `restore`, and `catalog`, matching the [HTTP API](/docs/api). Generated `TypedDict` definitions live in `brain.types`.
 
-`list(after="", limit=100)` pages metadata. `history(session_id, after="", limit=100)` returns `events` and `next_cursor`. `observe(session_id, after="")` yields events synchronously. Reconnect explicitly using the last retained durable cursor.
+- `list(after="", limit=100)` returns a page of sessions.
+- `history(session_id, after="", limit=100)` returns `{"events": [...], "next_cursor": "..."}`.
+- `observe(session_id, after="")` returns a synchronous iterator over SSE frames. Pass the last non-empty `event["cursor"]` as `after` to reconnect.
 
 ## Timeouts and errors
 
-`Brain(url, token, timeout=30)` sets the socket timeout, including streaming reads. Choose an appropriate timeout for external flush/restore. Use a thread or process when embedding this synchronous client into an asynchronous application.
-
-HTTP failures raise `BrainError` with `status`, `code`, and `request_id`. Tool errors are transcript data. Requests are never automatically retried, and redirects are rejected. `brain.types` contains generated `TypedDict` declarations.
+- `Brain(url, token, timeout=30)` sets the socket timeout in seconds (increase this if you call `flush` or `restore` over large checkpoints).
+- HTTP errors raise `BrainError` with `.status`, `.code`, and `.request_id`.
+- Tool failures are delivered as `tool.result` events with `is_error: True`.
+- The client rejects HTTP redirects and does not retry requests automatically.

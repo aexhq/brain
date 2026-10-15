@@ -1,29 +1,22 @@
-# Local runtime implementation plan
+# 01: Local runtime plan
 
-Status: Draft  
-Release: R0, original milestones M1-M3  
-Decision: [ADR 0001](../adr/0001-local-first-session-server.md)
+- **Release:** R0 ([Roadmap](../roadmap.md))
+- **Architecture:** [ADR 0001](../adr/0001-local-first-session-server.md)
 
-Deliver one Go server that developers can run locally with Pi, on-disk state, HTTP tools, and observability. External storage and a durable job system are not prerequisites. The API and execution modules initially share a process; the Pi runner is an isolated integration process.
+Build a single Go server that runs local Pi sessions with SQLite metadata, append-only event and native state files, external HTTP/SSE tools, and OpenTelemetry instrumentation.
 
-| Work item | Implementation | Acceptance |
+## Work items
+
+| ID | Scope | Acceptance criteria |
 | --- | --- | --- |
-| L1 Foundation | Create the Go module, entry point, validated configuration, server lifecycle, one SQLite driver, and current schema initialization. Add structured logging and O1 instrumentation. Establish Linux and Windows build/runner smoke checks before documenting support. | A clean checkout builds and starts through documented commands. Invalid configuration fails before serving. Startup does not require a telemetry backend or external database. |
-| L2 Local session store | Add create/get/list/close, tenant-scoped metadata, append/read events, immutable event IDs, frozen configuration, and an explicit recovery path. Keep one current storage format. | Restart retains completed state with the tested build. Queries cannot cross scope. Events stay ordered. Missing/corrupt or unreadable state produces an error rather than a fresh session. Reads do not activate a harness. |
-| L3 Pi execution | Implement H1 and H2 through a thin TypeScript runner. Own cancellation at the session level; serialize accepted input per session, stream events, support interrupt, save native state at supported boundaries, and resume it. | A real Pi session completes several turns and resumes after restart. SSE disconnect does not cancel work. Interrupt affects the intended session. Unsupported capabilities are rejected. |
-| L4 Tool and interaction slice | Implement T1/T2: external HTTP tools, scoped call context, result mapping, current-session inspection, and an external approval-tool example. Disable native tools that bypass remote bindings. | Input errors do not reach the tool. Inspection cannot access unrelated sessions. Tool failures reach the model; Brain failures stop affected execution. Approval behavior requires no core gate or endpoint. |
-| L5 Local release | Bound session mailboxes, active executions, tool output, subscriber buffers, and local disk use. Add admission responses, deadline-bound shutdown, the initial TypeScript client/example, and V2/V3 checks. | Saturation stops new admission while allowing control/completion work to finish within configured limits. A slow subscriber cannot grow memory without bound. The packaged end-to-end example passes CI. |
+| **L1: Foundation** | Go module, CLI flags (`-config`, `-check`), strict config validation, SQLite schema setup, structured JSON logging, and OTLP setup. | Clean checkout builds and starts on Linux and Windows; `-check` validates config and exits; startup needs no external database or telemetry collector. |
+| **L2: Local store** | Session `create`/`get`/`list`/`close`, tenant-scoped SQLite metadata, append-only event log with opaque cursors, and startup recovery. | Completed turns survive restarts; cross-tenant lookups return `not_found`; torn final records are trimmed while interior corruption fails loudly; reading a session does not start a runner. |
+| **L3: Pi execution** | Node.js Pi runner over stdio (`open`, `prompt`, `steer`, `interrupt`, `checkpoint`), per-session input queue, SSE streaming, and completed-turn checkpoint recovery. | Multi-turn conversations run and resume across server restarts; disconnecting an SSE stream leaves execution running; `interrupt` cancels active and queued work. |
+| **L4: Tools & inspection** | HTTP/SSE tool dispatch with `tenant_id`/`session_id`/`call_id`, short-lived `inspect_session` token delegation, and the standalone [`examples/tools`](../../examples/tools/README.md) service. | Invalid tool arguments fail before HTTP dispatch; tool errors return to the model as `is_error` tool results; runner/disk errors abort the turn; built-in local Pi tools are disabled. |
+| **L5: Resource limits** | Bounded active turns, loaded sessions, per-session input queues, input/session byte caps, SSE subscriber buffers, and graceful shutdown drain. | Overload returns `429` with `Retry-After: 1` without starving in-flight tool completions or interrupts; slow SSE clients disconnect cleanly when their buffer fills. |
 
-Introduce modules as work lands: server/API, session lifecycle, local storage, harness adapters, tool dispatch, and telemetry. Keep interfaces at those boundaries and dependencies inside their adapters. A Go process should not expose arbitrary customer code as an in-process plugin. Pi bridge stdout carries only protocol messages; diagnostics go to stderr and structured logs.
+## Implementation notes
 
-The public session stays open across turns. Keep a small internal state union with state-specific data and one transition function; represent waiting only when the adapter exposes a meaningful wait. Serialize state transitions, not network/model/tool waits. Inputs, interruption, and results use the ordered control path with reserved completion capacity. Approval waits are ordinary tool waits. Keep unrelated sessions and inspection responsive even when all active runs are waiting on tools.
-
-Persist accepted inputs and retained events before reporting local acceptance. Reuse the tool.call/tool.result records for dispatch/result ordering; do not add a second effect journal. A known append failure stops that execution path, without requiring per-operation fsync. Coalesce display deltas into completed message records. SQLite owns configuration, access scope, and discovery metadata; the event log owns accepted inputs and observed history; the harness owns native conversation state. Write referenced data before advancing metadata. An incomplete final record may be lost after a crash; interior corruption must fail restoration or trigger configured external rehydration.
-
-Save consistent native state with its transcript boundary. Restore does not run the model or tools. Incomplete work is reported as interrupted after loss; remote work may still exist in its service. Compaction adds new context state without rewriting retained historical events. Rewind selects an earlier tail through a supported native operation, after stopping active work; it does not delete synced records or reverse tools. The [harness plan](03-harness-adapters.md) owns native restoration and the [API plan](05-api-and-sdks.md) owns cursor-loss responses.
-
-Authentication produces tenant/principal scope before session lookup. The surrounding application maps its end users to that scope. A caller cannot grant itself another tenant through request fields. API session listing may cover the developer's authorized sessions, while the agent's inspection tool is restricted to its current session unless separately granted access.
-
-R0 executes agent tools outside Brain, even in the local example, where a separate HTTP tool service is sufficient. The harness process contains trusted adapter glue and explicitly configured resources. Do not load customer code as a Brain plugin or enable ambient native execution. Process reuse requires measured benefit and session/credential isolation tests; no generic worker framework is needed initially.
-
-The local exit gate includes cold restart, next-request context after restore, concurrent input, SSE reconnect, interruption during tool waits, distinct tool/Brain errors, cross-session access attempts, late results, queue/disk saturation, and shutdown. Check that active-run permits cannot exhaust the capacity needed for tool results or interruption. Use the [verification plan](07-verification-and-release.md); all tasks remain planned until these checks pass.
+- **State transitions vs. I/O waits:** Hold session locks only during brief state transitions. Never hold a session or registry lock while waiting on model inference, tool HTTP calls, or disk/network I/O.
+- **Write before acknowledging:** Write accepted `user.message` events and emitted turn events to the local log before returning `202` or broadcasting to SSE subscribers.
+- **Torn tail vs. interior corruption:** A crash during an append can leave a partial record at the very end of the file, which startup recovery trims back to the last complete record. Damaged framing followed by later records is treated as corruption and fails the session until explicitly restored.

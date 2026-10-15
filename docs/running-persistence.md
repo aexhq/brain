@@ -1,8 +1,12 @@
 # Persistence and recovery
 
-External storage is optional. Without it, Brain uses SQLite and local files only. With it, input still completes after local acceptance; a bounded worker uploads checkpoints asynchronously. Machine loss can lose the unsynchronized tail.
+Brain always keeps active session state on local disk (SQLite for metadata, append-only files for events and native harness state). External persistence is optional: when enabled, a background worker uploads checkpoints to a secondary directory, S3, or Cloudflare R2 without slowing down the local request path.
 
-Add a `persistence` object to host configuration. A second local directory exercises the same publication and recovery path:
+Because uploads run asynchronously, a machine crash can lose events written after the last uploaded checkpoint.
+
+## Configuration
+
+Add a `persistence` block to your host config. Using a local `filesystem` provider is the easiest way to test checkpointing and recovery on one machine:
 
 ```json
 {
@@ -13,33 +17,46 @@ Add a `persistence` object to host configuration. A second local directory exerc
 }
 ```
 
-For AWS, use `provider: "s3"`, `bucket`, `region`, and an optional `prefix`. The AWS SDK's standard credential chain is available. Explicit credentials use `access_key_env` and `secret_key_env`, containing environment-variable names. For Cloudflare, use `provider: "r2"`, a bucket, `endpoint: "https://ACCOUNT_ID.r2.cloudflarestorage.com"`, and those explicit credential names. R2 defaults to region `auto`. The same host configuration can set `postgres_env` to the name of an environment variable holding a PostgreSQL connection string. PostgreSQL stores an eventual session index; it does not coordinate ownership.
+### S3 and Cloudflare R2
 
-The host needs object GET/PUT access to its configured prefix. Model-facing storage tools should use separate credentials and resource scopes. Native credential/configuration directories are not archived; the adapter supplies only the files required to restore its conversation. Credentials are rebound from host configuration on the new server.
+- **AWS S3:** Set `provider: "s3"`, `bucket`, `region`, and an optional key `prefix`. Brain uses the standard AWS SDK credential chain unless you specify environment variable names in `access_key_env` and `secret_key_env`.
+- **Cloudflare R2:** Set `provider: "r2"`, `bucket`, `endpoint` (`https://ACCOUNT_ID.r2.cloudflarestorage.com`), `access_key_env`, and `secret_key_env`. Region defaults to `auto`.
+- **PostgreSQL index (optional):** Set `postgres_env` to the name of an environment variable holding a PostgreSQL connection string. PostgreSQL stores an eventually consistent session index for discovery; it does not lock or coordinate session ownership.
 
-`POST /sessions/{id}/flush` captures local event history and the latest completed native checkpoint, then returns:
+The Brain server only needs `GET` and `PUT` access under its configured prefix. Keep internal checkpoint storage separate from any S3/R2 buckets exposed to agents as tools. Brain never archives provider API keys or host credential files—when a session is restored on a new server, credentials come from the new host's configuration.
 
-- `checkpoint`: an immutable external reference for handoff or disaster recovery.
-- `history_bytes`: the uploaded event boundary.
-- `resume_offset` and `native_checkpoint`: the corresponding usable native boundary.
-- `time`: publication time.
+## How checkpoints work
 
-History can be newer than the native checkpoint. A successful flush during a running turn does not mean that turn can be resumed halfway through. Flush never activates or pauses inference. `GET /sessions/{id}/sync` reports the last publication, pending work, and synchronization errors. These operations require configured external storage; flush requires management access.
+Brain uploads transcript data in immutable 64 KiB blocks alongside bounded tail segments and native harness files. It writes the checkpoint manifest only after every referenced file is in place, then updates the `latest` pointer and optional PostgreSQL index. Already uploaded 64 KiB blocks are reused on subsequent turns instead of re-uploading the full conversation history.
 
-Uploads use immutable 64 KiB blocks, bounded partial tails, and a small checkpoint manifest. A manifest is published only after all its files are uploaded. The latest pointer and optional PostgreSQL reference follow publication. Complete blocks are reused without hashing or uploading the growing transcript every turn. Only adapters with a proven append-only native checkpoint are currently supported by this path.
+On startup, Brain scans local disk and queues any unsynced sessions. Transient storage failures retry up to five times with exponential backoff, while permanent configuration or credential errors stop immediately. If the sync queue fills up, Brain rejects new input (`429`) and marks `/health/ready` as `503 not_ready` until the backlog drains.
 
-The queue contains bounded references to local data. Startup scans rediscover pending state. Storage failures retry with backoff for at most five attempts; known credential/bucket failures stop immediately. Pending data remains local. A full backlog rejects new input and changes readiness to unavailable. Explicit flush surfaces an error directly and allows an operator to retry after correcting the cause. Tool actions are never retried by this worker.
+### Flushing and checking status
 
-For a planned handoff:
+- `GET /sessions/{id}/sync` returns the latest published checkpoint, pending upload state, and any sync error.
+- `POST /sessions/{id}/flush` (requires `manage` permission) forces an immediate upload of local event history and the latest completed native checkpoint:
+  - `checkpoint`: immutable reference for handoff or restore.
+  - `history_bytes`: uploaded event log offset.
+  - `resume_offset` and `native_checkpoint`: the boundary where the harness can resume execution.
+  - `time`: publication timestamp.
 
-1. Stop routing new input to the old owner and wait for a completed native boundary. Interruption may leave newer history beyond that boundary.
-2. Flush and retain the returned immutable checkpoint reference.
-3. Stop the old owner. Route the session to a new instance with the same runtime artifact, harness/provider configuration, bindings, and storage access.
-4. Call `POST /sessions/{id}/restore` with `{"checkpoint":"RETURNED_REFERENCE"}`. An active request, stream, or execution must settle before replacing an existing cache.
-5. Call `POST /sessions/{id}/resume`, then submit new input. Restore and resume alone make no model requests.
+If you flush while a turn is still running, `history_bytes` may include events beyond `resume_offset`. Flushing does not pause or trigger model execution.
 
-When local metadata is absent, reading a known session automatically hydrates its latest complete external checkpoint. Use an explicit checkpoint during reassignment so an old cache or delayed publication cannot select the wrong boundary. Explicit restore also replaces an unusable existing cache. Replaced local directories are retained as `SESSION_ID-replaced-ID` for operator recovery; remove them only after deciding whether their unsynced tail is needed.
+## Moving a session to another server
 
-Brain does not merge concurrent owners. The surrounding platform must quiesce the previous owner. Remote tool side effects, jobs, browsers, and resources remain external. Restoring transcript state does not undo or restart those actions.
+Brain does not run distributed consensus or merge writes from two servers running the same session. Your platform must stop the old owner before starting the new one:
 
-Current automated evidence includes bounded append upload, failed publication, missing blocks, tenant/path rejection, backlog admission, passive restore, and the next Pi model request after full cache relocation. PostgreSQL runs in CI. S3/R2 SDK transport tests are not live cloud-account qualification. Cloud lifecycle policies, removal of unreachable failed-upload objects, regional replication, and retention remain operator choices; do not expire objects referenced by retained checkpoints.
+1. Stop routing new input to the old instance and let the current turn finish (or interrupt it).
+2. Call `POST /sessions/{id}/flush` on the old instance and save the returned `checkpoint` reference.
+3. Stop the old owner and route the session to the new instance (which must have the same runtime version, harness config, tool bindings, and storage access).
+4. Call `POST /sessions/{id}/restore` on the new instance with `{"checkpoint": "RETURNED_REFERENCE"}`.
+5. Call `POST /sessions/{id}/resume`, then send new input.
+
+When a server receives `GET /sessions/{id}` for a session that isn't on local disk, it automatically hydrates the latest published checkpoint from external storage. During a planned handoff, always call `POST /sessions/{id}/restore` with the explicit `checkpoint` ID from step 2 so a stale local cache or delayed upload cannot pick an older boundary.
+
+When `restore` replaces an existing local directory, Brain renames the old directory to `SESSION_ID-replaced-ID` so operators can inspect any unsynced local tail before deleting it.
+
+## Operational notes
+
+- Restoring a session recovers its transcript and native model context; it does not roll back or restart external tool jobs, sandboxes, or browser sessions.
+- Keep object lifecycle policies from expiring blocks referenced by retained checkpoints.

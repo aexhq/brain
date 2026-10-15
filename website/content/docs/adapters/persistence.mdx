@@ -1,24 +1,31 @@
 ---
 title: Persistence adapters
-description: Publish checkpoint objects and discover sessions without joining the hot path.
+description: Object storage and metadata indexing interfaces for background checkpoints.
 ---
 
-## Objects
+Persistence adapters implement two small Go interfaces in `internal/persistence` (see [Go interfaces](/docs/adapters/interfaces)).
 
-`Objects` exposes `Put(ctx, key, bytes, immutable)` and `Get(ctx, key)`. Immutable writes must never replace an existing object. An existing key can count as an already completed write; the archive supplies generation-scoped keys. Missing objects and provider errors must be distinguishable enough for archive recovery and retry policy.
+## `Objects` interface
 
-Keys are scoped by Brain's archive; enforce the configured storage prefix. Do not permit path traversal in a filesystem implementation. The existing adapters bound object sizes to 2 MiB.
+`Objects` provides `Put(ctx, key, bytes, immutable)` and `Get(ctx, key)`:
 
-The archive writes immutable 64 KiB blocks and bounded partial tails, then publishes a manifest only after its dependencies exist. It publishes the latest pointer and optional metadata index afterward. A failed upload can leave unreachable objects, but must not expose a partially readable checkpoint.
+- **Immutable writes:** When `immutable` is `true`, `Put` must never overwrite an existing object with different content (if the key already exists from an earlier attempt, returning success is fine because keys are generation-scoped).
+- **Error distinction:** Missing objects must return `persistence.ErrNotFound` so the archive layer can distinguish missing checkpoints from transient network/storage errors.
+- **Scoping and bounds:** Implementations must enforce the configured key prefix, reject path traversal, and cap individual object sizes at 2 MiB.
 
-## Metadata
+The archive coordinator splits transcripts and append-only native files into 64 KiB immutable blocks plus bounded tail objects. It writes the checkpoint manifest only after every referenced block is uploaded, then updates the `latest` pointer and optional metadata index.
 
-`Metadata` exposes `Put`, `Get`, `List`, and `Close`. Reads and lists are tenant-scoped. Ordering and pagination use session IDs. PostgreSQL is an eventual discovery index; it is not an execution lock, transaction coordinator, or authoritative owner election service.
+## `Metadata` interface
 
-See the [generated interface declarations](/docs/adapters/interfaces) for exact signatures.
+`Metadata` provides `Put`, `Get`, `List`, and `Close` for external session discovery (implemented by the PostgreSQL adapter):
 
-## Integration evidence
+- `Get` and `List` are scoped by `tenant` and ordered by session ID.
+- External metadata is an eventually consistent index updated after checkpoint publication; it is not used for locking or leader election.
 
-Exercise immutable-write retries, interrupted publication, missing objects, tenant isolation, backlog pressure, and restore into an empty cache. Verify the next real harness request after relocation, not only that uploaded bytes match.
+## Testing an adapter
 
-Filesystem paths are covered locally; PostgreSQL runs in CI. S3/R2 transport tests do not substitute for live cloud-account qualification. Retention, replication, and collection of unreachable objects remain operator concerns. Keep every object referenced by a retained checkpoint.
+Every storage adapter should pass the contract tests in `internal/persistence/`:
+- Immutable block writes and idempotent retries
+- Interrupted manifest publication (unreachable blocks must not expose a half-written checkpoint)
+- Missing object detection and tenant/path isolation
+- Restoring into an empty local cache and verifying the next Pi model request preserves conversation history

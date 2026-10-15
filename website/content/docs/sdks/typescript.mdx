@@ -1,18 +1,18 @@
 ---
 title: TypeScript SDK
-description: Create sessions and consume events with an async iterator.
+description: Create sessions and stream events with an async iterator.
 ---
 
-The client ships in this repository. Its package is private and is not a published npm release.
+The TypeScript client lives in `sdks/typescript` inside the repository. Build it before importing:
 
 ```sh
 npm --prefix sdks/typescript ci --ignore-scripts
 npm --prefix sdks/typescript run build
 ```
 
-## Conversation
+## Example
 
-Run this `.mjs` file from the repository root, with Brain running:
+Run this `.mjs` script from the repository root while Brain is running:
 
 ```js
 import { Brain } from './sdks/typescript/dist/index.js';
@@ -32,30 +32,30 @@ for await (const event of brain.observe(session.id)) {
 }
 ```
 
-In TypeScript, `event.data` is `unknown`: narrow it using the event type and expected shape. See the [event reference](/docs/reference/events). An input acknowledgement is not the model response.
+In TypeScript, `event.data` is typed as `unknown`—narrow it based on `event.type` (see [Events & streaming](/docs/reference/events)).
 
 ## Methods
 
-| Method | Result / purpose |
+| Method | Returns / description |
 | --- | --- |
-| `create(input, signal?)` | New `Session`. |
-| `get(id, signal?)` | Current `Session`. |
-| `list(after?, limit?)` | Object containing `sessions`. |
-| `send(id, input, signal?)` | Accepted message `Event`; use `interrupt` for interruption. |
-| `history(id, after?, limit?)` | `events` and `next_cursor`. |
-| `observe(id, { after?, signal? }?)` | Async iterator of events. |
-| `interrupt(id)` | Request interruption. |
-| `resume(id)` | Resume from the saved boundary. |
-| `close(id)` | Request terminal closure. |
-| `flush(id, signal?)` | Publish and return `SyncStatus`. |
-| `sync(id)` | Current `SyncStatus`. |
-| `restore(id, checkpoint, signal?)` | Restore a session. |
-| `catalog()` | Object containing authorized `tools`. |
+| `create(input, signal?)` | Creates and returns a `Session`. |
+| `get(id, signal?)` | Fetches a `Session` by ID. |
+| `list(after?, limit?)` | Returns `{ sessions }`. |
+| `send(id, input, signal?)` | Queues a `user.message` and returns the accepted `Event`. |
+| `history(id, after?, limit?)` | Returns `{ events, next_cursor }`. |
+| `observe(id, { after?, signal? }?)` | Async iterator yielding session events over SSE. |
+| `interrupt(id)` | Stops the active turn. |
+| `resume(id)` | Resumes an interrupted or failed session from its last checkpoint. |
+| `close(id)` | Permanently closes the session. |
+| `flush(id, signal?)` | Uploads local state to external storage and returns `SyncStatus`. |
+| `sync(id)` | Returns current `SyncStatus`. |
+| `restore(id, checkpoint, signal?)` | Restores a session from an external `checkpoint` ID. |
+| `catalog()` | Returns `{ tools }` available to the caller's tenant. |
 
-The constructor accepts a third `fetch` argument for instrumentation or testing. Wire types are generated from Go.
+`new Brain(url, token, fetchImpl?)` accepts an optional custom `fetch` implementation for testing or instrumentation.
 
-## Reconnect and errors
+## Reconnection, timeouts, and errors
 
-Retain the last nonempty `cursor` and pass it as `after` when reconnecting. The iterator does not reconnect automatically. An `AbortSignal` stops observation without stopping execution.
-
-HTTP errors throw `BrainError` with `status`, `code`, and optional `requestId`. Tool errors arrive as events. Default request timeout is 30 seconds; flush/restore use 60 seconds. Streaming has no overall timeout. Requests are not automatically retried and redirects are rejected.
+- **Reconnecting:** Save the last non-empty `event.cursor` and pass `{ after: cursor }` to `brain.observe(id, { after })`. Passing an `AbortSignal` closes the client stream without interrupting the session on the server.
+- **Timeouts:** Standard requests time out after 30 seconds (`flush` and `restore` allow 60 seconds). Streaming connections have no overall wall-clock timeout.
+- **Errors:** HTTP errors throw `BrainError` (with `status`, `code`, and optional `requestId`). Tool failures arrive as normal `tool.result` events in the stream. The client never follows HTTP redirects or retries failed requests automatically.

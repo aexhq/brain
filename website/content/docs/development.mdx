@@ -1,11 +1,11 @@
 ---
 title: Development & verification
-description: Build locally, run all checks, and contribute documentation from source.
+description: Build from source, run the test suite, and preview the docs site.
 ---
 
-## Repository checks
+## Run all checks
 
-Install runner, client, and documentation dependencies, then run the complete checks from the repository root:
+Install the Node dependencies for the runner, TypeScript SDK, and docs site, then run `scripts/check.mjs`:
 
 ```sh
 npm --prefix runners/pi ci --ignore-scripts
@@ -14,17 +14,22 @@ npm --prefix website ci --ignore-scripts
 node scripts/check.mjs
 ```
 
-Checks include generated contract drift, Go tests/vet, Pi recording-provider integration, TypeScript/Python clients, user journeys, and the static documentation build and integrity checks. CI covers Linux and Windows; Linux also runs the race detector, PostgreSQL contracts, and Docker smoke tests.
+`node scripts/check.mjs` runs:
+1. Pi runner and TypeScript SDK builds
+2. `go run ./cmd/generate -check` (verifies OpenAPI and SDK wire types are up to date)
+3. `go test ./...` and `go vet ./...`
+4. Pi runner unit/integration tests (against a local recording provider)
+5. TypeScript and Python SDK test suites
+6. End-to-end process journeys (`tests/journeys/journeys.test.mjs`)
+7. Docs site static build and link/contract verification (`website/scripts/site.test.mjs`)
 
-Journeys exercise actual server processes, Pi, external tools, approvals, cancellation, reconnect, tenant isolation, overload, process death, recovery, and telemetry failures. Recording-provider tests need no model credentials; they do not claim live model or cloud qualification.
-
-## Work on the docs
+## Preview the documentation site
 
 ```sh
 npm --prefix website run dev
 ```
 
-Open `http://127.0.0.1:3000/docs`. Guides live in `website/content/docs`; Fumadocs compiles their Markdown/MDX and builds search. API pages, Go interfaces, the Pi catalog, and shared persistence/tool guides are generated before development and production builds.
+Open `http://127.0.0.1:3000/docs`. To test the static production export locally:
 
 ```sh
 npm --prefix website run build
@@ -32,17 +37,13 @@ npm --prefix website test
 npm --prefix website start
 ```
 
-The production output is `website/out`. It can be hosted as static files. `start` uses Python's local HTTP server for review, not a production application server.
+## Where to edit what
 
-## Source of truth
-
-| Content | Edit here |
+| Area | Source of truth |
 | --- | --- |
-| API operations and response types | `internal/api/contract.go` and Go wire types; run `go run ./cmd/generate`. |
-| Harness/persistence interfaces | Go interface declarations. |
-| Model inventory | Pinned Pi dependencies and offline runtime policy. |
-| Persistence guide | `docs/running-persistence.md`. |
-| Local tool walkthrough | `examples/tools/README.md`. |
-| Usage guides and explanations | `website/content/docs`. |
-
-Generated site content is not checked in. Build checks reject missing pages, broken local links, and stale published contracts. Keep dependencies pinned and make server, runner, client, and documentation changes together.
+| HTTP routes, summaries, and wire types | `internal/api/contract.go` & `internal/core/types.go` (then run `go run ./cmd/generate`) |
+| Harness & storage Go interfaces | `internal/harness/harness.go` & `internal/persistence/` |
+| Model catalog | Pinned `@earendil-works/pi-coding-agent` in `runners/pi/package.json` |
+| Persistence guide | `docs/running-persistence.md` |
+| Local tools walkthrough | `examples/tools/README.md` |
+| Docs pages & guides | `website/content/docs/**/*.mdx` |

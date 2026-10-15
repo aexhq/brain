@@ -1,14 +1,14 @@
 # Brain
 
-A standalone agent session server with distributed tools and local working state.
+Brain is a standalone server for running agent sessions.
 
-Brain owns session transport, tenant isolation, persistence, and bounded execution. Harnesses own model calls and context. Tools run in external services, including approvals, storage, browsers, and code execution.
+It handles HTTP APIs, tenant isolation, event streaming, local storage, and checkpoint syncing. An agent harness (currently **Pi**) runs the model loop and manages context in a child process. Tools run as external HTTP or SSE services—meaning sandboxes, browsers, storage, and human approvals live outside the Brain process.
 
-This cut targets local development. The current executable supports Pi, SQLite metadata, append-only event files, HTTP/SSE tools, authenticated sessions, bounded queues, interruption, completed-turn recovery, and event streaming. Optional filesystem/S3/R2 checkpoint storage and PostgreSQL discovery run outside the execution path. TypeScript and Python clients use generated wire types. Cloud qualification, Codex/OpenCode adapters, MCP, the broader tool catalog, and production capacity work remain on the [roadmap](docs/roadmap.md).
+## Quickstart
 
-## Run locally
+You need **Go 1.26+**, **Node.js 24+**, and an API key for your model provider.
 
-Requires Go 1.26+, Node 24+, and an API key for the selected model provider. From the repository root:
+From the repository root, build the Pi runner and start the server:
 
 ```powershell
 npm --prefix runners/pi ci --ignore-scripts
@@ -18,52 +18,67 @@ $env:OPENAI_API_KEY = "your-provider-key"
 go run ./cmd/brain -config examples/local.json
 ```
 
-Keep credentials in environment variables. Copy the example to `brain.json` for local changes; that file is ignored by Git. `-check` validates configuration without starting the server. Configuration paths are relative to the process working directory.
+Copy `examples/local.json` to `brain.json` (gitignored) if you want to customize settings locally. Pass `-check` to validate your config file without starting the server.
 
-In another terminal, build the client and run the [session example](examples/session.mjs):
+In a second terminal, build the TypeScript SDK and run the example session:
 
 ```powershell
 npm --prefix sdks/typescript ci --ignore-scripts
 npm --prefix sdks/typescript run build
+$env:BRAIN_API_KEY = "replace-with-a-random-token-of-at-least-24-bytes"
 node examples/session.mjs
 ```
 
-Session settings are frozen at creation. Input is queued; unsupported steering fails explicitly. Local acceptance means the event was recorded, not that the model consumed it. Reconnect to the event stream using the last retained event cursor. Deltas and progress are provisional. Disconnecting an observer does not cancel execution.
+## Tools
 
-Tool bindings are host configuration: each descriptor supplies its schema, endpoint, allowed tenants, and optional credential environment variable. Only selected tools enter a session. Tool HTTP requests carry authenticated session/call scope outside model arguments. Responses contain `content` and optional `is_error`; SSE tools emit `progress` events followed by one `result`. Tools own approvals and remote jobs. Brain never automatically retries their actions.
+Tools are configured on the host and invoked over HTTP or SSE. When a model calls a tool, Brain sends the tool's arguments along with the authenticated `tenant_id`, `session_id`, and `call_id`. Synchronous tools return JSON (`content` and optional `is_error`); streaming tools emit `progress` events before a final `result`.
 
-The [local tool service](examples/tools/README.md) includes echo, scoped inspection, and an operator approval example. Its configuration is generated from the actual descriptors. It runs in a separate process and requires no cloud services.
+See [`examples/tools`](examples/tools/README.md) for a standalone local tool server that implements `echo`, `inspect_session`, and an operator approval flow (`ask_approval`).
 
-Recovery loads saved native context without invoking a model. After interruption, explicitly resume before sending new input. Recovery can discard native work beyond the last completed checkpoint; observed history remains available. Remote side effects are not rolled back. Cache warming and native local tools are disabled. Read the [architecture](docs/adr/0001-local-first-session-server.md) for ownership and durability boundaries.
+## Persistence and recovery
+
+By default, Brain stores session metadata in SQLite and writes events and native harness state to local append-only files in `.brain/`. You can optionally configure background checkpoint uploads to a local directory, S3, or Cloudflare R2, plus an eventual session index in PostgreSQL.
+
+See [Persistence and recovery](docs/running-persistence.md) for configuration, explicit flushes, and session handoff between servers.
+
+## Observability and Docker
+
+- **Health checks:** `GET /health/live` and `GET /health/ready`.
+- **Logs:** Structured JSON on stdout/stderr (request bodies and secrets are omitted).
+- **OpenTelemetry:** Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export traces and metrics over OTLP/HTTP.
+
+To build and smoke-test the container image locally (no model credentials needed):
+
+```powershell
+docker build --tag brain:local-dev .
+node scripts/container-smoke.mjs
+```
+
+When running the container in production, mount your config at `/config/brain.json`, bind `listen` to `0.0.0.0:8080`, and mount `/data` for local state.
 
 ## Documentation
 
-The [Fumadocs site](website/README.md) includes quickstart and usage guides, HTTP API reference, events, configuration, SDKs, model inventory, and adapter interfaces. To browse it locally:
+The [`website/`](website/README.md) directory contains the Fumadocs site covering the HTTP API, events, configuration, SDKs, model catalog, and adapter interfaces:
 
 ```powershell
 npm --prefix website ci --ignore-scripts
 npm --prefix website run dev
 ```
 
-Open `http://127.0.0.1:3000/docs`. The build generates API pages from the Go-owned OpenAPI contract, interfaces from Go declarations, and model inventory from the pinned Pi runtime. It publishes static files without adding a Brain runtime dependency.
+Then open `http://127.0.0.1:3000/docs`.
 
-## Checks
+## Development and checks
+
+Run the full test and verification suite (requires Go 1.26+, Node.js 24+, and Python 3.11+):
 
 ```powershell
 node scripts/check.mjs
 ```
 
-The checks require all three npm installations above and Python 3.11+. They build clients/runners and documentation, verify generated contracts and site links, run Go tests/vet, exercise the actual Pi SDK against a recording model provider, and test both clients. The [user journey suite](tests/journeys/README.md) runs actual server processes and both SDKs through conversations, tools/approvals, interruption, streaming, tenant isolation, process death, storage recovery, overload, and telemetry failures. Linux and Windows CI require these journeys. Linux CI also runs Go's race detector and PostgreSQL contracts. Portable-state tests restore into an empty cache and verify the next real Pi request preserves the saved prefix. Live cloud/provider verification is separate from recording-provider and SDK transport tests and requires configured credentials.
+This builds the Pi runner and TypeScript SDK, checks generated wire types and OpenAPI specs (`go run ./cmd/generate -check`), runs Go tests and `go vet`, tests both SDKs, runs the [end-to-end journey suite](tests/journeys/README.md), and builds and verifies the docs site.
 
-Generate API and runner declarations with `go run ./cmd/generate`. [OpenAPI](api/openapi.json) is generated from Go types and route declarations. Clean breaks are the default; dependency pins and standard document metadata do not imply API compatibility.
+## Project docs
 
-Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export traces and metrics over OTLP/HTTP. Exporters are bounded and optional. Logs use structured JSON without request bodies. Health endpoints are `/health/live` and `/health/ready`.
-
-Metrics cover request duration/errors, queued-input delay, first assistant output, runner startup, active execution, tool duration/outcomes, transcript/native byte growth, and synchronization backlog/duration/failures. They avoid tenant/session labels; traces identify individual sessions. These are measurements, not a claim of tested production capacity.
-
-The [Dockerfile](Dockerfile) packages the server and Pi runner as an unprivileged process. Mount a configuration file at `/config/brain.json`; set its listen address to `0.0.0.0:8080` and data directory to `/data`. The surrounding platform owns routing, session placement, cross-instance ownership, and failover.
-
-With Docker running, `docker build --tag brain:local-dev .` followed by `node scripts/container-smoke.mjs` checks the packaged server and real Pi runner using a local recording provider. It needs no model credentials and removes its temporary container afterward. Linux CI runs the same smoke test.
-
-See [persistence and recovery](docs/running-persistence.md) for configuration, explicit flush, cache loss, and handoff.
-
+- [Architecture ADR](docs/adr/0001-local-first-session-server.md) — ownership boundaries and design decisions
+- [Roadmap](docs/roadmap.md) — release milestones from local preview (R0) to operational release (R4)
+- [Implementation plan](docs/implementation-plan.md) — work breakdown across runtime, persistence, harnesses, tools, API, and operations

@@ -1,36 +1,49 @@
 ---
 title: Models & providers
-description: Choose a model from the pinned harness catalog and bind host credentials.
+description: Configure model providers, API keys, reasoning effort, and custom endpoints.
 ---
 
-## Selection
+## Choosing a model
 
-Set `config.model` to `provider/model`, for example `openai/gpt-4.1-mini`. Configure that provider on the host with `api_key_env`. Brain validates the provider at creation; Pi resolves the model when its runner opens. Unknown model IDs fail explicitly.
+Pass `config.model` in `provider/model` format when creating a session (for example, `openai/gpt-4.1-mini`). The provider prefix must match an entry in your host config's `providers` map:
 
-The [generated catalog](/docs/reference/model-catalog) is extracted from the pinned Pi runtime with network refresh disabled. It is an inventory, not a promise that every listed provider's authentication or transport is integrated and tested in Brain.
+```json
+{
+  "providers": {
+    "openai": { "api_key_env": "OPENAI_API_KEY" }
+  }
+}
+```
 
-## Current evidence
+Brain checks that the provider is configured when creating the session, and the Pi runner validates the model ID against its [offline model catalog](/docs/reference/model-catalog) when the session starts. Unknown providers or model IDs fail with `422 unsupported`.
 
-| Area | Status |
-| --- | --- |
-| Pi harness | Implemented with native completed-turn recovery and external tools. |
-| OpenAI-shaped requests | Exercised with `openai/gpt-4.1-mini` against a local recording provider. |
-| Live provider accounts | Not qualified by the credential-free test suite. |
-| Other catalog entries | Supplied by Pi; validate their transport, auth, and reasoning settings before relying on them. |
-| Codex / OpenCode | Planned adapters; not selectable built-in implementations. |
-
-Brain currently supplies API-key credentials. OAuth login flows and ambient credentials used by some Pi providers are not automatically available: child processes do not inherit arbitrary host credentials.
+> **Note:** Brain passes API keys explicitly via `api_key_env` and does not forward ambient host environment variables or interactive OAuth sessions into child runner processes.
 
 ## Reasoning effort
 
-Brain accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`, or omission. Pi uses `off` when omitted. The selected model must accept the requested level; if Pi changes it, the runner fails instead of silently substituting another value. Accepted API values do not imply every model supports every level.
+You can set `config.reasoning_effort` to `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"` (defaults to `"off"` when omitted). If the chosen model does not support the requested level, the runner fails explicitly rather than silently downgrading it.
 
-## Custom endpoints
+## Custom endpoints and proxies
 
-A host provider can set `base_url` and `api`. These override an existing catalog model; they do not add arbitrary model IDs. Choose a catalog entry and transport that match your endpoint. Brain has no public model-discovery endpoint yet; `/catalog` lists tools only.
+Each entry in `providers` accepts optional `base_url` and `api` fields to route an existing catalog provider through a proxy or compatible endpoint:
 
-## Recovery and prompt caches
+```json
+{
+  "providers": {
+    "openai": {
+      "api_key_env": "OPENAI_API_KEY",
+      "base_url": "https://my-proxy.example.com/v1",
+      "api": "openai-completions"
+    }
+  }
+}
+```
 
-Model, instructions, effort, and tool definitions are frozen at creation. Native state is restored alongside visible history to preserve execution context. Brain avoids unnecessary prefix changes and disables cache warming, but provider cache retention and harness prompt construction remain outside Brain's control.
+`base_url` and `api` override transport settings for models under that provider in the catalog; they do not register brand-new model names.
 
-Recovering a session never guarantees a provider prompt-cache hit. Dynamic configuration is planned, not implemented in this preview.
+## Prompt caching
+
+To help preserve provider prompt prefixes across turns and restores:
+- Session instructions, model, and tool schemas stay fixed for the life of the session.
+- Restoring a session loads Pi's native conversation state rather than reconstructing prompts from a flattened transcript.
+- Upstream background cache-warming timers are disabled (`cacheWarming: "off"`) so idle sessions never make background LLM calls.

@@ -1,38 +1,15 @@
-# Observability and operations implementation plan
+# 06: Observability and operations plan
 
-Status: Draft  
-Releases: instrumentation starts at R0; external sync operations at R1; capacity/recovery evidence at R4
+- **Releases:** Telemetry, resource limits, and Docker packaging at R0–R1; fleet benchmarks and recovery drills at R4 ([Roadmap](../roadmap.md))
 
-Operate Brain as a bounded compute unit with a clearly reported execution and synchronization state. A telemetry backend, shared scheduler, or control-plane service must not be necessary to start the server. Operations documentation should explain what the server guarantees and what its host platform must provide.
+Run Brain as a predictable, bounded process with built-in structured logging, OpenTelemetry traces and metrics, health endpoints, and explicit handoff steps.
 
-| Work item | Implementation | Acceptance |
+## Work items
+
+| ID | Scope | Acceptance criteria |
 | --- | --- | --- |
-| O1 Instrumentation | Use structured Go logs and OpenTelemetry metrics/traces. Instrument API, session lifecycle, harness, tools, local storage, and later external sync. Use bounded asynchronous exporters and per-operation spans. | Logs correlate a request through a session/tool call. Metrics cover resource and error behavior. Exporter failure does not block execution. Credentials and transcript payloads are excluded from routine output. |
-| O2 Resource control | Budget active sessions, per-session queued input, concurrent tools, output/artifact size, event subscribers, pending sync bytes, and local disk. Add liveness/readiness, admission responses, and reserved cancellation/completion capacity. | Slow dependencies/subscribers and full disk do not cause unbounded memory growth. Readiness reflects ability to admit work. Existing work can report cancellation/completion when admission is closed. |
-| O3 Packaging | Produce a reproducible server artifact and pinned Pi runner bundle, example configuration, startup/shutdown instructions, and a container image for the supported server platform. Add other harness packages without making them mandatory. | A clean environment runs the documented example. Dependency/version information is inspectable. Packaged builds pass their platform smoke tests and use the intended configuration/state paths. |
-| O4 Capacity | Benchmark coordinator overhead, each real harness footprint, tool throughput, streaming fan-out, and synchronization. Add long coding/research-style soaks and independent-instance scale tests with host-controlled routing. | Reports state hardware, versions, workload, queue/disk limits, latency percentiles, memory, and recovery behavior. Results separate simulated providers from real harness workloads. |
-| O5 Handoff and recovery | Document graceful shutdown, checkpoint/flush handoff, empty-cache restore, dependency outage response, and deployment-owned backup/replication settings. Exercise runbooks against the release artifact. | A new instance restores a known checkpoint with no local cache. A host can distinguish uploaded transcript progress from resumable context. The recovery report states the lost/unavailable tail and workspace limitations. |
-
-Observability covers latency; admission; active/waiting sessions; time to first output; tool outcomes separately from Brain/model failures; queue count/bytes and pending age; checkpoint progress/retries; process memory/CPU; and disk use. Include model usage and cached-input counts only when the harness supplies them; absent counters are not zero. Measure cumulative transcript/native-checkpoint bytes across turns. Derive names/attributes from instrumentation code.
-
-Keep metric label cardinality bounded by known operation, provider, harness, and outcome dimensions. Tenant/session/call IDs belong in authorized logs and traces. Start traces at useful request/turn boundaries; link long-running work rather than holding one unbounded span for the entire session. Do not emit a span or log line per token. Use the standard SDK's export/sampling facilities rather than building an observability transport.
-
-Admission is local to the instance. The host platform owns cross-instance quotas and placement. Stop admitting new work before resource budgets are exhausted; reserve room for control messages, final outcomes, and already admitted bounded output. If a producer cannot be slowed safely, interrupt it explicitly and report the reason. Do not silently truncate canonical transcript records to keep throughput numbers high.
-
-Enforce limits while reading and before size-driven allocation, including runner output and admitted in-flight data. Serialize only short session transitions; network waits and history loading must not hold global locks. Brain owns these limits and its runner residency. The harness owns context/token policy; external tools own job CPU/memory/time/output limits and resource cleanup. A quiet waiting tool is not a dead runner. Timeouts constrain the relevant operation and do not establish whether a remote side effect happened.
-
-Use transport keepalives and control-path health checks without model calls or context entries. Explicitly disable harness cache warming in controlled adapter configuration. Observation, idle time, and restoring saved state must not themselves consume inference tokens. Real user input and tool completions may trigger ordinary harness continuation.
-
-Liveness reports whether the process can serve its control path. Readiness reports whether new work can be admitted, including configured storage/backlog constraints. A missing optional telemetry exporter does not make execution unready. A required but incompatible harness or invalid startup configuration prevents serving rather than becoming a silent fallback.
-
-Graceful shutdown stops admission, requests supported quiescence, saves local state, attempts configured external flushes, and exits by the configured deadline. Report pending synchronization if the deadline expires; machine loss and unsynchronized tail loss remain accepted behavior. Graceful drain is an opportunity to preserve work, not a durability promise on forced termination.
-
-Creation/close failure handling covers Brain-owned runners, local files, connections, and pending callbacks. Stop new callbacks before closing state and reject stale results without attaching them to newer work. Close file handles before cache removal. Closing Brain's connection does not claim to destroy a caller's remote resource; tool services own that lifecycle.
-
-For an intentional handoff, the host stops new routing to the old owner, brings the session to a checkpointable boundary, flushes it, records the returned checkpoint reference, quiesces the old owner and its writes, and restores on the replacement. No automatic leader election or distributed lease service is introduced. An uncertain old owner must be resolved by the host before allowing concurrent mutation of a shared workspace.
-
-Disaster recovery uses retained checkpoints and the runtime artifact that wrote them. Operators choose backup/replication, retention, credentials, and remote-resource continuity. Recovery objectives depend on that deployment and must be measured. A transcript backup does not imply native context or a live sandbox. There is no cross-release restore guarantee or automatic data migration.
-
-The scale objective is thousands of simultaneously executing sessions across independent Brain instances. First establish a local baseline; then grow tested fleet size with an external load harness that provides routing. Test waiting/idle sessions separately from active inference and tool execution. Before the R4 candidate run, commit the advertised workload and latency/memory budgets to benchmark configuration using those baselines. Publish supported limits only after measuring real harness resource costs, long-running compaction/checkpoint behavior, and overload recovery on the declared topology.
-
-Use [OpenTelemetry Go](https://opentelemetry.io/docs/languages/go/) and [Go structured logging](https://pkg.go.dev/log/slog) as the instrumentation foundations. Require a dependency only when an implemented feature needs it; a telemetry collector/dashboard stack may be an optional example deployment, not part of the core runtime.
+| **O1: Telemetry** | Structured Go JSON logs (`log/slog`) and OpenTelemetry (`OTEL_EXPORTER_OTLP_ENDPOINT`) traces and metrics across HTTP, session lifecycle, runners, tools, and storage sync. | Request and trace IDs propagate through tool calls; metrics avoid high-cardinality session/tenant labels; broken OTLP collectors never stall turns; logs never include secrets or request bodies. |
+| **O2: Resource bounds** | Enforce `active`, `loaded`, `queue`, `input_bytes`, `session_bytes`, `subscribers`, `subscriber_events`, and `subscriber_bytes` limits, plus `/health/live` and `/health/ready`. | Saturation returns `429` (`Retry-After: 1`) while reserving capacity for in-flight tool completions and interrupts; full sync queues mark `/health/ready` as `503`. |
+| **O3: Packaging** | Reproducible Go + Pi runner container (`Dockerfile`) running as an unprivileged user, verified by `scripts/container-smoke.mjs`. | Container builds and passes the end-to-end smoke test in CI without external model credentials. |
+| **O4: Capacity benchmarks** | Measure coordinator overhead, runner memory footprint, tool throughput, SSE fan-out, and checkpoint sync across long sessions and multi-instance fleets. | Published capacity reports state exact hardware, workload shape, queue/disk settings, and latency/memory percentiles. |
+| **O5: Handoff & recovery drills** | Document and test graceful shutdown, planned `flush`/`restore` handoffs, empty-cache recovery, and archive outage recovery. | See [Persistence and recovery](../running-persistence.md) for the operator runbook. |

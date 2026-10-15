@@ -5,9 +5,9 @@ description: Start the server and send your first message.
 
 ## Prerequisites
 
-Install **Go 1.26+** and **Node.js 24+**, and obtain an API key for your model provider. This example uses OpenAI. Python 3.11+ is needed for the Python client and repository checks.
+Install **Go 1.26+** and **Node.js 24+**, and grab an API key for your model provider (this guide uses OpenAI). You also need Python 3.11+ if you plan to use the Python SDK or run the full test suite.
 
-The current implementation is on `successor` while the repository transition is in progress:
+Clone the repository and build the Pi runner:
 
 ```sh
 git clone --branch successor https://github.com/aexhq/brain.git
@@ -16,9 +16,9 @@ npm --prefix runners/pi ci --ignore-scripts
 npm --prefix runners/pi run build
 ```
 
-## Start Brain
+## 1. Start Brain
 
-In PowerShell, from the repository root:
+Set `BRAIN_API_KEY` (at least 24 random bytes) and `OPENAI_API_KEY`, then start the server:
 
 ```powershell
 $env:BRAIN_API_KEY = "replace-with-a-random-token-of-at-least-24-bytes"
@@ -26,23 +26,26 @@ $env:OPENAI_API_KEY = "your-provider-key"
 go run ./cmd/brain -config examples/local.json
 ```
 
-On macOS or Linux, set the same variables with `export NAME="value"`, then run the Go command. Use distinct credentials for Brain and the model provider.
+On macOS or Linux, use `export BRAIN_API_KEY=...` and `export OPENAI_API_KEY=...`.
 
-The example listens on `http://127.0.0.1:8080` and stores working state in `.brain`. Copy the configuration to the ignored `brain.json` file to customize it. Paths resolve from the process working directory.
+With `examples/local.json`, Brain listens on `http://127.0.0.1:8080` and writes local state to `.brain/`. To customize your setup without touching tracked files, copy `examples/local.json` to `brain.json` (gitignored).
 
-## Run a session
+## 2. Run a session with the SDK
 
-In another terminal, set the same `BRAIN_API_KEY`, then:
+In a second terminal, set the same `BRAIN_API_KEY`, build the TypeScript client, and run the example script:
 
 ```powershell
+$env:BRAIN_API_KEY = "replace-with-a-random-token-of-at-least-24-bytes"
 npm --prefix sdks/typescript ci --ignore-scripts
 npm --prefix sdks/typescript run build
 node examples/session.mjs "Explain what makes a good agent tool."
 ```
 
-The example creates a Pi session, submits a message, and observes execution. It uses `openai/gpt-4.1-mini` by default. See [model configuration](/docs/reference/models) before choosing another model.
+This creates a Pi session using `openai/gpt-4.1-mini`, sends your prompt, and streams the response. See [Models & providers](/docs/reference/models) to use a different model.
 
-## Use HTTP directly
+## Or call the HTTP API directly
+
+Create a session:
 
 ```sh
 curl http://127.0.0.1:8080/sessions \
@@ -51,7 +54,7 @@ curl http://127.0.0.1:8080/sessions \
   -d '{"harness":"pi","config":{"model":"openai/gpt-4.1-mini","tools":[]}}'
 ```
 
-Copy the returned `id`, then submit a message:
+Then send a message using the returned session `id`:
 
 ```sh
 curl http://127.0.0.1:8080/sessions/SESSION_ID/events \
@@ -60,8 +63,10 @@ curl http://127.0.0.1:8080/sessions/SESSION_ID/events \
   -d '{"type":"user.message","text":"Hello","key":"first-message"}'
 ```
 
-`202 Accepted` means the input was recorded locally. Read or stream [events](/docs/reference/events) for the response. Session configuration is frozen at creation. Resume and observation do not trigger inference.
+`POST /sessions/{id}/events` returns `202 Accepted` once the message is saved and queued. Stream or poll `GET /sessions/{id}/events` to read the assistant's reply—see [Events & streaming](/docs/reference/events).
 
 ## Next steps
 
-Connect the [local tool service](/docs/tools/local-tools), integrate the [TypeScript client](/docs/sdks/typescript), or learn about [recovery](/docs/guides/persistence).
+- Try the [local tool server](/docs/tools/local-tools) (`echo`, `inspect_session`, and `ask_approval`)
+- Connect with the [TypeScript SDK](/docs/sdks/typescript) or [Python SDK](/docs/sdks/python)
+- Set up [checkpoint persistence and recovery](/docs/guides/persistence)

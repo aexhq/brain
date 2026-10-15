@@ -1,7 +1,13 @@
 ---
 title: Errors
-description: Keep client rejections, tool failures, and execution failures distinct.
+description: HTTP status codes, tool errors, and session error events.
 ---
+
+Brain separates errors into three layers so you always know whether a request was rejected, a tool call failed, or a turn crashed:
+
+1. **HTTP errors** — invalid requests, auth failures, state conflicts, or rate limits returned directly to the caller.
+2. **Tool errors (`tool.result`)** — failed, denied, or timed-out tool calls passed back to the model so it can decide how to proceed.
+3. **Session errors (`session.error`)** — model provider failures or internal runner errors that stop the current turn.
 
 ## HTTP errors
 
@@ -9,29 +15,28 @@ description: Keep client rejections, tool failures, and execution failures disti
 {"error":{"code":"conflict","message":"resume the interrupted session before sending input"},"request_id":"REQUEST_ID"}
 ```
 
-Every response carries `X-Request-ID`. Preserve it when reporting a problem.
+Every HTTP response includes an `X-Request-ID` header.
 
-| HTTP | Code | Action |
+| HTTP | Code | What to do |
 | --- | --- | --- |
-| 400 | `invalid_request` | Correct JSON or field values. |
+| 400 | `invalid_request` | Fix malformed JSON or invalid field values. |
 | 401 | `forbidden` | Supply a valid Bearer token. |
-| 403 | `forbidden` | Use a grant authorized for this operation. |
-| 404 | `not_found` | Check identity and scope; another tenant's sessions are hidden. |
-| 409 | `conflict` | Resolve lifecycle or idempotency-key conflict. |
-| 409 | `cursor_unavailable` | Re-read retained history and reconcile missing tail data. |
-| 413 | `invalid_request` | Reduce the request body. |
-| 422 | `unsupported` | Use an implemented/configured capability. |
-| 429 | `overloaded` | Respect `Retry-After: 1`; reduce admission pressure. |
-| 500 | `brain_error` | Investigate server logs with the request ID. |
+| 403 | `forbidden` | Use a token with sufficient permissions (`manage` or non-`read_only`). |
+| 404 | `not_found` | Check the session ID and tenant scope. |
+| 409 | `conflict` | Session is in the wrong state (for example, needs `resume`), or an idempotency `key` was reused with different input. |
+| 409 | `cursor_unavailable` | The requested cursor was lost after a checkpoint restore; reload event history from the beginning. |
+| 413 | `invalid_request` | Request body exceeds `input_bytes`. |
+| 422 | `unsupported` | Requested harness, model, tool, or delivery mode (`steer`) is not available. |
+| 429 | `overloaded` | Queue or active limit reached; back off (`Retry-After: 1`) and retry. |
+| 500 | `brain_error` | Check server logs for the `request_id`. |
 
-Rejecting an invalid client request does not terminate a healthy session. Clients do not automatically retry requests.
+## Tool errors (`tool.result`)
 
-## Tool errors
+When a tool returns `is_error: true`, returns an HTTP error, outputs invalid JSON, or times out, Brain records a `tool.result` event with `result.is_error: true` and passes it to the harness. If the network connection drops or times out after the tool request was sent, `result.unknown_outcome` is also set to `true` because the remote side effect may have already happened.
 
-Tool denial, timeout, malformed output, or transport failure is delivered as `tool.result` with `result.is_error`. The harness/model decides what to do next. `unknown_outcome` means the remote action may already have occurred. Automatic retries can duplicate effects, so the tool service owns safe retry policy.
+## Session errors (`session.error`)
 
-## Execution errors
-
-`session.error` identifies execution failure separately from tool results. A `brain_error` means Brain could not maintain trustworthy execution, such as a broken runner protocol or failed append. `provider_error` identifies a model-provider failure. Follow the session status, address the cause, and explicitly resume where allowed.
-
-Interrupting queued input can also produce `session.error` with `conflict`. Inspect its `input_id`; not every error event denotes a server defect.
+A `session.error` event means the turn itself could not finish:
+- `provider_error` — the LLM provider rejected the request or failed mid-stream.
+- `brain_error` — the harness process crashed, violated the stdio protocol, or local disk writes failed.
+- `conflict` — a queued message was cancelled because the session was interrupted or closed before that message ran (check `input_id` on the event).

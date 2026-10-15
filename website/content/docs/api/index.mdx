@@ -1,15 +1,13 @@
 ---
 title: HTTP API
-description: One current contract for sessions, events, tools, and recovery.
+description: Endpoints for sessions, event streams, checkpoints, and tools.
 ---
 
-The endpoint pages are generated from Brain's Go route declarations and wire types. Download the [OpenAPI document](/openapi.json) for your own tooling.
+Endpoint pages are generated directly from Brain's Go route declarations and wire types. You can also download the raw [OpenAPI 3.1 spec](/openapi.json).
 
-## Requests
+## Making requests
 
-The local default is `http://127.0.0.1:8080`. Send Bearer authentication on session and catalog requests and `Content-Type: application/json` for request bodies. Unknown JSON fields and trailing JSON data are rejected.
-
-Brain uses unversioned routes. The OpenAPI document's `current` metadata is not a compatibility guarantee. Pin the server, runner, and SDK artifacts together.
+The local server listens on `http://127.0.0.1:8080` by default. Send Bearer authentication on session and catalog requests and `Content-Type: application/json` for request bodies. Unknown JSON fields and trailing JSON data are rejected.
 
 ## Sessions
 
@@ -28,18 +26,13 @@ Brain uses unversioned routes. The OpenAPI document's `current` metadata is not 
 | Operation | Endpoint |
 | --- | --- |
 | [Flush](/docs/api/generated/flush) | `POST /sessions/{id}/flush` |
-| [Synchronization status](/docs/api/generated/sync) | `GET /sessions/{id}/sync` |
+| [Sync status](/docs/api/generated/sync) | `GET /sessions/{id}/sync` |
 | [Restore](/docs/api/generated/restore) | `POST /sessions/{id}/restore` |
 | [Tool catalog](/docs/api/generated/catalog) | `GET /catalog` |
 
-Health endpoints are described in [operations](/docs/guides/operations). They do not require authentication.
+Public health endpoints (`/health/live` and `/health/ready`) are covered in [Operations & observability](/docs/guides/operations).
 
 ## Pagination and streaming
 
-List endpoints accept `limit` from 1 to 1000, defaulting to 100. For session lists, `after` is the final session ID from the previous page. For event history, use `next_cursor` or the last durable event's opaque `cursor`.
-
-Select SSE with `Accept: text/event-stream`. Reconnect using `after` or `Last-Event-ID`; the query takes precedence. Streaming replays retained history and then follows live output. See [events](/docs/reference/events) and [errors](/docs/reference/errors).
-
-## Running examples
-
-Copy request examples into a terminal or backend client. Brain currently has no browser CORS policy, so this site does not offer a live request playground or forward credentials through a proxy.
+- **Pagination:** List endpoints accept `limit` (`1`–`1000`, default `100`). Pass the last session ID as `after` on `GET /sessions`, or pass `next_cursor` (or the last retained event's `cursor`) as `after` on `GET /sessions/{id}/events`.
+- **SSE streaming:** Send `Accept: text/event-stream` to `GET /sessions/{id}/events` to replay retained history and stream live events. To resume after a disconnect, pass `?after=CURSOR` or `Last-Event-ID: CURSOR` (`after` takes precedence). See [Events & streaming](/docs/reference/events) and [Errors](/docs/reference/errors).

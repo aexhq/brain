@@ -392,7 +392,7 @@
     }
   },
   "info": {
-    "description": "Local agent session server. Code and route declarations own this contract. Clean breaks are the default.",
+    "description": "HTTP API for the Brain agent session server.",
     "title": "Brain",
     "version": "current"
   },
@@ -400,7 +400,7 @@
   "paths": {
     "/catalog": {
       "get": {
-        "description": "List descriptors authorized for the caller's tenant. Host endpoints and credentials are excluded. Select tool names when creating a session.",
+        "description": "Lists tool descriptors available to the caller's tenant. Endpoint URLs and credentials are omitted.",
         "operationId": "catalog",
         "responses": {
           "200": {
@@ -434,7 +434,7 @@
     },
     "/sessions": {
       "get": {
-        "description": "List authorized session metadata in ascending ID order. Pass the last session ID as after for the next page. Optional PostgreSQL discovery is eventually consistent.",
+        "description": "Lists sessions belonging to the caller's tenant in ascending ID order. Pass the last session ID as after to fetch the next page.",
         "operationId": "list",
         "parameters": [
           {
@@ -446,7 +446,7 @@
             }
           },
           {
-            "description": "JSON page size; SSE replays all retained events in batches.",
+            "description": "Maximum number of items to return (JSON mode).",
             "in": "query",
             "name": "limit",
             "schema": {
@@ -487,7 +487,7 @@
         "summary": "List sessions"
       },
       "post": {
-        "description": "Create a tenant-owned session with frozen configuration. Requires an unrestricted management grant. Creation does not call a model; the runner starts on first execution.",
+        "description": "Creates a session for the caller's tenant. Requires a management token. Session settings (harness, model, instructions, reasoning effort, and tools) are fixed at creation. Creating a session records its metadata locally; the harness process starts when the first message is sent.",
         "operationId": "create",
         "requestBody": {
           "content": {
@@ -531,7 +531,7 @@
     },
     "/sessions/{id}": {
       "get": {
-        "description": "Read authorized session metadata. If local metadata is absent, configured external storage can hydrate the latest complete checkpoint. Reading does not invoke inference.",
+        "description": "Returns metadata and current status for a session. If the session is not on local disk and external storage is configured, Brain hydrates the latest published checkpoint.",
         "operationId": "get",
         "parameters": [
           {
@@ -577,7 +577,7 @@
     },
     "/sessions/{id}/close": {
       "post": {
-        "description": "Request terminal closure. Requires management access. Observe session.status for completion. History is retained; remote actions and resources are not rolled back or removed.",
+        "description": "Permanently closes a session and stops any active or queued work. Requires a management token. Event history remains readable.",
         "operationId": "close",
         "parameters": [
           {
@@ -623,7 +623,7 @@
     },
     "/sessions/{id}/events": {
       "get": {
-        "description": "Read a page of durable events as JSON, or send Accept: text/event-stream to replay history and observe live output. The after query takes precedence over Last-Event-ID. Durable SSE frames have id equal to the opaque event cursor; assistant.delta and tool.progress are provisional. Keepalives are comments. Slow observers disconnect and must reconnect explicitly; disconnecting does not cancel execution. An unavailable cursor returns 409.",
+        "description": "Returns a page of retained events as JSON, or streams history and live updates when called with Accept: text/event-stream. Pass after (or Last-Event-ID) with the last retained event's cursor to resume from a known position. Returns 409 cursor_unavailable if the cursor points to an unsynced tail lost during restore.",
         "operationId": "events",
         "parameters": [
           {
@@ -637,7 +637,7 @@
             }
           },
           {
-            "description": "Last retained opaque event cursor. Do not use an event ID or construct cursors.",
+            "description": "Opaque cursor from the last retained event.",
             "in": "query",
             "name": "after",
             "schema": {
@@ -645,7 +645,7 @@
             }
           },
           {
-            "description": "JSON page size; SSE replays all retained events in batches.",
+            "description": "Maximum number of items to return (JSON mode).",
             "in": "query",
             "name": "limit",
             "schema": {
@@ -656,7 +656,7 @@
             }
           },
           {
-            "description": "Reconnect cursor when the after query is absent.",
+            "description": "SSE reconnect cursor (used when the after query parameter is omitted).",
             "in": "header",
             "name": "Last-Event-ID",
             "schema": {
@@ -700,7 +700,7 @@
         "summary": "Read or stream events"
       },
       "post": {
-        "description": "Submit user.message with text and optional key. Delivery defaults to queue; steering is unsupported in this preview. Acceptance records input locally, not model consumption or external durability. Alternatively send user.interrupt without text, key, or delivery; this returns a status acknowledgement. Tool actions are never automatically replayed.",
+        "description": "Queues a user.message (with text and an optional idempotency key) or requests an interruption with user.interrupt. Returns 202 Accepted once the input is recorded locally.",
         "operationId": "send",
         "parameters": [
           {
@@ -763,7 +763,7 @@
     },
     "/sessions/{id}/flush": {
       "post": {
-        "description": "Publish local history and the latest completed native checkpoint. Requires management access and external storage. History may be newer than the resumable native boundary. Flush does not pause or invoke inference. Retain the immutable checkpoint reference for handoff.",
+        "description": "Uploads local event history and the latest completed checkpoint to external storage and returns the resulting checkpoint reference. Requires a management token and configured persistence.",
         "operationId": "flush",
         "parameters": [
           {
@@ -809,7 +809,7 @@
     },
     "/sessions/{id}/restore": {
       "post": {
-        "description": "Restore the immutable checkpoint reference returned by flush. Requires management access and external storage. Quiesce the previous owner; local active requests, streams, and execution must settle before cache replacement. Restore does not infer or undo remote effects. Resume explicitly before sending new input when interrupted.",
+        "description": "Replaces local session state with a specific checkpoint from external storage. Requires a management token and settled local execution.",
         "operationId": "restore",
         "parameters": [
           {
@@ -865,7 +865,7 @@
     },
     "/sessions/{id}/resume": {
       "post": {
-        "description": "Return an interrupted or failed session to idle using its last completed native checkpoint. Requires management access and settled execution. Resume alone does not call a model or replay tools. Closed sessions cannot resume.",
+        "description": "Moves an interrupted or failed session back to idle from its last completed checkpoint. Requires a management token. Send a new user.message after resuming to continue the conversation.",
         "operationId": "resume",
         "parameters": [
           {
@@ -911,7 +911,7 @@
     },
     "/sessions/{id}/sync": {
       "get": {
-        "description": "Report external publication, pending work, and synchronization errors. Requires configured external storage. A pending tail may be lost on machine failure.",
+        "description": "Returns the latest published checkpoint, pending upload state, and any sync error for the session. Requires configured persistence.",
         "operationId": "sync",
         "parameters": [
           {

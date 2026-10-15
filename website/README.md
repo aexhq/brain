@@ -1,10 +1,10 @@
-# Brain documentation
+# Brain documentation site
 
-The documentation site uses [Fumadocs](https://www.fumadocs.dev/), Next.js static export, and MDX. Its monochrome layout takes inspiration from [Better Auth's documentation](https://better-auth.com/docs), with Brain's own branding and content. It runs separately from the Brain server and adds no server runtime dependencies.
+The docs site is built with [Fumadocs](https://www.fumadocs.dev/), Next.js (static export), and MDX.
 
 ## Local development
 
-Use Go 1.26+, Node.js 24, and npm. From the repository root:
+Requires Go 1.26+, Node.js 24+, and npm. From the repository root:
 
 ```sh
 npm --prefix runners/pi ci --ignore-scripts
@@ -12,9 +12,9 @@ npm --prefix website ci --ignore-scripts
 npm --prefix website run dev
 ```
 
-Open http://127.0.0.1:3000/docs/. The dev command generates reference pages before starting Next.js; authored MDX updates live. Rerun `npm --prefix website run generate` after changing generated inputs.
+Open `http://127.0.0.1:3000/docs/`. `npm run dev` generates the API reference, Go interface docs, model catalog, and shared guides before starting Next.js. Rerun `npm --prefix website run generate` whenever you change those upstream sources.
 
-To preview the production export (Python 3 required):
+To build and test the static export (requires Python 3 for the local preview server):
 
 ```sh
 npm --prefix website run build
@@ -22,27 +22,24 @@ npm --prefix website test
 npm --prefix website start
 ```
 
-## Content and generation
+## Where content comes from
 
-| Source | Published output |
+| Source | Generated / published output |
 | --- | --- |
-| `content/docs/*.mdx` and subdirectories | Guides, usage, configuration, events, errors, and adapter documentation |
-| Root `api/openapi.json` | Endpoint pages and downloadable `/openapi.json` |
-| Root Go harness and persistence declarations | Adapter interfaces |
-| Pinned Pi runtime's offline model registry | Model catalog; availability does not imply live-provider qualification |
-| Root `docs/running-persistence.md` | Persistence and recovery guide |
-| Root `examples/tools/README.md` | Local tool and approval walkthrough |
+| `website/content/docs/**/*.mdx` | Authored guides and reference pages |
+| `api/openapi.json` | `/docs/api/generated/*` and `/openapi.json` |
+| `internal/harness` & `internal/persistence` | `/docs/adapters/interfaces` |
+| Pinned Pi runtime model registry | `/docs/reference/model-catalog` |
+| `docs/running-persistence.md` | `/docs/guides/persistence` |
+| `examples/tools/README.md` | `/docs/tools/local-tools` |
 
-`scripts/generate.mjs` owns generated pages, which are ignored by Git. Do not edit them directly. Regenerate the root API contract with `go run ./cmd/generate` when Go contracts change, then build the site. The model generator disables network refresh and local overrides and does not need provider credentials.
+`website/scripts/generate.mjs` writes all generated MDX files (which are gitignored—do not edit them by hand). If you change Go route definitions or wire types, run `go run ./cmd/generate` from the repo root first.
 
-Navigation order lives in each content directory's `meta.json`. The content loader is `lib/source.ts`; the shared layout and GitHub source branch live in `lib/layout.shared.tsx` and `lib/shared.ts`. `app/global.css` owns Brain's visual styling. Change the source branch when the repository transition is complete.
+## Static export
 
-## Static hosting
+`npm run build` outputs static files to `website/out/`, including:
+- HTML pages under `/docs/*`
+- Prebuilt search index at `/api/search`
+- LLM-friendly Markdown exports at `/llms.txt`, `/llms-full.txt`, and `/llms.mdx/docs/*`
 
-`npm run build` produces `out/`. Serve that directory with index-file support, preserving extensionless files such as `/api/search`, `/llms.txt`, and `/llms-full.txt`. No Node.js service, database, search service, or provider credentials are needed to serve the output. The OpenAPI reference shows request examples and schemas; execution stays in the developer's terminal or SDK because Brain does not expose browser CORS by default.
-
-Every page has a Markdown export under `/llms.mdx/docs/`. API Markdown includes the operation and its referenced schemas. Search uses a bundled static index. Nothing is published automatically by this repository.
-
-## Verification
-
-The root `node scripts/check.mjs` runs the documentation build and tests alongside the server, runner, SDK, and journey checks. Site tests validate internal links and anchors, API contract parity, schema references, search coverage, and Markdown exports. Builds also type-check the application. CI runs on Linux and Windows.
+Serve `website/out/` with any static file host that supports `index.html` resolution and preserves extensionless files (`/api/search`, `/llms.txt`, `/llms-full.txt`).

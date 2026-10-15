@@ -1,43 +1,33 @@
 # Brain roadmap
 
-Status: Draft  
-Date: 2026-10-15  
-Architecture: [ADR 0001](adr/0001-local-first-session-server.md)
+Next: [integration expansion](plans/08-integration-expansion.md) and [delivery, docs, and platform examples](plans/09-delivery-and-examples.md), informed by [current research](research/integration-options.md).
 
-Brain will provide a standalone, ephemeral agent server that developers embed in wider platforms. Its hot path uses local state; external persistence and integrations are optional. A machine failure may lose the unsynchronized tail. The roadmap delivers a useful local server first, then proves portability, isolation, and capacity incrementally.
+- **Status:** Draft
+- **Date:** 2026-10-15
+- **Architecture:** [ADR 0001](adr/0001-local-first-session-server.md)
 
-The release names below are planning gates, not calendar commitments. Implementation is underway: the local Pi server, clients, HTTP/SSE tools, and portable checkpoint path are implemented. Cross-platform CI and recording-provider tests cover the local core; cloud qualification, additional harnesses, catalog services, and capacity gates remain. Detailed work and acceptance checks live in the linked plans; this roadmap owns release scope and requirement coverage.
+Brain is built in stages: ship a solid local session server first, then prove external checkpoint portability, additional harnesses, external tool packages, and multi-instance scale.
 
-Current delivery scope is local development. Cloud deployment/qualification and production capacity claims are deferred. The complete roadmap remains below so the smaller cut does not silently remove the longer-term requirements.
+Currently, the local Pi server, TypeScript and Python SDKs, HTTP/SSE tools, and checkpoint archive adapters (filesystem, S3, R2, and PostgreSQL) are implemented and covered by local CI and process-level journey tests. Live cloud qualification, Codex/OpenCode runners, MCP, the broader tool catalog, and load/soak benchmarks are next.
 
-| Release gate | Developer outcome | Required scope | Release evidence |
+## Release stages
+
+| Stage | Goal | Scope | Verification gate |
 | --- | --- | --- | --- |
-| R0 Local preview | Run and manage several local Pi sessions through one server. | Original milestones 1-3: local metadata/events/native state, authenticated session/event API, streaming, interrupt/resume, external HTTP tools, an external approval example, current-session inspection, TypeScript client, observability, bounded queues. | Real Pi lifecycle/restart, distinct tool/Brain errors, tool-wait responsiveness, scope, reconnect, and local load checks. Native tools cannot bypass distributed bindings. |
-| R1 Portable state preview | Resume on a fresh server using external storage. | Original milestone 4: S3 and R2 transcript/checkpoint adapters, PostgreSQL metadata adapter, asynchronous batching/retries, explicit flush, synchronization progress, and external restore. | Real S3/R2/PostgreSQL contract tests; restore with empty caches; interrupted upload and storage-outage tests. The local preview still runs without those services. |
-| R2 Harness integration beta | Choose Pi, OpenCode, or Codex at session creation through the same Brain API. | First part of milestone 5: pinned adapters, only necessary capability distinctions, MCP, native resume/rewind where proven, and Python client. | Conformance verifies the next request after restore, input timing during tool waits, error boundaries, and exclusion of bypassing tools. Each integration has an executable example. |
-| R3 Tooling beta | Bind selected storage, research, browser, and compute tools to a session. | Remaining milestone 5: external catalog services/packages for S3/R2, Fly/Modal, code execution, browser access, search/fetch, and inspection. | Each service passes its provider/isolation tests and owns approval, job, and cleanup behavior. Packages can ship independently without adding core entities. |
-| R4 Operational release | Operate Brain as a bounded compute unit in a larger multi-tenant platform. | Milestone 6: measured scale-out, long-session validation, shutdown/handoff/restore runbooks, and supported deployment artifacts. | All advertised features pass required CI, provider/isolation suites, load/soak tests, and fresh-infrastructure restore drills. Published limits identify hardware and workload. No cross-release compatibility promise is added. |
+| **R0: Local preview** | Run and manage local Pi sessions through one server. | Local SQLite metadata, append-only event/native files, session & SSE API, interrupt/resume, HTTP/SSE tools, approval & inspection examples, TypeScript SDK, OpenTelemetry, bounded queues. | End-to-end Pi lifecycle, restart recovery, tool vs. session error separation, tool-wait responsiveness, tenant isolation, SSE reconnect, and overload checks. |
+| **R1: Portable state** | Move or recover sessions across servers using external object storage. | S3, R2, and filesystem checkpoint stores, optional PostgreSQL session index, background batching/retries, explicit `flush`/`sync`/`restore`. | PostgreSQL and S3/R2 contract suites, empty-cache restore with preserved prompt context, interrupted upload tests, and archive-outage backpressure tests. |
+| **R2: Multi-harness beta** | Choose Pi, OpenCode, or Codex per session through the same API. | Pinned OpenCode and Codex adapters, MCP tool transport, native resume/rewind where supported, and the Python SDK. | Conformance tests verifying next-turn context after restore, input queueing during tool waits, error boundaries, and complete disabling of local bypass tools. |
+| **R3: Tool catalog beta** | Attach ready-made storage, web research, browser, and compute tools. | External tool services for S3/R2 buckets, Fly/Modal sandboxes, code execution, browser bridges, and web search/fetch. | Per-service isolation, quota, approval, and cleanup tests against real providers. |
+| **R4: Operational release** | Run Brain as a predictable compute unit in a multi-tenant fleet. | Multi-instance load & soak benchmarks, long-session compaction/checkpoint measurements, and handoff/disaster-recovery drills. | All advertised adapters pass credentialed CI, soak suites, and fresh-infrastructure restore drills with published hardware/workload numbers. |
 
-R0 is the first implementation target. Persistence, additional harnesses, and catalog packages can progress independently after the shared lifecycle/tool contracts exist. None should become a prerequisite for local execution. R4 requires evidence for the features advertised in the stable release, rather than treating integration code as proof of support.
+## Feature ownership
 
-Configuration stays frozen at launch. The [API plan](plans/05-api-and-sdks.md#future-configuration-updates-proposed) leaves room for later edits through the same session/configuration shape: model/effort at idle boundaries first, then instructions/tools and active-work boundaries where justified. This work is not a local-preview prerequisite or a committed release gate. Every adapter must support passive restore, isolated remote tools, and disabled cache warming; steering and live tool replacement can remain explicit optional operations.
-
-| Requirement | Delivery owner | First delivery and completion |
+| Area | Plan | Target stages |
 | --- | --- | --- |
-| Harness independence with frozen bindings | [Harness plan](plans/03-harness-adapters.md) | Pi at R0; all three harnesses at R2. |
-| Language-neutral, distributed tools | [Tools plan](plans/04-distributed-tools.md) | HTTP/SSE at R0; MCP at R2; external browser/compute integrations at R3. |
-| Transcript/context with local cache and cloud storage | [Persistence plan](plans/02-external-persistence.md) | Local at R0; S3 and R2 at R1. A third cloud provider is deferred until demanded. |
-| Session metadata and SQL adapters | [Local plan](plans/01-local-runtime.md), [persistence plan](plans/02-external-persistence.md) | SQLite at R0; optional PostgreSQL at R1. |
-| First-party tools and resources | [Tools plan](plans/04-distributed-tools.md) | External inspection/approval examples at R0; launch catalog at R3. No in-core execution services. |
-| Multi-session and tenant/session scoping | [Local plan](plans/01-local-runtime.md), [tools plan](plans/04-distributed-tools.md) | Brain API/call scoping at R0; tool services enforce their resource authorization and execution isolation. |
-| Interactive and resumable sessions | [API plan](plans/05-api-and-sdks.md), [harness plan](plans/03-harness-adapters.md) | R0 lifecycle; per-harness capability coverage at R2; portable restore at R1. |
-| Low overhead and thousands of concurrent sessions | [Operations plan](plans/06-observability-and-operations.md) | Baseline at R0; measured capacity across independent instances at R4. |
-| Horizontal deployment and disaster recovery | [Persistence plan](plans/02-external-persistence.md), [operations plan](plans/06-observability-and-operations.md) | Restore at R1; host-controlled handoff and recovery drills at R4. |
-| Backpressure and bounded retries | [Local plan](plans/01-local-runtime.md), [persistence plan](plans/02-external-persistence.md) | Local admission limits at R0; external retry/backlog limits at R1. |
-| Observability and maintainable contracts | [Operations plan](plans/06-observability-and-operations.md), [API plan](plans/05-api-and-sdks.md) | Instrumentation and one code-owned current contract begin at R0. Clean breaks apply at every release unless explicitly overridden. |
-
-Brain owns session admission, scoped event/tool transport, persistence, and observability. Harnesses own inference/context/continuation; tool services own external execution, approvals, and cleanup. The host platform owns identity integration, placement, cross-instance ownership, autoscaling, global quotas, and regional failover. Brain needs no Environment framework, durable scheduler, broker, consensus service, or hosted control plane.
-
-Dependencies are added with the feature that needs them. Start with Go standard-library services, one SQLite driver, the pinned Pi runner, and OpenTelemetry. Add cloud SDKs, PostgreSQL access, and MCP only with their adapters. Each addition must identify the supported use case and why an existing dependency or platform facility is insufficient.
-
-Use the [implementation index](implementation-plan.md) to select the next task and the [verification plan](plans/07-verification-and-release.md) to determine release readiness. Performance numbers remain targets or measurements with stated conditions; the roadmap itself is not a capacity claim.
+| Server runtime & local state | [01 Local runtime](plans/01-local-runtime.md) | R0 |
+| Object checkpoints & PostgreSQL index | [02 External persistence](plans/02-external-persistence.md) | R1 |
+| Pi, OpenCode, and Codex runners | [03 Harness adapters](plans/03-harness-adapters.md) | R0 (Pi), R2 (OpenCode, Codex) |
+| HTTP/SSE, MCP, and external tool catalog | [04 Distributed tools](plans/04-distributed-tools.md) | R0 (HTTP/SSE), R2 (MCP), R3 (catalog) |
+| HTTP contract & TypeScript/Python SDKs | [05 API and SDKs](plans/05-api-and-sdks.md) | R0–R2 |
+| Telemetry, limits, Docker, and capacity | [06 Observability and operations](plans/06-observability-and-operations.md) | R0–R4 |
+| Test suites & release gates | [07 Verification and release](plans/07-verification-and-release.md) | R0–R4 |

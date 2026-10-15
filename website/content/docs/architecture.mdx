@@ -1,35 +1,34 @@
 ---
 title: Architecture
-description: Fast local execution with clear ownership boundaries.
+description: How Brain coordinates harnesses, external tools, and storage.
 ---
 
-## The execution path
+## Request flow
 
-Your application sends authenticated HTTP requests to a Go server. Brain records accepted input locally, admits it through a bounded session queue, and starts or reuses the selected harness process. Pi owns model requests and context management.
+1. **Client to Brain:** Your backend sends authenticated HTTP requests to Brain. Brain writes incoming messages to disk, queues them per session, and spawns or reuses the harness runner process.
+2. **Brain to Harness:** The harness (**Pi**) runs in a child process over stdio. It constructs prompts, calls the LLM provider, manages context compaction, and decides when the turn is finished.
+3. **Brain to Tools:** When the model calls a tool, the harness forwards the call to Brain. Brain attaches the authenticated `tenant_id`, `session_id`, and `call_id` and POSTs the call to the configured HTTP/SSE tool endpoint.
+4. **Streaming to observers:** As the turn runs, Brain appends durable events to disk and broadcasts both durable events and live deltas (`assistant.delta`, `tool.progress`) to connected SSE clients.
 
-Tool calls travel back through Brain to an authorized HTTP/SSE service. A result becomes native harness context; the harness decides when to continue. Brain publishes durable events and provisional stream output for observers.
+## Local state vs. external checkpoints
 
-## Working state and external state
+Active sessions run against local disk so turns never block on remote storage:
 
-SQLite stores session metadata. Local append-only files hold event history and native harness state. A completed turn establishes the resumable native boundary.
+- **SQLite** stores session metadata, tenant ownership, and frozen session config.
+- **Append-only files** store the session event log and native harness state.
 
-Optional background workers publish immutable checkpoint blocks and an eventual external session index. They have small queues, bounded retries, and admission backpressure. They never retry agent tool actions or poll the model.
+When external persistence is configured (local archive directory, S3, or R2), a background worker uploads 64 KiB transcript blocks and completed native checkpoints asynchronously. If a machine crashes before a background upload finishes, only the unsynced tail is lost; restoring from external storage always lands on the latest complete checkpoint.
 
-Local acceptance is not an external durability promise. Machine loss can discard an unsynchronized tail. Restore uses a complete published checkpoint and never silently invents a new session when saved state is unusable.
+## Ownership boundaries
 
-## Keep responsibilities small
-
-| Component | Owns |
+| Layer | Responsibility |
 | --- | --- |
-| Brain | Session coordination, scope, event/tool transport, bounded admission, working state, persistence integration, telemetry. |
-| Harness | Inference, context construction, compaction, continuation, native state. |
-| Tool service | External execution, resource access, approvals, jobs, idempotency, cleanup. |
-| Host platform | User identity, placement, cross-instance ownership, routing, scaling, global quotas, disaster recovery orchestration. |
+| **Brain** | HTTP API, tenant auth, input queueing, SSE streaming, tool dispatch, local state, background checkpoint sync, OpenTelemetry. |
+| **Harness** | LLM requests, prompt construction, context compaction, native session state. |
+| **Tool service** | Tool execution, sandboxes, external jobs, human approvals, retries, resource cleanup. |
+| **Host platform** | End-user auth, session routing/placement, single-owner enforcement, scaling, failover. |
 
-The documentation site builds separately into static files. It adds no service dependency to the Brain execution path.
+## Design references
 
-## Current direction
-
-The local preview is implemented and covered by process-level journeys. Broader harness support, cloud qualification, resource tools, and production capacity remain planned. Frozen configuration is a launch policy; future edits should use tested execution boundaries rather than require a new user-facing concept.
-
-Read the repository's [ADR](https://github.com/aexhq/brain/blob/successor/docs/adr/0001-local-first-session-server.md) and [roadmap](https://github.com/aexhq/brain/blob/successor/docs/roadmap.md). Plans describe proposed work; implementation and tests own current behavior.
+- [ADR 0001: Local-first ephemeral session server](https://github.com/aexhq/brain/blob/successor/docs/adr/0001-local-first-session-server.md)
+- [Roadmap](https://github.com/aexhq/brain/blob/successor/docs/roadmap.md)

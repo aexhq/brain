@@ -1,34 +1,23 @@
-# External persistence implementation plan
+# 02: External persistence plan
 
-Status: Draft  
-Release: R1, milestone M4  
-Prerequisite: local storage and a tested Pi checkpoint boundary from [R0](01-local-runtime.md)
+- **Release:** R1 ([Roadmap](../roadmap.md))
+- **Prerequisite:** Local storage and Pi checkpoint recovery from [01 Local runtime](01-local-runtime.md)
 
-Add optional external persistence without placing a remote commit on every input, token, or tool call. SQLite and local files remain the active instance's working state. S3/R2 hold immutable transcript segments and native checkpoints; optional PostgreSQL holds discoverable session metadata. A complete checkpoint must contain enough configuration to restore a session even when a metadata index is behind.
+Add optional background checkpoint storage (filesystem, AWS S3, and Cloudflare R2) and an optional PostgreSQL session discovery index without putting remote network writes on the hot turn path.
 
-| Work item | Implementation | Acceptance |
+## Work items
+
+| ID | Scope | Acceptance criteria |
 | --- | --- | --- |
-| P1 Storage contracts | Define the current segment/checkpoint shape, object references, selected history boundary, frozen configuration, and sync progress. Include the native state needed by the selected adapter. Build a filesystem-backed test store. | A checkpoint identifies one valid transcript/native boundary and its dependencies. Unreadable state fails explicitly. Metadata references cannot make an incomplete upload restorable. No schema-version or migration subsystem is introduced. |
-| P2 S3 and R2 | Implement the required object operations with a maintained SDK. Share transport code where supported, while keeping provider configuration and conformance cases explicit. Upload immutable transcript segments and bounded native-state artifacts by size/age. | Real tests cover both providers, repeated upload, pagination/range reads where used, credentials, and retrieval. No whole-conversation rewrite or object PUT per token is required. |
-| P3 Synchronization worker | Run one ordered flush path per session with bounded concurrency across sessions. Queue references to local pending data, use bounded backoff for transient failures, and add explicit flush/status operations. | Repeated flushes do not duplicate logical history. Failed uploads retain pending local data. Queue/disk budgets stop admission before exhaustion. Nonretryable failures are surfaced and do not spin. |
-| P4 External metadata | Add a PostgreSQL adapter for session configuration, discovery, and checkpoint references. Batch updates outside the hot execution path. Keep it optional and document eventual list/status freshness. | The same session metadata contract works locally and externally. Tenant scope is preserved. Fresh metadata never points to an unpublished checkpoint. Missing PostgreSQL configuration does not disable local execution or object storage. |
-| P5 Restore and handoff | Restore locally on a usable hit; otherwise hydrate a complete external checkpoint into staging and publish after validation. Support an explicit checkpoint on reassignment. | A fresh process resumes saved context, verified by its next model request. An old cache cannot override reassignment. Incomplete uploads/missing artifacts produce errors. Cache hits at the LLM provider are not part of this guarantee. |
-| P6 Recovery evidence | Add upload interruption, storage outage, backlog pressure, process death, and fresh-infrastructure restore tests. Document the operator's recovery procedure with the operations plan. | Saved checkpoint references remain usable after cache loss. The recovery report states the actual transcript/native boundary and identifies any unavailable tail. |
+| **P1: Archive format** | Define immutable 64 KiB block keys, bounded tail objects, checkpoint manifests, `latest` pointers, and the filesystem archive store. | A manifest is published only after all referenced blocks and native files exist; incomplete uploads are never visible as valid checkpoints. |
+| **P2: S3 and R2 stores** | Implement `persistence.Objects` for S3 and Cloudflare R2, reusing already uploaded 64 KiB blocks across checkpoints. | Contract tests cover immutable puts, idempotent retries, missing objects (`ErrNotFound`), prefix scoping, and 2 MiB object size caps. |
+| **P3: Background sync worker** | Per-session ordered upload worker, bounded sync queue, exponential backoff (up to 5 tries) for transient errors, and `flush`/`sync` routes. | Transient errors retry; credential/config errors fail immediately; full sync queues reject new inputs (`429`) and mark `/health/ready` as `503`. |
+| **P4: PostgreSQL index** | Optional `persistence.Metadata` adapter in PostgreSQL updated after checkpoint publication. | `GET /sessions` and `GET /sessions/{id}` work across instances; tenant isolation holds; index rows never point to unpublished checkpoints. |
+| **P5: Restore and handoff** | Automatic hydration on local cache miss (`GET /sessions/{id}`) and explicit checkpoint replacement (`POST /sessions/{id}/restore`). | Restoring into a fresh directory and sending the next message preserves Pi's conversation context; replaced local caches are saved as `SESSION_ID-replaced-ID`. |
+| **P6: Failure & outage tests** | Test interrupted uploads, archive outages, queue backpressure, crash recovery, and handoff between server instances. | See [Persistence and recovery](../running-persistence.md) for the operator handoff runbook and guarantees. |
 
-The write sequence is local append, immutable segment/artifact upload, native checkpoint upload, then publication of the complete checkpoint manifest. Update the external metadata reference afterward. Local eviction may remove synchronized data only when a retained remote copy satisfies the relevant read/restore contract; pending data is not evictable to relieve overload.
+## Design notes
 
-Report uploaded transcript progress separately from the latest resumable native checkpoint. Uploaded messages alone do not imply resumable execution. Exclude harness credential files and rebind credentials through the host on restore. Remote files, jobs, browser state, and sandboxes remain owned by tool services; retain their references where the native conversation requires them, without promising restoration of those external resources.
-
-Append new transcript segments instead of uploading the full history each turn. Preserve prior segments through compaction/rewind; update the selected boundary and native context without modifying earlier records. Native persistence can still amplify writes: measure cumulative local/uploaded bytes over long sessions and use native append offsets or unchanged-object reuse where available. If only full snapshots exist, checkpoint less frequently and report the resulting recovery boundary. Do not add per-turn full-history hashing or a content-addressed storage layer by default.
-
-Define explicit flush as capturing a target local position and reporting what reached external storage. It reports both transcript progress and the usable resume checkpoint. Flush alone does not pause a running harness. For handoff, the host first brings execution to a supported stable boundary, requests checkpoint/flush, verifies the returned reference, then reassigns the session. If the adapter cannot checkpoint the current state, the API returns that limitation instead of claiming resumability.
-
-External stores do not provide cross-instance session ownership. The host must quiesce the previous owner and its writes before an intentional handoff. Immutable checkpoint references protect saved contents from delayed uploads; discovery metadata is not an ownership lock. Restore a specified checkpoint during handoff. If the host permits concurrent owners, Brain does not promise a merged transcript or coordinated side effects.
-
-Retry transient storage failures within a bounded budget. Invalid credentials, unreadable data, and invalid paths require correction rather than indefinite retries. Explicit flush surfaces failure; asynchronous failures appear in synchronization status, logs, metrics, and admission decisions. A restart with surviving disk can rediscover pending segments; a lost disk may lose unsynchronized work. Storage retries do not authorize replaying tool calls.
-
-S3 and R2 are the launch cloud stores. Use their supported object operations rather than assuming a portable append-in-place API. PostgreSQL is the first external SQL adapter; further SQL engines and a third cloud store require demand and the same contract suite. Provider-specific capabilities stay in adapters.
-
-Recovery is tested with the same shipped runtime/dependency set. A newer release has no obligation to read older Brain or harness state; use the corresponding old artifact to recover it, or make an explicit future compatibility exception. Do not silently migrate, delete, or reset saved data.
-
-The [API plan](05-api-and-sdks.md) defines lost-tail cursor behavior. The [operations plan](06-observability-and-operations.md) defines host-controlled recovery. Backup/replication policies and regional recovery objectives remain deployment choices, not guarantees of asynchronous flush.
+- **Write order:** Local append $\rightarrow$ 64 KiB block and tail uploads $\rightarrow$ native checkpoint file uploads $\rightarrow$ checkpoint manifest upload $\rightarrow$ `latest` pointer + optional PostgreSQL metadata update.
+- **History vs. resumable boundary:** Flushing during a running turn can upload events (`history_bytes`) that are newer than the last completed turn (`resume_offset` / `native_checkpoint`). Both offsets are reported in `SyncStatus`.
+- **Single owner per session:** External object storage and PostgreSQL do not provide distributed locking. The host platform must stop the old instance before restoring and resuming on a new instance.

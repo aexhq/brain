@@ -1,11 +1,17 @@
 ---
 title: Host configuration
-description: Configure the listener, grants, harnesses, providers, tools, and bounds.
+description: Configure the listener, auth tokens, harnesses, model providers, tools, and resource limits.
 ---
 
-Pass a JSON file with `go run ./cmd/brain -config brain.json`. Add `-check` to validate without starting the listener. Unknown fields and trailing JSON are rejected. Paths are relative to the process working directory.
+Pass your configuration file with `-config`:
 
-## Minimal configuration
+```sh
+go run ./cmd/brain -config brain.json
+```
+
+Add `-check` to validate the file and exit without starting the server. Unknown JSON fields and trailing data are rejected. Relative paths resolve from the working directory of the Brain process.
+
+## Minimal example
 
 ```json
 {
@@ -19,46 +25,44 @@ Pass a JSON file with `go run ./cmd/brain -config brain.json`. Add `-check` to v
 }
 ```
 
-| Field | Purpose |
+| Field | Description |
 | --- | --- |
-| `listen` | Host:port. Defaults to `127.0.0.1:8080`. |
-| `public_url` | Brain URL passed to scoped inspection tools. Defaults to `http://127.0.0.1:8080`. |
-| `data_dir` | SQLite and local session files. Defaults to `.brain`. |
-| `tokens` | [Tenant/session grants](/docs/guides/authentication), with credentials named by environment variable. |
-| `harnesses` | Harness name to command array; at least one is required. |
-| `providers` | Provider name to `api_key_env`, optional `base_url` and `api`. |
-| `tools` | Host-owned [tool bindings](/docs/tools). |
-| `limits` | Optional resource limits below. Omitted fields retain defaults. |
-| `persistence` | Optional external checkpoint configuration below. |
+| `listen` | Address and port to bind. Defaults to `127.0.0.1:8080`. |
+| `public_url` | Base URL passed to tools with `inspect_session: true`. Defaults to `http://127.0.0.1:8080`. |
+| `data_dir` | Local directory for SQLite and session files. Defaults to `.brain`. |
+| `tokens` | [Token grants](/docs/guides/authentication); each entry reads its secret from `token_env`. |
+| `harnesses` | Map of harness name (`pi`) to command array. At least one harness is required. |
+| `providers` | Map of provider name to `api_key_env` (plus optional `base_url` and `api`). |
+| `tools` | Array of [external tool descriptors](/docs/tools). |
+| `limits` | Optional resource limits (see table below). |
+| `persistence` | Optional external checkpoint storage settings (see table below). |
 
-Provider keys must be present for every configured provider. Session model IDs use `provider/model`. Credentials are not model arguments or saved native context.
+Every configured provider must have its `api_key_env` environment variable set at startup.
 
-## Resource limits
+## Resource limits (`limits`)
 
-| `limits` field | Default | Constraint / meaning |
+| Field | Default | Allowed range / meaning |
 | --- | ---: | --- |
-| `active` | 16 | At least 1 active execution slot. |
-| `loaded` | 1024 | At least `active`; loaded session entries. |
-| `queue` | 16 | 1–1024 queued inputs per session. |
-| `input_bytes` | 65536 | 1–1,048,576; input text bound. |
-| `session_bytes` | 1073741824 | At least 16 MiB; per-session storage bounds. |
-| `subscribers` | 128 | At least 1 concurrent SSE observer. |
-| `subscriber_events` | 128 | At least 1 queued event per observer. |
-| `subscriber_bytes` | 2097152 | At least 4096 queued bytes per observer. |
+| `active` | 16 | Minimum `1`. Maximum concurrent running turns across the server. |
+| `loaded` | 1024 | Minimum `active`. Maximum in-memory/loaded sessions. |
+| `queue` | 16 | `1`–`1024`. Maximum queued inputs per session. |
+| `input_bytes` | 65536 | `1`–`1048576` (1 MiB). Maximum byte length of a user message. |
+| `session_bytes` | 1073741824 | Minimum `16777216` (16 MiB). Maximum local disk usage per session. |
+| `subscribers` | 128 | Minimum `1`. Maximum concurrent SSE connections across the server. |
+| `subscriber_events` | 128 | Minimum `1`. Buffered events per SSE subscriber before disconnect. |
+| `subscriber_bytes` | 2097152 | Minimum `4096`. Buffered bytes per SSE subscriber before disconnect. |
 
-These are configured bounds, not measured throughput guarantees. See [operations](/docs/guides/operations).
+## External persistence (`persistence`)
 
-## External persistence
-
-| Field | Purpose |
+| Field | Description |
 | --- | --- |
-| `provider` | `filesystem`, `s3`, or `r2`. |
-| `directory` | Required for filesystem storage. |
-| `bucket` | Required for S3/R2. |
-| `region`, `endpoint`, `prefix` | Storage location and optional key prefix. R2 requires an endpoint and defaults to region `auto`. |
-| `access_key_env`, `secret_key_env` | Names of credential variables; required for R2. S3 also supports the AWS SDK credential chain. |
-| `postgres_env` | Optional variable containing the PostgreSQL connection string. |
-| `interval_seconds` | Default 5; range 1–3600. |
-| `queue` | Default 128; range 1–10,000 pending session references. |
+| `provider` | `"filesystem"`, `"s3"`, or `"r2"`. |
+| `directory` | Target path on disk (required when `provider` is `"filesystem"`). |
+| `bucket` | Bucket name (required for `"s3"` and `"r2"`). |
+| `region`, `endpoint`, `prefix` | Region, custom S3/R2 endpoint URL, and optional object key prefix. R2 requires `endpoint` and defaults to region `"auto"`. |
+| `access_key_env`, `secret_key_env` | Environment variable names for credentials (required for R2; optional for S3 when using IAM/default credential chain). |
+| `postgres_env` | Optional environment variable containing a PostgreSQL connection string for session indexing. |
+| `interval_seconds` | Background sync interval in seconds. Default `5`, range `1`–`3600`. |
+| `queue` | Maximum pending session sync entries. Default `128`, range `1`–`10000`. |
 
-Read [persistence and recovery](/docs/guides/persistence) for publication, retries, and handoff. S3/R2 adapters have transport tests; live cloud-account qualification remains pending.
+See [Persistence & recovery](/docs/guides/persistence) for setup details and handoff steps.

@@ -149,15 +149,15 @@ func main() {
 		if route.Name == "list" || route.Name == "events" {
 			afterDescription := "Last session ID from the previous page."
 			if route.Name == "events" {
-				afterDescription = "Last retained opaque event cursor. Do not use an event ID or construct cursors."
+				afterDescription = "Opaque cursor from the last retained event."
 			}
 			parameters = append(parameters,
 				map[string]any{"name": "after", "in": "query", "description": afterDescription, "schema": map[string]any{"type": "string"}},
-				map[string]any{"name": "limit", "in": "query", "description": "JSON page size; SSE replays all retained events in batches.", "schema": map[string]any{"type": "integer", "default": 100, "minimum": 1, "maximum": 1000}},
+				map[string]any{"name": "limit", "in": "query", "description": "Maximum number of items to return (JSON mode).", "schema": map[string]any{"type": "integer", "default": 100, "minimum": 1, "maximum": 1000}},
 			)
 		}
 		if route.Name == "events" {
-			parameters = append(parameters, map[string]any{"name": "Last-Event-ID", "in": "header", "description": "Reconnect cursor when the after query is absent.", "schema": map[string]any{"type": "string"}})
+			parameters = append(parameters, map[string]any{"name": "Last-Event-ID", "in": "header", "description": "SSE reconnect cursor (used when the after query parameter is omitted).", "schema": map[string]any{"type": "string"}})
 		}
 		if len(parameters) != 0 {
 			op["parameters"] = parameters
@@ -173,7 +173,7 @@ func main() {
 	}
 	routes, _ := json.MarshalIndent(routeValues, "", "  ")
 	fmt.Fprintf(&ts, "export const routes = %s as const;\n", routes)
-	apiDoc := map[string]any{"openapi": "3.1.0", "info": map[string]string{"title": "Brain", "version": "current", "description": "Local agent session server. Code and route declarations own this contract. Clean breaks are the default."}, "servers": []any{map[string]string{"url": "http://127.0.0.1:8080", "description": "Local development"}}, "paths": paths, "components": map[string]any{"schemas": schemas, "securitySchemes": map[string]any{"bearer": map[string]string{"type": "http", "scheme": "bearer"}}}}
+	apiDoc := map[string]any{"openapi": "3.1.0", "info": map[string]string{"title": "Brain", "version": "current", "description": "HTTP API for the Brain agent session server."}, "servers": []any{map[string]string{"url": "http://127.0.0.1:8080", "description": "Local development"}}, "paths": paths, "components": map[string]any{"schemas": schemas, "securitySchemes": map[string]any{"bearer": map[string]string{"type": "http", "scheme": "bearer"}}}}
 	doc, _ := json.MarshalIndent(apiDoc, "", "  ")
 	visit(reflect.TypeFor[harness.Options]())
 	visit(reflect.TypeFor[harness.RunnerFrame]())
