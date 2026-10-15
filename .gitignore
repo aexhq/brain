@@ -10,3 +10,9 @@ tests/release/built/
 .claude/
 
 __pycache__/
+/.build/
+/.test-output/
+/.brain/
+**/.test-output/
+*.egg-info/
+.wrangler/

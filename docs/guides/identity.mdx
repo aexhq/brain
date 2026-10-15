@@ -1,0 +1,123 @@
+---
+title: Authenticate users and delegate access
+description: Use signed identity tokens and revocable session grants without giving applications an operator key.
+---
+
+Brain accepts access tokens from explicitly installed identity issuers. Applications can use
+their existing login flow, keep users in separate tenants, and delegate less authority to a
+session worker. The login flow and account membership remain your application's responsibility.
+
+This guide describes the Session API v2 source distribution, not an already-published v1
+package. Source setup and verification commands are in
+[CONTRIBUTING.md](https://github.com/aexhq/brain/blob/main/CONTRIBUTING.md#session-api-v2-source-distribution).
+
+## Use an issued access token
+
+After your operator configures an issuer, pass an access token from your login library.
+Choose TypeScript or Python; neither client needs an operator key.
+
+```ts
+import { SessionClient } from "@aexhq/brain/v2";
+
+const token = process.env.OIDC_ACCESS_TOKEN;
+if (!token) throw new Error("OIDC_ACCESS_TOKEN is required");
+const brain = new SessionClient({ url: process.env.BRAIN_URL, token });
+const identity = await brain.identity();
+console.log(identity.tenant, identity.subject);
+```
+
+```python
+import os
+from brain import Brain
+
+brain = Brain(os.environ["BRAIN_URL"], os.environ["OIDC_ACCESS_TOKEN"])
+identity = brain.identity()
+print(identity["tenant"], identity["subject"])
+```
+
+`GET /v2/identity` returns only the caller's tenant, stable source identity, permissions,
+expiry and any session-grant identity. It does not return the bearer token. The source
+identity remains stable across signing-key rotation and is derived from the issuer and
+subject together.
+
+## Install an issuer
+
+Set `BRAIN_IDENTITY_ISSUERS` to a JSON array using your issuer's actual values:
+
+```json
+[
+  {
+    "issuer": "https://login.example.org/",
+    "audience": "brain",
+    "jwks_url": "https://login.example.org/.well-known/jwks.json",
+    "tenant_claim": "organization_id",
+    "permissions": [
+      "session:create", "session:list", "session:read", "input:write",
+      "participant:grant", "participant:revoke"
+    ]
+  }
+]
+```
+
+The issuer must sign `iss`, `aud`, `sub`, `iat`, `exp`, and the configured tenant claim.
+Use `"tenant": "your-tenant"` instead of `tenant_claim` for a fixed tenant. Supply exactly
+one mapping. Tenant identifiers use letters, numbers, periods, underscores, colons or
+hyphens and start with a letter or number.
+
+Permissions come from this startup configuration, not a token's `roles` or `scope` claims.
+Identity tokens never become operator credentials. `X-Brain-Tenant` cannot override their
+signed tenant. Keep the separate operator key in the control plane.
+
+Brain verifies RS256 and ES256 signatures against the configured JWKS URL. It never follows
+a token-supplied key URL or an HTTP redirect. Public key endpoints require HTTPS; explicit
+development mode permits HTTP only on loopback. Publish a new `kid` when rotating a key.
+
+Optional issuer settings are:
+
+| Setting | Default | Allowed range |
+| --- | --- | --- |
+| `max_token_ms` | One hour | One second to one day |
+| `cache_ms` | Five minutes | One second to one hour |
+| `refresh_ms` | Five seconds | One second to one minute, no greater than `cache_ms` |
+
+An unknown key may refresh the cache only after the refresh interval. Expired cached keys
+cannot authorize a request when refresh fails. Installed issuers, key sets and tokens are
+bounded: at most 16 issuers, 64 keys per set, a 256-KiB JWKS response and a 16-KiB token.
+Issuer and service clocks must be synchronized.
+
+## Delegate less authority
+
+For an existing `session` and the `identity` above:
+
+```ts
+const grant = await session.grant({
+  request_id: crypto.randomUUID(),
+  subject: identity.subject,
+  permissions: ["session:read", "input:write"],
+  expires_ms: Math.min(identity.expires_ms!, Date.now() + 60_000),
+});
+const worker = new SessionClient({ url: brain.url, token: grant.token });
+await worker.session(session.id).send("Continue this session");
+await session.revokeParticipant(grant.id);
+```
+
+A delegated grant cannot change the authenticated source, add permissions or outlive its
+parent authority. SQL retains its parent lineage. Revoking an ancestor immediately invalidates
+descendants, including an authentication snapshot captured before the revocation. A participant
+may revoke itself or a descendant, never a parent or sibling. Replaying an old grant request
+does not revive a revoked token.
+
+A lineage allows at most eight descendant levels, and a session retains at most 1,024 grant
+records. These bounds apply even when requests arrive through different API nodes.
+
+An application connection attached by an authenticated subject retains that `claim_subject`.
+A worker delegated `operation:claim` can claim that subject's original application invocations,
+using their exact connection ID and generation. Another subject in the same tenant cannot
+take the claim. Public claims cannot take over model calls or server-dispatched HTTP work.
+Connection attachment does not issue a dispatch permit; each operation still needs its own
+one-use claim.
+
+Token expiry and revocation close authenticated event streams and deny new mutations. They do
+not cancel work already durably admitted by the session. Use an explicit session control for
+cancellation. Original operation receipt authority remains separate so that a late result can
+still be recorded as evidence.

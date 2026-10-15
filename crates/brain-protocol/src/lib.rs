@@ -18,6 +18,7 @@ pub mod harness;
 pub mod ids;
 pub mod model;
 mod schema;
+pub mod session_v2;
 pub mod tool;
 
 pub use agentloop::*;

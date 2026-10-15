@@ -1,0 +1,16 @@
+{
+  "name": "brain-control",
+  "main": "dist/worker.mjs",
+  "compatibility_date": "2026-07-30",
+  "workers_dev": false,
+  "build": {
+    "command": "npm run build"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "brain-control",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ]
+}

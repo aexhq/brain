@@ -1,123 +1,459 @@
 ---
 title: Session history and recovery
-description: Event ordering, delivery, persistence and restart behavior.
+description: Read ordered records, distinguish missing bytes from unknown effects, and recover supported work.
 ---
 
-Use [Sessions](/brain/docs/concepts/sessions) for application examples. This page defines what
-saved history, event delivery and interruption mean for your app.
+Brain keeps a conversation's identity when clients disconnect or its execution moves. Read its
+records separately from its runs and operations: available history does not prove that work
+completed, and missing history does not mean that a completed effect can be repeated.
 
-## Saved history
+An action awaiting approval reports a typed `dispatch` wait. Its original saved
+decision and step remain intact until the exact approval permits a one-use claim.
+It does not keep an active loop or consume the approval answer as an action result.
+Use a written approval boundary for planned restarts; killing a process between
+allocation and record confirmation can leave an explicit unresolved position.
 
-`session.transcript()` returns the current model messages and `through_sequence`.
-`session.events(after)` reads committed events in sequence order; `session.stream(after)` reads
-those events and then follows new ones. Reads do not require an active agent turn.
+This page describes the Session API v2 source distribution. Published v1 runtimes use their
+matching release documentation and data layout; replacing a layout marker is not an upgrade.
+Source setup and verification commands are in
+[CONTRIBUTING.md](https://github.com/aexhq/brain/blob/main/CONTRIBUTING.md#session-api-v2-source-distribution).
+Use [identity tokens and participant grants](../guides/identity) for tenant-scoped application
+access without sharing an operator key.
 
-The loop chooses which tool observations become model messages. A model call alone does not
-change the saved transcript. Transcript/state changes are saved independently before returning
-to the loop, so a failed turn may contain completed writes and external actions.
+## Read a page or follow new records
 
-Every committed lifecycle, model/tool call, transcript and loop-state change has one session
-sequence. `(sessionId, sequence)` identifies a record. `transcript_delta` carries `{ keep, append }`;
-`kv_set` carries `{ key, value }`; `kv_delete` carries `{ key }`. A consumer can reconstruct those
-projections by processing the events in order and persisting its cursor.
-
-## Reading events
-
-This continuation assumes the quickstart's `session`. `handle` and `saveCursor` are your own
-consumer and durable cursor store:
+Given a v2 SDK `session`, read without starting another turn:
 
 ```ts
-let cursor = 0;
-for await (const event of session.events(cursor)) {
-  await handle(event);
-  cursor = event.sequence;
-  await saveCursor(cursor);
+const page = await session.records("0", 64);
+for (const record of page.records) {
+  console.log(record.sequence, record.kind, record.data);
+}
+console.log({ gaps: page.gaps, next: page.next, more: page.more });
+```
+
+Use `page.next` as the next page's `after` cursor. A sequence is a decimal **string**, including
+in JavaScript. Only `(session_id, sequence)` names a record; node names and ownership epochs do not.
+
+`session.events({ after, signal })` follows durable records through authenticated SSE. Each event
+is a `record` or an explicit `gap`. Your consumer owns durable cursor storage and reconnection.
+Processing and saving a cursor separately can cause redelivery. Keep a separate list of unresolved
+or unavailable intervals if you want to revisit them when old storage returns: advancing a stream
+cursor does not assert that every earlier position had readable bytes.
+
+Collection pages have both count and byte limits. For runs, operations, interactions,
+connections, files, state, memory and schedules, use the last returned ID, file name or
+document key as the exclusive `after` cursor. Continue until an **empty** page, not until a
+page contains fewer than the requested number of items. SDK iterators handle this:
+
+```ts
+for await (const operation of session.allOperations()) {
+  console.log(operation.id, operation.status);
+}
+for await (const document of session.allDocuments("memory")) {
+  console.log(document.key, document.value);
 }
 ```
 
-Finite HTTP pages contain at most 1,000 events and normally at most 8 MiB of records. An oversized
-next event is returned alone so the cursor can advance. The SDK follows pages for you.
+Python provides `session.all_operations()` and `session.all_documents("memory")`, with
+equivalent iterators for the other collections. These are live traversals, not snapshots;
+concurrent insertion before an already-consumed cursor is not included.
 
-For live HTTP delivery, send `Accept: text/event-stream` to
-`GET /v1/sessions/{id}/events?after={cursor}` with your API bearer token. SSE first catches up from
-saved history, then follows new commits. Model token deltas are live-only and have no sequence;
-reconnect to recover the completed model result, not missed deltas. Historical telemetry needs a
-configured sink.
+Operation lists and the operations export section return compact control views. A result
+body can leave that view after verified archival, so `result_available: false` on a list
+entry does not prove the archived bytes are lost. Read `session.operation(id)` in either
+SDK to hydrate that operation's original result. If that read still reports unavailable
+bytes, its known completion or uncertainty remains authoritative; do not repeat the effect.
 
-Your application owns reconnection, cursor persistence, retries and deduplication when forwarding
-events elsewhere. Processing an event and saving its cursor separately can cause redelivery after
-a crash. The event stream is not an external queue or backup.
+An execution notification is never permission to run application code. Claim the operation through
+the API once. An application promising crash recovery must also persist its own claim and receipt
+before reporting the result.
 
-### Event origin
+## Delete without losing the original outcome
 
-Recorded events expose their payload as `event.data` and, where present, Brain-assigned provenance
-as `event.origin`. Origins can identify an agent loop, tool or environment. Extension-supplied
-payload fields cannot override that origin. Older events may lack origin; do not infer authorship
-from an event's name. Origin identifies its source, not the truth of its contents or human approval.
+`session.delete()` immediately hides the session, cancels its work and revokes its
+participants and connections. It cannot recall an already-issued execution permit
+or a packet already sent. An original recipient can still use its retained receipt
+token to report the original outcome, including after a retained-volume restart.
 
-## Turns, results and failure
+Deleted-session receipts preserve the original outcome digest, bounded error
+metadata and sparse usage counters. Result bodies are discarded; provider payloads
+become unavailable digest-and-size evidence. The receipt response reports
+`result_available: false`. Reporting a known completion never restores history,
+permissions, package readiness or runnable work. Repeating unchanged original
+evidence is idempotent; changing a settled receipt conflicts.
 
-`session.submit()` returns the committed `turn_started` sequence. `session.outcome(sequence)`
-reads that turn as `pending`, `ended` or `failed`. Terminal outcomes include the original event
-and, when the loop emitted one, an assistant answer. An idle session does not prove a successful
-turn; an ended turn does not prove every tool or background job succeeded.
+An indexed cleanup queue discards existing control result bodies in bounded
+batches: up to 32 operations in SQLite/PostgreSQL or one operation per D1 atomic
+plan. Partially processed sessions rotate behind other pending deletions. An
+explicit discarded-result fact allows known outcomes to release unbound
+control and retained local output reservations once. Unknown outcomes retain their
+allowances, and incomplete model usage retains its token hold.
 
-Brain saves a model/tool/environment operation before dispatch and sends it once. It saves the
-observation before returning it to the loop. Tool events distinguish emitted results, synchronous
-return and final completion; returning need not finish background work.
+This source behavior is not complete physical erasure. Existing transcript/archive
+copies, files, checkpoints, configuration and custody require the full retention
+and backup lifecycle; their physical collection is not implied by a successful
+delete or by reclaiming an output reserve. Keep the matching runtime and retained
+data until a verified migration and rollback are available.
 
-| Outcome | Meaning |
+## Complete sparse usage without repeating work
+
+When an original model response omits a counter, Brain keeps that counter absent
+and holds its token allowance. An authorized operator can later attest to the
+missing value with the original operation ID and a stable request ID:
+
+```ts
+await session.reportUsage(operation.id, {
+  request_id: "provider-final-output-usage",
+  counters: { output_tokens: 0 },
+});
+const evidence = await session.usageEvidence(operation.id);
+```
+
+The equivalent Python calls are:
+
+```python
+session.report_usage(operation["id"], {
+    "request_id": "provider-final-output-usage",
+    "counters": {"output_tokens": 0},
+})
+evidence = session.usage_evidence(operation["id"])
+```
+
+Use an operator credential only in a trusted service. A worker holding the
+original model receipt capability can instead pass it as the final argument.
+Ordinary participants and identity-provider role claims cannot release model
+allowances. These facts record the recipient's or operator's attestation;
+they are not independently verified provider invoices or commercial billing.
+
+A report must fill at least one absent counter. Reported zero is a value; no
+existing value can be replaced or erased. Each counter is bounded to `2^40`.
+Unchanged content, source and request ID reconcile idempotently; changing the
+content or attribution conflicts. A new-ID no-op also conflicts, so an admitted
+model operation can accumulate at most three supplemental facts.
+
+Only originally dispatched, known completed or failed models accept supplements.
+Unknown effects and never-dispatched failures cannot use them to release holds.
+Input and output counters settle every admitted ancestor pool once; cached
+tokens are not counted again. Deleted-session evidence can settle accounting
+but cannot restore a body, permission, run or record position. Pending ordinary
+input does not block the finite accounting transaction.
+
+Original outcome hashes and receipt counters remain separate from current usage,
+including when a supplement arrives before the original receipt is bound to
+history. Supplement facts are authoritative SQL control evidence, exposed by
+inspection and export, not new transcript messages or model turns. Archived
+receipt hydration and original callback replay cannot overwrite newer accounting.
+The three-fact bound does not imply complete retained-byte accounting or physical
+erasure of every storage tier.
+
+## Export and reconcile requests
+
+`session.exportPages()` in TypeScript and `session.export_pages()` in Python traverse history,
+runs, operations, interactions, connections, files, state, memory, schedules and
+supplemental usage evidence. Each response
+identifies its section. HTTP callers echo the opaque `continuation` until it is absent;
+continuations are authenticated and belong to one session.
+
+`complete` is true only on the final page when no unresolved, reserved or unavailable history
+was observed. An export includes file references, not every file's bytes or custody/native
+state. Stop writers before a coherent backup; an export traversal alone is not a backup.
+
+Neither SDK silently retries a mutation. If its acknowledgement is lost, the uncertain
+`SessionError` retains `requestId` (TypeScript) or `request_id` (Python), including an ID
+generated by the SDK. An application may reconcile by explicitly resubmitting the **same
+content and ID**. A changed body conflicts. A fresh ID is new work, not reconciliation.
+
+## Allocation and missing history
+
+SQL reserves positions before local records are committed. Positions are never reused after
+owner loss. The read response includes `allocated_through` and these gap kinds:
+
+| Kind | Meaning |
 | --- | --- |
-| `error` | A known validation, execution or protocol failure |
-| `timeout` | The tool's original deadline expired |
-| `cancelled` | Work was explicitly interrupted |
-| `unknown` | Dispatch may have occurred, but no reliable result is available |
+| `reserved` | A live allocation has not yet been confirmed written |
+| `unused` | Its owner positively sealed a position without a record |
+| `unresolved` | Ownership changed before a reserved position was resolved |
+| `unavailable` | SQL confirms a written record, but its verified body cannot currently be read |
 
-These tool failures have `is_error: true`. None promises rollback or automatic retry. Inspect the
-external resource before deciding whether an uncertain action should be attempted again.
+Unavailable or unresolved positions are not empty records. Complete corrupt data is an error, not
+a truncated tail to discard. Returning bytes must match the authoritative identity and digest.
+They restore historical evidence, not an old permission to execute.
 
-Background tools retain their original deadlines and emission budgets after a turn ends. Later
-results or actionable environment observations can activate the loop without a user message.
-The loop saves its decisions; successful return completes its delivered event batch; see the [loop API](/brain/docs/reference/agentloop-contract).
+The source runtime commits each new local frame together with its original allocating
+node and epoch. If the process stops before SQL confirms that write, a live node with
+the retained volume verifies those physical bytes and reconciles the original allocation
+before continuing affected work. This also works for a returning node that no longer owns
+the session. Reconciliation uses bounded batches of 32 positions and reads one frame at a
+time; it never changes the session's high watermark, owner or execution claims.
 
-## Suspension and recovery
+Only exact original allocation evidence can resolve a lost confirmation. A conflicting
+digest or byte count is corruption; a positively unused position cannot become a record.
+Missing frames and older unconfirmed frames without retained allocator proof remain
+unresolved. Deleted history cannot be revived. Returning a volume is not permission to
+retry a model or action.
 
-Brain can release inactive execution while keeping sessions readable. `idleTtlMs` changes how long
-execution is retained; explicit zero retains it indefinitely. Releasing execution does not detach
-environments or end the session. Provider expiry and cleanup rules still apply to their resources.
+## Bounded history and asynchronous archive
 
-With storage intact, a server restart preserves committed history. First access after restart
-records an interrupted turn as failed; Brain never reruns it. An effect with no recorded terminal
-result becomes an ambiguous failure. Interrupted creation fails, and interrupted ending is closed
-without allowing new messages. A failed detach does not prevent ending.
+A node uses a byte-bounded decoded cache and a fixed number of SQLite WAL shards. It reserves
+local space for admitted outputs before dispatch. New work backs off under pressure rather than
+consuming capacity needed by an already admitted result.
 
-Teardown is separate. If it fails, the environment record remains; an explicit session delete with
-a new idempotency key can request another attempt. There is no automatic retry.
+Receipt settlement releases execution concurrency, but the control output reserve
+remains held until the result is bound to written transcript evidence. Local
+capacity transfers from the reservation only to a durably written original result.
+An unknown result retains its late-result allowance. A deleted session instead
+records explicit body disposal before reclaiming a known result's reserve.
+Replaying a completed
+binding cannot release that allowance twice. Pending ordinary input cannot block
+an admitted result from using its reserved space; sustained pressure does not
+allocate an endless stream of unused positions.
 
-Idempotency claims survive restart. Completed request responses are retained for 24 hours. If a
-claimed request has no recorded response, reusing its key returns an ambiguous error and does not
-execute again. Inspect session history before choosing a new operation key.
+Each inline result reserves its declared output limit plus a 48-KiB metadata
+allowance and conservative local-storage overhead. Provider usage details above
+32 KiB become an explicit `usage.provider_unavailable` digest and byte count;
+the original details are unavailable, not a stored blob reference. Reported
+standard counters and their absence are preserved. Error descriptions are
+UTF-8-truncated to a bounded prefix. These metadata bounds cannot turn a known
+completion into permission to repeat it.
 
-Committed records survive process and power failure when the local filesystem and storage honor
-flushes. Storage loss and lost provider resources are outside this guarantee. Follow the
-[backup and upgrade procedure](/brain/docs/guides/operate) to protect stored sessions.
+Records are at most 256 KiB; larger content belongs in a file/artifact. Archive blocks are bounded
+by 4 MiB decoded bytes and 128 records, with separate compressed-byte and manifest limits.
+The selected model context is bounded independently: at most the newest 64 positions through
+the triggering input and 512 KiB of record bytes. A missing selected record blocks continuation
+rather than silently dropping it.
 
-## Lifecycle and cleanup
+Archive publication writes immutable data and a manifest before registering exact membership
+in SQL. Local, S3, R2 and DynamoDB archives use the same coverage rules. DynamoDB stores actual
+binary transcript chunks, not S3 pointers. Hydration and authenticated cross-node reads share
+a four-read concurrency bound.
 
-`interrupt()` requests cancellation of the turn and unfinished tools, including background tools
-while the loop is idle. It keeps the session open. Cancellation is forwarded to executors; cleanup
-can extend response time beyond the turn deadline. The [configuration reference](/brain/docs/reference/configuration)
-defines model-call, turn and tool limits.
+`BRAIN_ARCHIVE_FLUSH_MS` controls the maintenance interval, from 100 to 60,000 milliseconds;
+its default is 1,000. It is **not** a maximum data-loss window during an archive outage.
+`GET /operator/storage` reports dirty bytes, queue bytes, oldest unarchived age, cache bytes
+and local output reserves. A local archive shares its disk's failure domain.
 
-`end()` refuses new messages, cancels unfinished tools and waits for their cleanup before detaching
-environments. History remains. `delete()` requires an ended or failed session and removes history,
-tears down environments and forgets credentials.
+## Ownership and locality
 
-`brain.close()` closes this client's connections and local handlers. It is idempotent and rejects
-later client operations, but does not interrupt or end stored sessions. It does not wait for
-application code that ignores cancellation. A client created by `withToken()` has its own lifetime.
+SQLite FULL, PostgreSQL and the authenticated Cloudflare D1 Worker provide control
+facts. The Worker implements named atomic domain operations using the real D1
+binding; it does not accept SQL or remote transaction callbacks from Brain.
+Ambiguous HTTP results never return dispatch permission. D1's bounded request
+and batch limits are not a claim that it has PostgreSQL's throughput. Local D1
+emulation and the separate live-cloud gate are documented in `CONTRIBUTING.md`.
 
-Environment turn-end cleanup can finish after the answer is available. Cleanup failure does not
-replace that answer; read its events to inspect the result. Graceful server shutdown drains
-admitted work and cleanup while callbacks remain available, then closes workers and subscriptions.
-Forced termination or deadlines can still leave partial progress.
+The D1 Worker runs four ordinary requests and two reserved lease/clock requests
+at once. Its separate waiting queues hold at most sixteen and four requests,
+respectively, for up to five seconds before explicit overload. A named SQL
+constraint can prove that a competing scope update rolled back an entire batch.
+Only that proof permits rebuilding the named operation's plan, with at most eight
+plans within the original 96-read bound. Changed authority is rechecked;
+transport uncertainty, other constraint failures and successful dispatch claims
+are never replayed this way.
+
+Nodes register new incarnation IDs with database-clock leases. Every authoritative write and
+dispatch claim checks the current session epoch and live incarnation. SQL uncertainty stops new
+authority-dependent work. A lease cannot recall a packet or a previously issued execution permit.
+SQL transactions and D1 atomic batches recheck their required live incarnations before commit.
+
+Eligibility is checked atomically in SQL. A session retains its admitted harness/model combination,
+provider configuration identities, scoped secret references, archive identity and local resource
+identity. An incompatible node is not scheduled or allowed to claim it. Reusing a node name with
+an empty volume does not create a replacement namespace: work waits for an eligible retained
+resource instead of returning an apparently empty filesystem.
+
+Use the same retained `BRAIN_CUSTODY_KEY` on nodes sharing a control store, and set their
+`BRAIN_INTERNAL_URL` to authenticated cluster-reachable origins. Production origins require HTTPS.
+Internal history reads use fresh cluster signatures; public API bearer tokens cannot authorize
+them. The routing endpoint serves only verified local bytes, never recursively forwards requests.
+
+Keep resource identities and custody with backups. Source control schemas predating retained
+resource admission require verified offline adoption; migration does not silently pin old sessions
+to whichever new node happens to start first.
+
+## Plan a node transfer
+
+An operator can move a supported session while its source node remains live.
+Inputs remain durable while execution drains; clients keep the same session ID:
+
+```ts
+const nodes = await brain.nodes();
+const target = nodes.find(node => node.endpoint === "https://node-b.example.com");
+if (!target) throw new Error("The chosen node is not registered");
+const current = await session.read();
+const transfer = await session.transferOwnership({
+  request_id: "move-to-node-b",
+  owner_epoch: current.owner_epoch,
+  target_node: target.id,
+});
+console.log(await session.ownershipTransfer(transfer.id));
+```
+
+Use the exact incarnation ID, not a reused hostname. These endpoints require
+operator authority. Python provides `brain.nodes()`, `session.transfer_ownership()`,
+`session.ownership_transfer()` and `session.cancel_transfer()`.
+
+`draining` fences new dispatch and harness decisions, but accepts original receipts.
+Already claimed operations must settle or become explicitly unknown. The source
+records a checkpoint and freezes its sequence barrier before `verifying`.
+It publishes coverage for every written position through that barrier. The target
+reads the checkpoint, bounded context and required original operation/child results
+from verified archives, not an unverified source-node cache.
+
+Run checkpoints remain authoritative in SQL under the frozen epoch. Verification
+uses bounded pages; the final transaction rechecks both live incarnations,
+capabilities, the unchanged barrier and complete proof cursor before advancing
+the owner epoch. `transferred` does not grant an execution permit: subsequent
+effects still need their original one-use claims.
+
+An unavailable target or unsupported process-bound checkpoint cannot silently
+become a successful handoff. A target expiring during verification fails the
+request without replacing the original owner. Losing the source aborts the
+planned request; ordinary fenced recovery remains separate. `failed` and
+`cancelled` requests do not become new attempts when replayed. Start an explicit
+new request if appropriate. A completed transfer cannot be reversed with
+`cancelTransfer()`; moving again needs another fully verified transfer.
+
+## Results, cancellation and continuation
+
+The durable operation ledger distinguishes `prepared`, `dispatched`, `completed`, `failed` and
+`unknown`. Brain commits an intent before an effect, commits a one-use claim before its send,
+and records the outcome before the harness receives it. SDK and adapter transports do not
+automatically repeat uncertain effects or model calls.
+
+Known completion remains completion when its result bytes are unavailable or too large.
+Unknown charged work retains its reservations. A former owner releases its stranded local output
+reserve only after a settled result is bound to written evidence. A late authenticated receipt
+can settle an uncertain operation without reviving a cancelled run.
+
+Brain records a harness request's exact digest and continuation declaration before writing it
+to the installed process. A checkpoint-capable, repeatable decision implementation can resume
+that same boundary; changed request bytes are a divergence error. A boundary admitted without
+repeatability cannot acquire that permission from a later installation.
+
+A process-bound harness also retains its original process identity. Losing or replacing that
+process blocks further continuation with `unsupported`, even if a new process can accept new
+runs. The original operation can still receive its authenticated late receipt without reviving
+the blocked run. Explicit new work is separate from resuming an old invocation. These checks
+do not make an opaque native runtime checkpointable or authorize hidden provider retries.
+
+## Change the harness for future work
+
+An admitted harness transition preserves the session, its records and its action catalogue:
+
+```ts
+const current = await session.read();
+await session.handoff({
+  request_id: "research-to-review",
+  revision: current.revision,
+  harness: { name: "review", version: "1" },
+});
+```
+
+Admit that exact selection in `harness_transitions` when creating the session. Handoff requires
+settled runs and no accepted work; a blocked checkpoint must be explicitly resolved or cancelled,
+not passed to another harness. A live owner must support the target selection.
+
+The configuration, capability requirement, request receipt and journal command commit together.
+Replaying the same request returns the current session without undoing a later handoff; changing
+the body under the same request ID conflicts. This changes the harness for **future work**.
+It is not a node ownership transfer or a promise to resume arbitrary native process state.
+
+## Authority and admission
+
+Participant subjects cannot impersonate `operator`, `kernel`, `creator`, `timer`, `local`
+or a `harness:` source. Delegating a participant token cannot change its subject or amplify
+its permissions. SQL locks, or the D1 atomic batch, recheck revocation and expiry before
+new mutations and application dispatch claims commit. Already issued permissions and
+valid original receipt credentials are not recalled by later revocation.
+
+HTTP admission has separate bounded lanes for ordinary requests, file transfers, streams
+and completion receipts. Defaults are 128 ordinary requests, four file transfers and
+1,024 streams per node (`BRAIN_REQUESTS`, `BRAIN_FILE_TRANSFERS`, `BRAIN_STREAMS`).
+Completion receipts and operator requests share a reserved 32-request lane; health checks
+remain independent. Overload returns `overloaded`, not a queued unbounded upload.
+Request bodies have a 30-second read deadline.
+
+`GET /v2/sessions/{session}/budget` reports the session subtree's calls, active
+operations, output reservations and reported token usage. `session.budget()` is
+available in both SDKs. Available headroom is the minimum across the session and
+its ancestors; another child's activity cannot bypass their shared limits.
+
+Delegation commits the child, its initial input and its parent journal command
+together, even when the parent has no active owner. A child can reduce authority,
+choose an admitted harness transition and supply its own instructions. It cannot
+replace model credentials or admitted action, connection or event authority.
+Each child has its own reduced limits as well as every ancestor's limits.
+The maximum depth is eight child levels.
+
+An installed harness may return `delegate` for one child or `fork` with one to
+eight `delegations`. Brain saves that decision before admitting children.
+Each slot retains the same child and original input across owner changes.
+A partially admitted fork is not a completed join; later unrelated work in a
+child does not replace or delay its original outcome.
+
+Read a harness delegation's saved step through either SDK:
+
+```ts
+const joined = await session.children(runId, decisionStep);
+for (const child of joined.children) {
+  console.log(child.index, child.status, child.availability, child.completion);
+  if (child.availability === "referenced") {
+    const record = await session.childResult(runId, child.index, decisionStep);
+    console.log(record.data);
+  }
+}
+```
+
+Python provides `session.children(run_id, step)` and
+`session.child_result(run_id, child_index, step)`. Parent read authority can read
+these original result records without gaining access to the child's other records
+or actions. `ready` means all expected children have settled or become blocked,
+not that they all succeeded. The parent harness receives typed `children` with
+explicit completed, failed, blocked or cancelled states.
+
+Joined answers use at most 128 KiB of inline result bytes. `referenced` means the
+verified body is readable separately; `unavailable` means a known completion's
+body cannot currently be read. Neither condition turns completed work into a new
+attempt. `Run.completion` names the written record accepted by the completion
+transaction; SSE notification alone is not that transaction's authority.
+
+Parent pause blocks new descendant dispatch until resume. Parent cancellation,
+close or interrupt immediately invalidates older descendant authority; a bounded
+background pass then closes those children and cancels their waiting work.
+Already issued execution permits and packets cannot be recalled. An original
+authenticated receipt is still accepted for a closed child without reviving its
+cancelled run.
+
+Explicit new work on an open parent after cancellation uses a new generation.
+Replaying the old control request does not cancel that new work. A harness cannot
+use an old saved decision to create a fresh child after its run was cancelled.
+
+Text-model admission reserves input bytes plus framing and the explicit output
+token ceiling as a conservative estimate, not a provider price guarantee.
+Both reported input and output counters must exist before the estimate is
+released. An explicit zero is different from an absent counter. Unknown outcomes
+retain their active, output and token reservations; known completion with partial
+usage retains its token hold. Token-bounded sessions currently reject non-text
+messages and opaque provider-side conversation handles rather than guessing
+their unobserved context size.
+
+The current retained-budget counter covers receipt-body accounting and output
+reservations, not a complete measurement of every file, transcript and control
+row. Do not use it as a billing total or substitute it for the storage report.
+Older control schemas require verified offline migration before this runtime
+will open them.
+
+State events and explicit document updates share the same four-MiB, 1,024-document
+state-plus-memory quota. If concurrent changes exhaust that quota after event acceptance,
+the command becomes `failed` with an explicit error; later commands are not stalled.
+
+Restarting a compatible harness can consume saved decisions and original receipts where its
+continuation contract allows. A lost model request is not regenerated as a new request. Missing
+context, incompatible harness state or an uncertain prerequisite produces an explicit blocked
+run. Inspect the operation and external resource before an explicit retry or new-run decision.
+
+Pause stops new dispatch, not already accepted remote work. Cancel requests stopping; it does not
+claim rollback. Closing retains evidence. Back up control facts, history/archive references,
+files, resource identities, native state and custody as one coherent stopped-writer unit before
+changing a retained runtime.

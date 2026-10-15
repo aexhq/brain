@@ -148,7 +148,7 @@ pub fn openapi() -> Value {
 
 /// The session contract addresses its definitions as `#/$defs/Name`; inside the
 /// OpenAPI document they live at `#/components/schemas/Name`.
-fn rewrite_references(value: &mut Value) {
+pub(crate) fn rewrite_references(value: &mut Value) {
     match value {
         Value::Object(map) => {
             for (key, child) in map.iter_mut() {

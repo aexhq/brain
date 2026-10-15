@@ -3,10 +3,11 @@
   "private": true,
   "workspaces": [
     "packages/brain-sdk",
+    "packages/brain-d1",
     "examples"
   ],
   "scripts": {
-    "gen": "cargo run -q -p brain-protocol --bin brain-protocol-contract && cargo run -q -p brain-http --bin brain-http-contract && cargo run -q -p brain --bin brain-contract && cargo run -q -p brain-server --bin brain-server-contract && npm run gen -w packages/brain-sdk",
+    "gen": "cargo run -q -p brain-protocol --bin brain-protocol-contract && cargo run -q -p brain-http --bin brain-http-contract && cargo run -q -p brain --bin brain-contract && cargo run -q -p brain-server --bin brain-server-contract && npm run gen -w packages/brain-sdk && node tools/generate-wire.mjs",
     "build": "npm run build --workspaces --if-present",
     "test": "node --test tools/*.test.mjs && npm test --workspaces --if-present",
     "test:journeys": "node --test --test-concurrency=4 tests/journeys/*.test.mjs",
@@ -18,5 +19,13 @@
   },
   "engines": {
     "node": ">=22.19.0"
+  },
+  "devDependencies": {
+    "miniflare": "4.20260730.0",
+    "wrangler": "4.151.0"
+  },
+  "overrides": {
+    "undici": "7.30.0",
+    "sharp": "0.35.5"
   }
 }

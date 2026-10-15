@@ -7,10 +7,27 @@
 use std::{fs, path::Path};
 
 fn main() {
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("generated/contract/session/v1/openapi.yaml");
-    let text = serde_norway::to_string(&brain_http::openapi()).expect("the document serializes");
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(&path, text).unwrap_or_else(|error| panic!("write {}: {error}", path.display()));
-    println!("wrote {}", path.display());
+    for (version, document) in [
+        ("v1", brain_http::openapi()),
+        ("v2", brain_http::openapi_v2()),
+    ] {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("generated/contract/session/{version}"));
+        fs::create_dir_all(&root).unwrap();
+        for (extension, text) in [
+            (
+                "yaml",
+                serde_norway::to_string(&document).expect("OpenAPI serializes"),
+            ),
+            (
+                "json",
+                format!("{}\n", serde_json::to_string_pretty(&document).unwrap()),
+            ),
+        ] {
+            let path = root.join(format!("openapi.{extension}"));
+            fs::write(&path, text)
+                .unwrap_or_else(|error| panic!("write {}: {error}", path.display()));
+            println!("wrote {}", path.display());
+        }
+    }
 }

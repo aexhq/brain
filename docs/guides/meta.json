@@ -2,6 +2,7 @@
   "title": "Customize and operate",
   "pages": [
     "write-a-tool",
+    "managed-code",
     "subagents",
     "environment-control",
     "write-a-loop",

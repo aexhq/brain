@@ -23,6 +23,7 @@ jobs:
       rust-platforms: ${{ github.event_name != 'pull_request' || steps.filter.outputs.common == 'true' || steps.filter.outputs.rust == 'true' }}
       brain-env: ${{ github.event_name != 'pull_request' || steps.filter.outputs.common == 'true' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.npm == 'true' || steps.filter.outputs.runtime-tests == 'true' }}
       image-smoke: ${{ github.event_name != 'pull_request' || steps.filter.outputs.common == 'true' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.image == 'true' }}
+      session-server: ${{ github.event_name != 'pull_request' || steps.filter.outputs.common == 'true' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.npm == 'true' || steps.filter.outputs.runtime-tests == 'true' }}
     steps:
       - uses: actions/checkout@v7
         if: github.event_name == 'pull_request'
@@ -72,6 +73,9 @@ jobs:
         with:
           toolchain: "1.97.1"
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
       - uses: actions/setup-node@v7
         with:
           node-version: "22.23.2"
@@ -81,8 +85,12 @@ jobs:
       # those. A diff means a type changed without its contract being regenerated, or a
       # generated file was edited by hand.
       - run: npm run gen
-      - run: git diff --exit-code -- crates/brain-protocol/generated crates/brain-http/generated crates/brain/generated catalog crates/brain/src/model/generated packages/brain-sdk/src/generated packages/brain-sdk/contracts docs/reference/configuration.mdx
-      - run: npm test
+      - run: git diff --exit-code -- crates/brain-protocol/generated crates/brain-http/generated crates/brain/generated catalog crates/brain/src/model/generated packages/brain-sdk/src/generated packages/brain-sdk/contracts internal/generated packages/brain-python/brain/generated docs/reference/configuration.mdx
+      - run: mkdir -p .build/scratch && npm test
+        env:
+          TMPDIR: ${{ github.workspace }}/.build/scratch
+          TMP: ${{ github.workspace }}/.build/scratch
+          TEMP: ${{ github.workspace }}/.build/scratch
       - run: npm run package-smoke
 
   audit:
@@ -238,9 +246,60 @@ jobs:
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:18080/v1/sessions)" = 401
           curl --fail --silent -H 'authorization: Bearer test-token' http://127.0.0.1:18080/v1/sessions | jq -e '.sessions == []'
 
+  session-server:
+    needs: changes
+    if: needs.changes.outputs.session-server == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GOMAXPROCS: "4"
+      GOTMPDIR: ${{ github.workspace }}/.build/go
+      TMPDIR: ${{ github.workspace }}/.build/scratch
+      TMP: ${{ github.workspace }}/.build/scratch
+      TEMP: ${{ github.workspace }}/.build/scratch
+    steps:
+      - uses: actions/checkout@v7
+      - run: mkdir -p .build/go .build/scratch
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24.17.0"
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12.10"
+      - run: npm ci && npm run build -w packages/brain-sdk && npm test -w packages/brain-d1
+      - name: Check Go components and static diagnostics
+        run: |
+          test -z "$(gofmt -l $(find internal adapters cmd -name '*.go'))"
+          go vet ./internal/... ./adapters/... ./cmd/...
+          go test ./internal/... ./adapters/... ./cmd/...
+          go test -race ./adapters/identity ./adapters/sqlcontrol
+          go build -o .build/brain ./cmd/brain
+          go build -o .build/brain-worker ./cmd/brain-worker
+          CGO_ENABLED=0 go build -o .build/brain-linux ./cmd/brain
+      - name: Pull immutable managed-code fixture images
+        run: |
+          docker pull node@sha256:862263c612aa437e3037674b85419622a9d93bff80aa1eee5398dfe686375532
+          docker pull python@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+      - name: Run public SDK and real supplied-code journeys
+        run: node --test --test-concurrency=1 tests/greenfield/journeys.test.mjs tests/greenfield/managed.journeys.test.mjs
+      - name: Run actual D1 public journeys
+        env:
+          BRAIN_TEST_CONTROL: d1
+        run: node --test --test-concurrency=1 tests/greenfield/journeys.test.mjs
+      - name: Run PostgreSQL and real Linux multi-process faults
+        shell: pwsh
+        run: ./tests/greenfield/postgres-emulator.ps1 -Cluster
+      - name: Verify native S3 and DynamoDB transcript bodies
+        shell: pwsh
+        run: ./tests/greenfield/archive-emulators.ps1
+
   build-test:
     if: always()
-    needs: [changes, contracts, audit, lint, rust-core, rust-platforms, brain-env, image-smoke]
+    needs: [changes, contracts, audit, lint, rust-core, rust-platforms, brain-env, image-smoke, session-server]
     runs-on: ubuntu-24.04
     steps:
       - name: Every affected check passed

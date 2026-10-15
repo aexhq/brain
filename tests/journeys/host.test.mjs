@@ -280,6 +280,8 @@ test("a tool may emit observations but cannot forge protected runtime events", {
   let denied = false;
   const observer = tool({ name: "observer", description: "Emit an observation", input: z.object({}), run: async (_input, context) => {
     await assert.rejects(context.emit("turn_ended", {}), failure(400));
+    assert.deepEqual((await collect(session.events())).filter(({ type }) => type === "turn_ended"), [],
+      "the rejected emission must not create a terminal record while the original Tool is still running");
     denied = true;
     await context.emit("application_observation", { ready: true });
     return context.finish("observed");
@@ -289,6 +291,13 @@ test("a tool may emit observations but cannot forge protected runtime events", {
   await session.send("observe");
   assert.equal(denied, true);
   const events = await collect(session.events());
-  assert.equal(events.filter(({ type }) => type === "turn_ended").length, 1);
-  assert.deepEqual(events.find(({ type }) => type === "application_observation").data, { ready: true });
+  const ended = events.filter(({ type }) => type === "turn_ended");
+  assert.ok(ended.length > 0);
+  // A valid observation may cause another kernel-owned event activation.
+  for (const event of ended) {
+    assert.ok(event.origin === undefined || event.origin === null);
+    assert.ok(Object.hasOwn(event.data, "result"));
+    assert.ok(Number.isSafeInteger(event.data.events_through));
+  }
+  assert.deepEqual(events.filter(({ type }) => type === "application_observation").map(({ data }) => data), [{ ready: true }]);
 });
