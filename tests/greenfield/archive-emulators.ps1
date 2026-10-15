@@ -48,9 +48,15 @@ try {
     $s3 = & docker run --detach --pull never @identity --name $s3Name --label "copilot.session=211666ca-c6e9-4741-aef7-9b195ab235c0" --cpus 1 --memory 512m --pids-limit 128 --publish "127.0.0.1::$s3Port" --mount "type=bind,source=$scratch,target=/work" --env TMPDIR=/work/s3 --env TMP=/work/s3 --env TEMP=/work/s3 --env HOME=/work/s3 --env MINIO_ROOT_USER=brain-fixture --env MINIO_ROOT_PASSWORD=brain-fixture-not-live --env S3_IGNORE_SUBDOMAIN_BUCKETNAME=true $s3Image @s3Arguments
     if ($LASTEXITCODE -ne 0) { throw 'S3 emulator failed to start' }
     $created += $s3.Trim()
-    $dynamo = & docker run --detach --pull never @identity --name $dynamoName --label "copilot.session=211666ca-c6e9-4741-aef7-9b195ab235c0" --cpus 1 --memory 512m --publish '127.0.0.1::8000' --mount "type=bind,source=$scratch,target=/work" --env TMPDIR=/work/dynamo --env TMP=/work/dynamo --env TEMP=/work/dynamo --env HOME=/work/dynamo $dynamoImage '-Djava.io.tmpdir=/work/dynamo' '-Duser.home=/work/dynamo' -jar DynamoDBLocal.jar -inMemory -sharedDb
-    if ($LASTEXITCODE -ne 0) { throw 'DynamoDB emulator failed to start' }
+    $dynamo = & docker create --pull never @identity --name $dynamoName --label "copilot.session=211666ca-c6e9-4741-aef7-9b195ab235c0" --cpus 1 --memory 512m --publish '127.0.0.1::8000' --mount "type=bind,source=$scratch,target=/work" --workdir /work/dynamo --env TMPDIR=/work/dynamo --env TMP=/work/dynamo --env TEMP=/work/dynamo --env HOME=/work/dynamo $dynamoImage '-Djava.io.tmpdir=/work/dynamo' '-Duser.home=/work/dynamo' -jar DynamoDBLocal.jar -inMemory -sharedDb
+    if ($LASTEXITCODE -ne 0) { throw 'DynamoDB emulator could not be created' }
     $created += $dynamo.Trim()
+    # The image's private home is inaccessible to the host UID used by Linux CI.
+    # Copy only its public distribution into the owned, host-user fixture directory.
+    & docker cp "${dynamo}:/home/dynamodblocal/." (Join-Path $scratch 'dynamo') | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'DynamoDB emulator distribution could not be copied' }
+    & docker start $dynamo | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'DynamoDB emulator failed to start' }
     $env:BRAIN_TEST_S3_ENDPOINT = Get-EmulatorOrigin $s3Name $s3Port
     $env:BRAIN_TEST_DYNAMO_ENDPOINT = Get-EmulatorOrigin $dynamoName '8000'
     $deadline = [datetime]::UtcNow.AddSeconds(60)
