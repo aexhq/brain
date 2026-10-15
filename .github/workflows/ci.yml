@@ -204,6 +204,7 @@ jobs:
     needs: build-test
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       pages: write
       id-token: write
     environment:
@@ -213,7 +214,12 @@ jobs:
       group: pages
       cancel-in-progress: false
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Deploy tested static site
         id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346
+      - name: Verify public documentation and reference assets
+        env:
+          DOCS_URL: ${{ steps.deployment.outputs.page_url }}
+        run: node scripts/docs-smoke.mjs "$DOCS_URL"
 

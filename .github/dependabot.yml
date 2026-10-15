@@ -11,3 +11,6 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directories: [/, /services/sandbox]
+    schedule: { interval: weekly }
