@@ -82,13 +82,14 @@ type CommandReceipt struct {
 }
 
 type Connection struct {
-	Generation string    `json:"generation"`
-	ID         string    `json:"id"`
-	Ownership  Ownership `json:"ownership"`
-	ResourceID *string   `json:"resource_id,omitempty"`
-	SessionID  string    `json:"session_id"`
-	Status     string    `json:"status"`
-	Template   string    `json:"template"`
+	ClaimSubject *string   `json:"claim_subject,omitempty"`
+	Generation   string    `json:"generation"`
+	ID           string    `json:"id"`
+	Ownership    Ownership `json:"ownership"`
+	ResourceID   *string   `json:"resource_id,omitempty"`
+	SessionID    string    `json:"session_id"`
+	Status       string    `json:"status"`
+	Template     string    `json:"template"`
 }
 
 type ConnectionAttach struct {
@@ -350,6 +351,29 @@ type HarnessSelection struct {
 	Configuration json.RawMessage `json:"configuration,omitempty"`
 	Name          string          `json:"name"`
 	Version       string          `json:"version"`
+}
+
+type IdentityIssuer struct {
+	Audience    string   `json:"audience"`
+	CacheMs     *uint64  `json:"cache_ms,omitempty"`
+	Issuer      string   `json:"issuer"`
+	JwksUrl     string   `json:"jwks_url"`
+	MaxTokenMs  *uint64  `json:"max_token_ms,omitempty"`
+	Permissions []string `json:"permissions"`
+	RefreshMs   *uint64  `json:"refresh_ms,omitempty"`
+	Tenant      *string  `json:"tenant,omitempty"`
+	TenantClaim *string  `json:"tenant_claim,omitempty"`
+}
+
+type IdentityView struct {
+	ExpiresMs     *uint64  `json:"expires_ms,omitempty"`
+	Issuer        *string  `json:"issuer,omitempty"`
+	Operator      bool     `json:"operator"`
+	ParticipantID *string  `json:"participant_id,omitempty"`
+	Permissions   []string `json:"permissions"`
+	SessionID     *string  `json:"session_id,omitempty"`
+	Subject       string   `json:"subject"`
+	Tenant        string   `json:"tenant"`
 }
 
 type Input struct {
@@ -807,6 +831,7 @@ var Routes = map[string]string{
 	"GET /operator/sessions/{session}/transfers/{transfer}":         "",
 	"GET /operator/storage":                                         "",
 	"GET /v2/catalog":                                               "",
+	"GET /v2/identity":                                              "",
 	"POST /v2/packages":                                             "PackageAdmission",
 	"GET /v2/packages/{package}":                                    "",
 	"GET /v2/sessions":                                              "",

@@ -276,6 +276,7 @@ jobs:
           test -z "$(gofmt -l $(find internal adapters cmd -name '*.go'))"
           go vet ./internal/... ./adapters/... ./cmd/...
           go test ./internal/... ./adapters/... ./cmd/...
+          go test -race ./adapters/identity ./adapters/sqlcontrol
           go build -o .build/brain ./cmd/brain
           go build -o .build/brain-worker ./cmd/brain-worker
           CGO_ENABLED=0 go build -o .build/brain-linux ./cmd/brain

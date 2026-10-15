@@ -147,7 +147,7 @@ func Open(ctx context.Context, dsn string, development bool) (*Store, error) {
 			}
 			version = 5
 		}
-		if version != 12 {
+		if version != 13 {
 			return kernel.Fail(wire.ErrorCodeUnsupported, "control database requires verified offline migration")
 		}
 		if _, err := tx.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS sessions_ready ON sessions(ready,tenant,ready_ms,id)"); err != nil {

@@ -107,6 +107,7 @@ export class SessionClient {
   }
 
   session(sessionId: string): Session { return new Session(this, sessionId); }
+  identity(): Promise<Wire.IdentityView> { return this.request("GET", "/v2/identity"); }
   list(after = "", limit = 64): Promise<Wire.SessionPage> {
     return this.request("GET", `/v2/sessions?after=${segment(after)}&limit=${limit}`);
   }

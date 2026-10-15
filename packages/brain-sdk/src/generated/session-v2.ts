@@ -304,6 +304,7 @@ export interface CommandReceipt {
  * via the `definition` "Connection".
  */
 export interface Connection {
+  claim_subject?: string;
   generation: string;
   id: string;
   ownership: Ownership;
@@ -660,6 +661,35 @@ export interface HarnessRequest {
   run_id: string;
   session_id: string;
   step: number;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV2`'s JSON-Schema
+ * via the `definition` "IdentityIssuer".
+ */
+export interface IdentityIssuer {
+  audience: string;
+  cache_ms?: number;
+  issuer: string;
+  jwks_url: string;
+  max_token_ms?: number;
+  permissions: string[];
+  refresh_ms?: number;
+  tenant?: string;
+  tenant_claim?: string;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV2`'s JSON-Schema
+ * via the `definition` "IdentityView".
+ */
+export interface IdentityView {
+  expires_ms?: number;
+  issuer?: string;
+  operator: boolean;
+  participant_id?: string;
+  permissions: string[];
+  session_id?: string;
+  subject: string;
+  tenant: string;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV2`'s JSON-Schema

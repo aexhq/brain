@@ -63,6 +63,7 @@ mod contract {
         Transfer,
         ParticipantGrant,
         ParticipantToken,
+        IdentityView,
         PackageAdmission,
         Package,
         CatalogEntry,
@@ -107,6 +108,7 @@ macro_rules! write {
     };
 }
 
+read!(identity, get, "/v2/identity", contract::IdentityView);
 write!(
     create,
     post,
@@ -436,7 +438,7 @@ read!(
 
 #[derive(OpenApi)]
 #[openapi(paths(
-    create, list, session, delete, input, command, records, internal_record, stream, budget, runs, children, child_result, operations,
+    identity, create, list, session, delete, input, command, records, internal_record, stream, budget, runs, children, child_result, operations,
     operation, claim, receipt, retry, interactions, interact, answer, connections,
     attach, revoke, state, state_put, state_delete, memory, memory_put, memory_delete,
     files, file_put, file_get, file_delete, schedules, schedule, unschedule, webhook,
@@ -451,6 +453,7 @@ pub fn openapi() -> Value {
     crate::openapi::rewrite_references(&mut schemas);
     document["components"]["schemas"] = schemas;
     let routes = [
+        identity(),
         create(),
         list(),
         session(),

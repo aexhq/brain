@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { randomUUID, randomBytes, createHash, createHmac } from "node:crypto";
+import { randomUUID, randomBytes, createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -183,6 +183,153 @@ async function fixture(t, options = {}) {
     releaseModels() { state.holdModels = false; for (const complete of state.pendingModels.splice(0)) complete(); },
     get applicationURL() { return `http://127.0.0.1:${application.address().port}`; } };
 }
+
+test("J02/J16: real JWT keys, tenant isolation, attenuated grants and expiring streams preserve admitted work", { timeout: 60000 }, async t => {
+  const rsa = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const ec = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const rotated = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const issuer = "https://identity.journey.invalid";
+  const publicKey = (pair, kid, alg) => ({ ...pair.publicKey.export({ format: "jwk" }), kid, alg, use: "sig" });
+  let keys = [publicKey(rsa, "rsa", "RS256"), publicKey(ec, "ec", "ES256")], keyReads = 0;
+  const jwks = createServer((request, response) => {
+    keyReads++;
+    assert.equal(request.method, "GET");
+    assert.equal(request.url, "/keys");
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ keys }));
+  });
+  jwks.listen(0, "127.0.0.1");
+  await once(jwks, "listening");
+  t.after(async () => { jwks.closeAllConnections(); await new Promise(resolve => jwks.close(resolve)); });
+  const token = (pair = rsa, kid = "rsa", claims = {}) => {
+    const alg = pair === rsa ? "RS256" : "ES256";
+    const now = Math.floor(Date.now() / 1000);
+    const header = Buffer.from(JSON.stringify({ alg, kid, typ: "JWT" })).toString("base64url");
+    const body = Buffer.from(JSON.stringify({ iss: issuer, aud: "brain-journey", sub: "user-a", tenant_id: "alpha",
+      iat: now, exp: now + 120, roles: ["operator"], scope: "*", ...claims })).toString("base64url");
+    const input = `${header}.${body}`;
+    return `${input}.${sign("sha256", Buffer.from(input), { key: pair.privateKey, dsaEncoding: "ieee-p1363" }).toString("base64url")}`;
+  };
+  const permissions = ["session:create", "session:list", "session:read", "input:write", "state:write", "participant:grant",
+    "participant:revoke", "connection:attach", "operation:claim", "action:deliver"];
+  const references = { fixture: "FIXTURE_MODEL_KEY", signing: "FIXTURE_SIGNING_KEY" };
+  const f = await fixture(t, { environment: {
+    BRAIN_IDENTITY_ISSUERS: JSON.stringify([{ issuer, audience: "brain-journey", jwks_url: `http://127.0.0.1:${jwks.address().port}/keys`,
+      tenant_claim: "tenant_id", permissions, cache_ms: 60000, refresh_ms: 1000 }]),
+    BRAIN_SECRET_REFS: JSON.stringify({ local: references, alpha: references, beta: references }),
+  } });
+  const alphaToken = token(), betaToken = token(rsa, "rsa", { sub: "user-b", tenant_id: "beta" });
+  const alpha = new SessionClient({ url: f.origin, token: alphaToken });
+  const beta = new SessionClient({ url: f.origin, token: betaToken });
+  const identity = await alpha.identity();
+  assert.equal(identity.tenant, "alpha");
+  assert.equal(identity.operator, false);
+  assert.deepEqual(identity.permissions, permissions);
+  assert.equal((await new SessionClient({ url: f.origin, token: token(ec, "ec") }).identity()).subject, identity.subject);
+  assert.equal(keyReads, 1, "both supported algorithms use the same bounded key set");
+  await assert.rejects(alpha.nodes(), error => error.status === 403);
+  const overridden = await fetch(f.origin + "/v2/identity", { headers: { Authorization: `Bearer ${alphaToken}`, "X-Brain-Tenant": "beta" } });
+  assert.equal((await overridden.json()).tenant, "alpha");
+  assert.equal((await fetch(f.origin + "/v2/identity", { headers: { Authorization: "fixture-operator" } })).status, 401);
+  for (const invalid of [
+    token(rsa, "rsa", { aud: "wrong" }), token(rsa, "rsa", { iss: "https://untrusted.invalid" }),
+    token(rsa, "rsa", { exp: Math.floor(Date.now() / 1000) - 1 }), token(rsa, "rsa", { tenant_id: ["alpha"] }),
+  ]) {
+    await assert.rejects(new SessionClient({ url: f.origin, token: invalid }).identity(), error => error.status === 401);
+  }
+  const a = await alpha.create(f.config({
+    connections: [{ name: "application", kind: "application", provider: "application", ownership: "borrowed" }],
+    actions: [{ name: "deliver", description: "Deliver once", connection: "application", input_schema: { type: "object" },
+      max_output_bytes: 8192, timeout_ms: 60000 }],
+  }), { requestId: "same-tenant-local-request" });
+  const b = await beta.create(f.config(), { requestId: "same-tenant-local-request" });
+  const completed = (session, count = 1) => waitFor(() => session.runs(), runs => runs.length === count &&
+    runs.every(run => run.status === "completed"), "tenant-authenticated original runs complete");
+  assert.notEqual(a.id, b.id);
+  assert.deepEqual((await alpha.list()).sessions.map(session => session.id), [a.id]);
+  await assert.rejects(beta.session(a.id).read(), error => error.status === 404);
+  await assert.rejects(beta.session(a.id).send("cross-tenant", "denied"), error => error.status === 404);
+  await a.send("authorized identity", "authorized");
+  await completed(a);
+  const [modelOperation] = await a.operations();
+  await assert.rejects(a.claim(modelOperation.id, { request_id: "model-is-not-application", connection_id: "model", generation: "" }),
+    error => error.status === 403);
+  const python = await runPython(t, "python-identity.py", { BRAIN_URL: f.origin, BRAIN_TOKEN: betaToken,
+    BRAIN_SESSION: b.id, BRAIN_OTHER_SESSION: a.id });
+  assert.match(python, /python identity isolated/u);
+  await completed(b);
+  assert.equal(f.state.modelCalls, 2);
+  const grantPermissions = ["participant:grant", "participant:revoke", "session:read", "input:write", "state:write", "operation:claim"];
+  const grantRequest = { request_id: "parent", subject: identity.subject, permissions: grantPermissions, expires_ms: Date.now() + 60000 };
+  await assert.rejects(a.grant({ ...grantRequest, request_id: "longer", expires_ms: identity.expires_ms + 1 }), error => error.status === 403);
+  await assert.rejects(a.grant({ ...grantRequest, request_id: "stronger", permissions: ["*"] }), error => error.status === 403);
+  const parent = await a.grant(grantRequest);
+  const parentClient = new SessionClient({ url: f.origin, token: parent.token });
+  const parentSession = parentClient.session(a.id);
+  const child = await parentSession.grant({ ...grantRequest, request_id: "child", expires_ms: parent.expires_ms });
+  const childSession = new SessionClient({ url: f.origin, token: child.token }).session(a.id);
+  const sibling = await parentSession.grant({ ...grantRequest, request_id: "sibling", expires_ms: parent.expires_ms });
+  await assert.rejects(childSession.revokeParticipant(parent.id), error => error.status === 403);
+  await assert.rejects(childSession.revokeParticipant(sibling.id), error => error.status === 403);
+  assert.equal((await parentClient.identity()).participant_id, parent.id);
+  const connection = await a.attach("application", { requestId: "owned-application" });
+  assert.equal(connection.claim_subject, identity.subject);
+  await a.invoke("deliver", {}, "authenticated-delivery");
+  const [operation] = await waitFor(() => a.operations(), operations => operations.some(value => value.kind === "action" && value.status === "prepared"),
+    "original application operation is prepared").then(operations => operations.filter(value => value.kind === "action"));
+  const claim = { request_id: "claim-original", connection_id: connection.id, generation: connection.generation };
+  const otherSubject = new SessionClient({ url: f.origin, token: token(rsa, "rsa", { sub: "another-application" }) });
+  await assert.rejects(otherSubject.session(a.id).claim(operation.id, claim), error => error.status === 403);
+  const execution = await childSession.claim(operation.id, claim);
+  await assert.rejects(childSession.claim(operation.id, claim), error => error.status === 409);
+  const invocation = JSON.stringify(execution);
+  const delivered = await fetch(f.applicationURL, { method: "POST", headers: { "Content-Type": "application/json",
+    "X-Brain-Operation": operation.id, "X-Brain-Signature": "v1=" + createHmac("sha256", "fixture-signing-key").update(invocation).digest("hex") }, body: invocation });
+  assert.equal(delivered.status, 200);
+  await a.receipt(operation.id, await delivered.json(), execution.receipt_token);
+  await completed(a, 2);
+  assert.equal(f.state.applicationCalls, 1);
+  const closedStream = async (authority, session) => {
+    const response = await fetch(`${f.origin}/v2/sessions/${session}/events`, {
+      headers: { Authorization: `Bearer ${authority}` }, signal: AbortSignal.timeout(12000) });
+    assert.equal(response.status, 200);
+    const read = (async () => {
+      const reader = response.body.getReader();
+      let bytes = 0;
+      try {
+        for (;;) {
+          const next = await reader.read();
+          if (next.done) return { ended: true };
+          bytes += next.value.byteLength;
+          assert(bytes < 2 * 1024 * 1024);
+        }
+      } finally { reader.releaseLock(); }
+    })();
+    return { result: read.catch(error => ({ error: error.name })) };
+  };
+  const revokedStream = await closedStream(child.token, a.id);
+  await parentSession.revokeParticipant(parent.id);
+  assert.deepEqual(await revokedStream.result, { ended: true });
+  await assert.rejects(childSession.read(), error => error.status === 401);
+  await assert.rejects(childSession.send("revoked authority", "never-admitted"), error => error.status === 401);
+  assert.equal(f.state.modelCalls, 2);
+  keys = [...keys, publicKey(rotated, "rotated", "ES256")];
+  await delay(1100);
+  assert.equal((await new SessionClient({ url: f.origin, token: token(rotated, "rotated") }).identity()).subject, identity.subject);
+  assert.equal(keyReads, 2, "rotation uses one explicit bounded JWKS refresh");
+  f.state.holdModels = true;
+  const short = token(rsa, "rsa", { exp: Math.floor(Date.now() / 1000) + 6 });
+  const shortClient = new SessionClient({ url: f.origin, token: short });
+  await shortClient.session(a.id).send("admitted before expiry", "admitted-before-expiry");
+  await waitFor(() => f.state.pendingModels.length, count => count === 1, "authorized work reaches the real model endpoint");
+  const expiring = await closedStream(short, a.id);
+  assert.deepEqual(await expiring.result, { ended: true });
+  await assert.rejects(shortClient.identity(), error => error.status === 401);
+  f.releaseModels();
+  await completed(a, 3);
+  assert.equal(f.state.modelCalls, 3, "token expiry does not resend or cancel an already-admitted model operation");
+  assert.equal(f.state.applicationCalls, 1);
+});
 
 test("J05/J10/J23: HTTP approvals park the original decision and resume once after a retained restart", async t => {
   const f = await fixture(t);

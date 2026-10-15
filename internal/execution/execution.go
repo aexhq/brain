@@ -3,7 +3,12 @@ package execution
 import (
 	"context"
 	"github.com/aexhq/brain/internal/generated/wire"
+	"github.com/aexhq/brain/internal/kernel"
 )
+
+type Identity interface {
+	Authenticate(context.Context, string) (kernel.Principal, error)
+}
 
 type Harness interface {
 	Validate(wire.SessionConfig) error

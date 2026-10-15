@@ -89,6 +89,9 @@ class Brain:
     def session(self, session_id: str) -> Session:
         return Session(self, session_id)
 
+    def identity(self) -> wire.IdentityView:
+        return self.request("GET", "/v2/identity")
+
     def list(self, after: str = "", limit: int = 64) -> wire.SessionPage:
         return self.request("GET", f"/v2/sessions?after={_segment(after)}&limit={limit}")
 

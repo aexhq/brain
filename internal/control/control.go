@@ -78,6 +78,7 @@ type Coverage struct {
 
 type Participant struct {
 	ID          string
+	Parent      string
 	Session     string
 	Tenant      string
 	Subject     string

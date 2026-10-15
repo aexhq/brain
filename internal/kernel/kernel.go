@@ -85,6 +85,8 @@ type Principal struct {
 	GrantID     string
 	Permissions []string
 	Operator    bool
+	Issuer      string
+	Expires     int64
 }
 
 func (p Principal) Allows(session, permission string) bool {
@@ -97,8 +99,13 @@ func Subset(child, parent []string) bool {
 		if !slices.Contains(parent, item) {
 			return false
 		}
+
 	}
 	return true
+}
+
+func PermissionSubset(child, parent []string) bool {
+	return slices.Contains(parent, "*") || Subset(child, parent)
 }
 
 func ValidateConfig(config wire.SessionConfig) error {

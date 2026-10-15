@@ -111,6 +111,14 @@ S3/DynamoDB emulator conformance. The existing Rust, image and live-provider gat
 remain separate and required when selected. Local/emulator success is not live
 credential, immutable publication or production cutover evidence.
 
+Run `pwsh -File tests/greenfield/archive-emulators.ps1` for real HTTP/S3 SDK and
+DynamoDB Local conformance. The default S3 service is the official Moto **5.2.4**
+Linux/amd64 image pinned by digest. It is an emulator, not evidence of live S3/R2
+authorization or durability. The unchanged archive assertions also run against a
+retained MinIO image with `-S3Engine minio`; this is a legacy comparison only.
+MinIO's community repository is now unmaintained and its old public image is no
+longer pullable, so CI must not depend on a workstation's cached copy.
+
 Keep `TMP` and `TEMP` under the checkout before starting Miniflare. Its database
 belongs outside Brain's retained data directory. `BRAIN_TEST_PYTHON` must select
 the real interpreter when Windows exposes a launcher shim.

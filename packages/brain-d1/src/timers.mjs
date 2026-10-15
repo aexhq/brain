@@ -1,5 +1,5 @@
 import {
-  Fault, Mutation, clock, decode, digest, field, id, need, one, result, rows, safe, schedule, scheduleColumns,
+  Fault, Mutation, clock, decode, digest, field, id, invalidParticipantAncestor, need, one, result, rows, safe, schedule, scheduleColumns,
 } from "./domain.mjs";
 import { acceptInput } from "./control.mjs";
 import { bytes, pageRows } from "./pages.mjs";
@@ -75,23 +75,52 @@ export const timerHandlers = {
     const current = await m.session(identifier, true);
     const now = (await m.one(`SELECT ${clock} AS now`)).now;
     need(safe(request.expires_ms) > now && safe(request.expires_ms) <= now + 86400000, "invalid", "participant token expiry must be within one day");
-    const prior = await m.one("SELECT request_hash FROM participants WHERE id=?", [participantID], true);
-    if (prior) need(prior.request_hash === hash, "conflict", "participant key has different arguments");
-    else m.change("INSERT INTO participants(id,session_id,subject,permissions,expires_ms,request_hash) VALUES(?,?,?,?,?,?)",
-      [participantID, identifier, request.subject, field(text[1], "permissions"), request.expires_ms, hash]);
+    const authority = db.authority, parent = authority?.Participant ?? "";
+    if (authority) {
+      need(authority.Tenant === current.tenant && (!authority.Session || authority.Session === identifier),
+        "forbidden", "participant grant exceeds its tenant or session authority");
+      let subject = authority.Subject, permissions = authority.Permissions, expires = authority.Expires;
+      if (parent) {
+        const currentParent = await m.one("SELECT subject,permissions,expires_ms FROM participants WHERE id=? AND session_id=?", [parent, identifier]);
+        subject = currentParent.subject;
+        permissions = decode(currentParent.permissions);
+        expires = currentParent.expires_ms;
+      }
+      need(request.subject === subject && (permissions.includes("*") || request.permissions.every(value => permissions.includes(value))) &&
+        safe(request.expires_ms) <= expires, "forbidden", "participant cannot amplify permissions, lifetime or source identity");
+    }
+    const prior = await m.one("SELECT request_hash,parent,revoked FROM participants WHERE id=?", [participantID], true);
+    if (prior) need(prior.request_hash === hash && prior.parent === parent, "conflict", "participant key has different arguments or parent authority");
+    else {
+      const count = await m.one("SELECT COUNT(*) AS count FROM participants WHERE session_id=?", [identifier]);
+      const depth = await m.one("SELECT COALESCE(MAX(depth),0) AS depth FROM participant_ancestors WHERE descendant=?", [parent]);
+      need(count.count < 1024 && depth.depth < 8, "overloaded", "participant count or delegation depth bound reached");
+      m.change("INSERT INTO participants(id,session_id,subject,permissions,expires_ms,request_hash,parent) VALUES(?,?,?,?,?,?,?)",
+        [participantID, identifier, request.subject, field(text[1], "permissions"), request.expires_ms, hash, parent]);
+      if (parent) {
+        m.change("INSERT INTO participant_ancestors(descendant,ancestor,depth) VALUES(?,?,1)", [participantID, parent]);
+        m.change("INSERT INTO participant_ancestors(descendant,ancestor,depth) SELECT ?,ancestor,depth+1 FROM participant_ancestors WHERE descendant=?",
+          [participantID, parent]);
+      }
+    }
     await m.commit();
-    return { ID: participantID, Session: identifier, Tenant: current.tenant, Subject: request.subject,
-      Permissions: request.permissions, Expires: request.expires_ms, Revoked: false };
+    return { ID: participantID, Parent: parent, Session: identifier, Tenant: current.tenant, Subject: request.subject,
+      Permissions: request.permissions, Expires: request.expires_ms, Revoked: Boolean(prior?.revoked) };
   },
   async Participant(db, [participantID]) {
-    const value = await one(db, `SELECT p.id,p.session_id,s.tenant,p.subject,p.permissions,p.expires_ms,p.revoked
+    const value = await one(db, `SELECT p.id,p.parent,p.session_id,s.tenant,p.subject,p.permissions,p.expires_ms,
+CASE WHEN p.revoked<>0 OR EXISTS(${invalidParticipantAncestor()}) THEN 1 ELSE 0 END AS revoked
 FROM participants p JOIN sessions s ON p.session_id=s.id WHERE p.id=? AND s.lifecycle<>'deleted' AND p.expires_ms>${clock}`, [participantID]);
-    return { ID: value.id, Session: value.session_id, Tenant: value.tenant, Subject: value.subject,
+    return { ID: value.id, Parent: value.parent, Session: value.session_id, Tenant: value.tenant, Subject: value.subject,
       Permissions: decode(value.permissions), Expires: value.expires_ms, Revoked: value.revoked !== 0 };
   },
   async RevokeParticipant(db, [identifier, participantID]) {
     const m = new Mutation(db);
     await m.session(identifier);
+    if (db.authority?.Participant && db.authority.Participant !== participantID) {
+      const allowed = await m.one("SELECT COUNT(*) AS count FROM participant_ancestors WHERE descendant=? AND ancestor=?", [participantID, db.authority.Participant]);
+      need(allowed.count === 1, "forbidden", "participants may revoke only themselves or their descendants");
+    }
     m.change("UPDATE participants SET revoked=1 WHERE session_id=? AND id=?", [identifier, participantID], true);
     await m.commit();
   },

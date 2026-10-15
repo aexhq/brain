@@ -171,22 +171,47 @@ func (s *Store) Grant(ctx context.Context, session string, request wire.Particip
 		if request.ExpiresMs <= uint64(now) || request.ExpiresMs > uint64(now)+86400000 {
 			return kernel.Fail(wire.ErrorCodeInvalid, "participant token expiry must be within one day")
 		}
-		var prior string
-		e = tx.QueryRowContext(ctx, s.q("SELECT request_hash FROM participants WHERE id=?"), id).Scan(&prior)
-		if e == nil && prior != hash {
-			return kernel.Fail(wire.ErrorCodeConflict, "participant key has different arguments")
+		parent, e := s.grantAuthority(ctx, tx, current, request)
+		if e != nil {
+			return e
+		}
+		var prior, previousParent string
+		var revoked int
+		e = tx.QueryRowContext(ctx, s.q("SELECT request_hash,parent,revoked FROM participants WHERE id=?"), id).Scan(&prior, &previousParent, &revoked)
+		if e == nil && (prior != hash || previousParent != parent) {
+			return kernel.Fail(wire.ErrorCodeConflict, "participant key has different arguments or parent authority")
 		}
 		if e != nil && !errors.Is(e, sql.ErrNoRows) {
 			return e
 		}
 		if e != nil {
-			_, e = tx.ExecContext(ctx, s.q("INSERT INTO participants(id,session_id,subject,permissions,expires_ms,request_hash) VALUES(?,?,?,?,?,?)"),
-				id, session, request.Subject, string(kernel.JSON(request.Permissions)), request.ExpiresMs, hash)
+			var count, depth int
+			if e = tx.QueryRowContext(ctx, s.q("SELECT COUNT(*) FROM participants WHERE session_id=?"), session).Scan(&count); e != nil {
+				return e
+			}
+			if e = tx.QueryRowContext(ctx, s.q("SELECT COALESCE(MAX(depth),0) FROM participant_ancestors WHERE descendant=?"), parent).Scan(&depth); e != nil {
+				return e
+			}
+			if count >= 1024 || depth >= 8 {
+				return kernel.Fail(wire.ErrorCodeOverloaded, "participant count or delegation depth bound reached")
+			}
+			_, e = tx.ExecContext(ctx, s.q("INSERT INTO participants(id,session_id,subject,permissions,expires_ms,request_hash,parent) VALUES(?,?,?,?,?,?,?)"),
+				id, session, request.Subject, string(kernel.JSON(request.Permissions)), request.ExpiresMs, hash, parent)
 			if e != nil {
 				return e
 			}
+			if parent != "" {
+				if _, e = tx.ExecContext(ctx, s.q("INSERT INTO participant_ancestors(descendant,ancestor,depth) VALUES(?,?,1)"), id, parent); e != nil {
+					return e
+				}
+				if _, e = tx.ExecContext(ctx, s.q("INSERT INTO participant_ancestors(descendant,ancestor,depth) SELECT ?,ancestor,depth+1 FROM participant_ancestors WHERE descendant=?"),
+					id, parent); e != nil {
+					return e
+				}
+			}
 		}
-		out = control.Participant{ID: id, Session: session, Tenant: current.Tenant, Subject: request.Subject, Permissions: request.Permissions, Expires: int64(request.ExpiresMs)}
+		out = control.Participant{ID: id, Parent: parent, Session: session, Tenant: current.Tenant, Subject: request.Subject,
+			Permissions: request.Permissions, Expires: int64(request.ExpiresMs), Revoked: revoked != 0}
 		return nil
 	})
 	return
@@ -196,9 +221,10 @@ func (s *Store) Participant(ctx context.Context, id string) (control.Participant
 	var out control.Participant
 	var permissions string
 	var revoked int
-	err := s.db.QueryRowContext(ctx, s.q(`SELECT p.id,p.session_id,s.tenant,p.subject,p.permissions,p.expires_ms,p.revoked
+	err := s.db.QueryRowContext(ctx, s.q(`SELECT p.id,p.parent,p.session_id,s.tenant,p.subject,p.permissions,p.expires_ms,
+CASE WHEN p.revoked<>0 OR EXISTS(`+s.invalidParticipantAncestor(false)+`) THEN 1 ELSE 0 END
 FROM participants p JOIN sessions s ON p.session_id=s.id WHERE p.id=? AND s.lifecycle<>'deleted' AND p.expires_ms>`+s.clock()), id).
-		Scan(&out.ID, &out.Session, &out.Tenant, &out.Subject, &permissions, &out.Expires, &revoked)
+		Scan(&out.ID, &out.Parent, &out.Session, &out.Tenant, &out.Subject, &permissions, &out.Expires, &revoked)
 	if err != nil {
 		return out, notFound(err)
 	}
@@ -211,6 +237,15 @@ func (s *Store) RevokeParticipant(ctx context.Context, session, id string) error
 	return s.transaction(ctx, func(tx *sql.Tx) error {
 		if _, err := s.session(ctx, tx, session, true); err != nil {
 			return err
+		}
+		if authority := control.RequestAuthority(ctx); authority != nil && authority.Participant != "" && authority.Participant != id {
+			var count int
+			if err := tx.QueryRowContext(ctx, s.q("SELECT COUNT(*) FROM participant_ancestors WHERE descendant=? AND ancestor=?"), id, authority.Participant).Scan(&count); err != nil {
+				return err
+			}
+			if count != 1 {
+				return kernel.Fail(wire.ErrorCodeForbidden, "participants may revoke only themselves or their descendants")
+			}
 		}
 		return requireOne(tx.ExecContext(ctx, s.q("UPDATE participants SET revoked=1 WHERE session_id=? AND id=?"), session, id))
 	})

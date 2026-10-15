@@ -199,6 +199,19 @@ func (s *Store) ClaimDispatch(ctx context.Context, session string, owner control
 			if live != 1 || (claimant != owner.Node && claimant != out.View.Recipient) {
 				return kernel.Fail(wire.ErrorCodeForbidden, "connection is revoked, replaced or not the invocation recipient")
 			}
+			if control.RequestAuthority(ctx) != nil && claimant != owner.Node {
+				subject, e := s.authoritySubject(ctx, tx)
+				if e != nil {
+					return e
+				}
+				var attached string
+				if e = tx.QueryRowContext(ctx, s.q("SELECT claim_subject FROM connections WHERE id=? AND session_id=?"), out.View.Recipient, session).Scan(&attached); e != nil {
+					return e
+				}
+				if subject != out.View.Recipient && (attached == "" || attached != subject) {
+					return kernel.Fail(wire.ErrorCodeForbidden, "claim is not from the attached application subject")
+				}
+			}
 		}
 		e = requireOne(tx.ExecContext(ctx, s.q(`UPDATE operations SET status='dispatched',claimant=?,claim_key=?,revision=revision+1
 WHERE id=? AND session_id=? AND status='prepared' AND deadline_ms>`+s.clock()+`

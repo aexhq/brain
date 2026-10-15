@@ -168,6 +168,8 @@ pub fn session_v2() -> Value {
             define::<Transfer>(generator);
             define::<ParticipantGrant>(generator);
             define::<ParticipantToken>(generator);
+            define::<IdentityIssuer>(generator);
+            define::<IdentityView>(generator);
             define::<PackageAdmission>(generator);
             define::<Package>(generator);
             define::<ManagedInvocation>(generator);

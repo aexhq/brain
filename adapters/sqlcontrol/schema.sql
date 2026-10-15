@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS brain_schema (version BIGINT PRIMARY KEY);
-INSERT INTO brain_schema(version) SELECT 12 WHERE NOT EXISTS(SELECT 1 FROM brain_schema);
+INSERT INTO brain_schema(version) SELECT 13 WHERE NOT EXISTS(SELECT 1 FROM brain_schema);
 CREATE TABLE IF NOT EXISTS nodes (
  id TEXT PRIMARY KEY, lease BIGINT NOT NULL, draining BIGINT NOT NULL DEFAULT 0,
  endpoint TEXT NOT NULL DEFAULT '', configuration_digest TEXT NOT NULL DEFAULT ''
@@ -114,7 +114,7 @@ CREATE INDEX IF NOT EXISTS interactions_page ON interactions(session_id,id);
 CREATE TABLE IF NOT EXISTS connections (
  id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), template TEXT NOT NULL,
  generation BIGINT NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'active',
- ownership TEXT NOT NULL, resource_id TEXT NOT NULL DEFAULT '', request_hash TEXT NOT NULL,
+ ownership TEXT NOT NULL, resource_id TEXT NOT NULL DEFAULT '', request_hash TEXT NOT NULL, claim_subject TEXT NOT NULL DEFAULT '',
  UNIQUE(session_id,template,generation)
 );
 CREATE TABLE IF NOT EXISTS documents (
@@ -137,8 +137,14 @@ CREATE INDEX IF NOT EXISTS schedules_page ON schedules(session_id,id);
 CREATE TABLE IF NOT EXISTS participants (
  id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), subject TEXT NOT NULL,
  permissions TEXT NOT NULL, expires_ms BIGINT NOT NULL, revoked BIGINT NOT NULL DEFAULT 0,
- request_hash TEXT NOT NULL
+ request_hash TEXT NOT NULL, parent TEXT NOT NULL DEFAULT ''
 );
+CREATE INDEX IF NOT EXISTS participants_session ON participants(session_id,id);
+CREATE TABLE IF NOT EXISTS participant_ancestors (
+ descendant TEXT NOT NULL REFERENCES participants(id), ancestor TEXT NOT NULL REFERENCES participants(id),
+ depth BIGINT NOT NULL CHECK(depth BETWEEN 1 AND 8), PRIMARY KEY(descendant,ancestor)
+);
+CREATE INDEX IF NOT EXISTS participant_descendants ON participant_ancestors(ancestor,descendant);
 CREATE TABLE IF NOT EXISTS coverage (
  session_id TEXT NOT NULL REFERENCES sessions(id), first_sequence BIGINT NOT NULL,
  last_sequence BIGINT NOT NULL, object_key TEXT NOT NULL, digest TEXT NOT NULL, bytes BIGINT NOT NULL,

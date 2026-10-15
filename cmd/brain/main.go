@@ -22,6 +22,7 @@ import (
 	"github.com/aexhq/brain/adapters/archive"
 	"github.com/aexhq/brain/adapters/d1control"
 	"github.com/aexhq/brain/adapters/harness"
+	"github.com/aexhq/brain/adapters/identity"
 	"github.com/aexhq/brain/adapters/integrations"
 	"github.com/aexhq/brain/adapters/models"
 	"github.com/aexhq/brain/adapters/sqlcontrol"
@@ -253,6 +254,17 @@ func run() error {
 		return err
 	}
 	defer records.Close()
+	var issuers []wire.IdentityIssuer
+	identityConfig := env("BRAIN_IDENTITY_ISSUERS", "[]")
+	decoder := json.NewDecoder(strings.NewReader(identityConfig))
+	decoder.DisallowUnknownFields()
+	if len(identityConfig) > 32768 || !json.Valid([]byte(identityConfig)) || decoder.Decode(&issuers) != nil || issuers == nil {
+		return fmt.Errorf("invalid BRAIN_IDENTITY_ISSUERS")
+	}
+	identities, err := identity.New(issuers, development)
+	if err != nil {
+		return err
+	}
 	var registrations []harness.Registration
 	if err = json.Unmarshal([]byte(env("BRAIN_HARNESSES", "[]")), &registrations); err != nil {
 		return fmt.Errorf("invalid BRAIN_HARNESSES")
@@ -351,7 +363,7 @@ func run() error {
 		internalURL = "http://" + listener.Addr().String()
 	}
 	app, err := server.New(server.Config{Node: node, Token: token, Key: key, Workers: int(workers), Inflight: int(inflight),
-		Requests: int(requests), FileTransfers: int(files), Streams: int(streams),
+		Requests: int(requests), FileTransfers: int(files), Streams: int(streams), Identity: identities,
 		Lease: time.Duration(lease) * time.Millisecond, Development: development, Origins: strings.Fields(os.Getenv("BRAIN_BROWSER_ORIGINS")), InternalURL: internalURL, ArchiveInterval: time.Duration(archiveInterval) * time.Millisecond},
 		authority, records, blobs, loops, effects)
 	if err != nil {

@@ -17,6 +17,8 @@ This page describes the Session API v2 source distribution. Published v1 runtime
 matching release documentation and data layout; replacing a layout marker is not an upgrade.
 Source setup and verification commands are in
 [CONTRIBUTING.md](https://github.com/aexhq/brain/blob/main/CONTRIBUTING.md#session-api-v2-source-distribution).
+Use [identity tokens and participant grants](../guides/identity) for tenant-scoped application
+access without sharing an operator key.
 
 ## Read a page or follow new records
 
@@ -56,6 +58,12 @@ for await (const document of session.allDocuments("memory")) {
 Python provides `session.all_operations()` and `session.all_documents("memory")`, with
 equivalent iterators for the other collections. These are live traversals, not snapshots;
 concurrent insertion before an already-consumed cursor is not included.
+
+Operation lists and the operations export section return compact control views. A result
+body can leave that view after verified archival, so `result_available: false` on a list
+entry does not prove the archived bytes are lost. Read `session.operation(id)` in either
+SDK to hydrate that operation's original result. If that read still reports unavailable
+bytes, its known completion or uncertainty remains authoritative; do not repeat the effect.
 
 An execution notification is never permission to run application code. Claim the operation through
 the API once. An application promising crash recovery must also persist its own claim and receipt

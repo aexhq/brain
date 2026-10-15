@@ -233,6 +233,9 @@
     "Connection": {
       "additionalProperties": false,
       "properties": {
+        "claim_subject": {
+          "type": "string"
+        },
         "generation": {
           "type": "string"
         },
@@ -950,6 +953,95 @@
       "required": [
         "name",
         "version"
+      ],
+      "type": "object"
+    },
+    "IdentityIssuer": {
+      "additionalProperties": false,
+      "properties": {
+        "audience": {
+          "type": "string"
+        },
+        "cache_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "jwks_url": {
+          "type": "string"
+        },
+        "max_token_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "permissions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "refresh_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tenant": {
+          "type": "string"
+        },
+        "tenant_claim": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "issuer",
+        "audience",
+        "jwks_url",
+        "permissions"
+      ],
+      "type": "object"
+    },
+    "IdentityView": {
+      "additionalProperties": false,
+      "properties": {
+        "expires_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "operator": {
+          "type": "boolean"
+        },
+        "participant_id": {
+          "type": "string"
+        },
+        "permissions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "tenant": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant",
+        "subject",
+        "permissions",
+        "operator"
       ],
       "type": "object"
     },

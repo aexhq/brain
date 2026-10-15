@@ -56,6 +56,7 @@ class CommandReceipt(TypedDict):
     status: str
 
 class Connection(TypedDict):
+    claim_subject: NotRequired[str]
     generation: str
     id: str
     ownership: Ownership
@@ -206,6 +207,27 @@ class HarnessSelection(TypedDict):
     configuration: NotRequired[Any]
     name: str
     version: str
+
+class IdentityIssuer(TypedDict):
+    audience: str
+    cache_ms: NotRequired[int]
+    issuer: str
+    jwks_url: str
+    max_token_ms: NotRequired[int]
+    permissions: list[str]
+    refresh_ms: NotRequired[int]
+    tenant: NotRequired[str]
+    tenant_claim: NotRequired[str]
+
+class IdentityView(TypedDict):
+    expires_ms: NotRequired[int]
+    issuer: NotRequired[str]
+    operator: bool
+    participant_id: NotRequired[str]
+    permissions: list[str]
+    session_id: NotRequired[str]
+    subject: str
+    tenant: str
 
 class Input(TypedDict):
     data: InputData

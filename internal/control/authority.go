@@ -6,6 +6,9 @@ type Authority struct {
 	Participant string
 	Session     string
 	Tenant      string
+	Subject     string   `json:"Subject,omitempty"`
+	Permissions []string `json:"Permissions,omitempty"`
+	Expires     int64    `json:"Expires,omitempty"`
 }
 
 type authorityKey struct{}

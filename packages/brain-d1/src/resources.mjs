@@ -2,7 +2,7 @@ import { cancelLineage } from "./lineage.mjs";
 import { wakeParents } from "./children.mjs";
 import { equal } from "./budgets.mjs";
 import {
-  Mutation, big, capability, clock, connection, connectionColumns, decode, digest, document, documentColumns, encode, field, fileColumns,
+  Mutation, authoritySubject, big, capability, clock, connection, connectionColumns, decode, digest, document, documentColumns, encode, field, fileColumns,
   id, interaction, interactionColumns, integer, need, one, operationColumns, raw, result, rows, safe, session, sessionColumns,
 } from "./domain.mjs";
 import { journal } from "./control.mjs";
@@ -71,8 +71,9 @@ AND status='pending' AND expires_ms>${clock}`, [status, answerText, answer.reque
       need(count.count < 32, "overloaded", "active connection limit reached");
       const priorGeneration = await m.one("SELECT CAST(COALESCE(MAX(generation),0) AS TEXT) AS generation FROM connections WHERE session_id=? AND template=?", [identifier, request.template]);
       const generation = big(priorGeneration.generation) + 1n;
-      m.change("INSERT INTO connections(id,session_id,template,generation,ownership,resource_id,request_hash) VALUES(?,?,?,?,?,?,?)",
-        [connectionID, identifier, request.template, generation, template.ownership, request.resource_id ?? "", hash]);
+      const subject = await authoritySubject(m);
+      m.change("INSERT INTO connections(id,session_id,template,generation,ownership,resource_id,request_hash,claim_subject) VALUES(?,?,?,?,?,?,?,?)",
+        [connectionID, identifier, request.template, generation, template.ownership, request.resource_id ?? "", hash, subject]);
     }
     return result(m, "SELECT " + connectionColumns + " FROM connections WHERE id=?", [connectionID], connection);
   },

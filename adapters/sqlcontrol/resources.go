@@ -162,16 +162,19 @@ func (s *Store) Answer(ctx context.Context, session, id string, answer wire.Inte
 func scanConnection(row scanner) (wire.Connection, error) {
 	var out wire.Connection
 	var generation int64
-	var resource string
-	err := row.Scan(&out.ID, &out.SessionID, &out.Template, &generation, &out.Status, &out.Ownership, &resource)
+	var resource, subject string
+	err := row.Scan(&out.ID, &out.SessionID, &out.Template, &generation, &out.Status, &out.Ownership, &resource, &subject)
 	out.Generation = strconv.FormatInt(generation, 10)
 	if resource != "" {
 		out.ResourceID = &resource
 	}
+	if subject != "" {
+		out.ClaimSubject = &subject
+	}
 	return out, notFound(err)
 }
 
-const connectionColumns = "id,session_id,template,generation,status,ownership,resource_id"
+const connectionColumns = "id,session_id,template,generation,status,ownership,resource_id,claim_subject"
 
 func (s *Store) Attach(ctx context.Context, session string, request wire.ConnectionAttach) (out wire.Connection, err error) {
 	if err = kernel.ValidateAttachment(request); err != nil {
@@ -217,8 +220,12 @@ func (s *Store) Attach(ctx context.Context, session string, request wire.Connect
 		if err := tx.QueryRowContext(ctx, s.q("SELECT COALESCE(MAX(generation),0)+1 FROM connections WHERE session_id=? AND template=?"), session, request.Template).Scan(&generation); err != nil {
 			return err
 		}
-		_, e = tx.ExecContext(ctx, s.q("INSERT INTO connections(id,session_id,template,generation,ownership,resource_id,request_hash) VALUES(?,?,?,?,?,?,?)"),
-			id, session, request.Template, generation, template.Ownership, kernel.Value(request.ResourceID), hash)
+		subject, e := s.authoritySubject(ctx, tx)
+		if e != nil {
+			return e
+		}
+		_, e = tx.ExecContext(ctx, s.q("INSERT INTO connections(id,session_id,template,generation,ownership,resource_id,request_hash,claim_subject) VALUES(?,?,?,?,?,?,?,?)"),
+			id, session, request.Template, generation, template.Ownership, kernel.Value(request.ResourceID), hash, subject)
 		if e != nil {
 			return e
 		}

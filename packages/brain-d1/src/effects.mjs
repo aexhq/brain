@@ -1,5 +1,5 @@
 import {
-  Mutation, big, clock, decode, digest, encode, field, need, one, operation, operationColumns, raw, result, rows, safe, wire,
+  Mutation, authoritySubject, big, clock, decode, digest, encode, field, need, one, operation, operationColumns, raw, result, rows, safe, wire,
 } from "./domain.mjs";
 import { journal } from "./control.mjs";
 import { operationBytes, pageRows } from "./pages.mjs";
@@ -106,6 +106,12 @@ AND status='answered' AND expires_ms>${clock})=1`;
       need((await m.one("SELECT CASE WHEN " + predicate + " THEN 1 ELSE 0 END AS valid", values)).valid === 1 &&
         (claimant === owner.Node || claimant === prior.recipient), "forbidden", "connection is revoked, replaced or not the invocation recipient");
       m.guard(predicate, values);
+      if (m.authority && claimant !== owner.Node) {
+        const subject = await authoritySubject(m);
+        const attached = await m.one("SELECT claim_subject FROM connections WHERE id=? AND session_id=?", [prior.recipient, identifier]);
+        need(subject === prior.recipient || (attached.claim_subject && attached.claim_subject === subject),
+          "forbidden", "claim is not from the attached application subject");
+      }
     }
     m.change(`UPDATE operations SET status='dispatched',claimant=?,claim_key=?,revision=revision+1
 WHERE id=? AND session_id=? AND status='prepared' AND deadline_ms>${clock}

@@ -481,6 +481,8 @@ object!(Connection {
     pub status: String,
     pub ownership: Ownership,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_subject: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_id: Option<String>,
 });
 
@@ -571,6 +573,38 @@ object!(Transfer {
     pub checkpoint: Option<RecordReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<ErrorResponse>,
+});
+
+object!(IdentityIssuer {
+    pub issuer: String,
+    pub audience: String,
+    pub jwks_url: String,
+    pub permissions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_claim: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_token_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_ms: Option<u64>,
+});
+
+object!(IdentityView {
+    pub tenant: String,
+    pub subject: String,
+    pub permissions: Vec<String>,
+    pub operator: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub participant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_ms: Option<u64>,
 });
 
 object!(ParticipantGrant {

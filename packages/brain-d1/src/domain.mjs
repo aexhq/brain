@@ -128,7 +128,7 @@ export async function initialize(db) {
   const exists = await one(db, "SELECT name FROM sqlite_master WHERE type='table' AND name='brain_schema'", [], true);
   if (exists) {
     const version = await one(db, "SELECT MAX(version) AS version FROM brain_schema");
-    need(version.version === 12, "unsupported", "D1 control schema requires a verified offline migration");
+    need(version.version === 13, "unsupported", "D1 control schema requires a verified offline migration");
   }
   const statements = sqlSchema.split(";").map(value => value.trim()).filter(Boolean);
   statements.push(
@@ -149,7 +149,7 @@ retry_of,error,CAST(intent_sequence AS TEXT) AS intent_sequence,intent_digest,to
 export const commandColumns = `id,session_id,status,accepted_ms,run_id,CAST(sequence AS TEXT) AS sequence,error`;
 export const runColumns = `r.id,r.session_id,r.command_id,r.status,CAST(r.step AS TEXT) AS step,r.checkpoint,r.decision,r.wait_kind,r.wait_id,
 r.error,c.payload,CAST(c.sequence AS TEXT) AS sequence,CAST(r.completion_sequence AS TEXT) AS completion_sequence,r.completion_digest,r.harness_process`;
-export const connectionColumns = "id,session_id,template,CAST(generation AS TEXT) AS generation,status,ownership,resource_id";
+export const connectionColumns = "id,session_id,template,CAST(generation AS TEXT) AS generation,status,ownership,resource_id,claim_subject";
 export const interactionColumns = "id,session_id,CAST(revision AS TEXT) AS revision,status,request,answer,answer_key";
 export const documentColumns = "key,CAST(revision AS TEXT) AS revision,value,expires_ms";
 export const scheduleColumns = "id,session_id,due_ms,status,request";
@@ -185,7 +185,8 @@ export function run(row) {
 }
 export function connection(row) {
   return { id: row.id, session_id: row.session_id, template: row.template, generation: row.generation, status: row.status,
-    ownership: row.ownership, ...(row.resource_id ? { resource_id: row.resource_id } : {}) };
+    ownership: row.ownership, ...(row.resource_id ? { resource_id: row.resource_id } : {}),
+    ...(row.claim_subject ? { claim_subject: row.claim_subject } : {}) };
 }
 export function interaction(row) {
   return { id: row.id, session_id: row.session_id, revision: row.revision, status: row.status,
@@ -195,6 +196,18 @@ export function document(row) {
   return { key: row.key, revision: row.revision, value: raw(row.value), ...(row.expires_ms ? { expires_ms: row.expires_ms } : {}) };
 }
 export function schedule(row) { return { id: row.id, session_id: row.session_id, due_ms: row.due_ms, status: row.status, request: raw(row.request) }; }
+
+export function invalidParticipantAncestor(expiryOnly = false) {
+  return `SELECT 1 FROM participant_ancestors l LEFT JOIN participants a ON a.id=l.ancestor
+WHERE l.descendant=p.id AND (a.id IS NULL OR a.session_id<>p.session_id OR a.expires_ms<=${clock}${expiryOnly ? "" : " OR a.revoked<>0"})`;
+}
+
+export async function authoritySubject(m) {
+  const authority = m.authority;
+  if (!authority) return "";
+  if (!authority.Participant) return authority.Subject;
+  return (await m.one("SELECT subject FROM participants WHERE id=? AND session_id=?", [authority.Participant, authority.Session])).subject;
+}
 
 // Only named domain handlers create these plans. The caller cannot supply SQL.
 // Every read/write scope is compared inside the same D1 batch as its changes.
@@ -266,15 +279,34 @@ AND s.epoch=? AND s.lifecycle<>'deleted' AND n.lease>${clock} AND n.draining=0${
   guard(predicate, values = []) { this.guards.push({ predicate, values }); }
   change(sql, values = [], exact = false) { this.writes.push({ sql, values, exact }); }
   async commit(reads = []) {
+    let authorityEnd;
     if (this.authority) {
       const authority = this.authority;
-      await this.scope("session:" + authority.Session);
-      const predicate = `EXISTS(SELECT 1 FROM participants p JOIN sessions s ON s.id=p.session_id
-WHERE p.id=? AND p.session_id=? AND s.tenant=? AND s.lifecycle<>'deleted' AND p.revoked=0 AND p.expires_ms>${clock})`;
-      const values = [authority.Participant, authority.Session, authority.Tenant];
+      const conditions = [], expiry = [], values = [], expiryValues = [];
+      if (authority.Expires !== undefined) {
+        conditions.push(`?>${clock}`);
+        expiry.push(`?>${clock}`);
+        values.push(authority.Expires);
+        expiryValues.push(authority.Expires);
+      }
+      if (authority.Session) {
+        await this.scope("session:" + authority.Session);
+        conditions.push("EXISTS(SELECT 1 FROM sessions WHERE id=? AND tenant=? AND lifecycle<>'deleted')");
+        values.push(authority.Session, authority.Tenant);
+      }
+      if (authority.Participant) {
+        conditions.push(`EXISTS(SELECT 1 FROM participants p WHERE p.id=? AND p.session_id=? AND
+p.revoked=0 AND p.expires_ms>${clock} AND NOT EXISTS(${invalidParticipantAncestor()}))`);
+        values.push(authority.Participant, authority.Session);
+        expiry.push(`EXISTS(SELECT 1 FROM participants p WHERE p.id=? AND p.session_id=? AND
+p.expires_ms>${clock} AND NOT EXISTS(${invalidParticipantAncestor(true)}))`);
+        expiryValues.push(authority.Participant, authority.Session);
+      }
+      const predicate = conditions.join(" AND ");
       const valid = await this.one("SELECT CASE WHEN " + predicate + " THEN 1 ELSE 0 END AS valid", values);
       need(valid.valid === 1, "unauthorized", "participant authority was revoked or expired before commit");
       this.guard(predicate, values);
+      authorityEnd = { predicate: expiry.join(" AND "), values: expiryValues };
     }
     if (this.writes.length === 0 && this.guards.length === 0) {
       return Promise.all(reads.map(({ sql, values = [] }) => rows(this.db, sql, values)));
@@ -294,6 +326,10 @@ WHERE p.id=? AND p.session_id=? AND s.tenant=? AND s.lifecycle<>'deleted' AND p.
     for (const { sql, values, exact } of this.writes) {
       batch.push(statement(this.db, sql, values));
       if (exact) changed();
+    }
+    if (authorityEnd) {
+      batch.push(statement(this.db, "INSERT INTO d1_guards SELECT ?,CASE WHEN " + authorityEnd.predicate + " THEN 1 ELSE 0 END",
+        ["authority:end", ...authorityEnd.values]));
     }
     batch.push(this.db.prepare("DELETE FROM d1_guards"));
     const firstRead = batch.length;

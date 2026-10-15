@@ -370,6 +370,53 @@ test("actual D1 rechecks a revoked authentication snapshot inside the atomic mut
   assert.equal((await f.call("Participant", [self.ID])).Revoked, true);
 });
 
+test("actual D1 attenuates bounded participant ancestry and rejects expired identity commits", async t => {
+  const f = await fixture(t);
+  const permissions = ["participant:grant", "participant:revoke", "state:write", "session:read"];
+  const identity = { Participant: "", Session: f.id, Tenant: "tenant", Subject: "identity:browser",
+    Permissions: permissions, Expires: Date.now() + 60000 };
+  const request = { request_id: "identity-root", subject: identity.Subject, permissions, expires_ms: identity.Expires - 1 };
+  const grant = async (authority, request) => {
+    const response = await f.rpc("Grant", [f.id, request], { authority });
+    assert.equal(response.status, 200, response.text);
+    return response.data.value;
+  };
+  const expired = await f.rpc("PutDocument", [f.id, "state", "expired", { request_id: "expired", revision: "0", value: true }],
+    { authority: { ...identity, Expires: Date.now() - 1 } });
+  assert.equal(expired.status, 401, expired.text);
+  assert.equal((await f.database.prepare("SELECT COUNT(*) AS count FROM documents").first()).count, 0);
+  const parent = await grant(identity, request);
+  const authenticate = value => ({ Participant: value.ID, Session: value.Session, Tenant: value.Tenant });
+  for (const invalid of [
+    { ...request, request_id: "longer", expires_ms: identity.Expires + 1 },
+    { ...request, request_id: "stronger", permissions: ["*"] },
+    { ...request, request_id: "other-source", subject: "someone-else" },
+  ]) {
+    const denied = await f.rpc("Grant", [f.id, invalid], { authority: identity });
+    assert.equal(denied.status, 403, denied.text);
+  }
+  const childRequest = { ...request, request_id: "child" };
+  const child = await grant(authenticate(parent), childRequest);
+  const sibling = await grant(authenticate(parent), { ...request, request_id: "sibling" });
+  assert.equal(child.Parent, parent.ID);
+  assert.equal((await f.rpc("Grant", [f.id, childRequest])).status, 409, "another parent cannot replay the same grant key");
+  for (const target of [parent.ID, sibling.ID]) {
+    const denied = await f.rpc("RevokeParticipant", [f.id, target], { authority: authenticate(child) });
+    assert.equal(denied.status, 403, denied.text);
+  }
+  let leaf = child;
+  for (let depth = 2; depth <= 8; depth++) leaf = await grant(authenticate(leaf), { ...request, request_id: "depth-" + depth });
+  const excessive = await f.rpc("Grant", [f.id, { ...request, request_id: "too-deep" }], { authority: authenticate(leaf) });
+  assert.equal(excessive.status, 429, excessive.text);
+  assert.equal(excessive.data.code, "overloaded");
+  const captured = authenticate(leaf);
+  const revoked = await f.rpc("RevokeParticipant", [f.id, parent.ID], { authority: authenticate(parent) });
+  assert.equal(revoked.status, 200, revoked.text);
+  assert.equal((await f.call("Participant", [leaf.ID])).Revoked, true);
+  const denied = await f.rpc("PutDocument", [f.id, "state", "stale-child", { request_id: "stale-child", revision: "0", value: true }], { authority: captured });
+  assert.equal(denied.status, 401, denied.text);
+});
+
 test("actual D1 preserves omitted optional action and event authority during delegation", async t => {
   const f = await fixture(t);
   const config = structuredClone(f.config);

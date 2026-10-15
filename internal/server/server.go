@@ -40,6 +40,7 @@ type Config struct {
 	Origins         []string
 	InternalURL     string
 	ArchiveInterval time.Duration
+	Identity        execution.Identity
 }
 
 type Server struct {
@@ -121,7 +122,15 @@ type principalKey struct{}
 type handler func(http.ResponseWriter, *http.Request, kernel.Principal) error
 
 func (s *Server) principal(r *http.Request) (kernel.Principal, error) {
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	values := r.Header.Values("Authorization")
+	fields := strings.Fields(r.Header.Get("Authorization"))
+	if len(values) > 1 || (len(fields) != 0 && (len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") || len(fields[1]) > 16384)) {
+		return kernel.Principal{}, kernel.Fail(wire.ErrorCodeUnauthorized, "one valid bearer authority is required")
+	}
+	token := ""
+	if len(fields) == 2 {
+		token = fields[1]
+	}
 	if s.Config.Token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.Config.Token)) == 1 {
 		tenant := r.Header.Get("X-Brain-Tenant")
 		if tenant == "" {
@@ -140,9 +149,12 @@ func (s *Server) principal(r *http.Request) (kernel.Principal, error) {
 		if ok && s.verify("participant", id, signature) {
 			grant, err := s.Control.Participant(r.Context(), id)
 			if err == nil && !grant.Revoked {
-				return kernel.Principal{Tenant: grant.Tenant, Subject: grant.Subject, Session: grant.Session, GrantID: grant.ID, Permissions: grant.Permissions}, nil
+				return kernel.Principal{Tenant: grant.Tenant, Subject: grant.Subject, Session: grant.Session, GrantID: grant.ID, Permissions: grant.Permissions, Expires: grant.Expires}, nil
 			}
 		}
+	}
+	if s.Config.Identity != nil && token != "" {
+		return s.Config.Identity.Authenticate(r.Context(), token)
 	}
 	return kernel.Principal{}, kernel.Fail(wire.ErrorCodeUnauthorized, "valid bearer authority is required")
 }
@@ -180,7 +192,7 @@ func (s *Server) wrap(permission string, fn handler) http.HandlerFunc {
 			w.Header().Set("Vary", "Origin")
 		}
 		p, err := s.principal(r)
-		if err == nil && !p.Allows(r.PathValue("session"), permission) {
+		if err == nil && permission != "" && !p.Allows(r.PathValue("session"), permission) {
 			err = kernel.Fail(wire.ErrorCodeForbidden, "participant grant does not allow this operation")
 		}
 		if err == nil && strings.HasPrefix(r.URL.Path, "/operator/") && !p.Operator {
@@ -191,8 +203,9 @@ func (s *Server) wrap(permission string, fn handler) http.HandlerFunc {
 		}
 		if err == nil {
 			ctx := context.WithValue(r.Context(), principalKey{}, p)
-			if p.GrantID != "" {
-				ctx = control.WithAuthority(ctx, control.Authority{Participant: p.GrantID, Session: p.Session, Tenant: p.Tenant})
+			if p.GrantID != "" || p.Expires > 0 {
+				ctx = control.WithAuthority(ctx, control.Authority{Participant: p.GrantID, Session: r.PathValue("session"), Tenant: p.Tenant,
+					Subject: p.Subject, Permissions: p.Permissions, Expires: p.Expires})
 			}
 			err = fn(w, r.WithContext(ctx), p)
 		}
@@ -396,6 +409,7 @@ func (s *Server) routes() error {
 		s.mux.HandleFunc(pattern, s.wrap(permission, fn))
 		registered[pattern] = true
 	}
+	add("GET /v2/identity", "", s.identity)
 	add("POST /v2/sessions", "session:create", s.create)
 	add("GET /v2/sessions", "session:list", s.list)
 	add("GET /v2/sessions/{session}", "session:read", s.session)

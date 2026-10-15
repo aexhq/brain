@@ -351,9 +351,22 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request, p kernel.Principa
 	if err != nil {
 		return err
 	}
-	if operation.View.Recipient != request.ConnectionID || operation.Generation != request.Generation ||
-		(!p.Operator && p.Subject != request.ConnectionID) {
+	if operation.View.Kind != wire.EffectKindAction || operation.View.Recipient != request.ConnectionID || operation.Generation != request.Generation {
 		return kernel.Fail(wire.ErrorCodeForbidden, "claim is not from the original invocation recipient")
+	}
+	action, err := kernel.Action(session.View.Config, operation.View.Action)
+	if err != nil {
+		return err
+	}
+	application := false
+	for _, template := range session.View.Config.Connections {
+		if template.Name == action.Connection && template.Kind == wire.ConnectionKindApplication {
+			application = true
+			break
+		}
+	}
+	if !application {
+		return kernel.Fail(wire.ErrorCodeForbidden, "only an application connection accepts public dispatch claims")
 	}
 	operation, err = s.Control.ClaimDispatch(r.Context(), session.View.ID, session.Owner, operation.View.ID, request.ConnectionID, request.RequestID)
 	if err != nil {
@@ -744,6 +757,23 @@ func (s *Server) handoff(w http.ResponseWriter, r *http.Request, p kernel.Princi
 	}
 	return writeJSON(w, out.View)
 }
+func (s *Server) identity(w http.ResponseWriter, r *http.Request, p kernel.Principal) error {
+	out := wire.IdentityView{Tenant: p.Tenant, Subject: p.Subject, Permissions: append([]string{}, p.Permissions...), Operator: p.Operator}
+	if p.Session != "" {
+		out.SessionID = kernel.Ptr(p.Session)
+	}
+	if p.GrantID != "" {
+		out.ParticipantID = kernel.Ptr(p.GrantID)
+	}
+	if p.Issuer != "" {
+		out.Issuer = kernel.Ptr(p.Issuer)
+	}
+	if p.Expires > 0 {
+		out.ExpiresMs = kernel.Ptr(uint64(p.Expires))
+	}
+	return writeJSON(w, out)
+}
+
 func (s *Server) grant(w http.ResponseWriter, r *http.Request, p kernel.Principal) error {
 	request, err := readBody[wire.ParticipantGrant](s, w, r, "ParticipantGrant")
 	if err != nil {
@@ -752,8 +782,9 @@ func (s *Server) grant(w http.ResponseWriter, r *http.Request, p kernel.Principa
 	if err = kernel.ValidateParticipant(request); err != nil {
 		return err
 	}
-	if !p.Operator && (request.Subject != p.Subject || !kernel.Subset(request.Permissions, p.Permissions)) {
-		return kernel.Fail(wire.ErrorCodeForbidden, "delegated token cannot amplify permissions or impersonate another source")
+	if !p.Operator && (request.Subject != p.Subject || !kernel.PermissionSubset(request.Permissions, p.Permissions) ||
+		p.Expires <= 0 || request.ExpiresMs > uint64(p.Expires)) {
+		return kernel.Fail(wire.ErrorCodeForbidden, "delegated token cannot amplify permissions, lifetime or source identity")
 	}
 	if err = s.audit(r.Context(), p, r.PathValue("session"), "participant.grant_requested", map[string]any{"subject": request.Subject, "permissions": request.Permissions}); err != nil {
 		return err

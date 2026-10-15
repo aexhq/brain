@@ -9,6 +9,7 @@
   "GET /operator/sessions/{session}/transfers/{transfer}": "",
   "GET /operator/storage": "",
   "GET /v2/catalog": "",
+  "GET /v2/identity": "",
   "POST /v2/packages": "PackageAdmission",
   "GET /v2/packages/{package}": "",
   "GET /v2/sessions": "",

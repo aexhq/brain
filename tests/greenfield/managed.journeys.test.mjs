@@ -195,13 +195,19 @@ test("J04/J17: TypeScript and Python managed packages execute real locked depend
     const { runtime } = await f.build(language);
     await f.api("POST", `/v2/sessions/${runtime.id}/inputs`, { request_id: randomUUID(),
       data: { kind: "action", name: "inspect", arguments: { value: "12" } } });
-    const [operation] = await waitFor(() => f.api("GET", `/v2/sessions/${runtime.id}/operations`), values => {
+    const [summary] = await waitFor(() => f.api("GET", `/v2/sessions/${runtime.id}/operations`), values => {
       if (values[0]) assert(!["failed", "unknown"].includes(values[0].status), JSON.stringify(values[0]));
       return values.length === 1 && values[0].status === "completed";
     }, `${language} managed invocation`);
+    assert.equal(summary.error, undefined, `${language}: ${JSON.stringify(summary)}`);
+    await waitFor(() => f.api("GET", `/v2/sessions/${runtime.id}/operations`),
+      values => values.length === 1 && values[0].status === "completed" && !values[0].result_available,
+      `${language} receipt leaves the compact control row after verified archival`);
+    const operation = await f.api("GET", `/v2/sessions/${runtime.id}/operations/${summary.id}`);
+    assert.equal(operation.error, undefined, `${language}: ${JSON.stringify(operation)}`);
+    assert.equal(operation.result_available, true, "the original archived receipt remains readable");
     assert.deepEqual(operation.result, { dependency: true, secret_injected: true, internal_key_absent: true,
       read_only: true, uid: 65532, operation_id: operation.id });
-    assert.equal(operation.error, undefined);
     await waitFor(() => f.api("GET", `/v2/sessions/${runtime.id}/runs`),
       runs => runs.length === 1 && runs[0].status === "completed", "managed run completes");
   }

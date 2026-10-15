@@ -131,10 +131,16 @@ export default {
         envelope.arguments.every(value => typeof value === "string"), "invalid", "control arguments do not match the finite domain operation");
       const authority = envelope.authority;
       if (authority !== undefined) {
-        need(authority && Object.keys(authority).length === 3 &&
-          ["Participant", "Session", "Tenant"].every(key => typeof authority[key] === "string" &&
-            /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(authority[key])),
-        "invalid", "control participant authority is invalid");
+        const identifier = value => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
+        need(authority && Object.keys(authority).every(key => ["Participant", "Session", "Tenant", "Subject", "Permissions", "Expires"].includes(key)) &&
+          identifier(authority.Tenant) && (authority.Session === "" || identifier(authority.Session)) &&
+          (authority.Participant === "" || identifier(authority.Participant)) &&
+          (authority.Subject === undefined || identifier(authority.Subject)) &&
+          (authority.Permissions === undefined || (Array.isArray(authority.Permissions) && authority.Permissions.length <= 64 &&
+            authority.Permissions.every(value => value === "*" || identifier(value)))) &&
+          (authority.Expires === undefined || (Number.isSafeInteger(authority.Expires) && authority.Expires > 0)) &&
+          (authority.Participant ? Boolean(authority.Session) : Boolean(authority.Subject && authority.Permissions && authority.Expires)),
+        "invalid", "control request authority is invalid");
       }
       const values = envelope.arguments.map(decode);
       depth(values);
