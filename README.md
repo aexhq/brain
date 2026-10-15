@@ -4,7 +4,7 @@ A standalone agent session server with distributed tools and local working state
 
 Brain owns session transport, tenant isolation, persistence, and bounded execution. Harnesses own model calls and context. Tools run in external services, including approvals, storage, browsers, and code execution.
 
-Implementation is in progress. The current executable supports Pi, SQLite metadata, append-only event files, HTTP/SSE tools, authenticated sessions, bounded queues, interruption, completed-turn recovery, and event streaming. Optional filesystem/S3/R2 checkpoint storage and PostgreSQL discovery run outside the execution path. TypeScript and Python clients use generated wire types. The [roadmap](docs/roadmap.md) and [implementation plans](docs/implementation-plan.md) describe remaining integrations; they are not release claims.
+This cut targets local development. The current executable supports Pi, SQLite metadata, append-only event files, HTTP/SSE tools, authenticated sessions, bounded queues, interruption, completed-turn recovery, and event streaming. Optional filesystem/S3/R2 checkpoint storage and PostgreSQL discovery run outside the execution path. TypeScript and Python clients use generated wire types. Cloud qualification, Codex/OpenCode adapters, MCP, the broader tool catalog, and production capacity work remain on the [roadmap](docs/roadmap.md).
 
 ## Run locally
 
@@ -32,6 +32,8 @@ Session settings are frozen at creation. Input is queued; unsupported steering f
 
 Tool bindings are host configuration: each descriptor supplies its schema, endpoint, allowed tenants, and optional credential environment variable. Only selected tools enter a session. Tool HTTP requests carry authenticated session/call scope outside model arguments. Responses contain `content` and optional `is_error`; SSE tools emit `progress` events followed by one `result`. Tools own approvals and remote jobs. Brain never automatically retries their actions.
 
+The [local tool service](examples/tools/README.md) includes echo, scoped inspection, and an operator approval example. Its configuration is generated from the actual descriptors. It runs in a separate process and requires no cloud services.
+
 Recovery loads saved native context without invoking a model. After interruption, explicitly resume before sending new input. Recovery can discard native work beyond the last completed checkpoint; observed history remains available. Remote side effects are not rolled back. Cache warming and native local tools are disabled. Read the [architecture](docs/adr/0001-local-first-session-server.md) for ownership and durability boundaries.
 
 ## Checks
@@ -45,6 +47,8 @@ The checks require both npm installations above and Python 3.11+. They build cli
 Generate API and runner declarations with `go run ./cmd/generate`. [OpenAPI](api/openapi.json) is generated from Go types and route declarations. Clean breaks are the default; dependency pins and standard document metadata do not imply API compatibility.
 
 Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export traces and metrics over OTLP/HTTP. Exporters are bounded and optional. Logs use structured JSON without request bodies. Health endpoints are `/health/live` and `/health/ready`.
+
+Metrics cover request duration/errors, queued-input delay, first assistant output, runner startup, active execution, tool duration/outcomes, transcript/native byte growth, and synchronization backlog/duration/failures. They avoid tenant/session labels; traces identify individual sessions. These are measurements, not a claim of tested production capacity.
 
 The [Dockerfile](Dockerfile) packages the server and Pi runner as an unprivileged process. Mount a configuration file at `/config/brain.json`; set its listen address to `0.0.0.0:8080` and data directory to `/data`. The surrounding platform owns routing, session placement, cross-instance ownership, and failover.
 

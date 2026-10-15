@@ -92,6 +92,7 @@ type entry struct {
 	executing   bool
 	runCtx      context.Context
 	restore     bool
+	firstOutput time.Time
 }
 
 func New(opts Options) (*Engine, error) {
@@ -568,6 +569,7 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 	a.mu.Lock()
 	a.executing = true
 	a.runCtx = ctx
+	a.firstOutput = q.event.Time
 	a.mu.Unlock()
 	defer func() {
 		if runErr != nil {
@@ -579,6 +581,7 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 		a.mu.Unlock()
 	}()
 	if e.opts.Metrics != nil {
+		e.opts.Metrics.QueueDelay.Record(ctx, time.Since(q.event.Time).Seconds())
 		e.opts.Metrics.Active.Add(ctx, 1)
 		defer e.opts.Metrics.Active.Add(ctx, -1)
 	}
@@ -627,6 +630,7 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 		if err := e.acquireRunner(ctx); err != nil {
 			return err
 		}
+		started := time.Now()
 		runner, err = e.opts.Factories[a.meta.Harness].Open(ctx, harness.Options{Lifetime: e.ctx, SessionID: a.meta.ID, Dir: nativeDir, Config: cfg, Tools: selected, Provider: provider,
 			Event: func(kind string, data json.RawMessage) error {
 				if kind != "assistant.message" && kind != "assistant.delta" {
@@ -634,9 +638,14 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 				}
 				a.mu.Lock()
 				inputID := a.current
+				first := a.firstOutput
+				a.firstOutput = time.Time{}
 				a.mu.Unlock()
 				if inputID == "" {
 					return errors.New("harness emitted output without active input")
+				}
+				if !first.IsZero() && e.opts.Metrics != nil {
+					e.opts.Metrics.FirstOutput.Record(e.ctx, time.Since(first).Seconds())
 				}
 				_, err := e.emit(a, kind, inputID, data)
 				return err
@@ -683,6 +692,9 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 				return result, nil
 			},
 		})
+		if e.opts.Metrics != nil {
+			e.opts.Metrics.RunnerStartup.Record(ctx, time.Since(started).Seconds(), metric.WithAttributes(attribute.String("harness", a.meta.Harness)))
+		}
 		if err != nil {
 			<-e.resident
 			return err
@@ -723,6 +735,19 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if e.opts.Metrics != nil {
+		previous := map[string]int64{}
+		if a.meta.Checkpoint != nil {
+			for _, f := range a.meta.Checkpoint.Files {
+				previous[f.Path] = f.Size
+			}
+		}
+		var growth int64
+		for _, f := range files {
+			growth += max(0, f.Size-previous[f.Path])
+		}
+		e.opts.Metrics.NativeBytes.Add(ctx, growth, metric.WithAttributes(attribute.String("harness", a.meta.Harness)))
+	}
 	a.meta.Checkpoint = &core.Checkpoint{ID: core.ID(), Offset: a.log.Size(), Files: files, Config: cfg, Time: time.Now().UTC()}
 	err = e.opts.Store.Save(ctx, a.meta)
 	if err == nil {

@@ -371,6 +371,9 @@ func write(w http.ResponseWriter, status int, value any) {
 }
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	code := core.ErrorCode(err)
+	if s.Metrics != nil {
+		s.Metrics.Rejected.Add(r.Context(), 1, metric.WithAttributes(attribute.String("code", string(code))))
+	}
 	status := 500
 	message := "internal server error"
 	var typed *core.Error

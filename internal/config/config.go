@@ -119,8 +119,8 @@ func (c *Config) Validate() error {
 		return errors.New("at least one harness is required")
 	}
 	for name, r := range c.Harnesses {
-		if name != "pi" && name != "codex" && name != "opencode" {
-			return fmt.Errorf("unknown harness %q", name)
+		if name == "" || len(name) > 64 {
+			return fmt.Errorf("invalid harness name %q", name)
 		}
 		if len(r.Command) == 0 || r.Command[0] == "" {
 			return fmt.Errorf("harness %s has no command", name)

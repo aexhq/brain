@@ -1,6 +1,6 @@
 # Brain implementation plan
 
-Status: Draft  
+Status: Local development implementation in progress
 Decision: [ADR 0001](adr/0001-local-first-session-server.md)  
 Release scope: [Roadmap](roadmap.md)
 
@@ -30,4 +30,6 @@ Start with L1 and corresponding A1, O1, and V1 work. Then implement Pi and one e
 
 The roadmap owns release scope. Each plan owns work items and acceptance checks. Once implemented, schemas/types, SQL, code, and tests own behavior. Update plans when decisions change; keep one current contract. Compatibility work requires an explicit exception to the ADR's clean-break policy.
 
-Keep changes small enough to review and verify. Do not prebuild every interface or provider package. Complete the current end-to-end slice, run all required checks, and move to the next dependency-ready task. No implementation work is marked complete by these draft documents.
+Keep changes small enough to review and verify. Do not prebuild every interface or provider package. Complete the current end-to-end slice, run all required checks, and move to the next dependency-ready task.
+
+The current cut is for local development. It includes the Pi server, local state, external HTTP/SSE tools, approval/inspection examples, generated clients, telemetry, and filesystem checkpoint recovery. Optional S3/R2/PostgreSQL adapters are present; cloud deployment and live cloud qualification are deferred. Additional harnesses, MCP, the broader tool catalog, global disk accounting, soak/capacity testing, and production release gates remain in the linked plans. This cut does not claim R4 readiness or thousands of measured concurrent harnesses.

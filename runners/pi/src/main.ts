@@ -150,7 +150,7 @@ async function open(options: OpenOptions) {
       event("assistant.message", { text, usage: e.message.usage, stop_reason: e.message.stopReason });
       lastError = e.message.stopReason === "error" ? e.message.errorMessage ?? "model provider failed" : undefined;
     } else if (e.type === "agent_settled") {
-      aborted = e.aborted; settled?.();
+      aborted ||= e.aborted; settled?.();
     }
   });
   return { tools: active };
@@ -159,7 +159,7 @@ async function open(options: OpenOptions) {
 async function dispatch(method: string, params: unknown): Promise<unknown> {
   if (method === "open") return open(params as OpenOptions);
   if (!session) throw new Error("session is not open");
-  if (method === "interrupt") { await session.abort(); return {}; }
+  if (method === "interrupt") { aborted = true; await session.abort(); return {}; }
   if (method === "steer") {
     if (!busy) throw new Error("steering requires active execution");
     await session.steer((params as { text: string }).text); return {};
@@ -180,15 +180,18 @@ async function dispatch(method: string, params: unknown): Promise<unknown> {
     busy = true; lastError = undefined; aborted = false;
     const completion = new Promise<void>(resolve => { settled = resolve; });
     try {
-      await session.prompt((params as { text: string }).text, { expandPromptTemplates: false });
+      try { await session.prompt((params as { text: string }).text, { expandPromptTemplates: false }); }
+      catch (error) { if (!aborted) { if (lastError) throw new ProviderFailure(lastError); throw error; } }
       await completion;
-      if (lastError) throw new Error(lastError);
       if (aborted) return { interrupted: true };
+      if (lastError) throw new ProviderFailure(lastError);
       return {};
     } finally { busy = false; settled = undefined; }
   }
   throw new Error("unsupported runner operation");
 }
+
+class ProviderFailure extends Error {}
 
 async function receive(frame: Frame) {
   if (!frame.id) fatal(new Error("missing frame identity"));
@@ -201,7 +204,7 @@ async function receive(frame: Frame) {
   try { send({ id: frame.id, result: await dispatch(frame.method, frame.params) }); }
   catch (error) {
     send({ id: frame.id, error: {
-      code: frame.method === "prompt" ? "provider_error" : "invalid_request",
+      code: error instanceof ProviderFailure ? "provider_error" : "brain_error",
       message: error instanceof Error ? error.message : "runner operation failed",
     } });
   }

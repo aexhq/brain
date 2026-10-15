@@ -137,6 +137,9 @@ func (s *syncer) run() {
 		}
 		s.mu.Lock()
 		s.initialized = true
+		if s.engine.opts.Metrics != nil {
+			s.engine.opts.Metrics.SyncPending.Record(s.engine.ctx, int64(len(s.pending)))
+		}
 		ids := make([]string, 0, len(s.pending))
 		for id, p := range s.pending {
 			if !p.stopped && !time.Now().Before(p.due) {
@@ -154,7 +157,14 @@ func (s *syncer) run() {
 			change := p.change
 			s.mu.Unlock()
 			ctx, cancel := context.WithTimeout(s.engine.ctx, 45*time.Second)
+			started := time.Now()
 			_, err := s.engine.flush(ctx, id)
+			if s.engine.opts.Metrics != nil {
+				s.engine.opts.Metrics.SyncDuration.Record(ctx, time.Since(started).Seconds())
+				if err != nil {
+					s.engine.opts.Metrics.SyncFailures.Add(ctx, 1)
+				}
+			}
 			cancel()
 			s.mu.Lock()
 			if err == nil {

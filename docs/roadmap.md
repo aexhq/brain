@@ -8,6 +8,8 @@ Brain will provide a standalone, ephemeral agent server that developers embed in
 
 The release names below are planning gates, not calendar commitments. Implementation is underway: the local Pi server, clients, HTTP/SSE tools, and portable checkpoint path are implemented. Cross-platform CI and recording-provider tests cover the local core; cloud qualification, additional harnesses, catalog services, and capacity gates remain. Detailed work and acceptance checks live in the linked plans; this roadmap owns release scope and requirement coverage.
 
+Current delivery scope is local development. Cloud deployment/qualification and production capacity claims are deferred. The complete roadmap remains below so the smaller cut does not silently remove the longer-term requirements.
+
 | Release gate | Developer outcome | Required scope | Release evidence |
 | --- | --- | --- | --- |
 | R0 Local preview | Run and manage several local Pi sessions through one server. | Original milestones 1-3: local metadata/events/native state, authenticated session/event API, streaming, interrupt/resume, external HTTP tools, an external approval example, current-session inspection, TypeScript client, observability, bounded queues. | Real Pi lifecycle/restart, distinct tool/Brain errors, tool-wait responsiveness, scope, reconnect, and local load checks. Native tools cannot bypass distributed bindings. |

@@ -4,7 +4,7 @@ const commands = [
   ["npm", ["--prefix", "runners/pi", "run", "build"]],
   ["npm", ["--prefix", "sdks/typescript", "run", "build"]],
   ["go", ["run", "./cmd/generate", "-check"]],
-  ["go", ["test", "./..."]],
+  ["go", ["test", "-count=1", "./..."]],
   ["go", ["vet", "./..."]],
   ["npm", ["--prefix", "runners/pi", "test"]],
   ["npm", ["--prefix", "sdks/typescript", "test"]],

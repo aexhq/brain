@@ -19,12 +19,20 @@ import (
 )
 
 type Metrics struct {
-	Requests     metric.Int64Counter
-	Duration     metric.Float64Histogram
-	Active       metric.Int64UpDownCounter
-	ToolCalls    metric.Int64Counter
-	ToolDuration metric.Float64Histogram
-	Appended     metric.Int64Counter
+	Requests      metric.Int64Counter
+	Duration      metric.Float64Histogram
+	Active        metric.Int64UpDownCounter
+	ToolCalls     metric.Int64Counter
+	ToolDuration  metric.Float64Histogram
+	Appended      metric.Int64Counter
+	QueueDelay    metric.Float64Histogram
+	FirstOutput   metric.Float64Histogram
+	RunnerStartup metric.Float64Histogram
+	NativeBytes   metric.Int64Counter
+	SyncPending   metric.Int64Gauge
+	SyncDuration  metric.Float64Histogram
+	SyncFailures  metric.Int64Counter
+	Rejected      metric.Int64Counter
 }
 
 func Setup(ctx context.Context) (*Metrics, func(context.Context) error, error) {
@@ -55,7 +63,15 @@ func Setup(ctx context.Context) (*Metrics, func(context.Context) error, error) {
 	calls, e4 := meter.Int64Counter("brain.tool.calls")
 	toolDuration, e5 := meter.Float64Histogram("brain.tool.duration", metric.WithUnit("s"))
 	appended, e6 := meter.Int64Counter("brain.transcript.bytes", metric.WithUnit("By"))
-	if err := errors.Join(e1, e2, e3, e4, e5, e6); err != nil {
+	queue, e7 := meter.Float64Histogram("brain.input.queue_delay", metric.WithUnit("s"))
+	first, e8 := meter.Float64Histogram("brain.assistant.first_output", metric.WithUnit("s"))
+	startup, e9 := meter.Float64Histogram("brain.runner.startup", metric.WithUnit("s"))
+	native, e10 := meter.Int64Counter("brain.native.appended_bytes", metric.WithUnit("By"))
+	pending, e11 := meter.Int64Gauge("brain.sync.pending")
+	syncDuration, e12 := meter.Float64Histogram("brain.sync.duration", metric.WithUnit("s"))
+	syncFailures, e13 := meter.Int64Counter("brain.sync.failures")
+	rejected, e14 := meter.Int64Counter("brain.http.rejected")
+	if err := errors.Join(e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14); err != nil {
 		return nil, nil, err
 	}
 	close := func(ctx context.Context) error {
@@ -65,5 +81,5 @@ func Setup(ctx context.Context) (*Metrics, func(context.Context) error, error) {
 		}
 		return errors.Join(errs...)
 	}
-	return &Metrics{requests, duration, active, calls, toolDuration, appended}, close, nil
+	return &Metrics{Requests: requests, Duration: duration, Active: active, ToolCalls: calls, ToolDuration: toolDuration, Appended: appended, QueueDelay: queue, FirstOutput: first, RunnerStartup: startup, NativeBytes: native, SyncPending: pending, SyncDuration: syncDuration, SyncFailures: syncFailures, Rejected: rejected}, close, nil
 }

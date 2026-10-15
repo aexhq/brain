@@ -17,11 +17,11 @@ function client(t, toolResult) {
   let sequence = 0;
   const events = [];
   const lines = readline.createInterface({ input: child.stdout });
-  lines.on("line", line => {
+  lines.on("line", async line => {
     const frame = JSON.parse(line);
     if (frame.event) { events.push(frame); return; }
     if (frame.method === "tool.call") {
-      child.stdin.write(JSON.stringify({ id: frame.id, result: toolResult(frame.params) }) + "\n");
+      child.stdin.write(JSON.stringify({ id: frame.id, result: await toolResult(frame.params) }) + "\n");
       return;
     }
     const pending = waiting.get(frame.id);
@@ -112,6 +112,26 @@ test("real Pi: tool failure is model-visible and execution continues", { timeout
   await runner.request("prompt", { text: "call tool" });
   assert.ok(api.requests[1].messages.some(m => m.role === "tool" && m.content.includes("approval denied")));
   assert.ok(runner.events.some(e => e.event === "assistant.message" && e.data.text === "completed"));
+  await runner.close();
+});
+
+test("real Pi: a pending tool waits silently and can be interrupted", { timeout: 30000 }, async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "brain-pi-wait-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const api = await provider(t);
+  const started = Promise.withResolvers();
+  const answer = Promise.withResolvers();
+  const runner = client(t, async () => { started.resolve(); return answer.promise; });
+  await runner.request("open", options(dir, api.url));
+  const pending = runner.request("prompt", { text: "call tool" });
+  await started.promise;
+  await delay(150);
+  assert.equal(api.requests.length, 1, "a pending tool caused model polling");
+  await runner.request("interrupt");
+  assert.deepEqual(await pending, { interrupted: true });
+  answer.resolve(result());
+  await delay(100);
+  assert.equal(api.requests.length, 1, "interruption replayed inference");
   await runner.close();
 });
 
