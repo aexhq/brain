@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aex-brain"
+version = "1.0.0"
+description = "Language-neutral Brain Session API v2 client"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{name = "Aex"}]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/aexhq/brain"
+
+[tool.setuptools.packages.find]
+include = ["brain*"]
+
+[tool.setuptools.package-data]
+"brain.generated" = ["*.json"]

@@ -1,0 +1,83 @@
+---
+title: Run managed code
+description: Build a pinned Node or Python package and run it outside the Brain API process.
+---
+
+A managed package keeps running when the uploading browser disconnects. Write an action in
+TypeScript, JavaScript or Python; Brain records its build and invocation, and a separate worker
+runs it with the package's dependencies and scoped secrets.
+
+This guide covers the Session API v2 source distribution. It does not describe a published
+release or a production hostile-code sandbox. First complete the
+[source worker setup](https://github.com/aexhq/brain/blob/main/CONTRIBUTING.md#session-api-v2-source-distribution).
+
+<Tabs items={["TypeScript", "Python"]} groupId="managed-language">
+<Tab value="TypeScript">
+
+```ts
+export default (args: { name: string }) => ({
+  greeting: `Hello, ${args.name}!`,
+});
+```
+
+JavaScript uses the same default export without the type annotation. The Node worker supports
+Node's erasable TypeScript syntax, not a TypeScript compiler or arbitrary build script.
+
+</Tab>
+<Tab value="Python">
+
+```python
+def main(args, context):
+    return {"greeting": f"Hello, {args['name']}!"}
+```
+
+Python actions may also be asynchronous. Multiple actions can use an `actions` dictionary;
+Node packages use an exported `actions` object.
+
+</Tab>
+</Tabs>
+
+The complete [managed-package example](https://github.com/aexhq/brain/blob/main/examples/managed-package.mjs)
+uploads either function, waits for its immutable build, pins the package into a new session,
+invokes `greet` and closes both sessions. It prints `{ greeting: 'Hello, Ada!' }`.
+It invokes the action directly, so this example does not call a model.
+
+## Build, then admit the action
+
+1. Create a builder session with a `build_package` action on an admitted managed connection.
+2. Submit the source manifest with `client.admitPackage(...)`. Admission is not a successful build.
+3. Read `client.package(id)` until its status is `ready`, `failed` or `unknown`.
+4. Create the runtime session with the package ID in the action's `package` field.
+   Schemas must match the package; output and timeout limits cannot increase.
+
+A session's action catalogue does not change after creation. Package builds record source and
+base-image digests; the runtime uses an immutable image identity, never a mutable image tag.
+The trusted local runner's images stay on that worker's Docker engine.
+
+## Dependencies and secrets
+
+Node packages include `package.json` and an npm version-three lockfile. Registry dependencies
+need SHA-512 integrity. Installation disables lifecycle scripts and omits development dependencies.
+Python dependencies need exact versions and SHA-256 hashes; only binary wheels are installed.
+Builds have no package secrets.
+
+List runtime environment names in the manifest's `secrets`, then bind each name to a scoped
+secret reference in the connection's `secrets`. Admission checks that the references are available;
+values are injected only into the invocation.
+The worker does not persist injected values or forward exception details that may contain them.
+Code can still deliberately return a secret: do not return credentials as action results.
+
+## Limits and uncertain work
+
+The local profile uses non-root, read-only runtime containers, disabled runtime networking,
+bounded CPU/memory/processes and a wall deadline. Dependency builds contact npm or PyPI.
+Source is limited to 64 files and a 200,000-byte manifest; output is at most 196,608 bytes.
+
+Ordinary Docker is **not** a hostile-code production boundary. This profile requires explicitly
+trusted development code and does not promise a hard writable-layer disk quota for dependency
+builds. Nonempty runtime network grants are rejected rather than silently ignored.
+
+The worker durably claims an operation before starting it and saves its receipt before reporting.
+It may report that same receipt again after a lost acknowledgement; it never reruns code from a
+replayed notification or a lost claim. A crashed claim without a stored receipt remains `unknown`.
+Known completion with missing result bytes remains completion, not a new invocation.

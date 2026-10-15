@@ -38,3 +38,21 @@ app and prints the result.
 Prompt-based typed answers live in Aex's SDK, so Brain's `send()` and `submit()` reject `output` options.
 Provider-native model formats and Tool schemas still work. Existing callers can follow the
 [typed-answer migration](https://aex.dev/docs#structured-output).
+
+## Session API v2 source client
+
+The source distribution also exports `@aexhq/brain/v2` for the matching Go service.
+It returns durable command receipts from `send()`, not answers or session closure.
+Follow `events()` for `run.completed`, then send another message on the same session.
+Do not use this surface with a published v1 server.
+
+Use `allRuns()`, `allOperations()`, `allInteractions()`, `allConnections()`,
+`allDocuments(scope)`, `allFiles()` and `allSchedules()` for complete traversals.
+Both count and byte limits apply: a short page does not mean the collection ended.
+`exportPages()` follows all nine export sections and reports history completeness;
+it is not a stopped-writer backup of file bytes, custody or native state.
+
+An uncertain `SessionError` retains `requestId`, including an SDK-generated ID.
+Explicitly resubmit the original content and ID to reconcile a lost acknowledgement.
+The client never silently resends mutations. Application workers require a durable
+receipt store; replaying an SSE notification is not permission to execute again.

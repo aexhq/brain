@@ -19,6 +19,14 @@
     "tag": "next"
   },
   "exports": {
+    "./v2": {
+      "types": "./dist/v2.d.ts",
+      "import": "./dist/v2.js"
+    },
+    "./receipts": {
+      "types": "./dist/receipts.d.ts",
+      "import": "./dist/receipts.js"
+    },
     "./environments": {
       "types": "./dist/environments.d.ts",
       "import": "./dist/environments.js"

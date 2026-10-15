@@ -5,9 +5,11 @@ mod limits;
 mod openapi;
 mod router;
 mod service;
+mod session_v2;
 
 pub use error::HttpError;
 pub use limits::HttpLimits;
 pub use openapi::openapi;
 pub use router::{router, router_with_bearer};
 pub use service::{BrainApi, HostConnection};
+pub use session_v2::openapi as openapi_v2;

@@ -16,6 +16,8 @@ fn main() {
     }
     for (path, document) in [
         ("session/v1/schemas.json", contract::session()),
+        ("session/v2/schemas.json", contract::session_v2()),
+        ("session/v2/catalog.json", contract::integrations()),
         ("session/v1/codes.json", contract::codes()),
         ("environment/v1/schemas.json", contract::environment()),
         ("tool/v1/schemas.json", contract::tool()),

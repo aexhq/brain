@@ -1,0 +1,235 @@
+[
+  {
+    "capabilities": [
+      "claim",
+      "receipt",
+      "sse",
+      "late-evidence"
+    ],
+    "configuration_schema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "credentials": [
+      "participant"
+    ],
+    "kind": "application",
+    "limitations": [
+      "SSE is notification, not permission. Application recovery requires durable receipts."
+    ],
+    "name": "application",
+    "version": "2"
+  },
+  {
+    "capabilities": [
+      "build",
+      "invoke"
+    ],
+    "configuration_schema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "credentials": [
+      "operator-configured worker signing key",
+      "scoped package secret references"
+    ],
+    "kind": "local",
+    "limitations": [
+      "Explicit trusted development only. Docker is not a hostile-code production boundary. Runtime network is disabled; dependency builds use npm/PyPI with integrity locks and disabled lifecycle/source builds. Images are local to the registered worker. No automatic reexecution of lost claims."
+    ],
+    "name": "local_compute",
+    "version": "1"
+  },
+  {
+    "capabilities": [
+      "invoke",
+      "signed-request"
+    ],
+    "configuration_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "format": "uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    },
+    "credentials": [
+      "signing"
+    ],
+    "kind": "http",
+    "limitations": [
+      "Requests are sent once. A lost response is uncertain, not automatically retried."
+    ],
+    "name": "http",
+    "version": "2"
+  },
+  {
+    "capabilities": [
+      "read",
+      "write",
+      "list",
+      "stat",
+      "delete"
+    ],
+    "configuration_schema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "credentials": [],
+    "kind": "storage",
+    "limitations": [
+      "Per-session rooted namespace; no recursive delete. A directory may contain at most 4096 entries for bounded listing. Local storage does not migrate between machines."
+    ],
+    "name": "local_storage",
+    "version": "1"
+  },
+  {
+    "capabilities": [
+      "read",
+      "write",
+      "list",
+      "stat",
+      "delete"
+    ],
+    "configuration_schema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "credentials": [
+      "operator-configured agent bucket credentials"
+    ],
+    "kind": "storage",
+    "limitations": [
+      "Separate agent bucket and credentials are required. Object storage does not support atomic directory rename or append."
+    ],
+    "name": "s3_storage",
+    "version": "1"
+  },
+  {
+    "capabilities": [
+      "read",
+      "write",
+      "list",
+      "stat",
+      "delete"
+    ],
+    "configuration_schema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "credentials": [
+      "operator-configured agent bucket credentials"
+    ],
+    "kind": "storage",
+    "limitations": [
+      "Separate agent bucket and credentials are required. Object storage does not support atomic directory rename or append."
+    ],
+    "name": "r2_storage",
+    "version": "1"
+  },
+  {
+    "capabilities": [
+      "fetch"
+    ],
+    "configuration_schema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "credentials": [],
+    "kind": "network",
+    "limitations": [
+      "Public HTTP(S), ports 80/443 only. No private destinations, browser execution, cookies or unrestricted request headers."
+    ],
+    "name": "web_fetch",
+    "version": "1"
+  },
+  {
+    "capabilities": [
+      "search"
+    ],
+    "configuration_schema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "credentials": [
+      "api_key"
+    ],
+    "kind": "search",
+    "limitations": [
+      "Brave Web Search. Country, language, safesearch and freshness are provider-specific options. No silent provider fallback."
+    ],
+    "name": "brave",
+    "version": "1"
+  },
+  {
+    "capabilities": [
+      "search"
+    ],
+    "configuration_schema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "credentials": [
+      "api_key"
+    ],
+    "kind": "search",
+    "limitations": [
+      "Tavily Search. Search depth, topic and domain filtering retain provider semantics. No silent provider fallback."
+    ],
+    "name": "tavily",
+    "version": "1"
+  },
+  {
+    "capabilities": [
+      "search"
+    ],
+    "configuration_schema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "credentials": [
+      "api_key"
+    ],
+    "kind": "search",
+    "limitations": [
+      "Exa Search. Search type, category, domain filtering and publication dates retain provider semantics. No silent provider fallback."
+    ],
+    "name": "exa",
+    "version": "1"
+  },
+  {
+    "capabilities": [
+      "tools"
+    ],
+    "configuration_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "tool": {
+          "type": "string"
+        },
+        "url": {
+          "format": "uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    },
+    "credentials": [
+      "optional token"
+    ],
+    "kind": "mcp",
+    "limitations": [
+      "Streamable HTTP, protocols 2025-11-25 and 2025-06-18. Each invocation initializes its own protocol session. No opaque tool retry or native process continuation."
+    ],
+    "name": "mcp",
+    "version": "1"
+  }
+]

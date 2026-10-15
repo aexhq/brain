@@ -24,6 +24,18 @@ const session = await compile(schema, "BrainSessionContract", {
 });
 await writeFile(path.join(output, "session.ts"), session.replace(/\r\n/gu, "\n"));
 
+const v2Path = path.join(root, "crates/brain-protocol/generated/contract/session/v2/schemas.json");
+const v2Schema = JSON.parse(await readFile(v2Path, "utf8"));
+const v2 = await compile(v2Schema, "BrainSessionContractV2", {
+  bannerComment: "/* eslint-disable */\n/** Generated from Brain-owned v2 contracts. Do not edit. */",
+  additionalProperties: false,
+  strictIndexSignatures: true,
+  unreachableDefinitions: true,
+  style: { singleQuote: false, printWidth: 100 },
+  cwd: path.dirname(v2Path),
+});
+await writeFile(path.join(output, "session-v2.ts"), v2.replace(/\r\n/gu, "\n"));
+
 // Runtime validation uses the same definitions as the wire types, without bundling the session API.
 const environmentDefinitions = {};
 function includeDefinition(name) {

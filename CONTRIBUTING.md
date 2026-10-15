@@ -28,6 +28,101 @@ npm test
 npm run package-smoke
 ```
 
+### Session API v2 source distribution
+
+The new Go service and separate supplied-code worker are source-only until their exact-commit
+release gates are admitted. They do not replace a retained production data directory.
+Use Go **1.27.2** (pinned in `go.mod`), Node 24.17 or newer, and Python 3.12 or newer for the
+new SDK and worker journeys. Keep the existing Rust/runtime gates above.
+
+```sh
+npm run gen
+go test ./internal/... ./adapters/... ./cmd/...
+go vet ./internal/... ./adapters/... ./cmd/...
+go build -o .build/brain ./cmd/brain
+go build -o .build/brain-worker ./cmd/brain-worker
+npm run build -w packages/brain-sdk
+node --test --test-concurrency=1 tests/greenfield/journeys.test.mjs
+node --test --test-concurrency=1 tests/greenfield/managed.journeys.test.mjs
+```
+
+On Windows, build `.build\brain.exe` and `.build\brain-worker.exe`. Put Go/Rust scratch and
+build directories inside the checkout; the journey scripts put their state in `.test-output`
+and remove only resources they create. Managed journeys require a responsive Linux Docker
+engine and these immutable, pre-pulled base images:
+
+```sh
+docker pull node@sha256:862263c612aa437e3037674b85419622a9d93bff80aa1eee5398dfe686375532
+docker pull python@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+```
+
+For a manual trusted-development worker, configure:
+
+| Process | Variable | Value |
+| --- | --- | --- |
+| Worker | `BRAIN_WORKER_TRUSTED_DEVELOPMENT` | `1`; explicitly trusts supplied development code |
+| Worker | `BRAIN_WORKER_KEY` | A retained random signing key of at least 32 bytes |
+| Worker | `BRAIN_WORKER_DATA` | A new, private receipt directory |
+| Worker | `BRAIN_WORKER_CALLBACK_ORIGINS` | Brain's exact origin, such as `http://127.0.0.1:8080` |
+| Worker | `BRAIN_WORKER_NODE_IMAGE`, `BRAIN_WORKER_PYTHON_IMAGE` | The immutable references above |
+| Brain | `BRAIN_DEVELOPMENT` | `1`; local compute is not admitted in production mode |
+| Brain | `BRAIN_PUBLIC_URL` | The same callback origin |
+| Brain | `BRAIN_SECRET_REFS` | `{"local":{"worker":"MANAGED_WORKER_KEY"}}` plus other scoped references |
+| Brain | `MANAGED_WORKER_KEY` | The worker's signing key, supplied through the environment, never arguments |
+| Brain | `BRAIN_COMPUTE_WORKERS` | `{"local_compute":{"url":"http://127.0.0.1:8090/invoke","signing":"worker"}}` |
+
+Start the worker binary separately from Brain. Register an installed harness in `BRAIN_HARNESSES`
+and use a new `BRAIN_DATA` directory and an operator `BRAIN_API_TOKEN`. The official portable
+harness lives in the Extensions repository; fixture harnesses are test-only.
+Run `node examples/managed-package.mjs node` or `node examples/managed-package.mjs python`
+with the same operator token and `BRAIN_URL` in the example's environment.
+
+Managed fixtures build and run real locked npm/PyPI dependencies, exercise read-only/non-root
+runtime limits, and recover stored receipts after deliberately lost transport. They do not
+establish a production hostile-code boundary, live Modal/Fly access or published installation.
+
+#### SQL control profiles
+
+SQLite is the default. `BRAIN_CONTROL_URL` selects a PostgreSQL DSN when
+`BRAIN_CONTROL=sql`. `tests\greenfield\postgres-emulator.ps1 -Cluster` creates a
+disposable loopback PostgreSQL container and tests real Linux owner loss, retained
+resource affinity and recovery. Build `.build\brain-linux` for `GOOS=linux`,
+`GOARCH=amd64`, `CGO_ENABLED=0` before the cluster profile. The script removes only
+its captured container, network and schema IDs.
+
+The D1 profile uses the actual Miniflare/workerd D1 binding, not an in-memory mock:
+
+```powershell
+npm run build -w packages/brain-d1
+npm test -w packages/brain-d1
+$env:BRAIN_TEST_CONTROL = 'd1'
+node --test --test-concurrency=1 tests\greenfield\journeys.test.mjs
+```
+
+The required CI rollup also includes `session-server`: Go diagnostics, both SDK
+journeys, real Docker-managed code, D1, PostgreSQL/Linux process faults, and native
+S3/DynamoDB emulator conformance. The existing Rust, image and live-provider gates
+remain separate and required when selected. Local/emulator success is not live
+credential, immutable publication or production cutover evidence.
+
+Keep `TMP` and `TEMP` under the checkout before starting Miniflare. Its database
+belongs outside Brain's retained data directory. `BRAIN_TEST_PYTHON` must select
+the real interpreter when Windows exposes a launcher shim.
+
+For a deployed Worker, set `BRAIN_CONTROL=d1`, `BRAIN_CONTROL_URL` to its HTTPS
+origin and `BRAIN_D1_KEY` to the same retained 32-byte hexadecimal service key
+configured as a Worker secret. This is separate from the public API token and
+cluster custody key. Set a real database binding in `packages/brain-d1/wrangler.jsonc`
+before deploying; the checked-in zero database ID is deliberately not deployable.
+Do not point a conformance job at a production database.
+
+`npm run test:live -w packages/brain-d1` requires `BRAIN_D1_ACCOUNT_ID` and
+`CLOUDFLARE_API_TOKEN`. It creates and deletes one disposable database and tests
+actual cloud limits. Missing credentials fail, rather than skip. Miniflare
+currently accepts a row beyond the documented cloud limit, so the local gate is
+not evidence of cloud limit enforcement. The Worker independently rejects
+values above one MiB and bounds request bytes, reads, parameters and batch size.
+
 Check that generation leaves no uncommitted changes in the generated contracts, SDK types or
 configuration reference. CI also runs real Tool worker and HTTP lifecycle integration tests, the locked Python
 Environment preparation test, and an image smoke test. Run the Python check with

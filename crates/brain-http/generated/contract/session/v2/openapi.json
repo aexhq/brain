@@ -1,0 +1,4146 @@
+{
+  "components": {
+    "schemas": {
+      "Action": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "default": false,
+            "type": "boolean"
+          },
+          "connection": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "input_schema": true,
+          "max_output_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "output_schema": true,
+          "package": {
+            "type": "string"
+          },
+          "timeout_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "connection",
+          "input_schema",
+          "max_output_bytes",
+          "timeout_ms"
+        ],
+        "type": "object"
+      },
+      "CatalogEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "configuration_schema": true,
+          "credentials": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "kind",
+          "capabilities",
+          "credentials",
+          "limitations",
+          "configuration_schema"
+        ],
+        "type": "object"
+      },
+      "ChildResult": {
+        "additionalProperties": false,
+        "properties": {
+          "availability": {
+            "$ref": "#/components/schemas/ChildResultAvailability"
+          },
+          "command_id": {
+            "type": "string"
+          },
+          "completion": {
+            "$ref": "#/components/schemas/RecordReference"
+          },
+          "error": {
+            "$ref": "#/components/schemas/ErrorResponse"
+          },
+          "index": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "result": true,
+          "run_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          }
+        },
+        "required": [
+          "index",
+          "session_id",
+          "command_id",
+          "run_id",
+          "status",
+          "availability"
+        ],
+        "type": "object"
+      },
+      "ChildResultAvailability": {
+        "enum": [
+          "pending",
+          "inline",
+          "referenced",
+          "unavailable",
+          "none"
+        ],
+        "type": "string"
+      },
+      "ChildResults": {
+        "additionalProperties": false,
+        "properties": {
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/ChildResult"
+            },
+            "type": "array"
+          },
+          "expected": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "step": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "run_id",
+          "step",
+          "expected",
+          "ready",
+          "children"
+        ],
+        "type": "object"
+      },
+      "Claim": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "generation": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "connection_id",
+          "generation"
+        ],
+        "type": "object"
+      },
+      "CommandReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "error": {
+            "$ref": "#/components/schemas/ErrorResponse"
+          },
+          "id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "sequence": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "session_id",
+          "status",
+          "accepted_ms"
+        ],
+        "type": "object"
+      },
+      "Connection": {
+        "additionalProperties": false,
+        "properties": {
+          "generation": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "ownership": {
+            "$ref": "#/components/schemas/Ownership"
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "session_id",
+          "template",
+          "generation",
+          "status",
+          "ownership"
+        ],
+        "type": "object"
+      },
+      "ConnectionAttach": {
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "template"
+        ],
+        "type": "object"
+      },
+      "ConnectionKind": {
+        "enum": [
+          "application",
+          "http",
+          "local",
+          "modal",
+          "fly",
+          "mcp",
+          "storage"
+        ],
+        "type": "string"
+      },
+      "ConnectionTemplate": {
+        "additionalProperties": false,
+        "properties": {
+          "capabilities": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "configuration": {
+            "additionalProperties": true,
+            "default": {},
+            "type": "object"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ConnectionKind"
+          },
+          "name": {
+            "type": "string"
+          },
+          "ownership": {
+            "$ref": "#/components/schemas/Ownership"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "secrets": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "type": "object"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "provider",
+          "ownership"
+        ],
+        "type": "object"
+      },
+      "ControlKind": {
+        "enum": [
+          "pause",
+          "resume",
+          "cancel",
+          "close"
+        ],
+        "type": "string"
+      },
+      "Decision": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "type": "string"
+              },
+              "arguments": true,
+              "checkpoint": true,
+              "effect": {
+                "$ref": "#/components/schemas/EffectKind"
+              },
+              "kind": {
+                "const": "call",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "effect",
+              "action",
+              "arguments",
+              "checkpoint"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "checkpoint": true,
+              "kind": {
+                "const": "complete",
+                "type": "string"
+              },
+              "result": true
+            },
+            "required": [
+              "kind",
+              "result",
+              "checkpoint"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "checkpoint": true,
+              "kind": {
+                "const": "wait",
+                "type": "string"
+              },
+              "wait": {
+                "$ref": "#/components/schemas/Wait"
+              }
+            },
+            "required": [
+              "kind",
+              "wait",
+              "checkpoint"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "checkpoint": true,
+              "data": true,
+              "kind": {
+                "const": "emit",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "name",
+              "version",
+              "data",
+              "checkpoint"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "checkpoint": true,
+              "interaction": {
+                "$ref": "#/components/schemas/InteractionCreate"
+              },
+              "kind": {
+                "const": "interact",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "interaction",
+              "checkpoint"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "checkpoint": true,
+              "delegation": {
+                "$ref": "#/components/schemas/Delegation"
+              },
+              "kind": {
+                "const": "delegate",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "delegation",
+              "checkpoint"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "checkpoint": true,
+              "delegations": {
+                "items": {
+                  "$ref": "#/components/schemas/Delegation"
+                },
+                "maxItems": 8,
+                "minItems": 1,
+                "type": "array"
+              },
+              "kind": {
+                "const": "fork",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "delegations",
+              "checkpoint"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Delegation": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/SessionConfig"
+          },
+          "context": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "config",
+          "message",
+          "context"
+        ],
+        "type": "object"
+      },
+      "Disposition": {
+        "enum": [
+          "application",
+          "state",
+          "context",
+          "wake",
+          "steer",
+          "interrupt"
+        ],
+        "type": "string"
+      },
+      "Document": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "key": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "value": true
+        },
+        "required": [
+          "key",
+          "revision",
+          "value"
+        ],
+        "type": "object"
+      },
+      "DocumentUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "value": true
+        },
+        "required": [
+          "request_id",
+          "revision",
+          "value"
+        ],
+        "type": "object"
+      },
+      "EffectKind": {
+        "enum": [
+          "model",
+          "action",
+          "build",
+          "lifecycle",
+          "webhook"
+        ],
+        "type": "string"
+      },
+      "ErrorCode": {
+        "enum": [
+          "invalid",
+          "unauthorized",
+          "forbidden",
+          "not_found",
+          "conflict",
+          "overloaded",
+          "unsupported",
+          "unavailable",
+          "uncertain",
+          "corrupt",
+          "internal"
+        ],
+        "type": "string"
+      },
+      "ErrorResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "message": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "retryable"
+        ],
+        "type": "object"
+      },
+      "EventRoute": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "disposition": {
+            "$ref": "#/components/schemas/Disposition"
+          },
+          "name": {
+            "type": "string"
+          },
+          "schema": true,
+          "sources": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "schema",
+          "disposition"
+        ],
+        "type": "object"
+      },
+      "Execution": {
+        "additionalProperties": false,
+        "properties": {
+          "arguments": true,
+          "deadline_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_output_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "operation": {
+            "$ref": "#/components/schemas/Operation"
+          },
+          "receipt_token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "arguments",
+          "receipt_token",
+          "max_output_bytes",
+          "deadline_ms"
+        ],
+        "type": "object"
+      },
+      "ExportManifest": {
+        "additionalProperties": false,
+        "properties": {
+          "complete": {
+            "type": "boolean"
+          },
+          "connections": {
+            "items": {
+              "$ref": "#/components/schemas/Connection"
+            },
+            "type": "array"
+          },
+          "continuation": {
+            "type": "string"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/FileInfo"
+            },
+            "type": "array"
+          },
+          "format": {
+            "type": "string"
+          },
+          "history": {
+            "$ref": "#/components/schemas/RecordPage"
+          },
+          "interactions": {
+            "items": {
+              "$ref": "#/components/schemas/Interaction"
+            },
+            "type": "array"
+          },
+          "memory": {
+            "items": {
+              "$ref": "#/components/schemas/Document"
+            },
+            "type": "array"
+          },
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/Operation"
+            },
+            "type": "array"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/Run"
+            },
+            "type": "array"
+          },
+          "schedules": {
+            "items": {
+              "$ref": "#/components/schemas/Schedule"
+            },
+            "type": "array"
+          },
+          "section": {
+            "$ref": "#/components/schemas/ExportSection"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionView"
+          },
+          "state": {
+            "items": {
+              "$ref": "#/components/schemas/Document"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "format",
+          "section",
+          "session",
+          "runs",
+          "operations",
+          "interactions",
+          "connections",
+          "files",
+          "state",
+          "memory",
+          "schedules",
+          "history",
+          "complete",
+          "continuation"
+        ],
+        "type": "object"
+      },
+      "ExportSection": {
+        "enum": [
+          "history",
+          "runs",
+          "operations",
+          "interactions",
+          "connections",
+          "files",
+          "state",
+          "memory",
+          "schedules"
+        ],
+        "type": "string"
+      },
+      "FileInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "digest": {
+            "type": "string"
+          },
+          "media_type": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "provenance": {
+            "type": "string"
+          },
+          "size": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "digest",
+          "size",
+          "media_type",
+          "provenance"
+        ],
+        "type": "object"
+      },
+      "Gap": {
+        "additionalProperties": false,
+        "properties": {
+          "first": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/GapKind"
+          },
+          "last": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "first",
+          "last",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "GapKind": {
+        "enum": [
+          "reserved",
+          "unused",
+          "unavailable",
+          "unresolved"
+        ],
+        "type": "string"
+      },
+      "Handoff": {
+        "additionalProperties": false,
+        "properties": {
+          "harness": {
+            "$ref": "#/components/schemas/HarnessSelection"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "revision",
+          "harness"
+        ],
+        "type": "object"
+      },
+      "HarnessRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "checkpoint": true,
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/ChildResult"
+            },
+            "type": "array"
+          },
+          "command_id": {
+            "type": "string"
+          },
+          "config": {
+            "$ref": "#/components/schemas/SessionConfig"
+          },
+          "context": {
+            "items": {
+              "$ref": "#/components/schemas/Record"
+            },
+            "type": "array"
+          },
+          "input": {
+            "$ref": "#/components/schemas/InputData"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/Operation"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "step": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "protocol",
+          "session_id",
+          "run_id",
+          "command_id",
+          "step",
+          "config",
+          "input",
+          "context",
+          "checkpoint"
+        ],
+        "type": "object"
+      },
+      "HarnessSelection": {
+        "additionalProperties": false,
+        "properties": {
+          "configuration": {
+            "additionalProperties": true,
+            "default": {},
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version"
+        ],
+        "type": "object"
+      },
+      "Input": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/InputData"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "data"
+        ],
+        "type": "object"
+      },
+      "InputData": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "message",
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "text"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "correlation": {
+                "type": "string"
+              },
+              "data": true,
+              "kind": {
+                "const": "event",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "name",
+              "version",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "arguments": true,
+              "kind": {
+                "const": "action",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "retry_of": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "name",
+              "arguments"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "control": {
+                "$ref": "#/components/schemas/ControlKind"
+              },
+              "kind": {
+                "const": "control",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "control"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Interaction": {
+        "additionalProperties": false,
+        "properties": {
+          "answer": true,
+          "id": {
+            "type": "string"
+          },
+          "request": {
+            "$ref": "#/components/schemas/InteractionCreate"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/InteractionStatus"
+          }
+        },
+        "required": [
+          "id",
+          "session_id",
+          "revision",
+          "status",
+          "request"
+        ],
+        "type": "object"
+      },
+      "InteractionAnswer": {
+        "additionalProperties": false,
+        "properties": {
+          "accept": {
+            "type": "boolean"
+          },
+          "answer": true,
+          "request_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "subject_digest": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "revision",
+          "subject_digest",
+          "accept",
+          "answer"
+        ],
+        "type": "object"
+      },
+      "InteractionCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/InteractionKind"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "schema": true,
+          "subject": {
+            "type": "string"
+          },
+          "subject_digest": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "kind",
+          "run_id",
+          "subject",
+          "subject_digest",
+          "prompt",
+          "schema",
+          "expires_ms"
+        ],
+        "type": "object"
+      },
+      "InteractionKind": {
+        "enum": [
+          "question",
+          "form",
+          "approval"
+        ],
+        "type": "string"
+      },
+      "InteractionStatus": {
+        "enum": [
+          "pending",
+          "answered",
+          "rejected",
+          "expired",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "Lifecycle": {
+        "enum": [
+          "open",
+          "closing",
+          "closed",
+          "deleted"
+        ],
+        "type": "string"
+      },
+      "Limits": {
+        "additionalProperties": false,
+        "properties": {
+          "calls": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "concurrent": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "deadline_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "input_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "output_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pending_inputs": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "retained_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tokens": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "calls",
+          "concurrent",
+          "input_bytes",
+          "output_bytes",
+          "retained_bytes",
+          "pending_inputs"
+        ],
+        "type": "object"
+      },
+      "ManagedInvocation": {
+        "additionalProperties": false,
+        "properties": {
+          "callback_url": {
+            "type": "string"
+          },
+          "execution": {
+            "$ref": "#/components/schemas/Execution"
+          },
+          "package": {
+            "$ref": "#/components/schemas/Package"
+          },
+          "secrets": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "execution",
+          "package",
+          "callback_url",
+          "secrets"
+        ],
+        "type": "object"
+      },
+      "ModelMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "content": true,
+          "role": {
+            "type": "string"
+          },
+          "tool_call_id": {
+            "type": "string"
+          },
+          "tool_calls": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ModelToolCall"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "type": "object"
+      },
+      "ModelRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/Action"
+            },
+            "type": "array"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/ModelMessage"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "messages",
+          "actions"
+        ],
+        "type": "object"
+      },
+      "ModelResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "$ref": "#/components/schemas/ModelMessage"
+          },
+          "native": {
+            "additionalProperties": true,
+            "default": {},
+            "type": "object"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage"
+          }
+        },
+        "required": [
+          "message",
+          "usage"
+        ],
+        "type": "object"
+      },
+      "ModelSelection": {
+        "additionalProperties": false,
+        "properties": {
+          "credential": {
+            "type": "string"
+          },
+          "format": true,
+          "name": {
+            "type": "string"
+          },
+          "native": {
+            "additionalProperties": true,
+            "default": {},
+            "type": "object"
+          },
+          "provider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "name"
+        ],
+        "type": "object"
+      },
+      "ModelToolCall": {
+        "additionalProperties": false,
+        "properties": {
+          "arguments": true,
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "arguments"
+        ],
+        "type": "object"
+      },
+      "NodeInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "draining": {
+            "type": "boolean"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "lease_expires_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "endpoint",
+          "lease_expires_ms",
+          "draining"
+        ],
+        "type": "object"
+      },
+      "Operation": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "arguments_digest": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/EffectKind"
+          },
+          "recipient": {
+            "type": "string"
+          },
+          "result": true,
+          "result_available": {
+            "type": "boolean"
+          },
+          "retry_of": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/OperationStatus"
+          },
+          "step_key": {
+            "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage"
+          }
+        },
+        "required": [
+          "id",
+          "session_id",
+          "run_id",
+          "step_key",
+          "kind",
+          "action",
+          "arguments_digest",
+          "status",
+          "recipient",
+          "revision",
+          "result_available"
+        ],
+        "type": "object"
+      },
+      "OperationStatus": {
+        "enum": [
+          "prepared",
+          "dispatched",
+          "completed",
+          "failed",
+          "unknown",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "Outcome": {
+        "enum": [
+          "completed",
+          "failed",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "Ownership": {
+        "enum": [
+          "managed",
+          "borrowed"
+        ],
+        "type": "string"
+      },
+      "Package": {
+        "additionalProperties": false,
+        "properties": {
+          "digest": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "image": {
+            "type": "string"
+          },
+          "manifest": {
+            "$ref": "#/components/schemas/PackageManifest"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "digest",
+          "status",
+          "manifest"
+        ],
+        "type": "object"
+      },
+      "PackageAdmission": {
+        "additionalProperties": false,
+        "properties": {
+          "builder": {
+            "type": "string"
+          },
+          "manifest": {
+            "$ref": "#/components/schemas/PackageManifest"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "session_id",
+          "manifest",
+          "builder"
+        ],
+        "type": "object"
+      },
+      "PackageBuildResult": {
+        "additionalProperties": false,
+        "properties": {
+          "base_image": {
+            "type": "string"
+          },
+          "builder": {
+            "type": "string"
+          },
+          "image": {
+            "type": "string"
+          },
+          "package_id": {
+            "type": "string"
+          },
+          "source_digest": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "package_id",
+          "source_digest",
+          "image",
+          "builder",
+          "base_image"
+        ],
+        "type": "object"
+      },
+      "PackageManifest": {
+        "additionalProperties": false,
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/Action"
+            },
+            "type": "array"
+          },
+          "cpu_millis": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "entrypoint": {
+            "type": "string"
+          },
+          "files": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "language": {
+            "$ref": "#/components/schemas/RuntimeLanguage"
+          },
+          "lockfile": {
+            "type": "string"
+          },
+          "memory_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "network": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "secrets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "version": {
+            "type": "string"
+          },
+          "wall_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "language",
+          "entrypoint",
+          "files",
+          "lockfile",
+          "actions",
+          "secrets",
+          "network",
+          "memory_bytes",
+          "cpu_millis",
+          "wall_ms"
+        ],
+        "type": "object"
+      },
+      "ParticipantGrant": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "permissions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "subject",
+          "permissions",
+          "expires_ms"
+        ],
+        "type": "object"
+      },
+      "ParticipantToken": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "token",
+          "expires_ms"
+        ],
+        "type": "object"
+      },
+      "Receipt": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/Outcome"
+          },
+          "request_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "result": true,
+          "usage": {
+            "$ref": "#/components/schemas/Usage"
+          }
+        },
+        "required": [
+          "request_id",
+          "outcome"
+        ],
+        "type": "object"
+      },
+      "Record": {
+        "additionalProperties": false,
+        "properties": {
+          "data": true,
+          "kind": {
+            "type": "string"
+          },
+          "operation_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "sequence": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "time_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "sequence",
+          "kind",
+          "time_ms",
+          "data"
+        ],
+        "type": "object"
+      },
+      "RecordPage": {
+        "additionalProperties": false,
+        "properties": {
+          "allocated_through": {
+            "type": "string"
+          },
+          "gaps": {
+            "items": {
+              "$ref": "#/components/schemas/Gap"
+            },
+            "type": "array"
+          },
+          "more": {
+            "type": "boolean"
+          },
+          "next": {
+            "type": "string"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/Record"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "records",
+          "gaps",
+          "allocated_through",
+          "next",
+          "more"
+        ],
+        "type": "object"
+      },
+      "RecordReference": {
+        "additionalProperties": false,
+        "properties": {
+          "digest": {
+            "type": "string"
+          },
+          "sequence": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "sequence",
+          "digest"
+        ],
+        "type": "object"
+      },
+      "Retry": {
+        "additionalProperties": false,
+        "properties": {
+          "acknowledge_uncertainty": {
+            "type": "boolean"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "acknowledge_uncertainty"
+        ],
+        "type": "object"
+      },
+      "Run": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "type": "string"
+          },
+          "completion": {
+            "$ref": "#/components/schemas/RecordReference"
+          },
+          "error": {
+            "$ref": "#/components/schemas/ErrorResponse"
+          },
+          "id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "step": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "wait": {
+            "$ref": "#/components/schemas/Wait"
+          }
+        },
+        "required": [
+          "id",
+          "session_id",
+          "command_id",
+          "status",
+          "step"
+        ],
+        "type": "object"
+      },
+      "RunStatus": {
+        "enum": [
+          "queued",
+          "active",
+          "waiting",
+          "paused",
+          "completed",
+          "failed",
+          "cancelled",
+          "blocked"
+        ],
+        "type": "string"
+      },
+      "RuntimeLanguage": {
+        "enum": [
+          "node",
+          "python"
+        ],
+        "type": "string"
+      },
+      "Schedule": {
+        "additionalProperties": false,
+        "properties": {
+          "due_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "request": {
+            "$ref": "#/components/schemas/ScheduleCreate"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "session_id",
+          "due_ms",
+          "status",
+          "request"
+        ],
+        "type": "object"
+      },
+      "ScheduleCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "due_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "input": {
+            "$ref": "#/components/schemas/InputData"
+          },
+          "interval_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "due_ms",
+          "input"
+        ],
+        "type": "object"
+      },
+      "SessionBudget": {
+        "additionalProperties": false,
+        "properties": {
+          "active_operations": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "available_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "available_operations": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "available_tokens": {
+            "type": "string"
+          },
+          "calls": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "incomplete_usages": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "remaining_calls": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reported_tokens": {
+            "type": "string"
+          },
+          "reserved_output_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reserved_tokens": {
+            "type": "string"
+          },
+          "retained_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "token_usage_pending": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id",
+          "calls",
+          "active_operations",
+          "retained_bytes",
+          "reserved_output_bytes",
+          "reported_tokens",
+          "reserved_tokens",
+          "incomplete_usages",
+          "token_usage_pending",
+          "remaining_calls",
+          "available_operations",
+          "available_bytes"
+        ],
+        "type": "object"
+      },
+      "SessionConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "actions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Action"
+            },
+            "type": "array"
+          },
+          "connections": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ConnectionTemplate"
+            },
+            "type": "array"
+          },
+          "events": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/EventRoute"
+            },
+            "type": "array"
+          },
+          "grants": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "harness": {
+            "$ref": "#/components/schemas/HarnessSelection"
+          },
+          "harness_transitions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/HarnessSelection"
+            },
+            "type": "array"
+          },
+          "instructions": {
+            "default": "",
+            "type": "string"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/Limits"
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelSelection"
+          },
+          "skills": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "model",
+          "harness",
+          "limits"
+        ],
+        "type": "object"
+      },
+      "SessionCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/SessionConfig"
+          },
+          "message": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "config"
+        ],
+        "type": "object"
+      },
+      "SessionPage": {
+        "additionalProperties": false,
+        "properties": {
+          "next": {
+            "type": "string"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/SessionView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "sessions"
+        ],
+        "type": "object"
+      },
+      "SessionView": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/SessionConfig"
+          },
+          "created_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "lifecycle": {
+            "$ref": "#/components/schemas/Lifecycle"
+          },
+          "owner_epoch": {
+            "type": "string"
+          },
+          "parent": {
+            "type": "string"
+          },
+          "paused": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "sequence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "lifecycle",
+          "revision",
+          "sequence",
+          "config",
+          "created_ms",
+          "owner_epoch",
+          "paused"
+        ],
+        "type": "object"
+      },
+      "StorageReport": {
+        "additionalProperties": false,
+        "properties": {
+          "accepting": {
+            "type": "boolean"
+          },
+          "archive_queue_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cache_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "format": {
+            "type": "string"
+          },
+          "oldest_unarchived_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reserved_output_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "retained_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sessions": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unarchived_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "format",
+          "retained_bytes",
+          "cache_bytes",
+          "unarchived_bytes",
+          "reserved_output_bytes",
+          "archive_queue_bytes",
+          "oldest_unarchived_ms",
+          "sessions",
+          "accepting"
+        ],
+        "type": "object"
+      },
+      "Transfer": {
+        "additionalProperties": false,
+        "properties": {
+          "checkpoint": {
+            "$ref": "#/components/schemas/RecordReference"
+          },
+          "error": {
+            "$ref": "#/components/schemas/ErrorResponse"
+          },
+          "id": {
+            "type": "string"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/TransferPhase"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "source_epoch": {
+            "type": "string"
+          },
+          "source_node": {
+            "type": "string"
+          },
+          "target_node": {
+            "type": "string"
+          },
+          "through": {
+            "type": "string"
+          },
+          "verified_runs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "session_id",
+          "source_node",
+          "source_epoch",
+          "target_node",
+          "phase",
+          "through",
+          "verified_runs"
+        ],
+        "type": "object"
+      },
+      "TransferCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "owner_epoch": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "target_node": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "owner_epoch",
+          "target_node"
+        ],
+        "type": "object"
+      },
+      "TransferPhase": {
+        "enum": [
+          "draining",
+          "verifying",
+          "transferred",
+          "cancelled",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "UnavailablePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "digest": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "digest",
+          "bytes"
+        ],
+        "type": "object"
+      },
+      "Usage": {
+        "additionalProperties": false,
+        "properties": {
+          "cached_tokens": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "input_tokens": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "output_tokens": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "provider": {
+            "additionalProperties": true,
+            "default": {},
+            "type": "object"
+          },
+          "provider_unavailable": {
+            "$ref": "#/components/schemas/UnavailablePayload"
+          }
+        },
+        "type": "object"
+      },
+      "Wait": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "hostToken": {
+        "description": "The scoped token returned by POST /v1/hosts, sent as Authorization: Bearer <token>. Identifies this registered host; do not substitute the server API token.",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "invocationToken": {
+        "description": "The invocation-scoped services token Brain supplies to an Environment executing an agent loop, tool or controller. Send it as Authorization: Bearer <token>; valid only for the granted services while that execution is open.",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "reporterToken": {
+        "description": "The reporter token Brain supplies to an Environment instance, sent as Authorization: Bearer <token>. Scoped to the session, environment name and incarnation sequence in the URL.",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "serverToken": {
+        "description": "The server's BRAIN_API_TOKEN, sent as Authorization: Bearer <token>. Required for application API calls when configured; optional only on a loopback server started without a token.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "Versioned Brain HTTP transport",
+    "license": {
+      "identifier": "MIT",
+      "name": "MIT"
+    },
+    "title": "brain-http",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/health/live": {
+      "get": {
+        "operationId": "live",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "operationId": "ready",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/internal/v2/records/{session}/{sequence}": {
+      "get": {
+        "description": "Node-local history routing. Requires a fresh cluster HMAC signature; public bearer tokens do not authorize this route.",
+        "operationId": "internal_record",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sequence",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "digest",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Brain-Request-Time",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Brain-Node-Signature",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Record"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "tags": []
+      }
+    },
+    "/operator/drain": {
+      "post": {
+        "operationId": "drain",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorageReport"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/operator/nodes": {
+      "get": {
+        "operationId": "nodes",
+        "parameters": [
+          {
+            "description": "Exclusive last id (key for documents, name for files). Repeat until the returned collection is empty; byte bounds can shorten a page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "maximum": 128,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/NodeInfo"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/operator/sessions/{session}/transfers": {
+      "post": {
+        "operationId": "transfer_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Transfer"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/operator/sessions/{session}/transfers/{transfer}": {
+      "delete": {
+        "operationId": "transfer_cancel",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Transfer"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      },
+      "get": {
+        "operationId": "transfer",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Transfer"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/operator/storage": {
+      "get": {
+        "operationId": "storage",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorageReport"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/catalog": {
+      "get": {
+        "operationId": "catalog",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CatalogEntry"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/packages": {
+      "post": {
+        "operationId": "package",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PackageAdmission"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Package"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/packages/{package}": {
+      "get": {
+        "operationId": "package_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Package"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions": {
+      "get": {
+        "operationId": "list",
+        "parameters": [
+          {
+            "description": "Exclusive last id (key for documents, name for files). Repeat until the returned collection is empty; byte bounds can shorten a page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "maximum": 128,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionPage"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      },
+      "post": {
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionView"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}": {
+      "delete": {
+        "operationId": "delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionView"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      },
+      "get": {
+        "operationId": "session",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionView"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/budget": {
+      "get": {
+        "operationId": "budget",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionBudget"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/commands/{command}": {
+      "get": {
+        "operationId": "command",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandReceipt"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/connections": {
+      "get": {
+        "operationId": "connections",
+        "parameters": [
+          {
+            "description": "Exclusive last id (key for documents, name for files). Repeat until the returned collection is empty; byte bounds can shorten a page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "maximum": 128,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Connection"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      },
+      "post": {
+        "operationId": "attach",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectionAttach"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Connection"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/connections/{connection}": {
+      "delete": {
+        "operationId": "revoke",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Connection"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/delegations": {
+      "post": {
+        "operationId": "delegate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Delegation"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionView"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/events": {
+      "get": {
+        "operationId": "stream",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/export": {
+      "get": {
+        "description": "Bounded manifest pages covering all named sections. Echo continuation as after until empty. This is not a stopped-writer backup or a transactional snapshot.",
+        "operationId": "export",
+        "parameters": [
+          {
+            "description": "Opaque continuation; omit or use 0 to begin.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportManifest"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/files": {
+      "get": {
+        "operationId": "files",
+        "parameters": [
+          {
+            "description": "Exclusive last id (key for documents, name for files). Repeat until the returned collection is empty; byte bounds can shorten a page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "maximum": 128,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/FileInfo"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/files/{file}": {
+      "delete": {
+        "operationId": "file_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileInfo"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      },
+      "get": {
+        "operationId": "file_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "items": {
+                    "format": "int32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      },
+      "put": {
+        "operationId": "file_put",
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "items": {
+                  "format": "int32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileInfo"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/handoff": {
+      "post": {
+        "operationId": "handoff",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Handoff"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionView"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/inputs": {
+      "post": {
+        "operationId": "input",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Input"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandReceipt"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/interactions": {
+      "get": {
+        "operationId": "interactions",
+        "parameters": [
+          {
+            "description": "Exclusive last id (key for documents, name for files). Repeat until the returned collection is empty; byte bounds can shorten a page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "maximum": 128,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Interaction"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      },
+      "post": {
+        "operationId": "interact",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InteractionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Interaction"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/interactions/{interaction}": {
+      "post": {
+        "operationId": "answer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InteractionAnswer"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Interaction"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/memory": {
+      "get": {
+        "operationId": "memory",
+        "parameters": [
+          {
+            "description": "Exclusive last id (key for documents, name for files). Repeat until the returned collection is empty; byte bounds can shorten a page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "maximum": 128,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Document"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/memory/{key}": {
+      "delete": {
+        "operationId": "memory_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Document"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      },
+      "put": {
+        "operationId": "memory_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Document"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/operations": {
+      "get": {
+        "operationId": "operations",
+        "parameters": [
+          {
+            "description": "Exclusive last id (key for documents, name for files). Repeat until the returned collection is empty; byte bounds can shorten a page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "maximum": 128,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Operation"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/operations/{operation}": {
+      "get": {
+        "operationId": "operation",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/operations/{operation}/claim": {
+      "post": {
+        "operationId": "claim",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Claim"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Execution"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/operations/{operation}/receipt": {
+      "post": {
+        "operationId": "receipt",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Receipt"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operation"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/operations/{operation}/retry": {
+      "post": {
+        "operationId": "retry",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Retry"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandReceipt"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/participants": {
+      "post": {
+        "operationId": "token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParticipantGrant"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParticipantToken"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/participants/{participant}": {
+      "delete": {
+        "operationId": "token_revoke",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/records": {
+      "get": {
+        "operationId": "records",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordPage"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/runs": {
+      "get": {
+        "operationId": "runs",
+        "parameters": [
+          {
+            "description": "Exclusive last id (key for documents, name for files). Repeat until the returned collection is empty; byte bounds can shorten a page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "maximum": 128,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Run"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/runs/{run}/children": {
+      "get": {
+        "operationId": "children",
+        "parameters": [
+          {
+            "description": "The saved delegation decision's zero-based step.",
+            "in": "query",
+            "name": "step",
+            "required": true,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChildResults"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/runs/{run}/children/{child}/result": {
+      "get": {
+        "operationId": "child_result",
+        "parameters": [
+          {
+            "description": "The saved delegation decision's zero-based step.",
+            "in": "query",
+            "name": "step",
+            "required": true,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "child",
+            "required": true,
+            "schema": {
+              "format": "int32",
+              "maximum": 7,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Record"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/schedules": {
+      "get": {
+        "operationId": "schedules",
+        "parameters": [
+          {
+            "description": "Exclusive last id (key for documents, name for files). Repeat until the returned collection is empty; byte bounds can shorten a page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "maximum": 128,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Schedule"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      },
+      "post": {
+        "operationId": "schedule",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScheduleCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Schedule"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/schedules/{schedule}": {
+      "delete": {
+        "operationId": "unschedule",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Schedule"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/state": {
+      "get": {
+        "operationId": "state",
+        "parameters": [
+          {
+            "description": "Exclusive last id (key for documents, name for files). Repeat until the returned collection is empty; byte bounds can shorten a page.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "maximum": 128,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Document"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/state/{key}": {
+      "delete": {
+        "operationId": "state_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Document"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      },
+      "put": {
+        "operationId": "state_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Document"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    },
+    "/v2/sessions/{session}/webhooks": {
+      "post": {
+        "operationId": "webhook",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Input"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandReceipt"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "serverToken": []
+          }
+        ],
+        "tags": []
+      }
+    }
+  }
+}

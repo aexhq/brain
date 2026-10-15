@@ -133,6 +133,66 @@ pub fn codes() -> Value {
     crate::codes::catalogue()
 }
 
+/// The Go runtime's public and worker contracts, authored only in Rust.
+pub fn session_v2() -> Value {
+    use crate::session_v2::*;
+    document(
+        "session/v2/schemas.json",
+        "Brain Session API v2",
+        |generator| {
+            define::<ErrorResponse>(generator);
+            define::<SessionCreate>(generator);
+            define::<SessionPage>(generator);
+            define::<Input>(generator);
+            define::<CommandReceipt>(generator);
+            define::<RecordPage>(generator);
+            define::<Run>(generator);
+            define::<Operation>(generator);
+            define::<Claim>(generator);
+            define::<Execution>(generator);
+            define::<Receipt>(generator);
+            define::<UnavailablePayload>(generator);
+            define::<Retry>(generator);
+            define::<Interaction>(generator);
+            define::<InteractionAnswer>(generator);
+            define::<ConnectionAttach>(generator);
+            define::<Connection>(generator);
+            define::<DocumentUpdate>(generator);
+            define::<Document>(generator);
+            define::<FileInfo>(generator);
+            define::<Schedule>(generator);
+            define::<Delegation>(generator);
+            define::<Handoff>(generator);
+            define::<NodeInfo>(generator);
+            define::<TransferCreate>(generator);
+            define::<Transfer>(generator);
+            define::<ParticipantGrant>(generator);
+            define::<ParticipantToken>(generator);
+            define::<PackageAdmission>(generator);
+            define::<Package>(generator);
+            define::<ManagedInvocation>(generator);
+            define::<PackageBuildResult>(generator);
+            define::<CatalogEntry>(generator);
+            define::<ModelRequest>(generator);
+            define::<ModelResponse>(generator);
+            define::<HarnessRequest>(generator);
+            define::<Decision>(generator);
+            define::<ChildResults>(generator);
+            define::<SessionBudget>(generator);
+            define::<StorageReport>(generator);
+            define::<ExportManifest>(generator);
+            marker("brain-session/2")
+        },
+    )
+}
+
+pub fn integrations() -> Value {
+    let entries: Vec<crate::session_v2::CatalogEntry> =
+        serde_json::from_str(include_str!("../../../catalog/integrations.json"))
+            .expect("integration catalog matches its canonical Rust type");
+    serde_json::to_value(entries).expect("integration catalog serializes")
+}
+
 /// A contract identifier as a document root, for readers to match on.
 fn marker(contract: &str) -> Map<String, Value> {
     root(json!({

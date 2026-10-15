@@ -1,0 +1,101 @@
+[
+  {
+    "name": "application",
+    "version": "2",
+    "kind": "application",
+    "capabilities": ["claim", "receipt", "sse", "late-evidence"],
+    "credentials": ["participant"],
+    "limitations": ["SSE is notification, not permission. Application recovery requires durable receipts."],
+    "configuration_schema": {"type": "object", "additionalProperties": false}
+  },
+  {
+    "name": "local_compute",
+    "version": "1",
+    "kind": "local",
+    "capabilities": ["build", "invoke"],
+    "credentials": ["operator-configured worker signing key", "scoped package secret references"],
+    "limitations": ["Explicit trusted development only. Docker is not a hostile-code production boundary. Runtime network is disabled; dependency builds use npm/PyPI with integrity locks and disabled lifecycle/source builds. Images are local to the registered worker. No automatic reexecution of lost claims."],
+    "configuration_schema": {"type": "object", "additionalProperties": false}
+  },
+  {
+    "name": "http",
+    "version": "2",
+    "kind": "http",
+    "capabilities": ["invoke", "signed-request"],
+    "credentials": ["signing"],
+    "limitations": ["Requests are sent once. A lost response is uncertain, not automatically retried."],
+    "configuration_schema": {"type": "object", "required": ["url"], "properties": {"url": {"type": "string", "format": "uri"}}, "additionalProperties": false}
+  },
+  {
+    "name": "local_storage",
+    "version": "1",
+    "kind": "storage",
+    "capabilities": ["read", "write", "list", "stat", "delete"],
+    "credentials": [],
+    "limitations": ["Per-session rooted namespace; no recursive delete. A directory may contain at most 4096 entries for bounded listing. Local storage does not migrate between machines."],
+    "configuration_schema": {"type": "object", "additionalProperties": false}
+  },
+  {
+    "name": "s3_storage",
+    "version": "1",
+    "kind": "storage",
+    "capabilities": ["read", "write", "list", "stat", "delete"],
+    "credentials": ["operator-configured agent bucket credentials"],
+    "limitations": ["Separate agent bucket and credentials are required. Object storage does not support atomic directory rename or append."],
+    "configuration_schema": {"type": "object", "additionalProperties": false}
+  },
+  {
+    "name": "r2_storage",
+    "version": "1",
+    "kind": "storage",
+    "capabilities": ["read", "write", "list", "stat", "delete"],
+    "credentials": ["operator-configured agent bucket credentials"],
+    "limitations": ["Separate agent bucket and credentials are required. Object storage does not support atomic directory rename or append."],
+    "configuration_schema": {"type": "object", "additionalProperties": false}
+  },
+  {
+    "name": "web_fetch",
+    "version": "1",
+    "kind": "network",
+    "capabilities": ["fetch"],
+    "credentials": [],
+    "limitations": ["Public HTTP(S), ports 80/443 only. No private destinations, browser execution, cookies or unrestricted request headers."],
+    "configuration_schema": {"type": "object", "additionalProperties": false}
+  },
+  {
+    "name": "brave",
+    "version": "1",
+    "kind": "search",
+    "capabilities": ["search"],
+    "credentials": ["api_key"],
+    "limitations": ["Brave Web Search. Country, language, safesearch and freshness are provider-specific options. No silent provider fallback."],
+    "configuration_schema": {"type": "object", "additionalProperties": false}
+  },
+  {
+    "name": "tavily",
+    "version": "1",
+    "kind": "search",
+    "capabilities": ["search"],
+    "credentials": ["api_key"],
+    "limitations": ["Tavily Search. Search depth, topic and domain filtering retain provider semantics. No silent provider fallback."],
+    "configuration_schema": {"type": "object", "additionalProperties": false}
+  },
+  {
+    "name": "exa",
+    "version": "1",
+    "kind": "search",
+    "capabilities": ["search"],
+    "credentials": ["api_key"],
+    "limitations": ["Exa Search. Search type, category, domain filtering and publication dates retain provider semantics. No silent provider fallback."],
+    "configuration_schema": {"type": "object", "additionalProperties": false}
+  },
+  {
+    "name": "mcp",
+    "version": "1",
+    "kind": "mcp",
+    "capabilities": ["tools"],
+    "credentials": ["optional token"],
+    "limitations": ["Streamable HTTP, protocols 2025-11-25 and 2025-06-18. Each invocation initializes its own protocol session. No opaque tool retry or native process continuation."],
+    "configuration_schema": {"type": "object", "required": ["url"], "properties": {"url": {"type": "string", "format": "uri"}, "tool": {"type": "string"}}, "additionalProperties": false}
+  }
+]
