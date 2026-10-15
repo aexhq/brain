@@ -1,0 +1,19 @@
+{
+  "name": "@aexhq/brain-pi",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.2.0",
+    "@earendil-works/pi-coding-agent": "1.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.12.2",
+    "typescript": "5.9.3"
+  }
+}
+
