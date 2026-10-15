@@ -1,8 +1,16 @@
 version: 2
 updates:
-  - package-ecosystem: cargo
+  - package-ecosystem: gomod
     directory: /
     schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directories: [/runners/pi, /sdks/typescript, /services/sandbox, /website]
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
   - package-ecosystem: github-actions
     directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directories: [/, /services/sandbox]
     schedule: { interval: weekly }

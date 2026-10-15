@@ -1,0 +1,49 @@
+---
+title: Development & verification
+description: Build from source, run the test suite, and preview the docs site.
+---
+
+## Run all checks
+
+Install the Node dependencies for the runner, TypeScript SDK, and docs site, then run `scripts/check.mjs`:
+
+```sh
+npm --prefix runners/pi ci --ignore-scripts
+npm --prefix sdks/typescript ci --ignore-scripts
+npm --prefix website ci --ignore-scripts
+node scripts/check.mjs
+```
+
+`node scripts/check.mjs` runs:
+1. Pi runner and TypeScript SDK builds
+2. `go run ./cmd/generate -check` (verifies OpenAPI and SDK wire types are up to date)
+3. `go test ./...` and `go vet ./...`
+4. Pi runner unit/integration tests (against a local recording provider)
+5. TypeScript and Python SDK test suites
+6. End-to-end process journeys (`tests/journeys/journeys.test.mjs`)
+7. Docs site static build and link/contract verification (`website/scripts/site.test.mjs`)
+
+## Preview the documentation site
+
+```sh
+npm --prefix website run dev
+```
+
+Open `http://127.0.0.1:3000/docs`. To test the static production export locally:
+
+```sh
+npm --prefix website run build
+npm --prefix website test
+npm --prefix website start
+```
+
+## Where to edit what
+
+| Area | Source of truth |
+| --- | --- |
+| HTTP routes, summaries, and wire types | `internal/api/contract.go` & `internal/core/types.go` (then run `go run ./cmd/generate`) |
+| Harness & storage Go interfaces | `internal/harness/harness.go` & `internal/persistence/` |
+| Model catalog | Pinned `@earendil-works/pi-coding-agent` in `runners/pi/package.json` |
+| Persistence guide | `docs/running-persistence.md` |
+| Local tools walkthrough | `examples/tools/README.md` |
+| Docs pages & guides | `website/content/docs/**/*.mdx` |

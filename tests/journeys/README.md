@@ -1,51 +1,41 @@
-# SDK user journeys
+# End-to-end journey tests
 
-These tests import the public `@aexhq/brain` package and exercise a real Brain server, Wasmtime
-worker, and local journal. The model speaks scripted OpenAI SSE; Environments reached over HTTP run
-in the test process. No model account, cloud deployment, SDK transport stub, or internal SDK import
-is needed.
+The journey suite (`tests/journeys/journeys.test.mjs`) tests the compiled Brain server, the Pi runner, the example HTTP/SSE tool server, and both the TypeScript and Python SDKs against a local recording model provider. It runs offline with no external API keys, cloud accounts, or Docker required.
 
-`npm run test:journeys` runs the files concurrently using Node's built-in test runner. Each file
-owns its server, worker process group, random ports, credentials, and temporary data directory.
-Tests within a file run in order. CI builds the binaries and Components once in the existing
-Linux worker job, then runs all journeys as a required part of `build-test`.
+## Running the suite
 
-| Public functionality | Journey coverage |
-| --- | --- |
-| `Brain` / `BrainClient`, `withToken`, custom `fetch`, `request`, `BrainError` | Authenticated and unauthenticated clients, isolated derived credentials, real request tracing, missing sessions, invalid options |
-| `component`, `admit`, `admitTool`, inspection | File/bytes/HTTP artifacts, id reuse, parallel preparation, rejected artifacts, prepared session creation, native Tool execution |
-| `sessions.create/get/list`, initial transcript, system, response format, idle policy | Full conversation lifecycle, seeded context, reopen through another client, idempotent creation with and without host Tools, conflicting keys, parallel conversations |
-| `send`, `state`, `id`, `transcript` | String/structured input, multiple suspended turns, idempotent sends, invalid input, cold reads, native state across completed turns; no replay after interruption |
-| `interrupt`, `end`, `delete` | Running and idle cancellation, model and host Tool cancellation, repeated keyed operations, ended-session reads, invalid deletion, independent sessions |
-| `events`, `stream`, client `stream` | Durable cursors, a full page boundary, replay-to-live delivery, reconnect, abort, authentication, session isolation |
-| `tool` with `run` in `hostEnv`, options, schemas, context | Progress ordering, input defaults and extra-property policy, input/output errors, handler errors, deadlines/signals, the call's sequence, concurrent sessions, protected Event rejection |
-| `close`, `register`, `credentials`, reattachment | Save credentials, close the client while retaining sessions, reject mismatched placements, restore matching handlers, preserve active-call cancellation on creation replay |
-| `environment`, `brainEnv`, placed Tools | Independent authenticated Environments, lazy allocation, configuration validation, explicit native grants and denied access, workspace persistence/isolation |
-| Registered agentloops with scoped stdio callbacks | Independent model and Tool calls, native resume, callback journal barriers, and rejection of session-selected executable code |
-| `timeoutMs` | Explicit client timeout leaves the server's execution observable and does not retry the model call |
+To run all repository checks including journeys:
 
-The pagination case emits fewer than the permitted Events per turn across enough turns to cross
-the real page boundary. It is a correctness check, not a throughput or memory benchmark. Cancellation
-tests synchronize with actual model/Tool entry rather than guessing execution progress with sleeps.
-
-## Run locally on Linux
-
-After `npm ci && npm run build`:
-
-```sh
-rustup target add wasm32-wasip2
-cargo build -p brain-server --bin brain -p brain-env-worker --bin brain-env-worker
-cargo build --manifest-path tests/fixtures/diagnostic-tool/Cargo.toml --target wasm32-wasip2 --release
-export BRAIN_TEST_SERVER="$PWD/target/debug/brain"
-export BRAIN_TEST_WORKER="$PWD/target/debug/brain-env-worker"
-export BRAIN_TEST_TOOL_COMPONENT="$PWD/tests/fixtures/diagnostic-tool/target/wasm32-wasip2/release/diagnostic_tool.wasm"
-npm run test:journeys
+```powershell
+node scripts/check.mjs
 ```
 
-Missing binaries or Components fail the suite; no journeys are conditionally skipped. The server
-and worker run natively on Windows too (the worker listens on a named pipe there), but the journey
-harness stops servers by process group, so run the journeys themselves in WSL on Windows. Portable
-SDK unit tests still run with `npm test`.
+To run only the journey suite (after building `runners/pi` and `sdks/typescript`):
 
-Custom startup harness journeys also exercise `kv_read`, `kv_put`, and `kv_delete` across a failed
-turn and server restart, preserving the distinction between absent keys and JSON null.
+```powershell
+node --test tests/journeys/journeys.test.mjs
+```
+
+Each test compiles the Go binaries into a temp directory and starts isolated processes with their own ports, tokens, and storage directories. Crash tests kill the server and runner processes directly and verify cleanup and recovery on both Linux and Windows.
+
+## What is covered
+
+| Journey | What it verifies |
+| --- | --- |
+| Configure a local server | `-check` validates config without starting the server; invalid settings and external schema `$ref`s are rejected. |
+| Start and continue a conversation | Create, read, list, send, and close; Unicode streaming, pagination, idempotency keys, and multi-turn model context. |
+| Authenticate and delegate inspection | Tenant isolation across routes, tenant-filtered tool catalogs, read-only vs. management tokens, and revocable `inspect_session` tokens. |
+| Use external tools and approvals | `echo`, `inspect_session`, and `ask_approval` (approve/deny, SSE progress, concurrent sessions, and duplicate-decision rejection). |
+| Reconnect an observer | Resuming SSE streams via `?after=` and `Last-Event-ID`; client disconnects leave turns running; lost cursors return `409 cursor_unavailable`. |
+| Queue, interrupt, and close | Queue limits (`429` with `Retry-After`), reusing keys after rejection, cancelling queued inputs on interrupt, and cleaning up pending approvals. |
+| Handle tool failures | Denials, HTTP 500s, bad JSON, oversized outputs, dropped connections, timeouts, redirects, and incomplete SSE streams return `is_error` tool results to the model without automatic retries. |
+| Restart after process death | Committed events survive SIGKILL; torn final records are trimmed; resuming is passive and never replays unfinished tool calls. |
+| Recover into a fresh cache | Missing local sessions hydrate from external checkpoints; `history_bytes` and `resume_offset` stay distinct; restored sessions preserve prompt context on the next turn. |
+| Recover from an archive outage | Local turns succeed while storage is down; full sync queues reject new input and mark readiness `503`; explicit `flush` clears the backlog once storage recovers. |
+| Diagnose provider and Brain failures | Model provider errors and broken runner protocols fail the turn explicitly instead of masquerading as tool errors; credentials never leak into logs. |
+| Repair corrupt local history | Interior file corruption fails loudly instead of silently truncating history; an explicit `restore` recovers the session from external storage. |
+| Reject invalid API input | Unknown JSON fields, unsupported harnesses/models/tools, `steer` delivery, and oversized payloads return `400`/`413`/`422`. |
+| Bound observer memory | Oversized events disconnect slow SSE observers without interrupting the turn or corrupting stored history. |
+| Switch SDKs | A conversation started in TypeScript continues seamlessly in Python across tool calls, streaming, flush/restore, and interrupt/resume. |
+| Run concurrent tenants | Active execution limits hold under load, tenants stay isolated, and idle runner eviction preserves native context when reloaded. |
+| Operate with telemetry | Trace IDs propagate from HTTP requests through tool calls; OTLP spans and metrics export cleanly; broken OTLP collectors do not block sessions. |

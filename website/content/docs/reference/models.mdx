@@ -1,0 +1,49 @@
+---
+title: Models & providers
+description: Configure model providers, API keys, reasoning effort, and custom endpoints.
+---
+
+## Choosing a model
+
+Pass `config.model` in `provider/model` format when creating a session (for example, `openai/gpt-4.1-mini`). The provider prefix must match an entry in your host config's `providers` map:
+
+```json
+{
+  "providers": {
+    "openai": { "api_key_env": "OPENAI_API_KEY" }
+  }
+}
+```
+
+Brain checks that the provider is configured when creating the session, and the Pi runner validates the model ID against its [offline model catalog](/docs/reference/model-catalog) when the session starts. Unknown providers or model IDs fail with `422 unsupported`.
+
+> **Note:** Brain passes API keys explicitly via `api_key_env` and does not forward ambient host environment variables or interactive OAuth sessions into child runner processes.
+
+## Reasoning effort
+
+You can set `config.reasoning_effort` to `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"` (defaults to `"off"` when omitted). If the chosen model does not support the requested level, the runner fails explicitly rather than silently downgrading it.
+
+## Custom endpoints and proxies
+
+Each entry in `providers` accepts optional `base_url` and `api` fields to route an existing catalog provider through a proxy or compatible endpoint:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "api_key_env": "OPENAI_API_KEY",
+      "base_url": "https://my-proxy.example.com/v1",
+      "api": "openai-completions"
+    }
+  }
+}
+```
+
+`base_url` and `api` override transport settings for models under that provider in the catalog; they do not register brand-new model names.
+
+## Prompt caching
+
+To help preserve provider prompt prefixes across turns and restores:
+- Session instructions, model, and tool schemas stay fixed for the life of the session.
+- Restoring a session loads Pi's native conversation state rather than reconstructing prompts from a flattened transcript.
+- Upstream background cache-warming timers are disabled (`cacheWarming: "off"`) so idle sessions never make background LLM calls.

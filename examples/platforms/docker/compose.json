@@ -1,0 +1,22 @@
+{
+  "services": {
+    "brain": {
+      "build": "../../..",
+      "ports": ["127.0.0.1:8080:8080"],
+      "environment": {
+        "BRAIN_API_KEY": "${BRAIN_API_KEY:?set BRAIN_API_KEY}",
+        "OPENAI_API_KEY": "${OPENAI_API_KEY:?set OPENAI_API_KEY}",
+        "RESOURCE_TOOL_TOKEN": "${TOOL_API_KEY:?set TOOL_API_KEY}"
+      },
+      "volumes": ["./brain.json:/config/brain.json:ro", "brain-data:/data"],
+      "stop_grace_period": "30s"
+    },
+    "resources": {
+      "build": "../../..",
+      "entrypoint": ["/app/resource-tools"],
+      "command": ["-listen", "0.0.0.0:8092"],
+      "environment": { "TOOL_API_KEY": "${TOOL_API_KEY:?set TOOL_API_KEY}" }
+    }
+  },
+  "volumes": { "brain-data": {} }
+}

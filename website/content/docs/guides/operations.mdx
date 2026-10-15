@@ -1,0 +1,27 @@
+---
+title: Operations & observability
+description: Health checks, rate limits, OpenTelemetry, and container deployment.
+---
+
+## Health endpoints
+
+- `GET /health/live` — returns `200` with `{"status":"ok"}` when the HTTP server is up.
+- `GET /health/ready` — returns `200` with `{"status":"ready"}` when the server can accept new work, or `503` with `{"status":"not_ready"}` if the checkpoint sync queue is full or the server is shutting down.
+
+## Capacity and backpressure
+
+You can tune concurrency, memory, and disk limits in your [host configuration](/docs/reference/configuration) (`active` turns, `loaded` sessions, per-session `queue` depth, `input_bytes`, `session_bytes`, and SSE `subscribers`). When a limit is reached, Brain returns `429 overloaded` with `Retry-After: 1` so in-flight turns and tool completions can finish cleanly.
+
+## Logs and OpenTelemetry
+
+Brain writes structured JSON logs without request bodies or credentials. Every HTTP response includes an `X-Request-ID` header (and error responses include `request_id` in the JSON body).
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export traces and metrics over OTLP/HTTP:
+- **Metrics** track request latency and error counts, input queue delay, time to first assistant output, runner startup time, active executions, tool latency and outcomes, transcript/checkpoint byte growth, and sync queue depth/failures. Metrics omit high-cardinality `tenant` and `session` labels.
+- **Traces** carry session and call IDs across HTTP admission, harness execution, and outbound tool calls.
+
+## Containers and session routing
+
+The repository `Dockerfile` packages the Brain binary and the Pi runner as an unprivileged user. Mount your config at `/config/brain.json`, set `listen` to `0.0.0.0:8080`, and mount `/data` for local storage.
+
+Each active session must have a single owning Brain instance at a time. Your routing layer is responsible for sticky session placement and failover; see [Persistence & recovery](/docs/guides/persistence) for the handoff sequence between instances.

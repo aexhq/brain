@@ -1,0 +1,41 @@
+---
+title: Introduction
+description: A standalone server for agent sessions.
+---
+
+import Link from 'next/link';
+
+<p className="brain-kicker">Agent sessions. Your infrastructure.</p>
+
+<p className="brain-intro">Brain is an open-source server for creating, running, and resuming agent sessions. Pick a harness, connect your tools over HTTP, and keep session state on your own storage.</p>
+
+<div className="brain-actions">
+  <Link href="/docs/quickstart">Run your first session <span>→</span></Link>
+  <Link href="/docs/api">Explore the API <span>↗</span></Link>
+</div>
+
+## How it works
+
+Brain manages session state, tenant isolation, event streaming, and tool calls. The agent harness (currently **Pi**) runs the model loop and manages conversation context. Your tools run outside Brain in whatever environment they need—a separate service, a sandbox, a browser worker, or an internal API.
+
+<div className="brain-flow" aria-label="Your application sends requests to Brain, which coordinates a harness and external tools">
+  <b>Your app</b><span>→</span><b>Brain</b><span>→</span><b>Harness + tools</b>
+</div>
+
+<div className="brain-grid">
+  <Link href="/docs/guides/sessions"><small>01 / SESSIONS</small><strong>Manage the conversation ↗</strong><span>Stream events over SSE, queue messages, interrupt turns, and resume from checkpoints.</span></Link>
+  <Link href="/docs/tools"><small>02 / TOOLS</small><strong>Run tools anywhere ↗</strong><span>Expose tools over HTTP, SSE, or MCP. Keep sandboxes and approvals in your own services.</span></Link>
+  <Link href="/docs/guides/persistence"><small>03 / STATE</small><strong>Local speed, cloud backup ↗</strong><span>Run on local SQLite and append-only files, with optional background checkpoints to S3, R2, or GCS.</span></Link>
+  <Link href="/docs/adapters"><small>04 / ADAPTERS</small><strong>Clean extension points ↗</strong><span>Small Go interfaces for harnesses and object storage keep the server simple.</span></Link>
+</div>
+
+## Where to start
+
+| Goal | Guide |
+| --- | --- |
+| Start the server and send a message | [Quickstart](/docs/quickstart) |
+| Connect from your backend | [TypeScript SDK](/docs/sdks/typescript) or [Python SDK](/docs/sdks/python) |
+| Inspect routes and event payloads | [HTTP API](/docs/api) and [Events & streaming](/docs/reference/events) |
+| Configure models and API keys | [Models & providers](/docs/reference/models) |
+| Build a tool service or adapter | [Distributed tools](/docs/tools) and [Go interfaces](/docs/adapters/interfaces) |
+| Feed docs to a coding agent | [`/llms.txt`](/llms.txt) or [`/llms-full.txt`](/llms-full.txt) |

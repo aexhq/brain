@@ -1,0 +1,11 @@
+{
+  "listen":"0.0.0.0:8080",
+  "public_url":"https://brain.example.com",
+  "data_dir":"/data",
+  "tokens":[{"token_env":"BRAIN_API_KEY","tenant":"local","manage":true}],
+  "harnesses":{"pi":{"command":["node","runners/pi/dist/main.js"]}},
+  "providers":{"openai":{"api_key_env":"OPENAI_API_KEY"}},
+  "limits":{"active":4,"loaded":128,"queue":8},
+  "tools":[],
+  "persistence":{"provider":"s3","bucket":"replace-with-your-bucket","region":"eu-west-2","prefix":"brain"}
+}

@@ -1,0 +1,52 @@
+---
+title: Python SDK
+description: Zero-dependency synchronous client built on the Python standard library.
+---
+
+Requires Python 3.11+. The client lives in `sdks/python` in this repository. Add `sdks/python` to your `PYTHONPATH` before running:
+
+```powershell
+$env:PYTHONPATH = "sdks/python"
+```
+
+## Example
+
+```python
+import os
+from brain import Brain
+
+brain = Brain("http://127.0.0.1:8080", os.environ["BRAIN_API_KEY"])
+session = brain.create({
+    "harness": "pi",
+    "config": {"model": "openai/gpt-4.1-mini", "tools": []},
+})
+accepted = brain.send(session["id"], {
+    "type": "user.message", "text": "Explain append-only storage.", "key": "message-1",
+})
+stream = brain.observe(session["id"])
+try:
+    for event in stream:
+        if event["type"] == "assistant.message":
+            print(event["data"]["text"])
+        if (event.get("input_id") == accepted["id"]
+                and event["type"] == "session.status"
+                and event["data"]["status"] in {"idle", "failed", "interrupted", "closed"}):
+            break
+finally:
+    stream.close()
+```
+
+## Methods
+
+The `Brain` client provides `create`, `get`, `list`, `send`, `history`, `observe`, `interrupt`, `resume`, `close`, `flush`, `sync`, `restore`, and `catalog`, matching the [HTTP API](/docs/api). Generated `TypedDict` definitions live in `brain.types`.
+
+- `list(after="", limit=100)` returns a page of sessions.
+- `history(session_id, after="", limit=100)` returns `{"events": [...], "next_cursor": "..."}`.
+- `observe(session_id, after="")` returns a synchronous iterator over SSE frames. Pass the last non-empty `event["cursor"]` as `after` to reconnect.
+
+## Timeouts and errors
+
+- `Brain(url, token, timeout=30)` sets the socket timeout in seconds (increase this if you call `flush` or `restore` over large checkpoints).
+- HTTP errors raise `BrainError` with `.status`, `.code`, and `.request_id`.
+- Tool failures are delivered as `tool.result` events with `is_error: True`.
+- The client rejects HTTP redirects and does not retry requests automatically.

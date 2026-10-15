@@ -1,0 +1,20 @@
+{
+  "name": "@aexhq/brain-sandbox-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "tsc --allowJs --checkJs --noEmit --skipLibCheck --target es2023 --module nodenext src/providers.mjs && node --test test/*.test.mjs",
+    "live": "node test/live.mjs",
+    "catalog": "node src/catalog.mjs"
+  },
+  "dependencies": {
+    "@daytona/sdk": "0.224.1",
+    "@e2b/code-interpreter": "2.9.0",
+    "modal": "0.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,80 @@
+---
+title: Distributed tools
+description: Expose tools over HTTP or SSE in any language.
+---
+
+## Configure a tool
+
+Tools are registered in the host config's `tools` array:
+
+```json
+{
+  "name": "echo",
+  "description": "Return the supplied text.",
+  "input_schema": {
+    "type": "object",
+    "properties": { "text": { "type": "string" } },
+    "required": ["text"],
+    "additionalProperties": false
+  },
+  "url": "http://127.0.0.1:8081/tools/echo",
+  "token_env": "BRAIN_TOOLS_KEY",
+  "tenants": ["local"],
+  "timeout_seconds": 300,
+  "max_output_bytes": 1048576
+}
+```
+
+- `name` must start with a letter and contain up to 64 letters, digits, or underscores.
+- `description`, `input_schema` (without external `$ref`s), `url`, and `tenants` are required.
+- Optional `output_schema` validates the returned result envelope.
+- `timeout_seconds` defaults to `300` (range `1`–`86400`).
+- `max_output_bytes` defaults to `1048576` (1 MiB, max 2 MiB).
+
+`GET /catalog` returns the tool names, descriptions, and schemas allowed for the caller's tenant (without exposing `url` or `token_env`). Pass the tool names you want to enable in `config.tools` when creating a session.
+
+## Request payload
+
+When the model invokes a tool, Brain sends an HTTP `POST` to the configured `url`: Bearer authentication when `token_env` is set:
+
+```json
+{
+  "tenant_id": "local",
+  "session_id": "SESSION_ID",
+  "call_id": "HARNESS_CALL_ID",
+  "arguments": { "text": "hello" }
+}
+```
+
+Verify the `Authorization` header before trusting the request, and always scope operations using the top-level `tenant_id` and `session_id` rather than model-provided `arguments`. See [Local tools & approvals](/docs/tools/local-tools) for a working example.
+
+## Response formats
+
+### Synchronous JSON (`Content-Type: application/json`)
+
+```json
+{"content":[{"type":"text","text":"hello"}]}
+```
+
+Content blocks can be text (`{"type":"text","text":"..."}`) or base64-encoded images (`{"type":"image","data":"...","mime_type":"image/png"}`).
+
+### Streaming SSE (`Content-Type: text/event-stream`)
+
+Long-running tools can stream zero or more `progress` events followed by a single `result` event:
+
+```text
+event: progress
+data: {"message":"Waiting for operator approval"}
+
+event: result
+data: {"content":[{"type":"text","text":"Approved"}]}
+
+```
+
+`progress` events are forwarded to SSE observers as `tool.progress`, while the final `result` event completes the tool call and returns control to the harness.
+
+## Errors, timeouts, and long jobs
+
+- **Tool errors:** Return `{"content":[{"type":"text","text":"reason"}],"is_error":true}` (or an HTTP error status) when a tool call fails or is denied. Brain records a `tool.result` with `is_error: true` so the model can see the error and decide what to do next.
+- **Ambiguous network failures:** If the connection drops or times out after the request was sent, Brain sets `unknown_outcome: true` on the `tool.result` and never retries the call automatically.
+- **Long-running work:** Either stream SSE within `timeout_seconds`, or return a job ID immediately and expose separate status/cancel tools.

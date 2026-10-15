@@ -1,0 +1,45 @@
+---
+title: Session lifecycle
+description: Create sessions, send messages, stream events, and handle interruptions.
+---
+
+## Create a session
+
+Each session belongs to a single tenant and runs on a chosen harness (`pi`). When creating a session, pass `config.model`, optional `instructions` and `reasoning_effort`, and the list of `tools` enabled for that session.
+
+Session settings are fixed at creation. Creating a session writes its metadata to SQLite immediately; Brain starts the harness process when the first message arrives.
+
+## Send messages
+
+Send a `user.message` event with non-empty `text`. Each session runs one turn at a time and queues incoming messages in order (`delivery: "queue"`, the default). Passing `delivery: "steer"` currently returns `422 unsupported`.
+
+You can pass an optional `key` to make retries idempotent:
+- Sending the same `key` and identical payload returns the original accepted event.
+- Reusing a `key` with different text returns `409 conflict`.
+- If a request is rejected (for example with `429 overloaded`), the key is not consumed and can be retried.
+
+## Stream and read events
+
+You can fetch paginated history as JSON or stream live events over Server-Sent Events (`Accept: text/event-stream`).
+
+A single user message can trigger multiple assistant messages and tool calls before the turn finishes. Keep reading until you see a `session.status` event for your `input_id` with a terminal state (`idle`, `interrupted`, `failed`, or `closed`):
+
+| Status | Meaning |
+| --- | --- |
+| `idle` | Turn completed; ready for the next message. |
+| `running` | Model inference or a tool call is in progress. |
+| `interrupted` | Turn was stopped; call `resume` before sending new messages. |
+| `failed` | Turn stopped due to an error (`session.error`); fix the underlying cause and call `resume`. |
+| `closed` | Session is permanently closed. |
+
+During streaming, `assistant.delta` and `tool.progress` provide live updates; the completed text is saved in `assistant.message`. Disconnecting an SSE stream does not cancel the running turn.
+
+## Interrupt and resume
+
+To stop a running turn, send `{"type": "user.interrupt"}` to `POST /sessions/{id}/events` (or call `interrupt(id)` in the SDK). Any queued messages that haven't run yet fail with a `conflict` error event.
+
+Once the session settles into `interrupted` (or `failed`), call `POST /sessions/{id}/resume`. Resuming rolls native harness state back to the last completed turn checkpoint and sets the status back to `idle` without calling the model. You can then send your next message.
+
+## Close a session
+
+Call `POST /sessions/{id}/close` to permanently end a session and cancel any active or queued work. Closing a session keeps its event history readable; any external sandboxes or jobs created by tools must be cleaned up by their respective tool services.

@@ -1,0 +1,39 @@
+---
+title: Harness adapters
+description: Implement a harness runner over Brain's Go interface or stdio JSON protocol.
+---
+
+## Go lifecycle
+
+`Factory.Open` receives the session directory, frozen session config, enabled tool schemas, provider credentials, and callbacks for emitting events and dispatching tool calls. It returns a `Runner` with five methods: `Prompt`, `Steer`, `Interrupt`, `Checkpoint`, and `Close` (see [Go interfaces](/docs/adapters/interfaces)).
+
+Key rules for any `Runner`:
+- **Passive open:** Opening an existing session directory must load saved state without calling the model, re-running tools, or starting background cache-warming timers.
+- **Settled return:** `Prompt` blocks until the turn (including any tool calls and follow-up generations) finishes or is interrupted.
+- **Clean checkpoints:** `Checkpoint` returns the list of relative file paths and byte sizes in the session directory needed to restore the conversation, excluding any credentials.
+
+## Child process stdio protocol
+
+`harness.ProcessFactory` runs an external command (such as `node runners/pi/dist/main.js`) and communicates over newline-delimited JSON on `stdin` and `stdout` (max 4 MiB per frame). `stdout` is reserved strictly for protocol frames; write any debug logs to `stderr`.
+
+Request frame from Brain to runner:
+
+```json
+{"id":"REQUEST_ID","method":"prompt","params":{"text":"Hello"}}
+```
+
+- **Requests (`open`, `prompt`, `steer`, `interrupt`, `checkpoint`):** The runner replies with a frame matching `id` and either `result` or `error`.
+- **Events:** The runner emits `{"event": "...", "data": {...}}` for assistant deltas, completed messages, and usage.
+- **Tool calls:** The runner sends a reverse request with `method: "tool.call"`. Brain dispatches the HTTP/SSE call to the external tool service and writes the correlated response frame back to the runner's `stdin`.
+
+Wire types for this protocol are generated in `internal/harness` and `runners/pi/src/generated.ts`.
+
+## Isolation and testing
+
+A harness adapter must disable all built-in local tools (such as local bash or file editors), ambient plugins, and background cache warmers so the model can only invoke tools explicitly bound in `config.tools`. Child processes receive only minimal OS environment variables plus the provider credentials supplied in `open`.
+
+When testing a new harness adapter, verify:
+1. Reopening a saved directory makes zero model or tool calls until the next `Prompt`.
+2. Restoring a checkpoint into a fresh directory produces the exact same prompt context on the next turn.
+3. Tool errors return to the model as tool results, while broken stdio framing or disk failures abort the turn.
+4. Interrupting a turn while a tool call is waiting stops execution cleanly.

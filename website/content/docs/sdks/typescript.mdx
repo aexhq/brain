@@ -1,0 +1,61 @@
+---
+title: TypeScript SDK
+description: Create sessions and stream events with an async iterator.
+---
+
+The TypeScript client lives in `sdks/typescript` inside the repository. Build it before importing:
+
+```sh
+npm --prefix sdks/typescript ci --ignore-scripts
+npm --prefix sdks/typescript run build
+```
+
+## Example
+
+Run this `.mjs` script from the repository root while Brain is running:
+
+```js
+import { Brain } from './sdks/typescript/dist/index.js';
+
+const brain = new Brain('http://127.0.0.1:8080', process.env.BRAIN_API_KEY);
+const session = await brain.create({
+  harness: 'pi',
+  config: { model: 'openai/gpt-4.1-mini', tools: [] },
+});
+const input = await brain.send(session.id, {
+  type: 'user.message', text: 'Explain append-only storage.', key: 'message-1',
+});
+for await (const event of brain.observe(session.id)) {
+  if (event.type === 'assistant.message') console.log(event.data.text);
+  if (event.input_id === input.id && event.type === 'session.status'
+      && ['idle', 'failed', 'interrupted', 'closed'].includes(event.data.status)) break;
+}
+```
+
+In TypeScript, `event.data` is typed as `unknown`—narrow it based on `event.type` (see [Events & streaming](/docs/reference/events)).
+
+## Methods
+
+| Method | Returns / description |
+| --- | --- |
+| `create(input, signal?)` | Creates and returns a `Session`. |
+| `get(id, signal?)` | Fetches a `Session` by ID. |
+| `list(after?, limit?)` | Returns `{ sessions }`. |
+| `send(id, input, signal?)` | Queues a `user.message` and returns the accepted `Event`. |
+| `history(id, after?, limit?)` | Returns `{ events, next_cursor }`. |
+| `observe(id, { after?, signal? }?)` | Async iterator yielding session events over SSE. |
+| `interrupt(id)` | Stops the active turn. |
+| `resume(id)` | Resumes an interrupted or failed session from its last checkpoint. |
+| `close(id)` | Permanently closes the session. |
+| `flush(id, signal?)` | Uploads local state to external storage and returns `SyncStatus`. |
+| `sync(id)` | Returns current `SyncStatus`. |
+| `restore(id, checkpoint, signal?)` | Restores a session from an external `checkpoint` ID. |
+| `catalog()` | Returns `{ tools }` available to the caller's tenant. |
+
+`new Brain(url, token, fetchImpl?)` accepts an optional custom `fetch` implementation for testing or instrumentation.
+
+## Reconnection, timeouts, and errors
+
+- **Reconnecting:** Save the last non-empty `event.cursor` and pass `{ after: cursor }` to `brain.observe(id, { after })`. Passing an `AbortSignal` closes the client stream without interrupting the session on the server.
+- **Timeouts:** Standard requests time out after 30 seconds (`flush` and `restore` allow 60 seconds). Streaming connections have no overall wall-clock timeout.
+- **Errors:** HTTP errors throw `BrainError` (with `status`, `code`, and optional `requestId`). Tool failures arrive as normal `tool.result` events in the stream. The client never follows HTTP redirects or retries failed requests automatically.

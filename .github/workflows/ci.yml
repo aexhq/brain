@@ -1,260 +1,226 @@
-name: ci
-
+name: CI
 on:
   push:
-    branches: [main]
   pull_request:
-
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
+  schedule:
+    - cron: '32 6 * * 1'
 permissions:
   contents: read
-
 jobs:
-  changes:
-    runs-on: ubuntu-24.04
-    outputs:
-      contracts: ${{ github.event_name != 'pull_request' || steps.filter.outputs.common == 'true' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.npm == 'true' || steps.filter.outputs.generated-doc == 'true' }}
-      audit: ${{ github.event_name != 'pull_request' || steps.filter.outputs.common == 'true' || steps.filter.outputs.dependencies == 'true' }}
-      lint: ${{ github.event_name != 'pull_request' || steps.filter.outputs.common == 'true' || steps.filter.outputs.rust == 'true' }}
-      rust-core: ${{ github.event_name != 'pull_request' || steps.filter.outputs.common == 'true' || steps.filter.outputs.rust == 'true' }}
-      rust-platforms: ${{ github.event_name != 'pull_request' || steps.filter.outputs.common == 'true' || steps.filter.outputs.rust == 'true' }}
-      brain-env: ${{ github.event_name != 'pull_request' || steps.filter.outputs.common == 'true' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.npm == 'true' || steps.filter.outputs.runtime-tests == 'true' }}
-      image-smoke: ${{ github.event_name != 'pull_request' || steps.filter.outputs.common == 'true' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.image == 'true' }}
-    steps:
-      - uses: actions/checkout@v7
-        if: github.event_name == 'pull_request'
-        with:
-          fetch-depth: 2
-          persist-credentials: false
-      # Compare the tested merge commit with its base, including every PR commit and both rename paths.
-      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
-        if: github.event_name == 'pull_request'
-        id: filter
-        with:
-          token: ''
-          predicate-quantifier: every
-          filters: |
-            common:
-              - '!*.md'
-              - '!**/README*.md'
-              - '!docs/**/*.{md,mdx}'
-              - '!docs/**/meta.json'
-              - '!references/**/*.md'
-              - '!references/architecture.{png,excalidraw}'
-              - '!{crates,catalog,packages/brain-sdk,examples,tests}/**'
-              - '!{Cargo.toml,Cargo.lock,rust-toolchain.toml,rustfmt.toml,package.json,package-lock.json,Dockerfile,.dockerignore}'
-            rust:
-              - '{crates/**,catalog/**,Cargo.toml,Cargo.lock,rust-toolchain.toml,rustfmt.toml}'
-              - '!**/README*.md'
-            npm:
-              - '{packages/brain-sdk/**,examples/**,package.json,package-lock.json}'
-              - '!**/README*.md'
-            dependencies:
-              - '**/package{,-lock}.json'
-            runtime-tests:
-              - 'tests/**'
-              - '!**/README*.md'
-            image:
-              - '{Dockerfile,.dockerignore}'
-            generated-doc:
-              - 'docs/reference/configuration.mdx'
-
-  contracts:
-    needs: changes
-    if: needs.changes.outputs.contracts == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.97.1"
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "22.23.2"
-          cache: npm
-      - run: npm ci
-      # Renders each crate's generated/contract/ from its Rust types, then the SDK from
-      # those. A diff means a type changed without its contract being regenerated, or a
-      # generated file was edited by hand.
-      - run: npm run gen
-      - run: git diff --exit-code -- crates/brain-protocol/generated crates/brain-http/generated crates/brain/generated catalog crates/brain/src/model/generated packages/brain-sdk/src/generated packages/brain-sdk/contracts docs/reference/configuration.mdx
-      - run: npm test
-      - run: npm run package-smoke
-
-  audit:
-    needs: changes
-    if: needs.changes.outputs.audit == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "22.23.2"
-      # Reads package-lock.json; no install, so a slow registry costs this job alone.
-      - run: npm audit --audit-level=high
-
-  lint:
-    needs: changes
-    if: needs.changes.outputs.lint == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.97.1"
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: git diff --check
-
-  rust-core:
-    needs: changes
-    if: needs.changes.outputs.rust-core == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.97.1"
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: workspace-debug
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - run: cargo test --workspace --all-targets
-
-  rust-platforms:
-    needs: changes
-    if: needs.changes.outputs.rust-platforms == 'true'
+  security:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, macos-15]
+        include:
+          - language: go
+            build-mode: autobuild
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+          - language: actions
+            build-mode: none
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - if: matrix.language == 'go'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee
+        with:
+          category: /language:${{ matrix.language }}
+
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: brain-test
+          POSTGRES_DB: brain
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      BRAIN_TEST_POSTGRES: postgres://postgres:brain-test@localhost:5432/brain?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - run: go test -tags postgres ./internal/persistence
+  checks:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          toolchain: "1.97.1"
-          targets: wasm32-wasip2
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v6
+          go-version-file: go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          python-version: "3.13"
-      - run: cargo test --workspace --all-targets
-      - name: Build the diagnostic Components
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo build --manifest-path tests/fixtures/diagnostic-tool/Cargo.toml --target wasm32-wasip2 --release
-      - name: Admit and activate through the real worker process
-        shell: bash
-        env:
-          BRAIN_TEST_TOOL_COMPONENT: ${{ github.workspace }}/tests/fixtures/diagnostic-tool/target/wasm32-wasip2/release/diagnostic_tool.wasm
-        run: cargo test -p brain-env-worker --features integration-tests --test worker_process --test preparation
-
-  brain-env:
-    needs: changes
-    if: needs.changes.outputs.brain-env == 'true'
-    runs-on: ubuntu-24.04
+          node-version: '24'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: npm --prefix runners/pi ci --ignore-scripts
+      - run: npm --prefix sdks/typescript ci --ignore-scripts
+      - run: npm --prefix website ci --ignore-scripts
+      - run: npm --prefix services/sandbox ci --ignore-scripts
+      - run: node scripts/check.mjs
+      - run: go build -o bin/ ./cmd/brain ./cmd/resource-tools ./cmd/mcp-tools
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: binaries-${{ runner.os }}
+          path: |
+            bin/brain*
+            bin/resource-tools*
+            bin/mcp-tools*
+          retention-days: 7
+      - if: runner.os == 'Linux'
+        run: docker build --tag brain:local-dev .
+      - if: runner.os == 'Linux'
+        run: node scripts/container-smoke.mjs
+      - if: runner.os == 'Linux'
+        run: docker build --file services/sandbox/Dockerfile --tag brain-sandbox-tools:local-dev .
+      - if: runner.os == 'Linux'
+        run: node scripts/sandbox-container-smoke.mjs
+      - if: runner.os == 'Linux'
+        run: docker save brain:local-dev brain-sandbox-tools:local-dev -o images.tar
+      - if: runner.os == 'Linux'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: tested-images
+          path: images.tar
+          retention-days: 7
+  race:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
-          toolchain: "1.97.1"
-          targets: wasm32-wasip2
-      - uses: Swatinem/rust-cache@v2
+          go-version-file: go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          shared-key: workspace-debug
-      - name: Build the diagnostic Tool Component
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo build --manifest-path tests/fixtures/diagnostic-tool/Cargo.toml --target wasm32-wasip2 --release
-          cp tests/fixtures/diagnostic-tool/target/wasm32-wasip2/release/diagnostic_tool.wasm "$RUNNER_TEMP/diagnostic-tool.wasm"
-      - run: bash tools/build-python-fixtures.sh "$RUNNER_TEMP/python"
-      - name: Admit and activate through the real Linux worker process
-        env:
-          BRAIN_TEST_PYTHON_TOOL: ${{ runner.temp }}/python/python-tool.wasm
-          BRAIN_TEST_TOOL_COMPONENT: ${{ runner.temp }}/diagnostic-tool.wasm
-        run: cargo test -p brain-env-worker --features integration-tests --test worker_process --test preparation --test in_process
+          node-version: '24'
+      - run: npm --prefix runners/pi ci --ignore-scripts
+      - run: npm --prefix runners/pi run build
+      - run: go test -race ./...
 
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "22.23.2"
-          cache: npm
-      - run: npm ci && npm run build
-      - name: Verify Python Environment preparation with a real isolated project
-        run: |
-          "$RUNNER_TEMP/python/venv/bin/pip" install --disable-pip-version-check uv==0.8.15
-          BRAIN_TEST_UV="$RUNNER_TEMP/python/venv/bin/uv" node --test examples/python-environment.test.mjs
-      - run: cargo build -p brain-server --bin brain --bin brain-check-media-upgrade -p brain-env-worker --bin brain-env-worker
-      - name: Exercise lazy providers, cold history, and retained sessions through HTTP
-        env:
-          BRAIN_TEST_SERVER: ${{ github.workspace }}/target/debug/brain
-          BRAIN_TEST_WORKER: ${{ github.workspace }}/target/debug/brain-env-worker
-        run: node tests/release/runtime.mjs
-      - name: Run SDK user journeys in parallel
-        env:
-          BRAIN_TEST_SERVER: ${{ github.workspace }}/target/debug/brain
-          BRAIN_TEST_WORKER: ${{ github.workspace }}/target/debug/brain-env-worker
-          BRAIN_TEST_PYTHON_TOOL: ${{ runner.temp }}/python/python-tool.wasm
-          BRAIN_TEST_TOOL_COMPONENT: ${{ runner.temp }}/diagnostic-tool.wasm
-        run: npm run test:journeys
-      - name: Verify every package release fixture before publication
-        env:
-          BRAIN_TEST_SERVER: ${{ github.workspace }}/target/debug/brain
-          BRAIN_TEST_WORKER: ${{ github.workspace }}/target/debug/brain-env-worker
-        run: bash tools/check-release-fixtures.sh
-
-  image-smoke:
-    needs: changes
-    if: needs.changes.outputs.image-smoke == 'true'
-    runs-on: ubuntu-24.04
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NEXT_PUBLIC_BASE_PATH: /brain
     steps:
-      - uses: actions/checkout@v7
-      - run: docker build -t brain:test .
-      - name: Start the release image and exercise health and auth
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker run -d --name brain-test -p 18080:8080 \
-            -e BRAIN_API_TOKEN=test-token \
-            -v "$PWD/tests:/opt/brain/tests:ro" \
-            -e 'BRAIN_AGENTLOOPS={"fixture":{"command":"node","args":["/opt/brain/tests/fixtures/harness.mjs"]}}' \
-            brain:test
-          trap 'docker logs brain-test; docker rm -f brain-test >/dev/null' EXIT
-          for attempt in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:18080/health/ready >/dev/null; then break; fi
-            test "$attempt" -lt 60
-            sleep 1
-          done
-          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:18080/v1/sessions)" = 401
-          curl --fail --silent -H 'authorization: Bearer test-token' http://127.0.0.1:18080/v1/sessions | jq -e '.sessions == []'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+      - run: npm --prefix runners/pi ci --ignore-scripts
+      - run: npm --prefix website ci --ignore-scripts
+      - run: npm --prefix website run build
+      - run: npm --prefix website test
+      - uses: actions/upload-pages-artifact@5f327015a708106f6f1b7c9a633901af30fe80cb
+        with:
+          path: website/out
 
+  # Preserve the existing protected-branch gate while replacing its old Rust suite.
   build-test:
     if: always()
-    needs: [changes, contracts, audit, lint, rust-core, rust-platforms, brain-env, image-smoke]
-    runs-on: ubuntu-24.04
+    needs: [checks, race, postgres, docs, security]
+    runs-on: ubuntu-latest
     steps:
-      - name: Every affected check passed
+      - name: Require every verification job
         env:
-          NEEDS: ${{ toJSON(needs) }}
+          RESULTS: ${{ toJSON(needs) }}
         run: |
-          node <<'NODE'
-          const assert = require('node:assert/strict');
-          const { changes, ...jobs } = JSON.parse(process.env.NEEDS);
-          assert.equal(changes.result, 'success', 'change detection must succeed');
-          for (const [name, job] of Object.entries(jobs)) {
-            const selected = changes.outputs[name];
-            assert.ok(['true', 'false'].includes(selected), `${name}: missing selection`);
-            const expected = selected === 'true' ? 'success' : 'skipped';
-            assert.equal(job.result, expected, `${name}: expected ${expected}, got ${job.result}`);
-          }
-          NODE
+          python3 -c 'import json,os; results=json.loads(os.environ["RESULTS"]); assert all(job["result"] == "success" for job in results.values()), results'
+
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: tested-images
+      - run: docker load -i images.tar
+      - name: Publish the tested images
+        id: images
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for image in brain brain-sandbox-tools; do
+            ref="ghcr.io/aexhq/$image"
+            docker tag "$image:local-dev" "$ref:sha-$GITHUB_SHA"
+            docker tag "$image:local-dev" "$ref:main"
+            docker push "$ref:sha-$GITHUB_SHA"
+            docker push "$ref:main"
+            digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$ref:sha-$GITHUB_SHA" | cut -d@ -f2)
+            echo "$image=$digest" >> "$GITHUB_OUTPUT"
+          done
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-name: ghcr.io/aexhq/brain
+          subject-digest: ${{ steps.images.outputs.brain }}
+          push-to-registry: true
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-name: ghcr.io/aexhq/brain-sandbox-tools
+          subject-digest: ${{ steps.images.outputs.brain-sandbox-tools }}
+          push-to-registry: true
+
+  deploy-docs:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Deploy tested static site
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346
+      - name: Verify public documentation and reference assets
+        env:
+          DOCS_URL: ${{ steps.deployment.outputs.page_url }}
+        run: node scripts/docs-smoke.mjs "$DOCS_URL"
+

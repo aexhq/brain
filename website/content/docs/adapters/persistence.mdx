@@ -1,0 +1,31 @@
+---
+title: Persistence adapters
+description: Object storage and metadata indexing interfaces for background checkpoints.
+---
+
+Persistence adapters implement two small Go interfaces in `internal/persistence` (see [Go interfaces](/docs/adapters/interfaces)).
+
+## `Objects` interface
+
+`Objects` provides `Put(ctx, key, bytes, immutable)` and `Get(ctx, key)`:
+
+- **Immutable writes:** When `immutable` is `true`, `Put` must never overwrite an existing object with different content (if the key already exists from an earlier attempt, returning success is fine because keys are generation-scoped).
+- **Error distinction:** Missing objects must wrap `os.ErrNotExist` so the archive layer can distinguish missing checkpoints from transient network/storage errors.
+- **Scoping and bounds:** Implementations must enforce the configured key prefix, reject path traversal, and cap individual object sizes at 2 MiB.
+
+The archive coordinator splits transcripts and append-only native files into 64 KiB immutable blocks plus bounded tail objects. It writes the checkpoint manifest only after every referenced block is uploaded, then updates the `latest` pointer and optional metadata index.
+
+## `Metadata` interface
+
+`Metadata` provides `Put`, `Get`, `List`, and `Close` for external session discovery (implemented by the PostgreSQL adapter):
+
+- `Get` and `List` are scoped by `tenant` and ordered by session ID.
+- External metadata is an eventually consistent index updated after checkpoint publication; it is not used for locking or leader election.
+
+## Testing an adapter
+
+Every storage adapter should pass the contract tests in `internal/persistence/`:
+- Immutable block writes and idempotent retries
+- Interrupted manifest publication (unreachable blocks must not expose a half-written checkpoint)
+- Missing object detection and tenant/path isolation
+- Restoring into an empty local cache and verifying the next Pi model request preserves conversation history

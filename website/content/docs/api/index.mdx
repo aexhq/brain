@@ -1,0 +1,38 @@
+---
+title: HTTP API
+description: Endpoints for sessions, event streams, checkpoints, and tools.
+---
+
+Endpoint pages are generated directly from Brain's Go route declarations and wire types. You can also download the raw [OpenAPI 3.1 spec](/openapi.json).
+
+## Making requests
+
+The local server listens on `http://127.0.0.1:8080` by default. Send Bearer authentication on session and catalog requests and `Content-Type: application/json` for request bodies. Unknown JSON fields and trailing JSON data are rejected.
+
+## Sessions
+
+| Operation | Endpoint |
+| --- | --- |
+| [Create](/docs/api/generated/create) | `POST /sessions` |
+| [List](/docs/api/generated/list) | `GET /sessions` |
+| [Get](/docs/api/generated/get) | `GET /sessions/{id}` |
+| [Send / interrupt](/docs/api/generated/send) | `POST /sessions/{id}/events` |
+| [History / stream](/docs/api/generated/events) | `GET /sessions/{id}/events` |
+| [Resume](/docs/api/generated/resume) | `POST /sessions/{id}/resume` |
+| [Close](/docs/api/generated/close) | `POST /sessions/{id}/close` |
+
+## Persistence and tools
+
+| Operation | Endpoint |
+| --- | --- |
+| [Flush](/docs/api/generated/flush) | `POST /sessions/{id}/flush` |
+| [Sync status](/docs/api/generated/sync) | `GET /sessions/{id}/sync` |
+| [Restore](/docs/api/generated/restore) | `POST /sessions/{id}/restore` |
+| [Tool catalog](/docs/api/generated/catalog) | `GET /catalog` |
+
+Public health endpoints (`/health/live` and `/health/ready`) are covered in [Operations & observability](/docs/guides/operations).
+
+## Pagination and streaming
+
+- **Pagination:** List endpoints accept `limit` (`1`–`1000`, default `100`). Pass the last session ID as `after` on `GET /sessions`, or pass `next_cursor` (or the last retained event's `cursor`) as `after` on `GET /sessions/{id}/events`.
+- **SSE streaming:** Send `Accept: text/event-stream` to `GET /sessions/{id}/events` to replay retained history and stream live events. To resume after a disconnect, pass `?after=CURSOR` or `Last-Event-ID: CURSOR` (`after` takes precedence). See [Events & streaming](/docs/reference/events) and [Errors](/docs/reference/errors).

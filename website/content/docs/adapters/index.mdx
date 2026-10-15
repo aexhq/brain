@@ -1,0 +1,24 @@
+---
+title: Adapter overview
+description: How harnesses, storage backends, and tools plug into Brain.
+---
+
+Brain has three extension boundaries:
+
+| Boundary | What it does | Interface |
+| --- | --- | --- |
+| **Harness** | Runs the model loop, manages prompt context and compaction, and writes native session state. | Go `harness.Factory` / `Runner` (or JSON-over-stdio child process). |
+| **Tool service** | Executes tools, manages sandboxes/jobs, and enforces resource permissions or approvals. | [HTTP / SSE protocol](/docs/tools) (any language). |
+| **Persistence** | Uploads immutable checkpoint blocks and maintains an optional session discovery index. | Go `persistence.Objects` and `persistence.Metadata`. |
+
+External tools run out-of-process over HTTP/SSE and require no changes to Brain. Harness and persistence adapters are internal Go packages compiled into the Brain binary (with harness runners typically executed as child processes configured in `harnesses`).
+
+## Built-in implementations
+
+- **Harness:** `pi` (`runners/pi`, a Node.js child process wrapping `@earendil-works/pi-coding-agent`).
+- **Local store:** SQLite metadata plus append-only event and native state files.
+- **Checkpoint object stores:** `filesystem`, `s3`, and `r2`.
+- **External metadata index:** PostgreSQL (`postgres_env`).
+- **Tool transport:** HTTP JSON and streaming SSE.
+
+See [Harness adapters](/docs/adapters/harness), [Persistence adapters](/docs/adapters/persistence), and the [Go interface definitions](/docs/adapters/interfaces) for implementation details.

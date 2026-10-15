@@ -1,0 +1,33 @@
+---
+title: Authentication & tenants
+description: Host-owned grants keep sessions and tools scoped to their caller.
+---
+
+Session and catalog endpoints require `Authorization: Bearer TOKEN`. Health endpoints are public. The host maps tokens to grants:
+
+```json
+{"tokens":[{"token_env":"BRAIN_API_KEY","tenant":"local","manage":true}]}
+```
+
+Tokens must be at least 24 random bytes and are loaded from environment variables when Brain starts.
+
+## Token grants
+
+| Field | Effect |
+| --- | --- |
+| `tenant` | **Required.** Binds the token to a tenant. Requests can never access another tenant's data. |
+| `session` | Optional. Restricts the token to a single session ID. |
+| `manage` | Allows creating, resuming, flushing, restoring, and closing sessions within the token's scope. |
+| `read_only` | Allows `GET` requests only (rejects messages, interrupts, and lifecycle changes). |
+
+Your backend authenticates end users and chooses which Brain token to use. Cross-tenant requests always return `404 not_found`, and `GET /catalog` only lists tools enabled for the caller's tenant.
+
+## How tools receive identity
+
+When Brain invokes an external tool, it includes the authenticated `tenant_id`, `session_id`, and `call_id` in the top-level request body alongside the model's `arguments`. Tool services should verify Brain's bearer token and use the top-level `tenant_id` and `session_id` rather than trusting model-supplied arguments.
+
+If a tool binding sets `inspect_session: true`, Brain also passes a short-lived, read-only token scoped to that single session so the tool can read session status or events while the call is active. Brain revokes the token as soon as the tool call returns.
+
+## Network security
+
+Run Brain behind TLS in production. Brain does not enable browser CORS or cookie auth; call it from your backend or CLI rather than directly from browser JavaScript.
