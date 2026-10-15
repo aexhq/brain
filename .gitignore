@@ -1,0 +1,11 @@
+/.brain/
+/bin/
+/coverage.out
+/coverage.html
+/brain.json
+.env
+node_modules/
+dist/
+__pycache__/
+*.pyc
+
