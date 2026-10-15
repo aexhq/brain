@@ -19,6 +19,8 @@ import (
 
 	"github.com/aexhq/brain/internal/core"
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 type Binding struct {
@@ -177,6 +179,7 @@ func (r *Registry) Call(ctx context.Context, scope Scope, call core.Call, progre
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 	if t.binding.TokenEnv != "" {
 		token := os.Getenv(t.binding.TokenEnv)
 		if token == "" {

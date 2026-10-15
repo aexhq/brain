@@ -1,0 +1,14 @@
+{
+  "listen": "127.0.0.1:8080",
+  "public_url": "http://127.0.0.1:8080",
+  "data_dir": ".brain",
+  "tokens": [{ "token_env": "BRAIN_API_KEY", "tenant": "local", "manage": true }],
+  "harnesses": {
+    "pi": { "command": ["node", "runners/pi/dist/main.js"] }
+  },
+  "providers": {
+    "openai": { "api_key_env": "OPENAI_API_KEY" }
+  },
+  "tools": []
+}
+

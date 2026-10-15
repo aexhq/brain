@@ -11,7 +11,10 @@ import (
 	"os"
 	"sync"
 
+	"context"
 	"github.com/aexhq/brain/internal/core"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 )
 
 const MaxRecord = 4 << 20
@@ -24,6 +27,7 @@ type Log struct {
 	broken   error
 	subs     map[*Subscription]struct{}
 	maxBytes int64
+	written  metric.Int64Counter
 }
 
 type Subscription struct {
@@ -59,7 +63,12 @@ func OpenLog(path string, maxBytes int64) (*Log, error) {
 	if err != nil {
 		return nil, err
 	}
-	l := &Log{f: f, subs: make(map[*Subscription]struct{}), maxBytes: maxBytes}
+	written, err := otel.Meter("github.com/aexhq/brain").Int64Counter("brain.transcript.bytes", metric.WithUnit("By"))
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	l := &Log{f: f, subs: make(map[*Subscription]struct{}), maxBytes: maxBytes, written: written}
 	r := bufio.NewReaderSize(f, 64<<10)
 	for {
 		b, err := readLine(r)
@@ -149,6 +158,19 @@ func (l *Log) Append(e core.Event) (core.Event, error) {
 	}
 	e.Cursor = cursorFor(l.size, e.ID)
 	l.size += int64(n)
+	l.written.Add(context.Background(), int64(n))
+	l.publish(e)
+	return e, nil
+}
+
+// Publish delivers provisional display data without adding it to history.
+func (l *Log) Publish(e core.Event) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.publish(e)
+}
+
+func (l *Log) publish(e core.Event) {
 	for s := range l.subs {
 		sz := int64(len(e.Data) + 256)
 		if s.bytes+sz > s.maxBytes {
@@ -162,7 +184,6 @@ func (l *Log) Append(e core.Event) (core.Event, error) {
 			l.remove(s, core.E(core.Overloaded, "subscriber queue full"))
 		}
 	}
-	return e, nil
 }
 
 func (l *Log) remove(s *Subscription, err error) {

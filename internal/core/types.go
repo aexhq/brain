@@ -160,9 +160,10 @@ type Checkpoint struct {
 }
 
 type Grant struct {
-	Tenant  string `json:"tenant"`
-	Session string `json:"session,omitempty"`
-	Manage  bool   `json:"manage"`
+	Tenant   string `json:"tenant"`
+	Session  string `json:"session,omitempty"`
+	Manage   bool   `json:"manage"`
+	ReadOnly bool   `json:"read_only,omitempty"`
 }
 
 func (g Grant) Allows(s Session) bool {
