@@ -2,9 +2,43 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    - cron: '32 6 * * 1'
 permissions:
   contents: read
 jobs:
+  security:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: go
+            build-mode: autobuild
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+          - language: actions
+            build-mode: none
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - if: matrix.language == 'go'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee
+        with:
+          category: /language:${{ matrix.language }}
+
   postgres:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -116,7 +150,7 @@ jobs:
   # Preserve the existing protected-branch gate while replacing its old Rust suite.
   build-test:
     if: always()
-    needs: [checks, race, postgres, docs]
+    needs: [checks, race, postgres, docs, security]
     runs-on: ubuntu-latest
     steps:
       - name: Require every verification job

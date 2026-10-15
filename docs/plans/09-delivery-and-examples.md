@@ -18,6 +18,8 @@ This cut implements the CI aggregate gate, exact-image promotion, provenance, do
 
 Retain GitHub Actions and the existing Linux/Windows, race, PostgreSQL, and container jobs. Prefer small workflow changes over a new monorepo/task/release framework.
 
+The repository-owned CodeQL matrix scans Go, JavaScript/TypeScript, Python, and Actions and participates in the aggregate gate. It replaces the legacy default scan that targeted Rust. Weekly CI retains recurring security analysis; publication still runs only for verified pushes to `main`.
+
 1. Keep `scripts/check.mjs` as the local full-check entry point. Add new provider-free contracts, package checks, example validation, and docs checks there or in clearly required CI jobs.
 2. Pin actions and container base images for reproducibility. Use Dependabot for Go, npm, Docker, Actions, and new Python manifests. Updates still run all conformance tests; do not auto-merge harness changes based only on compilation.
 3. Add credentialed qualification jobs for each advertised cloud integration. Use trusted code on protected branches, AWS OIDC where available, and scoped secrets for other providers. Never run untrusted PR code with provider credentials.

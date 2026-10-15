@@ -82,7 +82,7 @@ node scripts/check.mjs
 
 This builds the Pi runner and TypeScript SDK, checks generated wire types and OpenAPI specs (`go run ./cmd/generate -check`), runs Go tests and `go vet`, tests both SDKs, runs the [end-to-end journey suite](tests/journeys/README.md), and builds and verifies the docs site.
 
-CI also runs Linux race detection, real PostgreSQL, container smoke tests, sandbox service tests, and platform configuration/Worker tests. Every gate must pass before publication. Main publishes tested images to `ghcr.io/aexhq/brain` and `ghcr.io/aexhq/brain-sandbox-tools`, tagged by commit SHA with provenance, and deploys the tested Fumadocs export to GitHub Pages. Pin production images by digest. No compatibility/versioned API layer is introduced.
+CI also runs Linux race detection, real PostgreSQL, container smoke tests, sandbox service tests, platform configuration/Worker tests, and CodeQL for every source language. Every gate must pass before publication. Main publishes tested images to `ghcr.io/aexhq/brain` and `ghcr.io/aexhq/brain-sandbox-tools`, tagged by commit SHA with provenance, and deploys the tested Fumadocs export to GitHub Pages. Pin production images by digest. No compatibility/versioned API layer is introduced.
 
 Pi is the supported harness. [Codex/OpenCode feasibility results](docs/research/harness-probes.md) explain the remaining controls required before those adapters can claim the same recovery and tool guarantees. Live cloud support and local fixtures are distinguished in the integration evidence; thousand-session fleet capacity has not been claimed from local tests.
 
