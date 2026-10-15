@@ -4,7 +4,7 @@ import { gitConfig } from './shared';
 export function baseOptions(): BaseLayoutProps {
   return {
     nav: {
-      title: <span className="brain-sidebar-label">Developer docs <span>LOCAL PREVIEW</span></span>,
+      title: <span className="brain-sidebar-label">Developer docs <span>OPEN SOURCE</span></span>,
       url: '/docs',
     },
     githubUrl: `https://github.com/${gitConfig.user}/${gitConfig.repo}`,

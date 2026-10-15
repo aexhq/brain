@@ -1,0 +1,36 @@
+app = "replace-with-your-brain-app"
+primary_region = "lhr"
+kill_signal = "SIGTERM"
+kill_timeout = 30
+
+[build]
+  image = "ghcr.io/aexhq/brain:main"
+
+[deploy]
+  strategy = "immediate"
+
+[[files]]
+  guest_path = "/config/brain.json"
+  local_path = "brain.json"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 100
+    hard_limit = 200
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/health/ready"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "1gb"

@@ -6,6 +6,7 @@ import test from 'node:test';
 
 const site = fileURLToPath(new URL('../', import.meta.url));
 const out = path.join(site, 'out');
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
 const read = file => readFile(path.join(out, file), 'utf8');
 const documentFiles = (await readdir(path.join(out, 'docs'), { recursive: true }))
   .filter(file => file.endsWith('index.html')).map(file => path.join('docs', file));
@@ -15,7 +16,8 @@ const operations = Object.entries(contract.paths).flatMap(([route, methods]) =>
   Object.entries(methods).map(([method, operation]) => ({ route, method, ...operation })));
 
 async function resolveFile(url) {
-  const name = decodeURIComponent(url.pathname).replace(/^\//, '');
+  assert.ok(url.pathname.startsWith(basePath + '/'), `URL escapes deployment base: ${url.pathname}`);
+  const name = decodeURIComponent(url.pathname.slice(basePath.length)).replace(/^\//, '');
   const direct = path.join(out, name);
   try { if ((await stat(direct)).isFile()) return direct; }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -29,7 +31,7 @@ test('every rendered documentation link and anchor resolves in the static export
   const failures = [];
   for (const file of documentFiles) {
     const html = await read(file);
-    const url = new URL('/' + file.replaceAll(path.sep, '/').replace(/index\.html$/, ''), 'https://brain.test');
+    const url = new URL(basePath + '/' + file.replaceAll(path.sep, '/').replace(/index\.html$/, ''), 'https://brain.test');
     for (const [, href] of html.matchAll(/<a\b[^>]*\bhref="([^"]+)"/g)) {
       const target = new URL(href.replaceAll('&amp;', '&'), url);
       if (target.origin !== url.origin) continue;
@@ -75,7 +77,7 @@ test('static search and agent-readable exports cover the published guides and AP
   for (const file of documentFiles) {
     const url = '/' + file.replaceAll(path.sep, '/').replace(/\/index\.html$/, '');
     assert.ok(indexed.has(url), `Search misses ${url}`);
-    assert.ok(index.includes(`](${url})`), `Markdown index misses ${url}`);
+    assert.ok(index.includes(`](${basePath}${url})`), `Markdown index misses ${url}`);
     const md = await read(`llms.mdx/${url.slice(1)}/content.md`);
     assert.ok(md.length > 100, `Empty Markdown for ${url}`);
     assert.ok(full.includes(md.trim()), `Full export misses ${url}`);

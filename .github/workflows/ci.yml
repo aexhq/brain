@@ -52,11 +52,31 @@ jobs:
       - run: npm --prefix website ci --ignore-scripts
       - run: npm --prefix services/sandbox ci --ignore-scripts
       - run: node scripts/check.mjs
-      - run: go build -o bin/brain ./cmd/brain
+      - run: go build -o bin/ ./cmd/brain ./cmd/resource-tools ./cmd/mcp-tools
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: binaries-${{ runner.os }}
+          path: |
+            bin/brain*
+            bin/resource-tools*
+            bin/mcp-tools*
+          retention-days: 7
       - if: runner.os == 'Linux'
         run: docker build --tag brain:local-dev .
       - if: runner.os == 'Linux'
         run: node scripts/container-smoke.mjs
+      - if: runner.os == 'Linux'
+        run: docker build --file services/sandbox/Dockerfile --tag brain-sandbox-tools:local-dev .
+      - if: runner.os == 'Linux'
+        run: node scripts/sandbox-container-smoke.mjs
+      - if: runner.os == 'Linux'
+        run: docker save brain:local-dev brain-sandbox-tools:local-dev -o images.tar
+      - if: runner.os == 'Linux'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: tested-images
+          path: images.tar
+          retention-days: 7
   race:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -71,4 +91,95 @@ jobs:
       - run: npm --prefix runners/pi ci --ignore-scripts
       - run: npm --prefix runners/pi run build
       - run: go test -race ./...
+
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NEXT_PUBLIC_BASE_PATH: /brain
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+      - run: npm --prefix runners/pi ci --ignore-scripts
+      - run: npm --prefix website ci --ignore-scripts
+      - run: npm --prefix website run build
+      - run: npm --prefix website test
+      - uses: actions/upload-pages-artifact@5f327015a708106f6f1b7c9a633901af30fe80cb
+        with:
+          path: website/out
+
+  # Preserve the existing protected-branch gate while replacing its old Rust suite.
+  build-test:
+    if: always()
+    needs: [checks, race, postgres, docs]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every verification job
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 -c 'import json,os; results=json.loads(os.environ["RESULTS"]); assert all(job["result"] == "success" for job in results.values()), results'
+
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: tested-images
+      - run: docker load -i images.tar
+      - name: Publish the tested images
+        id: images
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for image in brain brain-sandbox-tools; do
+            ref="ghcr.io/aexhq/$image"
+            docker tag "$image:local-dev" "$ref:sha-$GITHUB_SHA"
+            docker tag "$image:local-dev" "$ref:main"
+            docker push "$ref:sha-$GITHUB_SHA"
+            docker push "$ref:main"
+            digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$ref:sha-$GITHUB_SHA" | cut -d@ -f2)
+            echo "$image=$digest" >> "$GITHUB_OUTPUT"
+          done
+      - uses: actions/attest-build-provenance@9d57eef8c06cd9d6b433effeeb7a6a77b3ff94ad
+        with:
+          subject-name: ghcr.io/aexhq/brain
+          subject-digest: ${{ steps.images.outputs.brain }}
+          push-to-registry: true
+      - uses: actions/attest-build-provenance@9d57eef8c06cd9d6b433effeeb7a6a77b3ff94ad
+        with:
+          subject-name: ghcr.io/aexhq/brain-sandbox-tools
+          subject-digest: ${{ steps.images.outputs.brain-sandbox-tools }}
+          push-to-registry: true
+
+  deploy-docs:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-test
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - name: Deploy tested static site
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346
 

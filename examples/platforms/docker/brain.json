@@ -1,0 +1,19 @@
+{
+  "listen": "0.0.0.0:8080",
+  "public_url": "http://brain:8080",
+  "data_dir": "/data",
+  "tokens": [{"token_env":"BRAIN_API_KEY","tenant":"local","manage":true}],
+  "harnesses": {"pi":{"command":["node","runners/pi/dist/main.js"]}},
+  "providers": {"openai":{"api_key_env":"OPENAI_API_KEY"}},
+  "limits": {"active":2,"loaded":64,"queue":8},
+  "tools": [{
+    "name":"web_fetch",
+    "description":"Fetch readable text from a public HTTP(S) page.",
+    "input_schema":{"type":"object","properties":{"url":{"type":"string"}},"required":["url"],"additionalProperties":false},
+    "url":"http://resources:8092/web_fetch",
+    "token_env":"RESOURCE_TOOL_TOKEN",
+    "tenants":["local"],
+    "timeout_seconds":30,
+    "max_output_bytes":2097152
+  }]
+}

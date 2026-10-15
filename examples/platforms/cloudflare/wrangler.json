@@ -1,0 +1,7 @@
+{
+  "name":"brain-r2-tools",
+  "main":"worker.mjs",
+  "compatibility_date":"2026-10-15",
+  "r2_buckets":[{"binding":"BUCKET","bucket_name":"replace-with-your-tools-bucket"}],
+  "vars":{"ALLOW_WRITE":"false"}
+}

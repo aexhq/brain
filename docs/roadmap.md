@@ -8,7 +8,7 @@ Next: [integration expansion](plans/08-integration-expansion.md) and [delivery, 
 
 Brain is built in stages: ship a solid local session server first, then prove external checkpoint portability, additional harnesses, external tool packages, and multi-instance scale.
 
-Currently, the local Pi server, TypeScript and Python SDKs, HTTP/SSE tools, and checkpoint archive adapters (filesystem, S3, R2, and PostgreSQL) are implemented and covered by local CI and process-level journey tests. Live cloud qualification, Codex/OpenCode runners, MCP, the broader tool catalog, and load/soak benchmarks are next.
+Implemented: the Pi server, TypeScript/Python SDKs, HTTP/SSE/MCP tools, filesystem/S3/R2/GCS archives, PostgreSQL index, external sandbox and resource services, and platform examples. S3 passed live cold-restore qualification; other cloud accounts remain separately unqualified. [Integration evidence](research/qualification.md) records the distinction. [Codex/OpenCode probes](research/harness-probes.md) identify the remaining runner blockers. Fleet load/soak benchmarks, browser tools, Fly machine tools, and dynamic session configuration remain future work.
 
 ## Release stages
 

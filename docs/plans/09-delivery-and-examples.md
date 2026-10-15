@@ -2,6 +2,8 @@
 
 Status: Implementation authorized on 2026-10-15. Complements [integration expansion](08-integration-expansion.md), [verification](07-verification-and-release.md), and the [research](../research/integration-options.md).
 
+This cut implements the CI aggregate gate, exact-image promotion, provenance, downloadable binaries, GitHub Pages subpath build, dependency update configuration, Docker/Fly/ECS recipes, an R2 Worker example, and TypeScript/Python session examples. Hosted fleet routing and a full application login/UI remain platform work, not Brain runtime entities. Cloud templates are labeled separately from live-qualified integrations.
+
 ## Delivery sequence
 
 | Slice | Deliverable | Acceptance |

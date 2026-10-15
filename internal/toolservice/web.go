@@ -69,7 +69,14 @@ func publicClient() *http.Client {
 				}
 			}
 			// Dial the vetted address directly; DNS cannot change between check and use.
-			return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+			for _, ip := range ips {
+				conn, dialErr := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+				if dialErr == nil {
+					return conn, nil
+				}
+				err = dialErr
+			}
+			return nil, err
 		},
 	}, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 4 {

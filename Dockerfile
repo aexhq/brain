@@ -13,10 +13,12 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 go build -trimpath -o /brain ./cmd/brain
+RUN CGO_ENABLED=0 go build -trimpath -o /resource-tools ./cmd/resource-tools
 
 FROM node:24-bookworm-slim
 WORKDIR /app
 COPY --from=server /brain /app/brain
+COPY --from=server /resource-tools /app/resource-tools
 COPY --from=runner --chown=node:node /build/runners/pi /app/runners/pi
 RUN mkdir /data && chown node:node /data
 USER node

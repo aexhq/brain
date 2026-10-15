@@ -2,6 +2,8 @@
 
 Status: Implementation authorized on 2026-10-15. Extends R1–R4 in the [roadmap](../roadmap.md) and [ADR 0001](../adr/0001-local-first-session-server.md).
 
+Landed in this cut: shared object contracts, GCS, live S3 archive qualification, remote MCP with static discovery, Modal/E2B/Daytona tool service, S3/R2 text tools, Brave/Tavily search and public fetch. [Qualification](../research/qualification.md) states the tested subset. [Harness probes](../research/harness-probes.md) keep Codex/OpenCode behind their mandatory gates. Browser/Fly machine tools, dynamic configuration, and I6 fleet benchmarks remain follow-up work; they are not hidden support claims.
+
 Evidence and alternatives live in [integration research](../research/integration-options.md). Release setup, examples, and documentation live in [plan 09](09-delivery-and-examples.md). Code and passing tests remain the authority for what is supported.
 
 ## Delivery order

@@ -46,6 +46,11 @@ def execute(command, timeout=30, limit=65536):
                 truncated = True
                 break
     finally:
+        if not timed_out and not truncated:
+            try:
+                proc.wait(timeout=max(0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                timed_out = True
         if timed_out or truncated:
             try:
                 if os.name == "posix":

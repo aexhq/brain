@@ -11,6 +11,7 @@ const commands = [
   ["npm", ["--prefix", "services/sandbox", "test"]],
   ["python", ["-m", "unittest", "discover", "-s", "sdks/python", "-p", "test_*.py"]],
   ["node", ["--test", "tests/journeys/journeys.test.mjs"]],
+  ["node", ["--test", "tests/platforms.test.mjs"]],
   ["npm", ["--prefix", "website", "run", "build"]],
   ["npm", ["--prefix", "website", "test"]],
 ];

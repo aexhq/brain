@@ -32,6 +32,8 @@ npm --prefix website start
 | Pinned Pi runtime model registry | `/docs/reference/model-catalog` |
 | `docs/running-persistence.md` | `/docs/guides/persistence` |
 | `examples/tools/README.md` | `/docs/tools/local-tools` |
+| `services/*/README.md` | Sandbox and resource tool guides |
+| `examples/platforms/README.md` | `/docs/guides/platforms` |
 
 `website/scripts/generate.mjs` writes all generated MDX files (which are gitignored—do not edit them by hand). If you change Go route definitions or wire types, run `go run ./cmd/generate` from the repo root first.
 
@@ -43,3 +45,5 @@ npm --prefix website start
 - LLM-friendly Markdown exports at `/llms.txt`, `/llms-full.txt`, and `/llms.mdx/docs/*`
 
 Serve `website/out/` with any static file host that supports `index.html` resolution and preserves extensionless files (`/api/search`, `/llms.txt`, `/llms-full.txt`).
+
+For a subpath deployment, set `NEXT_PUBLIC_BASE_PATH=/brain` before **both** build and tests. CI tests the root export and the GitHub Pages subpath, then deploys the exact tested Pages artifact after all verification jobs pass. The public URL is [aexhq.github.io/brain/docs](https://aexhq.github.io/brain/docs/). Keep local development's base path empty.

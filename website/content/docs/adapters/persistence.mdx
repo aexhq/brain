@@ -10,7 +10,7 @@ Persistence adapters implement two small Go interfaces in `internal/persistence`
 `Objects` provides `Put(ctx, key, bytes, immutable)` and `Get(ctx, key)`:
 
 - **Immutable writes:** When `immutable` is `true`, `Put` must never overwrite an existing object with different content (if the key already exists from an earlier attempt, returning success is fine because keys are generation-scoped).
-- **Error distinction:** Missing objects must return `persistence.ErrNotFound` so the archive layer can distinguish missing checkpoints from transient network/storage errors.
+- **Error distinction:** Missing objects must wrap `os.ErrNotExist` so the archive layer can distinguish missing checkpoints from transient network/storage errors.
 - **Scoping and bounds:** Implementations must enforce the configured key prefix, reject path traversal, and cap individual object sizes at 2 MiB.
 
 The archive coordinator splits transcripts and append-only native files into 64 KiB immutable blocks plus bounded tail objects. It writes the checkpoint manifest only after every referenced block is uploaded, then updates the `latest` pointer and optional metadata index.

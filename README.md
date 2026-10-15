@@ -2,6 +2,8 @@
 
 Brain is a standalone server for running agent sessions.
 
+[Documentation](https://aexhq.github.io/brain/docs/) · [API reference](https://aexhq.github.io/brain/docs/api/) · [Platform examples](examples/platforms/README.md) · [Integration evidence](docs/research/qualification.md)
+
 It handles HTTP APIs, tenant isolation, event streaming, local storage, and checkpoint syncing. An agent harness (currently **Pi**) runs the model loop and manages context in a child process. Tools run as external HTTP or SSE services—meaning sandboxes, browsers, storage, and human approvals live outside the Brain process.
 
 ## Quickstart
@@ -35,9 +37,11 @@ Tools are configured on the host and invoked over HTTP or SSE. When a model call
 
 See [`examples/tools`](examples/tools/README.md) for a standalone local tool server that implements `echo`, `inspect_session`, and an operator approval flow (`ask_approval`).
 
+Built-in integrations also include [remote MCP discovery and calls](website/content/docs/tools/mcp.mdx), [Modal/E2B/Daytona sandbox services](services/sandbox/README.md), and [S3/R2 storage plus Brave/Tavily search and public web fetch](services/resources/README.md). Provider keys are ordinary service configuration. These services deploy separately; Brain does not manage customer cloud accounts.
+
 ## Persistence and recovery
 
-By default, Brain stores session metadata in SQLite and writes events and native harness state to local append-only files in `.brain/`. You can optionally configure background checkpoint uploads to a local directory, S3, or Cloudflare R2, plus an eventual session index in PostgreSQL.
+By default, Brain stores session metadata in SQLite and writes events and native harness state to local append-only files in `.brain/`. You can optionally configure background checkpoint uploads to a local directory, S3, Cloudflare R2, or Google Cloud Storage, plus an eventual session index in PostgreSQL.
 
 See [Persistence and recovery](docs/running-persistence.md) for configuration, explicit flushes, and session handoff between servers.
 
@@ -72,10 +76,15 @@ Then open `http://127.0.0.1:3000/docs`.
 Run the full test and verification suite (requires Go 1.26+, Node.js 24+, and Python 3.11+):
 
 ```powershell
+node scripts/setup.mjs
 node scripts/check.mjs
 ```
 
 This builds the Pi runner and TypeScript SDK, checks generated wire types and OpenAPI specs (`go run ./cmd/generate -check`), runs Go tests and `go vet`, tests both SDKs, runs the [end-to-end journey suite](tests/journeys/README.md), and builds and verifies the docs site.
+
+CI also runs Linux race detection, real PostgreSQL, container smoke tests, sandbox service tests, and platform configuration/Worker tests. Every gate must pass before publication. Main publishes tested images to `ghcr.io/aexhq/brain` and `ghcr.io/aexhq/brain-sandbox-tools`, tagged by commit SHA with provenance, and deploys the tested Fumadocs export to GitHub Pages. Pin production images by digest. No compatibility/versioned API layer is introduced.
+
+Pi is the supported harness. [Codex/OpenCode feasibility results](docs/research/harness-probes.md) explain the remaining controls required before those adapters can claim the same recovery and tool guarantees. Live cloud support and local fixtures are distinguished in the integration evidence; thousand-session fleet capacity has not been claimed from local tests.
 
 ## Project docs
 

@@ -1,0 +1,23 @@
+{
+  "family":"brain",
+  "networkMode":"awsvpc",
+  "requiresCompatibilities":["FARGATE"],
+  "cpu":"1024",
+  "memory":"2048",
+  "executionRoleArn":"arn:aws:iam::ACCOUNT_ID:role/brain-execution",
+  "taskRoleArn":"arn:aws:iam::ACCOUNT_ID:role/brain-runtime",
+  "runtimePlatform":{"cpuArchitecture":"X86_64","operatingSystemFamily":"LINUX"},
+  "containerDefinitions":[{
+    "name":"brain",
+    "image":"ACCOUNT_ID.dkr.ecr.eu-west-2.amazonaws.com/brain@sha256:REPLACE_WITH_DIGEST",
+    "essential":true,
+    "stopTimeout":30,
+    "portMappings":[{"containerPort":8080,"protocol":"tcp"}],
+    "secrets":[
+      {"name":"BRAIN_API_KEY","valueFrom":"arn:aws:secretsmanager:eu-west-2:ACCOUNT_ID:secret:brain-api-key"},
+      {"name":"OPENAI_API_KEY","valueFrom":"arn:aws:secretsmanager:eu-west-2:ACCOUNT_ID:secret:brain-model-key"}
+    ],
+    "healthCheck":{"command":["CMD","node","-e","fetch('http://127.0.0.1:8080/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"],"interval":30,"timeout":5,"retries":3,"startPeriod":30},
+    "logConfiguration":{"logDriver":"awslogs","options":{"awslogs-group":"/brain","awslogs-region":"eu-west-2","awslogs-stream-prefix":"runtime"}}
+  }]
+}

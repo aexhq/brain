@@ -1,12 +1,13 @@
 import { Provider } from '@/components/provider';
 import { Header } from '@/components/header';
 import type { Metadata } from 'next';
+import { assetUrl } from '@/lib/shared';
 import './global.css';
 
 export const metadata: Metadata = {
   title: { default: 'Brain documentation', template: '%s · Brain' },
   description: 'Build, run, and resume agent sessions. A minimal server with distributed tools and portable state.',
-  icons: { icon: '/icon.svg' },
+  icons: { icon: assetUrl('/icon.svg') },
 };
 
 export default function Layout({ children }: LayoutProps<'/'>) {
