@@ -51,7 +51,7 @@ func (s *Settings) Validate() error {
 	if s.IntervalSeconds < 1 || s.IntervalSeconds > 3600 || s.Queue < 1 || s.Queue > 10000 {
 		return errors.New("invalid synchronization limits")
 	}
-	if s.Provider != "filesystem" && s.Provider != "s3" && s.Provider != "r2" {
+	if s.Provider != "filesystem" && s.Provider != "s3" && s.Provider != "r2" && s.Provider != "gcs" {
 		return errors.New("unknown storage provider")
 	}
 	if s.Provider == "filesystem" && s.Directory == "" {
@@ -68,6 +68,9 @@ func (s *Settings) Validate() error {
 	}
 	if s.Provider == "r2" && (s.Endpoint == "" || s.AccessKeyEnv == "" || s.SecretKeyEnv == "") {
 		return errors.New("R2 requires endpoint and credentials")
+	}
+	if s.Provider == "gcs" && (s.Endpoint != "" || s.Region != "" || s.AccessKeyEnv != "" || s.SecretKeyEnv != "") {
+		return errors.New("GCS uses application default credentials; S3 settings are not supported")
 	}
 	if s.AccessKeyEnv != "" || s.SecretKeyEnv != "" {
 		if os.Getenv(s.AccessKeyEnv) == "" || os.Getenv(s.SecretKeyEnv) == "" {
@@ -152,6 +155,9 @@ type S3Objects struct {
 func NewObjects(ctx context.Context, s Settings) (Objects, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
+	}
+	if s.Provider == "gcs" {
+		return newGCS(ctx, s)
 	}
 	if s.Prefix != "" && !validKey(strings.TrimSuffix(s.Prefix, "/")) {
 		return nil, errors.New("invalid storage prefix")

@@ -56,9 +56,9 @@ Every configured provider must have its `api_key_env` environment variable set a
 
 | Field | Description |
 | --- | --- |
-| `provider` | `"filesystem"`, `"s3"`, or `"r2"`. |
+| `provider` | `"filesystem"`, `"s3"`, `"r2"`, or `"gcs"`. |
 | `directory` | Target path on disk (required when `provider` is `"filesystem"`). |
-| `bucket` | Bucket name (required for `"s3"` and `"r2"`). |
+| `bucket` | Bucket name (required for all cloud providers). |
 | `region`, `endpoint`, `prefix` | Region, custom S3/R2 endpoint URL, and optional object key prefix. R2 requires `endpoint` and defaults to region `"auto"`. |
 | `access_key_env`, `secret_key_env` | Environment variable names for credentials (required for R2; optional for S3 when using IAM/default credential chain). |
 | `postgres_env` | Optional environment variable containing a PostgreSQL connection string for session indexing. |

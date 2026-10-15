@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/aexhq/brain/internal/persistence"
-	"github.com/aws/smithy-go"
 )
 
 type pendingSync struct {
@@ -178,7 +177,7 @@ func (s *syncer) run() {
 			} else {
 				p.attempts++
 				p.err = "external synchronization failed; inspect server logs"
-				p.stopped = p.attempts >= 5 || permanentStorageError(err)
+				p.stopped = p.attempts >= 5 || persistence.PermanentError(err)
 				p.due = time.Now().Add(min(5*time.Minute, s.interval*time.Duration(1<<p.attempts)))
 			}
 			s.mu.Unlock()
@@ -192,15 +191,4 @@ func (s *syncer) run() {
 		case <-ticker.C:
 		}
 	}
-}
-
-func permanentStorageError(err error) bool {
-	var api smithy.APIError
-	if errors.As(err, &api) {
-		switch api.ErrorCode() {
-		case "AccessDenied", "InvalidAccessKeyId", "SignatureDoesNotMatch", "NoSuchBucket":
-			return true
-		}
-	}
-	return false
 }

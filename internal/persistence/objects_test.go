@@ -2,14 +2,22 @@ package persistence
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
+	"hash/crc32"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
 	"testing"
+
+	"google.golang.org/api/option"
 )
 
 // Exercise the real AWS SDK, including signed requests and R2 configuration.
@@ -61,20 +69,108 @@ func TestS3CompatibleTransport(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx := context.Background()
-			if err := store.Put(ctx, "chunk", []byte("content"), true); err != nil {
-				t.Fatal(err)
-			}
-			if err := store.Put(ctx, "chunk", []byte("replacement"), true); err != nil {
-				t.Fatal(err)
-			}
-			b, err := store.Get(ctx, "chunk")
-			if err != nil || string(b) != "content" {
-				t.Fatalf("read %q: %v", b, err)
-			}
-			if _, err := store.Get(ctx, "missing"); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("missing object: %v", err)
-			}
+			objectContract(t, store)
 		})
 	}
+}
+
+func TestFileObjectContract(t *testing.T) { objectContract(t, FileObjects{Root: t.TempDir()}) }
+
+func objectContract(t *testing.T, store Objects) {
+	t.Helper()
+	ctx := context.Background()
+	for _, value := range []string{"content", "replacement"} {
+		if err := store.Put(ctx, "chunk", []byte(value), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if b, err := store.Get(ctx, "chunk"); err != nil || string(b) != "content" {
+		t.Fatalf("immutable read %q: %v", b, err)
+	}
+	if err := store.Put(ctx, "chunk", []byte("latest"), false); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := store.Get(ctx, "chunk"); err != nil || string(b) != "latest" {
+		t.Fatalf("mutable read %q: %v", b, err)
+	}
+	if _, err := store.Get(ctx, "missing"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing object: %v", err)
+	}
+	if err := store.Put(ctx, "large", make([]byte, MaxObjectBytes+1), false); err == nil {
+		t.Fatal("oversize write accepted")
+	}
+	if err := store.Put(ctx, "../escape", nil, false); err == nil {
+		t.Fatal("invalid key accepted")
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := store.Put(cancelled, "cancelled", nil, false); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled write: %v", err)
+	}
+	if _, err := store.Get(cancelled, "chunk"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled read: %v", err)
+	}
+}
+
+func TestGCSTransport(t *testing.T) {
+	var mu sync.Mutex
+	objects := map[string][]byte{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == "POST" {
+			if r.URL.Query().Get("uploadType") != "multipart" {
+				t.Error("expected bounded multipart upload")
+			}
+			_, params, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			parts := multipart.NewReader(r.Body, params["boundary"])
+			meta, err := parts.NextPart()
+			if err != nil {
+				t.Error(err)
+				w.WriteHeader(400)
+				return
+			}
+			var object struct{ Name string }
+			if err := json.NewDecoder(meta).Decode(&object); err != nil {
+				t.Error(err)
+			}
+			if !strings.HasPrefix(object.Name, "brain/") {
+				t.Errorf("unexpected key %s", object.Name)
+			}
+			if _, exists := objects[object.Name]; exists && r.URL.Query().Get("ifGenerationMatch") == "0" {
+				w.WriteHeader(412)
+				_, _ = io.WriteString(w, `{"error":{"code":412,"message":"exists"}}`)
+				return
+			}
+			data, err := parts.NextPart()
+			if err != nil {
+				t.Error(err)
+				w.WriteHeader(400)
+				return
+			}
+			objects[object.Name], err = io.ReadAll(data)
+			if err != nil {
+				t.Error(err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			checksum := make([]byte, 4)
+			binary.BigEndian.PutUint32(checksum, crc32.Checksum(objects[object.Name], crc32.MakeTable(crc32.Castagnoli)))
+			_ = json.NewEncoder(w).Encode(map[string]string{"generation": "1", "crc32c": base64.StdEncoding.EncodeToString(checksum)})
+			return
+		}
+		key := strings.TrimPrefix(r.URL.Path, "/b/bucket/o/")
+		data, ok := objects[key]
+		if !ok {
+			w.WriteHeader(404)
+			return
+		}
+		_, _ = w.Write(data)
+	}))
+	defer server.Close()
+	store, err := newGCS(context.Background(), Settings{Bucket: "bucket", Prefix: "brain"}, option.WithEndpoint(server.URL), option.WithoutAuthentication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	objectContract(t, store)
 }

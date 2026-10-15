@@ -1,0 +1,26 @@
+---
+title: MCP tools
+description: Connect remote MCP tools through the same authorization and limits as HTTP tools.
+---
+
+Brain supports remote Streamable HTTP MCP tools using the official Go SDK. API keys are sufficient; Brain does not manage OAuth accounts. Native command transports, sampling, resource catalogs, and MCP input requests are outside this integration.
+
+## Discover selected tools
+
+```sh
+go run ./cmd/mcp-tools -url https://YOUR_SERVER/mcp -token-env MCP_API_KEY -tenant local -tools search,fetch
+```
+
+The command prints bindings for the named tools. Review and copy them into `tools` in your host configuration. Descriptions and schemas stay static until you change configuration; discovery never changes an active session's tool set.
+
+Each binding uses the normal descriptor fields plus `mcp_tool`, the remote tool name. Its `name` is the model-visible Brain name, so you can explicitly rename tools to avoid collisions. `url` is the MCP endpoint; `token_env` supplies its bearer credential.
+
+## Calls and identity
+
+Calls run through Brain's tenant allowlist, input validation, timeout, and output bounds. The service receives trusted `tenant_id`, `session_id`, and `call_id` in `_meta["brain.dev/scope"]`. Metadata is attribution: the server must authenticate Brain and enforce resource access itself. Inspection credentials are not sent to MCP servers.
+
+Each invocation opens a separate MCP session while reusing pooled HTTP connections. This avoids sharing a remote server's session state across tenants, at the cost of one discovery/initialization round trip per invocation. There is no persistent background subscription or automatic action retry.
+
+Text and image content map to Brain content blocks; structured content is appended as JSON text. Other content types fail explicitly. Tool-declared errors remain tool results. A call interrupted after dispatch has an unknown outcome; the model can inspect the resource using another tool. Cancellation closes the request; whether remote work stops depends on the server.
+
+The SDK is pinned in `go.mod`. Local tests exercise actual SDK discovery, streaming progress, content, authorization, cancellation, and output limits. No particular third-party MCP service is claimed as live-qualified.

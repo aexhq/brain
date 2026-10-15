@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -77,6 +78,9 @@ func run() error {
 		objects, err := persistence.NewObjects(ctx, *cfg.Persistence)
 		if err != nil {
 			return err
+		}
+		if closer, ok := objects.(io.Closer); ok {
+			defer closer.Close()
 		}
 		archive = &persistence.Archive{Objects: objects, MaxSessionBytes: cfg.Limits.SessionBytes}
 		if cfg.Persistence.PostgresEnv != "" {

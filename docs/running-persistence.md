@@ -1,6 +1,6 @@
 # Persistence and recovery
 
-Brain always keeps active session state on local disk (SQLite for metadata, append-only files for events and native harness state). External persistence is optional: when enabled, a background worker uploads checkpoints to a secondary directory, S3, or Cloudflare R2 without slowing down the local request path.
+Brain always keeps active session state on local disk (SQLite for metadata, append-only files for events and native harness state). External persistence is optional: when enabled, a background worker uploads checkpoints to a secondary directory, S3, Cloudflare R2, or Google Cloud Storage without slowing down the local request path.
 
 Because uploads run asynchronously, a machine crash can lose events written after the last uploaded checkpoint.
 
@@ -24,6 +24,16 @@ Add a `persistence` block to your host config. Using a local `filesystem` provid
 - **PostgreSQL index (optional):** Set `postgres_env` to the name of an environment variable holding a PostgreSQL connection string. PostgreSQL stores an eventually consistent session index for discovery; it does not lock or coordinate session ownership.
 
 The Brain server only needs `GET` and `PUT` access under its configured prefix. Keep internal checkpoint storage separate from any S3/R2 buckets exposed to agents as tools. Brain never archives provider API keys or host credential files—when a session is restored on a new server, credentials come from the new host's configuration.
+
+### Google Cloud Storage
+
+Use `{"provider":"gcs","bucket":"YOUR_BUCKET","prefix":"brain"}`. The official Google SDK reads Application Default Credentials: use a workload identity on Google Cloud or `GOOGLE_APPLICATION_CREDENTIALS` pointing to a credential file locally. GCS rejects S3-specific region, endpoint, and credential fields. Grant object read/create/update under the configured prefix; no bucket administration is needed. Immutable objects use generation preconditions, while the `latest` pointer is replaceable.
+
+All three cloud adapters pass local SDK transport contracts. Live-account qualification is tracked separately; passing a simulated transport test is not evidence of credentials, IAM, or provider availability.
+
+### Hosted PostgreSQL
+
+Neon and Supabase use the existing PostgreSQL adapter, without new runtime dependencies. Put their connection string in the environment variable named by `postgres_env`, with TLS enabled. Use a direct connection or session pool initially; transaction-pool prepared-statement behavior varies by provider. Brain already bounds each process to four database connections. PostgreSQL remains an eventual discovery index, not session ownership coordination.
 
 ## How checkpoints work
 

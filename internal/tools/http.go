@@ -26,6 +26,7 @@ import (
 type Binding struct {
 	core.Tool
 	URL            string   `json:"url"`
+	MCPTool        string   `json:"mcp_tool,omitempty"`
 	TokenEnv       string   `json:"token_env,omitempty"`
 	Tenants        []string `json:"tenants"`
 	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
@@ -92,6 +93,9 @@ func New(bindings []Binding) (*Registry, error) {
 		}
 		if b.TokenEnv != "" && os.Getenv(b.TokenEnv) == "" {
 			return nil, fmt.Errorf("missing tool credential %s", b.TokenEnv)
+		}
+		if b.MCPTool != "" && b.InspectSession {
+			return nil, fmt.Errorf("MCP tools cannot receive session inspection credentials")
 		}
 		if b.TimeoutSeconds == 0 {
 			b.TimeoutSeconds = 300
@@ -163,6 +167,11 @@ func (r *Registry) Call(ctx context.Context, scope Scope, call core.Call, progre
 	if err := t.input.Validate(args); err != nil {
 		return core.ToolError("tool input validation failed: "+err.Error(), false)
 	}
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(t.binding.TimeoutSeconds)*time.Second)
+	defer cancel()
+	if t.binding.MCPTool != "" {
+		return r.callMCP(ctx, scope, t, call, progress)
+	}
 	if !t.binding.InspectSession {
 		scope.InspectionToken = ""
 		scope.BrainURL = ""
@@ -171,8 +180,6 @@ func (r *Registry) Call(ctx context.Context, scope Scope, call core.Call, progre
 	if err != nil {
 		return core.ToolError("invalid tool request", false)
 	}
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(t.binding.TimeoutSeconds)*time.Second)
-	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.binding.URL, bytes.NewReader(body))
 	if err != nil {
 		return core.ToolError("invalid tool request", false)
