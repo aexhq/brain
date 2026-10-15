@@ -42,7 +42,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /health/live", func(w http.ResponseWriter, r *http.Request) { write(w, 200, map[string]string{"status": "ok"}) })
 	m.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) {
 		if !s.Engine.Ready() {
-			write(w, 503, map[string]string{"status": "draining"})
+			write(w, 503, map[string]string{"status": "not_ready"})
 			return
 		}
 		write(w, 200, map[string]string{"status": "ready"})
@@ -213,6 +213,36 @@ func (s *Server) close(w http.ResponseWriter, r *http.Request, g core.Grant) {
 	write(w, 202, map[string]string{"status": "close_requested"})
 }
 
+func (s *Server) flush(w http.ResponseWriter, r *http.Request, g core.Grant) {
+	status, err := s.Engine.Flush(r.Context(), g, r.PathValue("id"))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	write(w, 200, status)
+}
+func (s *Server) syncStatus(w http.ResponseWriter, r *http.Request, g core.Grant) {
+	status, err := s.Engine.SyncStatus(r.Context(), g, r.PathValue("id"))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	write(w, 200, status)
+}
+func (s *Server) restore(w http.ResponseWriter, r *http.Request, g core.Grant) {
+	var input core.Restore
+	if err := s.decode(w, r, &input); err != nil {
+		s.badInput(w, r, err)
+		return
+	}
+	got, err := s.Engine.Restore(r.Context(), g, r.PathValue("id"), input.Checkpoint)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	write(w, 200, public(got))
+}
+
 func (s *Server) events(w http.ResponseWriter, r *http.Request, g core.Grant) {
 	n, err := limit(r)
 	if err != nil {
@@ -227,11 +257,12 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, g core.Grant) {
 		s.fail(w, r, core.E(core.CursorUnavailable, "invalid event cursor"))
 		return
 	}
-	log, err := s.Engine.Log(r.Context(), g, r.PathValue("id"))
+	log, release, err := s.Engine.Log(r.Context(), g, r.PathValue("id"))
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
+	defer release()
 	if !strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
 		events, err := log.Read(after, n, -1)
 		if err != nil {

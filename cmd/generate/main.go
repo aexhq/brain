@@ -99,6 +99,12 @@ func visit(t reflect.Type) (string, string, map[string]any) {
 func main() {
 	check := flag.Bool("check", false, "fail if generated files differ")
 	flag.Parse()
+	for _, route := range api.Contract() {
+		if route.Input != nil {
+			visit(route.Input)
+		}
+	}
+	visit(reflect.TypeFor[core.SyncStatus]())
 	for _, t := range []reflect.Type{reflect.TypeFor[core.CreateSession](), reflect.TypeFor[core.Session](), reflect.TypeFor[core.Input](), reflect.TypeFor[core.Event](), reflect.TypeFor[core.Tool](), reflect.TypeFor[core.Call](), reflect.TypeFor[core.Result](), reflect.TypeFor[core.ToolResult](), reflect.TypeFor[core.Error]()} {
 		visit(t)
 	}

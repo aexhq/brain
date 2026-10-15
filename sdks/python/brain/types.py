@@ -40,6 +40,9 @@ class Input(TypedDict):
     delivery: NotRequired[str]
     key: NotRequired[str]
 
+class Restore(TypedDict):
+    checkpoint: str
+
 class Result(TypedDict):
     content: list[Content]
     is_error: NotRequired[bool]
@@ -59,6 +62,15 @@ class SessionConfig(TypedDict):
     reasoning_effort: NotRequired[str]
     instructions: NotRequired[str]
     tools: list[str]
+
+class SyncStatus(TypedDict):
+    checkpoint: NotRequired[str]
+    history_bytes: int
+    resume_offset: int
+    native_checkpoint: NotRequired[str]
+    time: NotRequired[str]
+    pending: bool
+    error: NotRequired[str]
 
 class Tool(TypedDict):
     name: str

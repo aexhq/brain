@@ -6,7 +6,7 @@ Architecture: [ADR 0001](adr/0001-local-first-session-server.md)
 
 Brain will provide a standalone, ephemeral agent server that developers embed in wider platforms. Its hot path uses local state; external persistence and integrations are optional. A machine failure may lose the unsynchronized tail. The roadmap delivers a useful local server first, then proves portability, isolation, and capacity incrementally.
 
-The release names below are planning gates, not calendar commitments. Implementation has not started. Detailed work and acceptance checks live in the linked plans; this roadmap owns release scope and requirement coverage.
+The release names below are planning gates, not calendar commitments. Implementation is underway: the local Pi server, clients, HTTP/SSE tools, and portable checkpoint path are implemented. Cross-platform CI and recording-provider tests cover the local core; cloud qualification, additional harnesses, catalog services, and capacity gates remain. Detailed work and acceptance checks live in the linked plans; this roadmap owns release scope and requirement coverage.
 
 | Release gate | Developer outcome | Required scope | Release evidence |
 | --- | --- | --- | --- |

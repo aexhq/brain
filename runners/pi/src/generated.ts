@@ -65,6 +65,10 @@ export interface Provider {
   api?: string;
 }
 
+export interface Restore {
+  checkpoint: string;
+}
+
 export interface Result {
   content: Content[];
   is_error?: boolean;
@@ -96,6 +100,16 @@ export interface SessionConfig {
   reasoning_effort?: string;
   instructions?: string;
   tools: string[];
+}
+
+export interface SyncStatus {
+  checkpoint?: string;
+  history_bytes: number;
+  resume_offset: number;
+  native_checkpoint?: string;
+  time?: string;
+  pending: boolean;
+  error?: string;
 }
 
 export interface Tool {

@@ -17,6 +17,7 @@ import (
 	"github.com/aexhq/brain/internal/config"
 	"github.com/aexhq/brain/internal/core"
 	"github.com/aexhq/brain/internal/harness"
+	"github.com/aexhq/brain/internal/persistence"
 	"github.com/aexhq/brain/internal/session"
 	"github.com/aexhq/brain/internal/store"
 	"github.com/aexhq/brain/internal/telemetry"
@@ -69,6 +70,26 @@ func run() error {
 		return err
 	}
 	defer db.Close()
+	var archive *persistence.Archive
+	var syncQueue int
+	var syncInterval time.Duration
+	if cfg.Persistence != nil {
+		objects, err := persistence.NewObjects(ctx, *cfg.Persistence)
+		if err != nil {
+			return err
+		}
+		archive = &persistence.Archive{Objects: objects, MaxSessionBytes: cfg.Limits.SessionBytes}
+		if cfg.Persistence.PostgresEnv != "" {
+			metadata, err := persistence.NewPostgres(os.Getenv(cfg.Persistence.PostgresEnv))
+			if err != nil {
+				return err
+			}
+			defer metadata.Close()
+			archive.Metadata = metadata
+		}
+		syncQueue = cfg.Persistence.Queue
+		syncInterval = time.Duration(cfg.Persistence.IntervalSeconds) * time.Second
+	}
 	auth := api.NewAuth(cfg.Tokens)
 	factories := make(map[string]harness.Factory)
 	for name, r := range cfg.Harnesses {
@@ -77,7 +98,7 @@ func run() error {
 	engine, err := session.New(session.Options{Store: db, Tools: registry, Factories: factories, Provider: cfg.Provider, MaxActive: cfg.Limits.Active, MaxLoaded: cfg.Limits.Loaded, MaxQueue: cfg.Limits.Queue, MaxInputBytes: cfg.Limits.InputBytes, MaxLogBytes: cfg.Limits.SessionBytes, Logger: logger, Metrics: metrics, Inspection: func(s core.Session) (string, string, func()) {
 		token, revoke := auth.Delegate(s)
 		return token, cfg.PublicURL, revoke
-	}})
+	}, Archive: archive, SyncQueue: syncQueue, SyncInterval: syncInterval})
 	if err != nil {
 		return err
 	}

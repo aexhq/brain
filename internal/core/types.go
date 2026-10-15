@@ -159,6 +159,19 @@ type Checkpoint struct {
 	Time   time.Time    `json:"time"`
 }
 
+type Restore struct {
+	Checkpoint string `json:"checkpoint"`
+}
+type SyncStatus struct {
+	Checkpoint       string    `json:"checkpoint,omitempty"`
+	HistoryBytes     int64     `json:"history_bytes"`
+	ResumeOffset     int64     `json:"resume_offset"`
+	NativeCheckpoint string    `json:"native_checkpoint,omitempty"`
+	Time             time.Time `json:"time,omitempty"`
+	Pending          bool      `json:"pending"`
+	Error            string    `json:"error,omitempty"`
+}
+
 type Grant struct {
 	Tenant   string `json:"tenant"`
 	Session  string `json:"session,omitempty"`

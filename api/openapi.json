@@ -143,6 +143,18 @@
         ],
         "type": "object"
       },
+      "Restore": {
+        "additionalProperties": false,
+        "properties": {
+          "checkpoint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "checkpoint"
+        ],
+        "type": "object"
+      },
       "Result": {
         "additionalProperties": false,
         "properties": {
@@ -223,6 +235,39 @@
         "required": [
           "model",
           "tools"
+        ],
+        "type": "object"
+      },
+      "SyncStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "checkpoint": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "history_bytes": {
+            "type": "integer"
+          },
+          "native_checkpoint": {
+            "type": "string"
+          },
+          "pending": {
+            "type": "boolean"
+          },
+          "resume_offset": {
+            "type": "integer"
+          },
+          "time": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "history_bytes",
+          "resume_offset",
+          "pending"
         ],
         "type": "object"
       },
@@ -457,9 +502,103 @@
         ]
       }
     },
+    "/sessions/{id}/flush": {
+      "post": {
+        "operationId": "flush",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Operation result"
+          },
+          "default": {
+            "description": "Error with code, message, and request_id"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/sessions/{id}/restore": {
+      "post": {
+        "operationId": "restore",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Restore"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "Operation result"
+          },
+          "default": {
+            "description": "Error with code, message, and request_id"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/sessions/{id}/resume": {
       "post": {
         "operationId": "resume",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Operation result"
+          },
+          "default": {
+            "description": "Error with code, message, and request_id"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/sessions/{id}/sync": {
+      "get": {
+        "operationId": "sync",
         "parameters": [
           {
             "in": "path",

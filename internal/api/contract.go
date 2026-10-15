@@ -25,6 +25,9 @@ func (s *Server) routes() []Route {
 		{"events", http.MethodGet, "/sessions/{id}/events", nil, s.events},
 		{"resume", http.MethodPost, "/sessions/{id}/resume", nil, s.resume},
 		{"close", http.MethodPost, "/sessions/{id}/close", nil, s.close},
+		{"flush", http.MethodPost, "/sessions/{id}/flush", nil, s.flush},
+		{"sync", http.MethodGet, "/sessions/{id}/sync", nil, s.syncStatus},
+		{"restore", http.MethodPost, "/sessions/{id}/restore", reflect.TypeFor[core.Restore](), s.restore},
 		{"catalog", http.MethodGet, "/catalog", nil, func(w http.ResponseWriter, r *http.Request, g core.Grant) {
 			write(w, 200, map[string]any{"tools": s.Tools.Catalog(g.Tenant)})
 		}},

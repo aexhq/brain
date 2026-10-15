@@ -14,6 +14,7 @@ import (
 
 	"github.com/aexhq/brain/internal/core"
 	"github.com/aexhq/brain/internal/harness"
+	"github.com/aexhq/brain/internal/persistence"
 	"github.com/aexhq/brain/internal/tools"
 )
 
@@ -40,14 +41,15 @@ type Limits struct {
 	SubscriberBytes  int64 `json:"subscriber_bytes"`
 }
 type Config struct {
-	Listen    string              `json:"listen"`
-	PublicURL string              `json:"public_url"`
-	DataDir   string              `json:"data_dir"`
-	Tokens    []Token             `json:"tokens"`
-	Harnesses map[string]Runner   `json:"harnesses"`
-	Providers map[string]Provider `json:"providers"`
-	Tools     []tools.Binding     `json:"tools"`
-	Limits    Limits              `json:"limits"`
+	Listen      string                `json:"listen"`
+	PublicURL   string                `json:"public_url"`
+	DataDir     string                `json:"data_dir"`
+	Tokens      []Token               `json:"tokens"`
+	Harnesses   map[string]Runner     `json:"harnesses"`
+	Providers   map[string]Provider   `json:"providers"`
+	Tools       []tools.Binding       `json:"tools"`
+	Limits      Limits                `json:"limits"`
+	Persistence *persistence.Settings `json:"persistence,omitempty"`
 }
 
 func Load(file string) (Config, error) {
@@ -57,6 +59,13 @@ func Load(file string) (Config, error) {
 		return c, err
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return c, err
+	}
+	if info.Size() > 4<<20 {
+		return c, errors.New("configuration exceeds limit")
+	}
 	d := json.NewDecoder(io.LimitReader(f, 4<<20))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&c); err != nil {
@@ -72,6 +81,11 @@ func Load(file string) (Config, error) {
 }
 
 func (c *Config) Validate() error {
+	if c.Persistence != nil {
+		if err := c.Persistence.Validate(); err != nil {
+			return err
+		}
+	}
 	if _, _, err := net.SplitHostPort(c.Listen); err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}

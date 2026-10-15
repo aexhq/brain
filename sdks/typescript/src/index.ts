@@ -1,4 +1,4 @@
-import { routes, type CreateSession, type Session, type Input, type Event, type Tool } from "./generated.js";
+import { routes, type CreateSession, type Session, type Input, type Event, type Tool, type SyncStatus } from "./generated.js";
 export type * from "./generated.js";
 
 export class BrainError extends Error {
@@ -29,6 +29,9 @@ export class Brain {
   async interrupt(id: string): Promise<void> { await this.request("send", id, { type: "user.interrupt" }); }
   async resume(id: string): Promise<Session> { return (await this.request("resume", id)).json(); }
   async close(id: string): Promise<void> { await this.request("close", id); }
+  async flush(id: string, signal = AbortSignal.timeout(60000)): Promise<SyncStatus> { return (await this.request("flush", id, undefined, undefined, signal)).json(); }
+  async sync(id: string): Promise<SyncStatus> { return (await this.request("sync", id)).json(); }
+  async restore(id: string, checkpoint: string, signal = AbortSignal.timeout(60000)): Promise<Session> { return (await this.request("restore", id, { checkpoint }, undefined, signal)).json(); }
   async catalog(): Promise<{ tools: Tool[] }> { return (await this.request("catalog")).json(); }
   async history(id: string, after = "", limit = 100): Promise<{ events: Event[]; next_cursor: string }> {
     return (await this.request("events", id, undefined, new URLSearchParams({ after, limit: String(limit) }))).json();

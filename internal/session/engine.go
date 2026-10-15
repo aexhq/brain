@@ -10,12 +10,14 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/aexhq/brain/internal/core"
 	"github.com/aexhq/brain/internal/harness"
+	"github.com/aexhq/brain/internal/persistence"
 	"github.com/aexhq/brain/internal/store"
 	"github.com/aexhq/brain/internal/telemetry"
 	"github.com/aexhq/brain/internal/tools"
@@ -38,6 +40,9 @@ type Options struct {
 	Logger        *slog.Logger
 	Metrics       *telemetry.Metrics
 	Inspection    func(core.Session) (string, string, func())
+	Archive       *persistence.Archive
+	SyncQueue     int
+	SyncInterval  time.Duration
 }
 
 type Engine struct {
@@ -45,6 +50,7 @@ type Engine struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	mu           sync.Mutex
+	hydrateMu    sync.Mutex
 	entries      map[string]*entry
 	active       chan struct{}
 	resident     chan struct{}
@@ -53,6 +59,7 @@ type Engine struct {
 	shutdownOnce sync.Once
 	stopped      chan struct{}
 	shutdownErr  error
+	syncer       *syncer
 }
 
 type queued struct {
@@ -66,6 +73,9 @@ type accepted struct {
 }
 type entry struct {
 	mu          sync.Mutex
+	nativeMu    sync.RWMutex
+	syncGate    chan struct{}
+	refs        int // protected by Engine.mu; includes open event streams
 	ready       chan struct{}
 	err         error
 	meta        core.Session
@@ -92,10 +102,24 @@ func New(opts Options) (*Engine, error) {
 		opts.Logger = slog.Default()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Engine{opts: opts, ctx: ctx, cancel: cancel, entries: make(map[string]*entry), active: make(chan struct{}, opts.MaxActive), resident: make(chan struct{}, opts.MaxActive), stopped: make(chan struct{})}, nil
+	e := &Engine{opts: opts, ctx: ctx, cancel: cancel, entries: make(map[string]*entry), active: make(chan struct{}, opts.MaxActive), resident: make(chan struct{}, opts.MaxActive), stopped: make(chan struct{})}
+	if opts.Archive != nil {
+		if opts.SyncQueue < 1 || opts.SyncInterval <= 0 {
+			cancel()
+			return nil, errors.New("invalid synchronization limits")
+		}
+		e.syncer = newSyncer(e, opts.SyncQueue, opts.SyncInterval)
+		go e.syncer.run()
+	}
+	return e, nil
 }
 
-func (e *Engine) Ready() bool { e.mu.Lock(); defer e.mu.Unlock(); return !e.closed }
+func (e *Engine) Ready() bool {
+	e.mu.Lock()
+	closed := e.closed
+	e.mu.Unlock()
+	return !closed && (e.syncer == nil || e.syncer.admit())
+}
 
 func (e *Engine) load(ctx context.Context, id string) (*entry, error) {
 	if !core.ValidID(id) {
@@ -107,27 +131,69 @@ func (e *Engine) load(ctx context.Context, id string) (*entry, error) {
 		return nil, core.E(core.Overloaded, "server is draining")
 	}
 	if a := e.entries[id]; a != nil {
+		a.refs++
 		e.mu.Unlock()
 		select {
 		case <-a.ready:
+			if a.err != nil {
+				e.release(a)
+			}
 			return a, a.err
 		case <-ctx.Done():
+			e.release(a)
 			return nil, ctx.Err()
 		}
 	}
+	var evicted *entry
 	if len(e.entries) >= e.opts.MaxLoaded {
-		e.mu.Unlock()
-		return nil, core.E(core.Overloaded, "loaded session limit reached")
+		for oldID, old := range e.entries {
+			if old.refs != 0 {
+				continue
+			}
+			select {
+			case <-old.ready:
+			default:
+				continue
+			}
+			if !old.mu.TryLock() {
+				continue
+			}
+			idle := !old.working && !old.executing
+			old.mu.Unlock()
+			if idle {
+				delete(e.entries, oldID)
+				evicted = old
+				break
+			}
+		}
+		if evicted == nil {
+			e.mu.Unlock()
+			return nil, core.E(core.Overloaded, "loaded session limit reached")
+		}
 	}
-	a := &entry{ready: make(chan struct{}), keys: make(map[string]accepted)}
+	a := &entry{ready: make(chan struct{}), keys: make(map[string]accepted), refs: 1, syncGate: make(chan struct{}, 1)}
 	e.entries[id] = a
 	e.mu.Unlock()
-	defer close(a.ready)
+	if evicted != nil {
+		e.dropRunner(evicted)
+		if evicted.log != nil {
+			_ = evicted.log.Close()
+		}
+	}
+	defer func() {
+		if a.err != nil {
+			if a.log != nil {
+				_ = a.log.Close()
+			}
+			e.mu.Lock()
+			delete(e.entries, id)
+			a.refs--
+			e.mu.Unlock()
+		}
+		close(a.ready)
+	}()
 	a.meta, a.err = e.opts.Store.Get(ctx, id)
 	if a.err != nil {
-		e.mu.Lock()
-		delete(e.entries, id)
-		e.mu.Unlock()
 		return nil, a.err
 	}
 	dir, err := e.opts.Store.Dir(id)
@@ -172,8 +238,13 @@ func (e *Engine) load(ctx context.Context, id string) (*entry, error) {
 	return a, a.err
 }
 
+func (e *Engine) release(a *entry) { e.mu.Lock(); a.refs--; e.mu.Unlock() }
+
 func (e *Engine) inspect(ctx context.Context, g core.Grant, id string) (core.Session, error) {
 	s, err := e.opts.Store.Get(ctx, id)
+	if core.ErrorCode(err) == core.NotFound && e.opts.Archive != nil && (g.Session == "" || g.Session == id) {
+		s, err = e.hydrate(ctx, g, id, "")
+	}
 	if err != nil {
 		return s, err
 	}
@@ -191,6 +262,7 @@ func (e *Engine) Get(ctx context.Context, g core.Grant, id string) (core.Session
 	if err != nil {
 		return core.Session{}, err
 	}
+	defer e.release(a)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return clone(a.meta), nil
@@ -218,7 +290,25 @@ func (e *Engine) List(ctx context.Context, g core.Grant, after string, limit int
 		}
 		return []core.Session{s}, nil
 	}
-	return e.opts.Store.List(ctx, g.Tenant, after, limit)
+	local, err := e.opts.Store.List(ctx, g.Tenant, after, limit)
+	if err != nil || e.opts.Archive == nil || e.opts.Archive.Metadata == nil {
+		return local, err
+	}
+	remote, err := e.opts.Archive.Metadata.List(ctx, g.Tenant, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool)
+	for _, s := range local {
+		seen[s.ID] = true
+	}
+	for _, s := range remote {
+		if !seen[s.ID] {
+			local = append(local, s)
+		}
+	}
+	sort.Slice(local, func(i, j int) bool { return local[i].ID < local[j].ID })
+	return local[:min(len(local), limit)], nil
 }
 
 func (e *Engine) Create(ctx context.Context, g core.Grant, input core.CreateSession) (core.Session, error) {
@@ -248,6 +338,9 @@ func (e *Engine) Create(ctx context.Context, g core.Grant, input core.CreateSess
 	if closed {
 		return core.Session{}, core.E(core.Overloaded, "server is draining")
 	}
+	if e.syncer != nil && !e.syncer.admit() {
+		return core.Session{}, core.E(core.Overloaded, "external synchronization backlog is full")
+	}
 	now := time.Now().UTC()
 	s := core.Session{ID: core.ID(), Tenant: g.Tenant, Harness: input.Harness, Config: input.Config, Status: "idle", CreatedAt: now, UpdatedAt: now}
 	if s.Config.Tools == nil {
@@ -257,18 +350,19 @@ func (e *Engine) Create(ctx context.Context, g core.Grant, input core.CreateSess
 	if err := e.opts.Store.Create(ctx, s); err != nil {
 		return core.Session{}, err
 	}
+	e.dirty(s.ID)
 	return s, nil
 }
 
-func (e *Engine) Log(ctx context.Context, g core.Grant, id string) (*store.Log, error) {
+func (e *Engine) Log(ctx context.Context, g core.Grant, id string) (*store.Log, func(), error) {
 	if _, err := e.inspect(ctx, g, id); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	a, err := e.load(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return a.log, nil
+	return a.log, func() { e.release(a) }, nil
 }
 
 func (e *Engine) emit(a *entry, kind, inputID string, data any) (core.Event, error) {
@@ -280,7 +374,11 @@ func (e *Engine) emit(a *entry, kind, inputID string, data any) (core.Event, err
 		a.log.Publish(ev)
 		return ev, nil
 	}
-	return a.log.Append(ev)
+	ev, err = a.log.Append(ev)
+	if err == nil {
+		e.dirty(a.meta.ID)
+	}
+	return ev, err
 }
 
 func (e *Engine) status(a *entry, status, input string) error {
@@ -311,6 +409,7 @@ func (e *Engine) Submit(ctx context.Context, g core.Grant, id string, input core
 	if err != nil {
 		return core.Event{}, err
 	}
+	defer e.release(a)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	data, _ := json.Marshal(input)
@@ -322,6 +421,9 @@ func (e *Engine) Submit(ctx context.Context, g core.Grant, id string, input core
 			}
 			return accepted.event, nil
 		}
+	}
+	if e.syncer != nil && !e.syncer.admit() {
+		return core.Event{}, core.E(core.Overloaded, "external synchronization backlog is full")
 	}
 	if a.closing || a.meta.Status == "closed" {
 		return core.Event{}, core.E(core.Conflict, "session is closed")
@@ -491,7 +593,10 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 	cfg := a.meta.Config
 	a.mu.Unlock()
 	if needsRestore {
-		if err := restoreNative(nativeDir, checkpoint); err != nil {
+		a.nativeMu.Lock()
+		err := restoreNative(nativeDir, checkpoint)
+		a.nativeMu.Unlock()
+		if err != nil {
 			return err
 		}
 		a.mu.Lock()
@@ -619,7 +724,11 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.meta.Checkpoint = &core.Checkpoint{ID: core.ID(), Offset: a.log.Size(), Files: files, Config: cfg, Time: time.Now().UTC()}
-	return e.opts.Store.Save(ctx, a.meta)
+	err = e.opts.Store.Save(ctx, a.meta)
+	if err == nil {
+		e.dirty(a.meta.ID)
+	}
+	return err
 }
 
 func (e *Engine) dropRunner(a *entry) {
@@ -726,6 +835,7 @@ func (e *Engine) Interrupt(ctx context.Context, g core.Grant, id string) error {
 	if err != nil {
 		return err
 	}
+	defer e.release(a)
 	a.mu.Lock()
 	if !a.working {
 		a.mu.Unlock()
@@ -757,6 +867,9 @@ func (e *Engine) Resume(ctx context.Context, g core.Grant, id string) (core.Sess
 	if err != nil {
 		return core.Session{}, err
 	}
+	defer e.release(a)
+	a.nativeMu.Lock()
+	defer a.nativeMu.Unlock()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.working || a.closing || a.meta.Status == "closed" {
@@ -789,6 +902,7 @@ func (e *Engine) CloseSession(ctx context.Context, g core.Grant, id string) erro
 	if err != nil {
 		return err
 	}
+	defer e.release(a)
 	a.mu.Lock()
 	a.closing = true
 	working := a.working
@@ -811,6 +925,9 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 		e.mu.Unlock()
 		go func() {
 			e.wg.Wait()
+			if e.syncer != nil {
+				<-e.syncer.done
+			}
 			e.mu.Lock()
 			entries := make([]*entry, 0, len(e.entries))
 			for _, a := range e.entries {

@@ -8,7 +8,7 @@ from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from .types import CreateSession, Event, Input, Session
+from .types import CreateSession, Event, Input, Session, SyncStatus
 
 
 class BrainError(Exception):
@@ -68,6 +68,15 @@ class Brain:
 
     def close(self, session_id: str) -> None:
         self._request("POST", f"/sessions/{quote(session_id, safe='')}/close")
+
+    def flush(self, session_id: str) -> SyncStatus:
+        return self._request("POST", f"/sessions/{quote(session_id, safe='')}/flush")
+
+    def sync(self, session_id: str) -> SyncStatus:
+        return self._request("GET", f"/sessions/{quote(session_id, safe='')}/sync")
+
+    def restore(self, session_id: str, checkpoint: str) -> Session:
+        return self._request("POST", f"/sessions/{quote(session_id, safe='')}/restore", {"checkpoint": checkpoint})
 
     def catalog(self) -> dict[str, Any]:
         return self._request("GET", "/catalog")

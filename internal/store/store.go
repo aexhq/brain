@@ -123,3 +123,45 @@ func (s *Store) List(ctx context.Context, tenant, after string, limit int) ([]co
 	}
 	return result, rows.Err()
 }
+
+// Scan is host-only discovery for bounded synchronization after restart.
+func (s *Store) Scan(ctx context.Context, after string, limit int) ([]core.Session, error) {
+	if limit < 1 || limit > 1000 {
+		return nil, errors.New("invalid scan limit")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT tenant,data FROM sessions WHERE id>? ORDER BY id LIMIT ?`, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []core.Session{}
+	for rows.Next() {
+		var session core.Session
+		var data []byte
+		if err := rows.Scan(&session.Tenant, &data); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(data, &session); err != nil {
+			return nil, err
+		}
+		result = append(result, session)
+	}
+	return result, rows.Err()
+}
+
+// Import is called only after a complete staged directory has been installed.
+func (s *Store) Import(ctx context.Context, session core.Session) error {
+	data, err := json.Marshal(session)
+	if err != nil {
+		return err
+	}
+	r, err := s.db.ExecContext(ctx, `INSERT INTO sessions(id,tenant,created,data) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data WHERE sessions.tenant=excluded.tenant`, session.ID, session.Tenant, session.CreatedAt.Format(time.RFC3339Nano), data)
+	if err != nil {
+		return err
+	}
+	n, err := r.RowsAffected()
+	if err == nil && n != 1 {
+		return core.E(core.Forbidden, "session belongs to another tenant")
+	}
+	return err
+}

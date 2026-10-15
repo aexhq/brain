@@ -45,6 +45,10 @@ export interface Input {
   key?: string;
 }
 
+export interface Restore {
+  checkpoint: string;
+}
+
 export interface Result {
   content: Content[];
   is_error?: boolean;
@@ -66,6 +70,16 @@ export interface SessionConfig {
   reasoning_effort?: string;
   instructions?: string;
   tools: string[];
+}
+
+export interface SyncStatus {
+  checkpoint?: string;
+  history_bytes: number;
+  resume_offset: number;
+  native_checkpoint?: string;
+  time?: string;
+  pending: boolean;
+  error?: string;
 }
 
 export interface Tool {
@@ -97,6 +111,10 @@ export const routes = {
     "method": "GET",
     "path": "/sessions/{id}/events"
   },
+  "flush": {
+    "method": "POST",
+    "path": "/sessions/{id}/flush"
+  },
   "get": {
     "method": "GET",
     "path": "/sessions/{id}"
@@ -105,6 +123,10 @@ export const routes = {
     "method": "GET",
     "path": "/sessions"
   },
+  "restore": {
+    "method": "POST",
+    "path": "/sessions/{id}/restore"
+  },
   "resume": {
     "method": "POST",
     "path": "/sessions/{id}/resume"
@@ -112,5 +134,9 @@ export const routes = {
   "send": {
     "method": "POST",
     "path": "/sessions/{id}/events"
+  },
+  "sync": {
+    "method": "GET",
+    "path": "/sessions/{id}/sync"
   }
 } as const;

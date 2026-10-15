@@ -4,7 +4,7 @@ A standalone agent session server with distributed tools and local working state
 
 Brain owns session transport, tenant isolation, persistence, and bounded execution. Harnesses own model calls and context. Tools run in external services, including approvals, storage, browsers, and code execution.
 
-Implementation is in progress. The current executable supports Pi, SQLite metadata, append-only event files, HTTP/SSE tools, authenticated sessions, bounded queues, interruption, completed-turn recovery, and event streaming. TypeScript and Python clients use generated wire types. The [roadmap](docs/roadmap.md) and [implementation plans](docs/implementation-plan.md) describe remaining integrations; they are not release claims.
+Implementation is in progress. The current executable supports Pi, SQLite metadata, append-only event files, HTTP/SSE tools, authenticated sessions, bounded queues, interruption, completed-turn recovery, and event streaming. Optional filesystem/S3/R2 checkpoint storage and PostgreSQL discovery run outside the execution path. TypeScript and Python clients use generated wire types. The [roadmap](docs/roadmap.md) and [implementation plans](docs/implementation-plan.md) describe remaining integrations; they are not release claims.
 
 ## Run locally
 
@@ -40,11 +40,13 @@ Recovery loads saved native context without invoking a model. After interruption
 node scripts/check.mjs
 ```
 
-The checks require both npm installations above and Python 3.11+. They build clients/runners, verify generated contracts, run Go tests/vet, exercise the actual Pi SDK against a recording model provider, and test both clients. Linux CI also runs Go's race detector. Live cloud/provider verification is separate from recording-provider tests and requires configured credentials.
+The checks require both npm installations above and Python 3.11+. They build clients/runners, verify generated contracts, run Go tests/vet, exercise the actual Pi SDK against a recording model provider, and test both clients. Linux CI also runs Go's race detector and PostgreSQL contracts. Portable-state tests restore into an empty cache and verify the next real Pi request preserves the saved prefix. Live cloud/provider verification is separate from recording-provider and SDK transport tests and requires configured credentials.
 
 Generate API and runner declarations with `go run ./cmd/generate`. [OpenAPI](api/openapi.json) is generated from Go types and route declarations. Clean breaks are the default; dependency pins and standard document metadata do not imply API compatibility.
 
 Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export traces and metrics over OTLP/HTTP. Exporters are bounded and optional. Logs use structured JSON without request bodies. Health endpoints are `/health/live` and `/health/ready`.
 
 The [Dockerfile](Dockerfile) packages the server and Pi runner as an unprivileged process. Mount a configuration file at `/config/brain.json`; set its listen address to `0.0.0.0:8080` and data directory to `/data`. The surrounding platform owns routing, session placement, cross-instance ownership, and failover.
+
+See [persistence and recovery](docs/running-persistence.md) for configuration, explicit flush, cache loss, and handoff.
 
