@@ -556,6 +556,10 @@ components:
           items:
             $ref: '#/components/schemas/Document'
           type: array
+        usage:
+          items:
+            $ref: '#/components/schemas/UsageEvidence'
+          type: array
       required:
       - format
       - section
@@ -568,6 +572,7 @@ components:
       - state
       - memory
       - schedules
+      - usage
       - history
       - complete
       - continuation
@@ -583,6 +588,7 @@ components:
       - state
       - memory
       - schedules
+      - usage
       type: string
     FileInfo:
       additionalProperties: false
@@ -1775,6 +1781,74 @@ components:
         provider_unavailable:
           $ref: '#/components/schemas/UnavailablePayload'
       type: object
+    UsageCounters:
+      additionalProperties: false
+      properties:
+        cached_tokens:
+          format: uint64
+          maximum: 1099511627776
+          minimum: 0
+          type: integer
+        input_tokens:
+          format: uint64
+          maximum: 1099511627776
+          minimum: 0
+          type: integer
+        output_tokens:
+          format: uint64
+          maximum: 1099511627776
+          minimum: 0
+          type: integer
+      type: object
+    UsageEvidence:
+      additionalProperties: false
+      properties:
+        accepted_ms:
+          format: uint64
+          minimum: 0
+          type: integer
+        counters:
+          $ref: '#/components/schemas/UsageCounters'
+        id:
+          type: string
+        operation_id:
+          type: string
+        request_id:
+          type: string
+        session_id:
+          type: string
+        source:
+          $ref: '#/components/schemas/UsageSource'
+        subject:
+          type: string
+      required:
+      - id
+      - session_id
+      - operation_id
+      - request_id
+      - source
+      - subject
+      - counters
+      - accepted_ms
+      type: object
+    UsageSource:
+      enum:
+      - receipt
+      - operator
+      type: string
+    UsageSupplement:
+      additionalProperties: false
+      properties:
+        counters:
+          $ref: '#/components/schemas/UsageCounters'
+        request_id:
+          maxLength: 128
+          minLength: 1
+          type: string
+      required:
+      - request_id
+      - counters
+      type: object
     Wait:
       additionalProperties: false
       properties:
@@ -2590,6 +2664,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CommandReceipt'
+          description: ''
+      security:
+      - serverToken: []
+      tags: []
+  /v2/sessions/{session}/operations/{operation}/usage:
+    get:
+      operationId: usage_evidence
+      parameters:
+      - description: Exclusive last id (key for documents, name for files). Repeat until the returned collection is empty; byte bounds can shorten a page.
+        in: query
+        name: after
+        required: false
+        schema:
+          type: string
+      - in: query
+        name: limit
+        required: false
+        schema:
+          format: int32
+          maximum: 128
+          minimum: 1
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/UsageEvidence'
+                type: array
+          description: ''
+      security:
+      - serverToken: []
+      tags: []
+    post:
+      description: Fill previously absent counters on a settled model operation. Requires the original receipt token or a tenant-scoped operator attestation. Existing values, outcome and original receipt identity cannot change; deleted-session evidence does not restore work.
+      operationId: usage_report
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UsageSupplement'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
           description: ''
       security:
       - serverToken: []

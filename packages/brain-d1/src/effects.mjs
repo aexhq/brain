@@ -43,7 +43,7 @@ export async function settlePackage(m, current, prior, receipt, receiptText) {
   m.change("UPDATE packages SET body=? WHERE tenant=? AND id=?", [encode(pkg), current.tenant, packageID]);
 }
 
-async function discardOperation(m, prior) {
+export async function discardOperation(m, prior) {
   if (prior.discarded) return;
   const receipt = await discardReceiptBodies(prior.usage ? { usage: decode(prior.usage) } : {});
   const usage = receipt.usage ? wire("Usage", receipt.usage) : "";
@@ -52,6 +52,9 @@ async function discardOperation(m, prior) {
   if (big(prior.result_sequence) === 0n && ["completed", "failed"].includes(prior.status)) {
     await releaseOutputBudgets(m, prior);
   }
+  prior.discarded = 1;
+  prior.result_body = "";
+  prior.usage = usage;
 }
 
 export const effectHandlers = {
@@ -199,9 +202,10 @@ AND EXISTS(SELECT 1 FROM runs r WHERE r.id=operations.run_id AND r.status IN ('q
     if (big(sequence) > 0n) {
       m.guard("EXISTS(SELECT 1 FROM allocations WHERE session_id=? AND sequence=? AND status='written' AND digest=?)", [identifier, sequence, resultDigest]);
     }
-    m.change(`UPDATE operations SET status=?,revision=revision+1,result_sequence=?,result_digest=?,result_body=?,usage=?,error=?,receipt_hash=?,receipt_key=?,discarded=?
+    const counters = receipt.usage ? wire("UsageCounters", receipt.usage) : "";
+    m.change(`UPDATE operations SET status=?,revision=revision+1,result_sequence=?,result_digest=?,result_body=?,usage=?,receipt_counters=?,error=?,receipt_hash=?,receipt_key=?,discarded=?
 WHERE id=? AND session_id=? AND status IN ('dispatched','unknown')`,
-    [receipt.outcome, sequence, resultDigest, body, usage ?? "", error, receiptHash, receipt.request_id, discarded ? 1 : 0, operationID, identifier], true);
+    [receipt.outcome, sequence, resultDigest, body, usage ?? "", counters, error, receiptHash, receipt.request_id, discarded ? 1 : 0, operationID, identifier], true);
     if (!discarded) await settlePackage(m, current, prior, receipt, body || wire("Receipt", receipt));
     if (receipt.outcome !== "unknown") {
       await settleBudgets(m, prior, receipt, new TextEncoder().encode(body).length, false, discarded || big(sequence) > 0n);

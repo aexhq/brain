@@ -11,16 +11,16 @@ import (
 )
 
 const operationColumns = `id,session_id,run_id,step_key,kind,action,arguments_digest,status,recipient,revision,
-arguments,output_limit,deadline_ms,generation,result_sequence,result_digest,result_body,usage,claimant,retry_of,error,intent_sequence,intent_digest,token_reserve,discarded`
+arguments,output_limit,deadline_ms,generation,result_sequence,result_digest,result_body,usage,claimant,retry_of,error,intent_sequence,intent_digest,token_reserve,discarded,receipt_counters`
 
 func scanOperation(row scanner) (control.Operation, error) {
 	var out control.Operation
-	var kind, status, arguments, body, usage, retry, failure string
+	var kind, status, arguments, body, usage, retry, failure, counters string
 	var revision, discarded int64
 	err := row.Scan(&out.View.ID, &out.View.SessionID, &out.View.RunID, &out.View.StepKey,
 		&kind, &out.View.Action, &out.View.ArgumentsDigest, &status, &out.View.Recipient, &revision,
 		&arguments, &out.OutputLimit, &out.Deadline, &out.Generation, &out.ResultSequence,
-		&out.ResultDigest, &body, &usage, &out.Claimant, &retry, &failure, &out.IntentSequence, &out.IntentDigest, &out.TokenReserve, &discarded)
+		&out.ResultDigest, &body, &usage, &out.Claimant, &retry, &failure, &out.IntentSequence, &out.IntentDigest, &out.TokenReserve, &discarded, &counters)
 	if err != nil {
 		return out, notFound(err)
 	}
@@ -49,6 +49,13 @@ func scanOperation(row scanner) (control.Operation, error) {
 	}
 	if retry != "" {
 		out.View.RetryOf = &retry
+	}
+	if counters != "" {
+		value, err := decode[wire.UsageCounters](counters)
+		if err != nil {
+			return out, err
+		}
+		out.ReceiptCounters = &value
 	}
 	return out, nil
 }
@@ -324,14 +331,15 @@ func (s *Store) RecordReceipt(ctx context.Context, session, id string, receipt w
 				return kernel.Fail(wire.ErrorCodeConflict, "receipt result has no matching written evidence")
 			}
 		}
-		usage := ""
+		usage, counters := "", ""
 		if receipt.Usage != nil {
 			usage = string(kernel.JSON(receipt.Usage))
+			counters = string(kernel.JSON(kernel.UsageCounters(receipt.Usage)))
 		}
 		e = requireOne(tx.ExecContext(ctx, s.q(`UPDATE operations SET status=?,revision=revision+1,
-result_sequence=?,result_digest=?,result_body=?,usage=?,error=?,receipt_hash=?,receipt_key=?,discarded=?
+result_sequence=?,result_digest=?,result_body=?,usage=?,receipt_counters=?,error=?,receipt_hash=?,receipt_key=?,discarded=?
 WHERE id=? AND session_id=? AND status IN ('dispatched','unknown')`), kernel.OutcomeStatus(receipt.Outcome),
-			sequence, digest, body, usage, kernel.Value(receipt.Error), hash, receipt.RequestID, boolInt(discarded), id, session))
+			sequence, digest, body, usage, counters, kernel.Value(receipt.Error), hash, receipt.RequestID, boolInt(discarded), id, session))
 		if e != nil {
 			return e
 		}

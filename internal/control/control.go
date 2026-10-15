@@ -42,18 +42,25 @@ type Transfer struct {
 }
 
 type Operation struct {
-	View           wire.Operation
-	Arguments      json.RawMessage
-	OutputLimit    int64
-	Deadline       int64
-	ResultSequence int64
-	ResultDigest   string
-	Generation     string
-	Claimant       string
-	IntentSequence int64
-	IntentDigest   string
-	TokenReserve   int64
-	Discarded      bool
+	View            wire.Operation
+	Arguments       json.RawMessage
+	OutputLimit     int64
+	Deadline        int64
+	ResultSequence  int64
+	ResultDigest    string
+	Generation      string
+	Claimant        string
+	IntentSequence  int64
+	IntentDigest    string
+	TokenReserve    int64
+	Discarded       bool
+	ReceiptCounters *wire.UsageCounters
+}
+
+type UsageReporter struct {
+	Kind    wire.UsageSource
+	Tenant  string
+	Subject string
 }
 
 type Allocation struct {
@@ -188,6 +195,8 @@ type Store interface {
 	RecordReceipt(context.Context, string, string, wire.Receipt, int64, string) (Operation, error)
 	ReceiptOutputSchema(context.Context, string, string) (string, error)
 	DiscardDeletedResults(context.Context, int) (int, error)
+	ReportUsage(context.Context, string, string, wire.UsageSupplement, UsageReporter) (Operation, error)
+	UsageEvidence(context.Context, string, string, int, ...string) ([]wire.UsageEvidence, error)
 	BindResult(context.Context, string, Owner, string, int64, string) error
 	ExpireOperations(context.Context, int) (int, error)
 	PropagateControls(context.Context, int) ([]string, error)

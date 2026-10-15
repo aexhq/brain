@@ -158,6 +158,12 @@ export class Session {
   receipt(operationId: string, receipt: Wire.Receipt, receiptToken: string): Promise<Wire.Operation> {
     return this.client.request("POST", `${this.path}/operations/${segment(operationId)}/receipt`, receipt, { token: receiptToken });
   }
+  reportUsage(operationId: string, request: Wire.UsageSupplement, receiptToken?: string): Promise<Wire.Operation> {
+    return this.client.request("POST", `${this.path}/operations/${segment(operationId)}/usage`, request, { token: receiptToken });
+  }
+  usageEvidence(operationId: string, limit = 64, after = ""): Promise<Wire.UsageEvidence[]> {
+    return this.client.request("GET", `${this.path}/operations/${segment(operationId)}/usage?limit=${limit}&after=${segment(after)}`);
+  }
   retry(operationId: string, request: Wire.Retry): Promise<Wire.CommandReceipt> {
     return this.client.request("POST", `${this.path}/operations/${segment(operationId)}/retry`, request);
   }

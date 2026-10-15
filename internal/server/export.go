@@ -15,6 +15,7 @@ import (
 var exportSections = []wire.ExportSection{
 	wire.ExportSectionHistory, wire.ExportSectionRuns, wire.ExportSectionOperations, wire.ExportSectionInteractions,
 	wire.ExportSectionConnections, wire.ExportSectionFiles, wire.ExportSectionState, wire.ExportSectionMemory, wire.ExportSectionSchedules,
+	wire.ExportSectionUsage,
 }
 
 type exportCursor struct {
@@ -45,6 +46,7 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request, p kernel.Princip
 	out := wire.ExportManifest{Format: "brain-export/2", Session: session.View, Section: exportSections[cursor.Section],
 		Runs: []wire.Run{}, Operations: []wire.Operation{}, Interactions: []wire.Interaction{}, Connections: []wire.Connection{},
 		Files: []wire.FileInfo{}, State: []wire.Document{}, Memory: []wire.Document{}, Schedules: []wire.Schedule{},
+		Usage:   []wire.UsageEvidence{},
 		History: wire.RecordPage{Records: []wire.Record{}, Gaps: []wire.Gap{}, Next: "0", AllocatedThrough: session.View.Sequence}}
 	next := ""
 	switch out.Section {
@@ -107,6 +109,11 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request, p kernel.Princip
 		out.Schedules, err = s.Control.Schedules(r.Context(), session.View.ID, 128, cursor.After)
 		if len(out.Schedules) != 0 {
 			next = out.Schedules[len(out.Schedules)-1].ID
+		}
+	case wire.ExportSectionUsage:
+		out.Usage, err = s.Control.UsageEvidence(r.Context(), session.View.ID, "", 128, cursor.After)
+		if len(out.Usage) != 0 {
+			next = out.Usage[len(out.Usage)-1].ID
 		}
 	}
 	if err != nil {

@@ -3,7 +3,7 @@ import { childrenReady } from "./children.mjs";
 
 export const bytes = column => "LENGTH(CAST(" + column + " AS BLOB))";
 export const runBytes = [ "r.checkpoint", "r.decision", "r.error", "c.payload" ].map(bytes).join("+");
-export const operationBytes = ["arguments", "result_body", "usage"].map(bytes).join("+") + "+6*" + bytes("error");
+export const operationBytes = ["arguments", "result_body", "usage", "receipt_counters"].map(bytes).join("+") + "+6*" + bytes("error");
 
 export async function pageRows(db, columns, source, predicate, key, size, limit, values) {
   const result = await rows(db, `WITH candidates AS (

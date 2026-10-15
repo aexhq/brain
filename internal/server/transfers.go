@@ -97,8 +97,12 @@ func (s *Server) bindResults(ctx context.Context, session control.Session) error
 		return err
 	}
 	for _, operation := range operations {
+		usage, err := kernel.ReceiptUsage(operation.View.Usage, operation.ReceiptCounters)
+		if err != nil {
+			return err
+		}
 		receipt := wire.Receipt{RequestID: "evidence:" + operation.View.ID, Outcome: wire.Outcome(operation.View.Status),
-			Result: operation.View.Result, Usage: operation.View.Usage, Error: operation.View.Error}
+			Result: operation.View.Result, Usage: usage, Error: operation.View.Error}
 		kind := "operation.ended"
 		if receipt.Outcome == wire.OutcomeFailed {
 			kind = "operation.failed"

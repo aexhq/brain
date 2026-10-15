@@ -172,6 +172,7 @@ class ExportManifest(TypedDict):
     section: ExportSection
     session: SessionView
     state: list[Document]
+    usage: list[UsageEvidence]
 
 class FileInfo(TypedDict):
     digest: str
@@ -532,6 +533,25 @@ class Usage(TypedDict):
     provider: NotRequired[Any]
     provider_unavailable: NotRequired[UnavailablePayload]
 
+class UsageCounters(TypedDict):
+    cached_tokens: NotRequired[int]
+    input_tokens: NotRequired[int]
+    output_tokens: NotRequired[int]
+
+class UsageEvidence(TypedDict):
+    accepted_ms: int
+    counters: UsageCounters
+    id: str
+    operation_id: str
+    request_id: str
+    session_id: str
+    source: UsageSource
+    subject: str
+
+class UsageSupplement(TypedDict):
+    counters: UsageCounters
+    request_id: str
+
 class Wait(TypedDict):
     id: str
     kind: str
@@ -543,7 +563,7 @@ Decision: TypeAlias = DecisionCall | DecisionComplete | DecisionWait | DecisionE
 Disposition: TypeAlias = Literal["application", "state", "context", "wake", "steer", "interrupt"]
 EffectKind: TypeAlias = Literal["model", "action", "build", "lifecycle", "webhook"]
 ErrorCode: TypeAlias = Literal["invalid", "unauthorized", "forbidden", "not_found", "conflict", "overloaded", "unsupported", "unavailable", "uncertain", "corrupt", "internal"]
-ExportSection: TypeAlias = Literal["history", "runs", "operations", "interactions", "connections", "files", "state", "memory", "schedules"]
+ExportSection: TypeAlias = Literal["history", "runs", "operations", "interactions", "connections", "files", "state", "memory", "schedules", "usage"]
 GapKind: TypeAlias = Literal["reserved", "unused", "unavailable", "unresolved"]
 InputData: TypeAlias = InputDataMessage | InputDataEvent | InputDataAction | InputDataControl
 InteractionKind: TypeAlias = Literal["question", "form", "approval"]
@@ -555,3 +575,4 @@ Ownership: TypeAlias = Literal["managed", "borrowed"]
 RunStatus: TypeAlias = Literal["queued", "active", "waiting", "paused", "completed", "failed", "cancelled", "blocked"]
 RuntimeLanguage: TypeAlias = Literal["node", "python"]
 TransferPhase: TypeAlias = Literal["draining", "verifying", "transferred", "cancelled", "failed"]
+UsageSource: TypeAlias = Literal["receipt", "operator"]

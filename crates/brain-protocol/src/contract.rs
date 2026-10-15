@@ -151,6 +151,8 @@ pub fn session_v2() -> Value {
             define::<Claim>(generator);
             define::<Execution>(generator);
             define::<Receipt>(generator);
+            define::<UsageSupplement>(generator);
+            define::<UsageEvidence>(generator);
             define::<UnavailablePayload>(generator);
             define::<Retry>(generator);
             define::<Interaction>(generator);

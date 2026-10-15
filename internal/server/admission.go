@@ -20,7 +20,8 @@ func (s *Server) admitHTTP(w http.ResponseWriter, r *http.Request) (func(), bool
 	lane := s.requestSlots
 	if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/events") {
 		lane = s.streamSlots
-	} else if strings.HasPrefix(r.URL.Path, "/operator/") || strings.HasSuffix(r.URL.Path, "/receipt") {
+	} else if strings.HasPrefix(r.URL.Path, "/operator/") || strings.HasSuffix(r.URL.Path, "/receipt") ||
+		(r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/usage")) {
 		lane = s.receiptSlots
 	} else if strings.Contains(r.URL.Path, "/files/") {
 		lane = s.fileSlots

@@ -223,6 +223,35 @@ async function fixture(t, options = {}) {
 }
 
 if (process.env.BRAIN_TEST_CONTROL === "d1") {
+  test("J17/J24: supplemental usage before original receipt binding cannot rewrite the original history", { timeout: 45000 }, async t => {
+    let withheld = false, original;
+    const f = await fixture(t, { async controlFault(method, values) {
+      if (method === "RecordReceipt" && values[2].outcome === "completed") {
+        withheld = true;
+        original = structuredClone(values[2]);
+      }
+      return withheld && method === "PendingResults";
+    } });
+    const view = await f.create({}, "one result while original history binding is unavailable");
+    const session = new SessionClient({ url: f.origin, token: "fixture-operator" }).session(view.id);
+    const [operation] = await waitFor(() => session.operations(), rows => rows.length === 1 && rows[0].status === "completed",
+      "known model outcome before transcript binding");
+    assert.equal((await session.records()).records.some(record => record.kind === "operation.ended"), false);
+    const refined = await session.reportUsage(operation.id, { request_id: "usage-before-binding", counters: { output_tokens: 0, cached_tokens: 0 } });
+    assert.equal(refined.usage.output_tokens, 0);
+    assert.equal((await session.budget()).reserved_tokens, "0");
+    withheld = false;
+    await f.settled(view.id);
+    const record = (await session.records()).records.find(record => record.kind === "operation.ended");
+    assert.deepEqual(record.data.usage, original.usage, "the historical original receipt must not inherit later accounting evidence");
+    assert.equal(Object.hasOwn(record.data.usage, "output_tokens"), false);
+    assert.equal(Object.hasOwn(record.data.usage, "cached_tokens"), false);
+    assert.equal((await session.operation(operation.id)).usage.output_tokens, 0);
+    assert.equal((await session.usageEvidence(operation.id)).length, 1);
+    assert.equal(f.state.modelCalls, 1);
+    assert.equal(f.state.applicationCalls, 0);
+  });
+
   test("J19/J21/J23/J24: lost control confirmation recovers original retained WAL bytes without another model request", { timeout: 60000 }, async t => {
     const { DatabaseSync } = await import("node:sqlite");
     let armed = false, captured, originalBody;
@@ -1016,6 +1045,152 @@ test("J17: token estimates deny before send and missing usage remains held acros
   assert.equal(released.token_usage_pending, false);
 });
 
+test("J17/J24/J30: supplemental usage survives both SDKs, archival and deleted-owner restarts without repeated sends", { timeout: 90000 }, async t => {
+  const custody = randomBytes(32);
+  const allowedOrigin = "https://usage.example";
+  const f = await fixture(t, { environment: { BRAIN_CUSTODY_KEY: custody.toString("hex"), BRAIN_L1_BYTES: "0",
+    BRAIN_ARCHIVE_FLUSH_MS: "100", BRAIN_BROWSER_ORIGINS: allowedOrigin } });
+  const config = f.config({ model: { provider: "fixture", name: "fixture-model", native: { max_completion_tokens: 32 } } });
+  config.limits.tokens = 2000;
+  const parentView = await f.create(config);
+  const view = await f.api("POST", `/v2/sessions/${parentView.id}/delegations`,
+    { request_id: "child-model-work", config, context: [], message: "the original explicitly admitted request" });
+  const client = () => new SessionClient({ url: f.origin, token: "fixture-operator" });
+  let session = client().session(view.id);
+  await f.settled(view.id);
+  const [first] = await session.operations();
+  const before = await session.budget();
+  assert.equal(before.reported_tokens, "7");
+  assert.equal(before.incomplete_usages, 1);
+  assert(BigInt(before.reserved_tokens) > 1000n && BigInt(before.reserved_tokens) < 1900n);
+  const original = (await session.records()).records.find(record => record.operation_id === first.id && record.kind === "operation.ended");
+  assert(original);
+  await waitFor(() => session.operations(), rows => rows.length === 1 && !rows[0].result_available,
+    "verified archival compacts the original SQL result body");
+  assert.equal((await session.operation(first.id)).result_available, true);
+  const path = `/v2/sessions/${view.id}/operations/${first.id}/usage`;
+  const request = { request_id: "cache-observed", counters: { cached_tokens: 0 } };
+  const grant = await f.api("POST", `/v2/sessions/${view.id}/participants`,
+    { request_id: "usage-reader", subject: "accounting-reader", permissions: ["session:read"], expires_ms: Date.now() + 120000 });
+  await f.api("POST", path, request, { token: grant.token, status: 403 });
+  await f.api("POST", path, request, { token: `r_${first.id}.not-original`, status: 401 });
+  for (const [headers, status] of [
+    [{ "X-Brain-Tenant": "another-tenant" }, 404],
+    [{ Origin: "https://denied.example" }, 403],
+  ]) {
+    const response = await fetch(f.origin + path, { method: "POST", headers: {
+      Authorization: "Bearer fixture-operator", "Content-Type": "application/json", ...headers,
+    }, body: JSON.stringify(request) });
+    assert.equal(response.status, status);
+    await response.body?.cancel();
+  }
+  const preflight = await fetch(f.origin + path, { method: "OPTIONS", headers: { Origin: allowedOrigin,
+    "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "authorization,content-type,x-brain-tenant" } });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("Access-Control-Allow-Origin"), allowedOrigin);
+  assert.match(preflight.headers.get("Access-Control-Allow-Headers"), /X-Brain-Tenant/u);
+  const observed = [];
+  const browserProtocol = new SessionClient({ url: f.origin, token: "fixture-operator", async fetch(url, init) {
+    const response = await fetch(url, { ...init, headers: { ...init.headers, Origin: allowedOrigin } });
+    observed.push({ status: response.status, origin: response.headers.get("Access-Control-Allow-Origin"),
+      cache: response.headers.get("Cache-Control") });
+    return response;
+  } }).session(view.id);
+  const sparse = await browserProtocol.reportUsage(first.id, request);
+  assert.equal(sparse.usage.cached_tokens, 0);
+  assert.equal(Object.hasOwn(sparse.usage, "output_tokens"), false);
+  assert.deepEqual(observed.at(-1), { status: 200, origin: allowedOrigin, cache: "no-store" });
+  assert.deepEqual(await session.reportUsage(first.id, request), sparse);
+  assert.equal((await session.budget()).reserved_tokens, before.reserved_tokens);
+  await assert.rejects(session.reportUsage(first.id, { ...request, counters: { cached_tokens: 1 } }),
+    error => error instanceof SessionError && error.code === "conflict");
+  await assert.rejects(session.reportUsage(first.id, { ...request, request_id: "no-op-is-not-new-evidence" }),
+    error => error instanceof SessionError && error.code === "conflict");
+  await assert.rejects(session.reportUsage(first.id, { request_id: "oversized", counters: { output_tokens: 2 ** 40 + 1 } }),
+    error => error instanceof SessionError && error.code === "invalid");
+  await session.send("a separate explicitly admitted follow-up", "second-input");
+  await waitFor(() => session.runs(), rows => rows.length === 2, "second command reaches its own run");
+  await delay(300);
+  assert.equal(f.state.modelCalls, 1);
+  assert.equal((await session.operations()).length, 1);
+  await f.stop();
+  await f.start();
+  assert.equal(f.state.modelCalls, 1, "restart cannot turn incomplete usage into a new allowance");
+  session = client().session(view.id);
+  assert.equal((await session.operation(first.id)).usage.cached_tokens, 0, "archive hydration keeps current authoritative counters");
+  f.state.modelUsage = { prompt_tokens: 5 };
+  await runPython(t, "usage-client.py", { BRAIN_URL: f.origin, BRAIN_SESSION: view.id, BRAIN_OPERATION: first.id,
+    BRAIN_USAGE: JSON.stringify({ request_id: "output-observed", counters: { output_tokens: 0 } }),
+    BRAIN_EXPECTED_USAGE: JSON.stringify({ input_tokens: 7, output_tokens: 0, cached_tokens: 0 }) });
+  await f.settled(view.id, "completed", 2);
+  const operations = await session.operations();
+  assert.equal(operations.length, 2);
+  assert.equal(f.state.modelCalls, 2, "only the separately admitted command can use the released token capacity");
+  const second = operations.find(operation => operation.id !== first.id);
+  assert.equal(second.usage.input_tokens, 5);
+  assert.equal(Object.hasOwn(second.usage, "output_tokens"), false);
+  const current = await session.operation(first.id);
+  assert.equal(current.result_available, true);
+  assert.equal(current.usage.output_tokens, 0);
+  assert.equal(current.usage.cached_tokens, 0);
+  const history = await session.records("0", 128);
+  assert.deepEqual(history.records.find(record => record.sequence === original.sequence), original);
+  const originalSecond = history.records.find(record => record.operation_id === second.id && record.kind === "operation.ended");
+  assert(originalSecond);
+  const evidence = await session.usageEvidence(first.id);
+  assert.equal(evidence.length, 2);
+  assert.deepEqual(new Set(evidence.map(value => value.request_id)), new Set(["cache-observed", "output-observed"]));
+  assert(evidence.every(value => value.source === "operator" && value.subject === "operator"));
+  const exported = [];
+  const sections = new Set();
+  let last;
+  for await (const page of session.exportPages()) {
+    sections.add(page.section);
+    exported.push(...page.usage);
+    last = page;
+  }
+  assert.equal(sections.size, 10);
+  assert.deepEqual(exported, evidence);
+  assert.equal(last.complete, true);
+  const receiptToken = operation => `r_${operation.id}.` + createHmac("sha256", custody)
+    .update(`receipt\0${view.id}:${operation.id}:${operation.recipient}`).digest("base64url");
+  const restoredBrowserProtocol = new SessionClient({ url: f.origin, token: "fixture-operator", async fetch(url, init) {
+    const response = await fetch(url, { ...init, headers: { ...init.headers, Origin: allowedOrigin } });
+    observed.push({ status: response.status, origin: response.headers.get("Access-Control-Allow-Origin"),
+      cache: response.headers.get("Cache-Control") });
+    return response;
+  } }).session(view.id);
+  const replayed = await restoredBrowserProtocol.receipt(first.id, original.data, receiptToken(first));
+  assert.equal(replayed.usage.output_tokens, 0, "original receipt replay cannot erase later accounting evidence");
+  assert.deepEqual(observed.at(-1), { status: 200, origin: allowedOrigin, cache: "no-store" });
+  const parentBefore = await client().session(parentView.id).budget();
+  assert.equal(parentBefore.reported_tokens, "12");
+  assert.equal(parentBefore.incomplete_usages, 1);
+  assert(BigInt(parentBefore.reserved_tokens) > 0n);
+  await session.delete();
+  await f.stop();
+  await f.start();
+  await runPython(t, "usage-client.py", { BRAIN_URL: f.origin, BRAIN_SESSION: view.id, BRAIN_OPERATION: second.id,
+    BRAIN_RECEIPT_TOKEN: receiptToken(second), BRAIN_DELETED: "1",
+    BRAIN_USAGE: JSON.stringify({ request_id: "late-original-usage", counters: { output_tokens: 0, cached_tokens: 0 } }),
+    BRAIN_EXPECTED_USAGE: JSON.stringify({ input_tokens: 5, output_tokens: 0, cached_tokens: 0 }) });
+  session = client().session(view.id);
+  const deleted = await session.receipt(second.id, originalSecond.data, receiptToken(second));
+  assert.equal(deleted.status, "completed");
+  assert.equal(deleted.result_available, false);
+  assert.equal(deleted.usage.output_tokens, 0);
+  const settled = await client().session(parentView.id).budget();
+  assert.equal(settled.calls, 2);
+  assert.equal(settled.reported_tokens, "12");
+  assert.equal(settled.reserved_tokens, "0");
+  assert.equal(settled.incomplete_usages, 0);
+  assert.equal(settled.active_operations, 0);
+  assert.equal(settled.reserved_output_bytes, 0);
+  await assert.rejects(session.read(), error => error instanceof SessionError && error.status === 404);
+  assert.equal(f.state.modelCalls, 2);
+  assert.equal(f.state.applicationCalls, 0);
+});
+
 test("J03/J16: admission rejects authority replacement, spoofed sources and cross-session access before effects", async t => {
   const f = await fixture(t);
   for (const native of [{ model: "replaced" }, { tools: [] }, { max_retries: 2 }, { extra_headers: {} }]) {
@@ -1368,8 +1543,8 @@ test("J02/J10/J18: both SDKs traverse byte-limited collections and every export 
     pages++;
   }
   assert.deepEqual(counts, { memory: 64, interactions: 132, connections: 3, schedules: 3, files: 3 });
-  assert.equal(sections.size, 9);
-  assert(pages > 9);
+  assert.equal(sections.size, 10);
+  assert(pages > 10);
   assert.equal(final.complete, true);
   assert.equal(final.continuation, "");
   await assert.rejects(session.export(continuation + "x"), error => error instanceof SessionError && error.code === "invalid");

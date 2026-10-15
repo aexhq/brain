@@ -49,10 +49,17 @@ Do not use this surface with a published v1 server.
 Use `allRuns()`, `allOperations()`, `allInteractions()`, `allConnections()`,
 `allDocuments(scope)`, `allFiles()` and `allSchedules()` for complete traversals.
 Both count and byte limits apply: a short page does not mean the collection ended.
-`exportPages()` follows all nine export sections and reports history completeness;
+`exportPages()` follows all ten export sections, including supplemental usage evidence,
+and reports history completeness;
 it is not a stopped-writer backup of file bytes, custody or native state.
 
 An uncertain `SessionError` retains `requestId`, including an SDK-generated ID.
 Explicitly resubmit the original content and ID to reconcile a lost acknowledgement.
 The client never silently resends mutations. Application workers require a durable
 receipt store; replaying an SSE notification is not permission to execute again.
+
+Trusted operators or original model receipt holders can use `reportUsage()` to fill
+absent counters on known settled model operations. `usageEvidence()` reads the
+bounded, attributed facts. Existing counters and original outcomes cannot change;
+unknown effects keep their holds. See
+[sparse usage settlement](https://aex.dev/brain/docs/reference/session-history#complete-sparse-usage-without-repeating-work).

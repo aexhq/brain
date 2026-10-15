@@ -34,15 +34,16 @@ async function fixture(t, options = {}) {
   const session = await call("Create", ["tenant", { request_id: "created", config }, "", "", ["storage:retained"]]);
   const id = session.View.id;
   const owner = await call("ClaimOwner", [id, node]);
-  async function prepare(name = "once", overrides = {}) {
-    const command = await call("Accept", [{ Tenant: "tenant", Subject: "operator" }, id,
+  async function prepare(name = "once", overrides = {}, target = { id, owner }) {
+    const { id: identifier, owner: authority } = target;
+    const command = await call("Accept", [{ Tenant: "tenant", Subject: "operator" }, identifier,
       { request_id: name, data: { kind: "message", text: name } }]);
-    await call("ApplyInput", [id, { Command: command.id, Owner: owner, Sequence: 1, Run: true, Disposition: "", StateKey: "" }]);
-    const sequence = await call("Allocate", [id, owner]);
+    await call("ApplyInput", [identifier, { Command: command.id, Owner: authority, Sequence: 1, Run: true, Disposition: "", StateKey: "" }]);
+    const sequence = await call("Allocate", [identifier, authority]);
     const digest = hash("intent:" + name);
-    await call("Written", [id, owner, sequence, digest, 64]);
-    return call("Prepare", [owner, {
-      ID: name, Session: id, Run: stableID("run", id, command.id), StepKey: "0", Kind: "model", Action: "generate",
+    await call("Written", [identifier, authority, sequence, digest, 64]);
+    return call("Prepare", [authority, {
+      ID: name, Session: identifier, Run: stableID("run", identifier, command.id), StepKey: "0", Kind: "model", Action: "generate",
       Arguments: { escaped: "quote\"slash\\", nested: { number: integer("9007199254740993"), empty: null } },
       Recipient: "model", OutputLimit: 8192, Timeout: 30000, Generation: "", Approval: false, RetryOf: "",
       IntentSequence: sequence, IntentDigest: digest, ...overrides,
@@ -50,6 +51,151 @@ async function fixture(t, options = {}) {
   }
   return { ...binding, call, id, owner, config, custody, prepare };
 }
+
+test("actual D1 refines sparse usage with immutable canonical evidence and no rewritten receipt", async t => {
+  const f = await fixture(t);
+  const op = await f.prepare("sparse-model");
+  await f.call("ClaimDispatch", [f.id, f.owner, op.View.id, f.owner.Node, "once"]);
+  const receipt = { request_id: "original", outcome: "completed", result: "original response", usage: { provider: { id: "original" } } };
+  await f.call("RecordReceipt", [f.id, op.View.id, receipt, 0, ""]);
+  const before = await f.database.prepare("SELECT result_body,receipt_hash,receipt_key FROM operations WHERE id=?").bind(op.View.id).first();
+  const originalSequence = (await f.call("Session", ["tenant", f.id])).View.sequence;
+  const reporter = { Kind: "receipt", Tenant: "", Subject: f.owner.Node };
+  const requests = [
+    { counters: { input_tokens: 0 }, request_id: "reported-zero" },
+    { counters: { output_tokens: 5 }, request_id: "reported-output" },
+    { counters: { cached_tokens: 2, input_tokens: 0 }, request_id: "reported-cache" },
+  ];
+  for (const [index, request] of requests.entries()) {
+    const value = await f.call("ReportUsage", [f.id, op.View.id, request, reporter]);
+    assert.equal(value.View.status, "completed");
+    assert.equal(value.View.result, "original response");
+    assert.equal(String(value.View.usage.input_tokens), "0");
+    assert.deepEqual(await f.call("ReportUsage", [f.id, op.View.id, request, reporter]), value);
+    const budget = await f.call("Budget", [f.id]);
+    assert.equal(String(budget.calls), "1");
+    assert.equal(String(budget.active_operations), "0");
+    assert(BigInt(String(budget.reserved_output_bytes)) > 0n, "usage cannot release unbound result capacity");
+    assert.equal(budget.reported_tokens, index === 0 ? "0" : "5");
+    assert.equal(String(budget.incomplete_usages), index === 0 ? "1" : "0");
+    if (index === 0) assert(BigInt(budget.reserved_tokens) > 0n);
+    else assert.equal(budget.reserved_tokens, "0");
+    const row = await f.database.prepare("SELECT request_hash FROM usage_evidence WHERE operation_id=? AND request_key=?")
+      .bind(op.View.id, request.request_id).first();
+    assert.equal(row.request_hash, hash(JSON.stringify([request, reporter.Kind, reporter.Subject, reporter.Tenant])),
+      "D1 uses the same canonical request identity as the generated Go wire struct");
+  }
+  assert.deepEqual(await f.database.prepare("SELECT result_body,receipt_hash,receipt_key FROM operations WHERE id=?").bind(op.View.id).first(), before);
+  assert.equal((await f.call("Session", ["tenant", f.id])).View.sequence, originalSequence);
+  const replayed = await f.call("RecordReceipt", [f.id, op.View.id, receipt, 0, ""]);
+  assert.equal(String(replayed.View.usage.input_tokens), "0");
+  assert.equal(String(replayed.View.usage.output_tokens), "5");
+  assert.equal(String(replayed.View.usage.cached_tokens), "2");
+  const evidence = [];
+  for (let after = ""; ;) {
+    const page = await f.call("UsageEvidence", [f.id, op.View.id, 1, after]);
+    if (!page.length) break;
+    evidence.push(...page);
+    after = page.at(-1).id;
+  }
+  assert.equal(evidence.length, 3);
+  for (const value of evidence) {
+    assert.equal(value.id, stableID("usage", f.id, op.View.id, value.request_id));
+    assert.equal(value.subject, f.owner.Node);
+    assert.equal(value.source, "receipt");
+    assert(BigInt(String(value.accepted_ms)) > 0n);
+  }
+  for (const request of [
+    { ...requests[0], counters: { input_tokens: 1 } },
+    { ...requests[0], request_id: "new-no-op" },
+    { request_id: "change-output", counters: { output_tokens: 6 } },
+  ]) assert.equal((await f.rpc("ReportUsage", [f.id, op.View.id, request, reporter])).status, 409);
+  assert.equal((await f.rpc("ReportUsage", [f.id, op.View.id, requests[0],
+    { Kind: "operator", Subject: "operator", Tenant: "tenant" }])).status, 409);
+  assert.equal((await f.call("UsageEvidence", [f.id, "", 64, ""])).length, 3);
+});
+
+test("actual D1 refines deleted usage at maximum budget ancestry within one atomic domain plan", async t => {
+  const f = await fixture(t);
+  const ancestors = [f.id];
+  for (let depth = 1; depth <= 8; depth++) {
+    const child = await f.call("Create", ["tenant", { request_id: "depth-" + depth, config: f.config },
+      ancestors.at(-1), f.id, ["storage:retained"]]);
+    ancestors.push(child.View.id);
+  }
+  const identifier = ancestors.at(-1);
+  const owner = await f.call("ClaimOwner", [identifier, f.owner.Node]);
+  const op = await f.prepare("deleted-model", {}, { id: identifier, owner });
+  await f.call("ClaimDispatch", [identifier, owner, op.View.id, owner.Node, "once"]);
+  const receipt = { request_id: "original", outcome: "completed", result: "private body",
+    usage: { input_tokens: 7, provider: { private: "provider body" } } };
+  await f.call("RecordReceipt", [identifier, op.View.id, receipt, 0, ""]);
+  const sequence = (await f.call("Session", ["tenant", identifier])).View.sequence;
+  await f.call("Delete", [identifier]);
+  const request = { request_id: "late-usage", counters: { output_tokens: 0 } };
+  const reporter = { Kind: "operator", Tenant: "tenant", Subject: "operator" };
+  assert.equal((await f.rpc("ReportUsage", [identifier, op.View.id, request, { ...reporter, Tenant: "other" }])).status, 404);
+  assert.equal((await f.rpc("ReportUsage", [identifier, op.View.id, request, { Kind: "receipt", Tenant: "", Subject: "not-original" }])).status, 403);
+  assert.equal((await f.rpc("ReportUsage", [identifier, op.View.id, request, { ...reporter, Kind: "participant" }])).status, 403);
+  for (let index = 0; index < 2; index++) {
+    const value = await f.call("ReportUsage", [identifier, op.View.id, request, reporter]);
+    assert.equal(value.Discarded, true);
+    assert.equal(value.View.status, "completed");
+    assert.equal(value.View.result_available, false);
+    assert.equal(Object.hasOwn(value.View, "result"), false);
+    assert.deepEqual(value.View.usage.provider, {});
+    assert.equal(value.View.usage.provider_unavailable.digest, hash(JSON.stringify(receipt.usage.provider)));
+    assert.equal(String((await f.call("RecordReceipt", [identifier, op.View.id, receipt, 0, ""])).View.usage.output_tokens), "0");
+  }
+  for (const ancestor of ancestors) {
+    const budget = await f.call("Budget", [ancestor]);
+    assert.equal(budget.reported_tokens, "7");
+    assert.equal(budget.reserved_tokens, "0");
+    assert.equal(String(budget.incomplete_usages), "0");
+    assert.equal(String(budget.calls), "1");
+    assert.equal(String(budget.active_operations), "0");
+    assert.equal(String(budget.reserved_output_bytes), "0");
+  }
+  const current = await f.database.prepare("SELECT lifecycle,ready,CAST(sequence AS TEXT) AS sequence FROM sessions WHERE id=?").bind(identifier).first();
+  assert.deepEqual(current, { lifecycle: "deleted", ready: 0, sequence });
+  assert.equal((await f.rpc("Session", ["tenant", identifier])).status, 404);
+});
+
+test("actual D1 settles contested zero usage once and refuses unknown or never-sent models", async t => {
+  const f = await fixture(t);
+  const reporter = { Kind: "operator", Tenant: "tenant", Subject: "operator" };
+  const request = { request_id: "report", counters: { output_tokens: 0 } };
+  for (const status of ["prepared", "dispatched", "unknown", "failed"]) {
+    await f.prepare(status);
+    if (status !== "prepared") await f.call("ClaimDispatch", [f.id, f.owner, status, f.owner.Node, "once"]);
+    if (["unknown", "failed"].includes(status)) {
+      await f.call("RecordReceipt", [f.id, status,
+        { request_id: "original", outcome: status, usage: { input_tokens: 0 } }, 0, ""]);
+    }
+    if (status !== "failed") assert.equal((await f.rpc("ReportUsage", [f.id, status, request, reporter])).status, 409);
+  }
+  const contender = { ...request, request_id: "competing-report" };
+  const responses = await Promise.all([
+    f.rpc("ReportUsage", [f.id, "failed", request, reporter]),
+    f.rpc("ReportUsage", [f.id, "failed", contender, reporter]),
+  ]);
+  assert.deepEqual(responses.map(response => response.status).sort(), [200, 409]);
+  const budget = await f.call("Budget", [f.id]);
+  assert.equal(budget.reported_tokens, "0");
+  assert.equal(String(budget.active_operations), "3");
+  assert.equal(String(budget.incomplete_usages), "0");
+  const winner = responses[0].status === 200 ? request : contender;
+  for (const response of await Promise.all([
+    f.rpc("ReportUsage", [f.id, "failed", winner, reporter]),
+    f.rpc("ReportUsage", [f.id, "failed", winner, reporter]),
+  ])) assert.equal(response.status, 200, response.text);
+  assert.deepEqual(await f.call("Budget", [f.id]), budget);
+  assert.equal((await f.call("UsageEvidence", [f.id, "", 64, ""])).length, 1);
+  await f.call("Delete", [f.id]);
+  assert.equal(String(await f.call("ExpireOperations", [32])), "1");
+  assert.equal((await f.rpc("ReportUsage", [f.id, "prepared", request, reporter])).status, 409);
+  assert.equal((await f.call("UsageEvidence", [f.id, "", 64, ""])).length, 1);
+});
 
 test("actual D1 retains original late outcome and sparse accounting after deletion without bodies or revival", async t => {
   const f = await fixture(t);

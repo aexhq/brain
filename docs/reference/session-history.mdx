@@ -96,10 +96,62 @@ and backup lifecycle; their physical collection is not implied by a successful
 delete or by reclaiming an output reserve. Keep the matching runtime and retained
 data until a verified migration and rollback are available.
 
+## Complete sparse usage without repeating work
+
+When an original model response omits a counter, Brain keeps that counter absent
+and holds its token allowance. An authorized operator can later attest to the
+missing value with the original operation ID and a stable request ID:
+
+```ts
+await session.reportUsage(operation.id, {
+  request_id: "provider-final-output-usage",
+  counters: { output_tokens: 0 },
+});
+const evidence = await session.usageEvidence(operation.id);
+```
+
+The equivalent Python calls are:
+
+```python
+session.report_usage(operation["id"], {
+    "request_id": "provider-final-output-usage",
+    "counters": {"output_tokens": 0},
+})
+evidence = session.usage_evidence(operation["id"])
+```
+
+Use an operator credential only in a trusted service. A worker holding the
+original model receipt capability can instead pass it as the final argument.
+Ordinary participants and identity-provider role claims cannot release model
+allowances. These facts record the recipient's or operator's attestation;
+they are not independently verified provider invoices or commercial billing.
+
+A report must fill at least one absent counter. Reported zero is a value; no
+existing value can be replaced or erased. Each counter is bounded to `2^40`.
+Unchanged content, source and request ID reconcile idempotently; changing the
+content or attribution conflicts. A new-ID no-op also conflicts, so an admitted
+model operation can accumulate at most three supplemental facts.
+
+Only originally dispatched, known completed or failed models accept supplements.
+Unknown effects and never-dispatched failures cannot use them to release holds.
+Input and output counters settle every admitted ancestor pool once; cached
+tokens are not counted again. Deleted-session evidence can settle accounting
+but cannot restore a body, permission, run or record position. Pending ordinary
+input does not block the finite accounting transaction.
+
+Original outcome hashes and receipt counters remain separate from current usage,
+including when a supplement arrives before the original receipt is bound to
+history. Supplement facts are authoritative SQL control evidence, exposed by
+inspection and export, not new transcript messages or model turns. Archived
+receipt hydration and original callback replay cannot overwrite newer accounting.
+The three-fact bound does not imply complete retained-byte accounting or physical
+erasure of every storage tier.
+
 ## Export and reconcile requests
 
 `session.exportPages()` in TypeScript and `session.export_pages()` in Python traverse history,
-runs, operations, interactions, connections, files, state, memory and schedules. Each response
+runs, operations, interactions, connections, files, state, memory, schedules and
+supplemental usage evidence. Each response
 identifies its section. HTTP callers echo the opaque `continuation` until it is absent;
 continuations are authenticated and belong to one session.
 

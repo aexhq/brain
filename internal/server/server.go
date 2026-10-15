@@ -175,22 +175,6 @@ func (s *Server) receiptToken(operation control.Operation) string {
 func (s *Server) wrap(permission string, fn handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Cache-Control", "no-store")
-		if origin := r.Header.Get("Origin"); origin != "" {
-			admitted := false
-			for _, allowed := range s.Config.Origins {
-				if allowed == origin {
-					admitted = true
-				}
-			}
-			if !admitted {
-				writeError(w, kernel.Fail(wire.ErrorCodeForbidden, "browser origin is not admitted"))
-				return
-			}
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Vary", "Origin")
-		}
 		p, err := s.principal(r)
 		if err == nil && permission != "" && !p.Allows(r.PathValue("session"), permission) {
 			err = kernel.Fail(wire.ErrorCodeForbidden, "participant grant does not allow this operation")
@@ -217,19 +201,27 @@ func (s *Server) wrap(permission string, fn handler) http.HandlerFunc {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodOptions && r.Header.Get("Origin") != "" {
-		for _, origin := range s.Config.Origins {
-			if origin == r.Header.Get("Origin") {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-				w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE")
-				w.Header().Set("Access-Control-Allow-Headers", "Authorization,Content-Type,Last-Event-ID,Idempotency-Key")
-				w.Header().Set("Vary", "Origin")
-				w.WriteHeader(http.StatusNoContent)
-				return
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Add("Vary", "Origin")
+	if origin := r.Header.Get("Origin"); origin != "" {
+		admitted := false
+		for _, allowed := range s.Config.Origins {
+			if allowed == origin {
+				admitted = true
 			}
 		}
-		http.Error(w, "origin denied", http.StatusForbidden)
-		return
+		if !admitted {
+			writeError(w, kernel.Fail(wire.ErrorCodeForbidden, "browser origin is not admitted"))
+			return
+		}
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization,Content-Type,Last-Event-ID,Idempotency-Key,X-Brain-Tenant")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 	}
 	release, ok := s.admitHTTP(w, r)
 	if !ok {
@@ -429,6 +421,9 @@ func (s *Server) routes() error {
 	add("POST /v2/sessions/{session}/operations/{operation}/claim", "operation:claim", s.claim)
 	s.mux.HandleFunc("POST /v2/sessions/{session}/operations/{operation}/receipt", s.receipt)
 	registered["POST /v2/sessions/{session}/operations/{operation}/receipt"] = true
+	s.mux.HandleFunc("POST /v2/sessions/{session}/operations/{operation}/usage", s.reportUsage)
+	registered["POST /v2/sessions/{session}/operations/{operation}/usage"] = true
+	add("GET /v2/sessions/{session}/operations/{operation}/usage", "session:read", s.usageEvidence)
 	add("POST /v2/sessions/{session}/operations/{operation}/retry", "operation:retry", s.retry)
 	add("GET /v2/sessions/{session}/interactions", "session:read", s.interactions)
 	add("POST /v2/sessions/{session}/interactions", "interaction:create", s.interact)

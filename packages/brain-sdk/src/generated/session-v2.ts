@@ -178,12 +178,18 @@ export type ExportSection =
   | "files"
   | "state"
   | "memory"
-  | "schedules";
+  | "schedules"
+  | "usage";
 /**
  * This interface was referenced by `BrainSessionAPIV2`'s JSON-Schema
  * via the `definition` "Lifecycle".
  */
 export type Lifecycle = "open" | "closing" | "closed" | "deleted";
+/**
+ * This interface was referenced by `BrainSessionAPIV2`'s JSON-Schema
+ * via the `definition` "UsageSource".
+ */
+export type UsageSource = "receipt" | "operator";
 /**
  * This interface was referenced by `BrainSessionAPIV2`'s JSON-Schema
  * via the `definition` "RuntimeLanguage".
@@ -529,6 +535,7 @@ export interface ExportManifest {
   section: ExportSection;
   session: SessionView;
   state: Document[];
+  usage: UsageEvidence[];
 }
 /**
  * This interface was referenced by `BrainSessionAPIV2`'s JSON-Schema
@@ -635,6 +642,29 @@ export interface SessionView {
   paused: boolean;
   revision: string;
   sequence: string;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV2`'s JSON-Schema
+ * via the `definition` "UsageEvidence".
+ */
+export interface UsageEvidence {
+  accepted_ms: number;
+  counters: UsageCounters;
+  id: string;
+  operation_id: string;
+  request_id: string;
+  session_id: string;
+  source: UsageSource;
+  subject: string;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV2`'s JSON-Schema
+ * via the `definition` "UsageCounters".
+ */
+export interface UsageCounters {
+  cached_tokens?: number;
+  input_tokens?: number;
+  output_tokens?: number;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV2`'s JSON-Schema
@@ -936,4 +966,12 @@ export interface TransferCreate {
   owner_epoch: string;
   request_id: string;
   target_node: string;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV2`'s JSON-Schema
+ * via the `definition` "UsageSupplement".
+ */
+export interface UsageSupplement {
+  counters: UsageCounters;
+  request_id: string;
 }

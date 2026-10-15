@@ -384,6 +384,37 @@ object!(Usage {
     pub provider_unavailable: Option<UnavailablePayload>,
 });
 
+object!(UsageCounters {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(max = 1099511627776_u64))]
+    pub cached_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(max = 1099511627776_u64))]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(max = 1099511627776_u64))]
+    pub output_tokens: Option<u64>,
+});
+
+object!(UsageSupplement {
+    #[schemars(length(min = 1, max = 128))]
+    pub request_id: String,
+    pub counters: UsageCounters,
+});
+
+choice!(UsageSource { Receipt, Operator });
+
+object!(UsageEvidence {
+    pub id: String,
+    pub session_id: String,
+    pub operation_id: String,
+    pub request_id: String,
+    pub source: UsageSource,
+    pub subject: String,
+    pub counters: UsageCounters,
+    pub accepted_ms: u64,
+});
+
 object!(Operation {
     pub id: String,
     pub session_id: String,
@@ -797,7 +828,8 @@ choice!(ExportSection {
     Files,
     State,
     Memory,
-    Schedules
+    Schedules,
+    Usage
 });
 
 object!(ExportManifest {
@@ -812,6 +844,7 @@ object!(ExportManifest {
     pub state: Vec<Document>,
     pub memory: Vec<Document>,
     pub schedules: Vec<Schedule>,
+    pub usage: Vec<UsageEvidence>,
     pub history: RecordPage,
     pub complete: bool,
     pub continuation: String,

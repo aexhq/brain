@@ -227,7 +227,6 @@ func (s *Server) available(ctx context.Context, operation control.Operation) con
 	var receipt wire.Receipt
 	if json.Unmarshal(record.Data, &receipt) == nil {
 		operation.View.Result = receipt.Result
-		operation.View.Usage = receipt.Usage
 		operation.View.ResultAvailable = receipt.Error == nil || len(receipt.Result) > 0 || receipt.Outcome != wire.OutcomeCompleted
 	}
 	return operation

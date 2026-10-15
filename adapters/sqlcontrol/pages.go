@@ -62,7 +62,7 @@ func (s *Store) RunnableRuns(ctx context.Context, session string, limit int) ([]
 }
 
 func (s *Store) operationBytes() string {
-	return s.bytes("arguments") + "+" + s.bytes("result_body") + "+" + s.bytes("usage") + "+6*" + s.bytes("error")
+	return s.bytes("arguments") + "+" + s.bytes("result_body") + "+" + s.bytes("usage") + "+" + s.bytes("receipt_counters") + "+6*" + s.bytes("error")
 }
 
 func (s *Store) PendingResults(ctx context.Context, session string, limit int) ([]control.Operation, error) {

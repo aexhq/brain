@@ -35,9 +35,16 @@ Keep this database private; it contains invocation-scoped receipt credentials.
 Use `all_runs()`, `all_operations()`, `all_interactions()`, `all_connections()`,
 `all_documents(scope)`, `all_files()` and `all_schedules()` to traverse collections.
 Pages have count and byte bounds, so a short page does not mean the end.
-`export_pages()` follows all nine export sections and reports history completeness.
+`export_pages()` follows all ten export sections, including supplemental usage evidence,
+and reports history completeness.
 This traversal is not a snapshot or a backup of file bytes, custody and native state.
 
 If a mutation acknowledgement is lost, its uncertain `SessionError.request_id`
 retains the original ID, including an SDK-generated one. Explicitly resubmit the
 unchanged content and that ID to reconcile; a new ID starts new work.
+
+Trusted operators or original model receipt holders can use `report_usage()` to fill
+absent counters on known settled model operations. `usage_evidence()` reads the
+bounded, attributed facts. Existing counters and original outcomes cannot change;
+unknown effects keep their holds. See
+[sparse usage settlement](https://aex.dev/brain/docs/reference/session-history#complete-sparse-usage-without-repeating-work).

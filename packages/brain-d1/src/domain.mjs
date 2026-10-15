@@ -128,7 +128,7 @@ export async function initialize(db) {
   const exists = await one(db, "SELECT name FROM sqlite_master WHERE type='table' AND name='brain_schema'", [], true);
   if (exists) {
     const version = await one(db, "SELECT MAX(version) AS version FROM brain_schema");
-    need(version.version === 15, "unsupported", "D1 control schema requires a verified offline migration");
+    need(version.version === 16, "unsupported", "D1 control schema requires a verified offline migration");
   }
   const statements = sqlSchema.split(";").map(value => value.trim()).filter(Boolean);
   statements.push(
@@ -145,7 +145,7 @@ export const sessionColumns = `id,tenant,config,lifecycle,CAST(revision AS TEXT)
 owner,CAST(epoch AS TEXT) AS epoch,CAST(generation AS TEXT) AS generation,paused,created_ms,parent,budget`;
 export const operationColumns = `id,session_id,run_id,step_key,kind,action,arguments_digest,status,recipient,CAST(revision AS TEXT) AS revision,
 arguments,output_limit,deadline_ms,generation,CAST(result_sequence AS TEXT) AS result_sequence,result_digest,result_body,usage,claimant,
-retry_of,error,CAST(intent_sequence AS TEXT) AS intent_sequence,intent_digest,token_reserve,approval,receipt_hash,receipt_key,discarded`;
+retry_of,error,CAST(intent_sequence AS TEXT) AS intent_sequence,intent_digest,token_reserve,approval,receipt_hash,receipt_key,discarded,receipt_counters`;
 export const commandColumns = `id,session_id,status,accepted_ms,run_id,CAST(sequence AS TEXT) AS sequence,error`;
 export const runColumns = `r.id,r.session_id,r.command_id,r.status,CAST(r.step AS TEXT) AS step,r.checkpoint,r.decision,r.wait_kind,r.wait_id,
 r.error,c.payload,CAST(c.sequence AS TEXT) AS sequence,CAST(r.completion_sequence AS TEXT) AS completion_sequence,r.completion_digest,r.harness_process`;
@@ -169,7 +169,8 @@ export function operation(row) {
     ...(row.error ? { error: row.error } : {}), ...(row.retry_of ? { retry_of: row.retry_of } : {}) },
     ...(row.arguments ? { Arguments: raw(row.arguments) } : {}), OutputLimit: row.output_limit, Deadline: row.deadline_ms, Generation: row.generation,
     ResultSequence: integer(row.result_sequence), ResultDigest: row.result_digest, Claimant: row.claimant,
-    IntentSequence: integer(row.intent_sequence), IntentDigest: row.intent_digest, TokenReserve: row.token_reserve, Discarded: row.discarded !== 0 };
+    IntentSequence: integer(row.intent_sequence), IntentDigest: row.intent_digest, TokenReserve: row.token_reserve, Discarded: row.discarded !== 0,
+    ReceiptCounters: row.receipt_counters ? raw(row.receipt_counters) : null };
 }
 export function command(row) {
   return { id: row.id, session_id: row.session_id, status: row.status, accepted_ms: row.accepted_ms,

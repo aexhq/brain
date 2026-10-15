@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS brain_schema (version BIGINT PRIMARY KEY);
-INSERT INTO brain_schema(version) SELECT 15 WHERE NOT EXISTS(SELECT 1 FROM brain_schema);
+INSERT INTO brain_schema(version) SELECT 16 WHERE NOT EXISTS(SELECT 1 FROM brain_schema);
 CREATE TABLE IF NOT EXISTS nodes (
  id TEXT PRIMARY KEY, lease BIGINT NOT NULL, draining BIGINT NOT NULL DEFAULT 0,
  endpoint TEXT NOT NULL DEFAULT '', configuration_digest TEXT NOT NULL DEFAULT ''
@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS operations (
  status TEXT NOT NULL DEFAULT 'prepared', output_limit BIGINT NOT NULL, deadline_ms BIGINT NOT NULL,
  generation TEXT NOT NULL, result_sequence BIGINT NOT NULL DEFAULT 0,
  result_digest TEXT NOT NULL DEFAULT '', result_body TEXT NOT NULL DEFAULT '',
- usage TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
+ usage TEXT NOT NULL DEFAULT '', receipt_counters TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
  receipt_hash TEXT NOT NULL DEFAULT '', receipt_key TEXT NOT NULL DEFAULT '',
  claimant TEXT NOT NULL DEFAULT '', claim_key TEXT NOT NULL DEFAULT '',
  approval BIGINT NOT NULL DEFAULT 0, retry_of TEXT NOT NULL DEFAULT '',
@@ -103,6 +103,13 @@ CREATE TABLE IF NOT EXISTS operations (
  UNIQUE(run_id,step_key)
 );
 CREATE INDEX IF NOT EXISTS operations_cleanup ON operations(session_id,id) WHERE discarded=0;
+CREATE TABLE IF NOT EXISTS usage_evidence (
+ id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
+ operation_id TEXT NOT NULL REFERENCES operations(id), request_key TEXT NOT NULL,
+ request_hash TEXT NOT NULL, body TEXT NOT NULL, UNIQUE(operation_id,request_key)
+);
+CREATE INDEX IF NOT EXISTS usage_session ON usage_evidence(session_id,id);
+CREATE INDEX IF NOT EXISTS usage_operation ON usage_evidence(session_id,operation_id,id);
 CREATE INDEX IF NOT EXISTS allocations_transfer ON allocations(session_id,status,archive_key,sequence);
 CREATE INDEX IF NOT EXISTS operations_session ON operations(session_id,id);
 CREATE INDEX IF NOT EXISTS operations_pending ON operations(status,session_id,deadline_ms);

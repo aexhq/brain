@@ -124,6 +124,15 @@ export async function releaseOutputBudgets(m, operation) {
   }
 }
 
+export async function refineTokenBudgets(m, prior, difference, complete) {
+  const reserve = complete ? prior.token_reserve : 0, incomplete = complete ? 1 : 0;
+  for (const pool of await pools(m, prior.session_id)) {
+    m.change(`UPDATE budgets SET tokens=tokens+?,reserved_tokens=reserved_tokens-?,incomplete_usages=incomplete_usages-?
+WHERE id=? AND reserved_tokens>=? AND incomplete_usages>=?`,
+    [difference, reserve, incomplete, pool.id, reserve, incomplete], true);
+  }
+}
+
 export const budgetHandlers = {
   async Budget(db, [identifier]) {
     const values = await rows(db, query, [identifier]);

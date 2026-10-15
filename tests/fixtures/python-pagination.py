@@ -17,6 +17,6 @@ for page in session.export_pages():
         counts[key] += len(page[key])
     last = page
 assert counts == {"memory": 64, "interactions": 132, "files": 3, "connections": 3, "schedules": 3}, counts
-assert sections == {"history", "runs", "operations", "interactions", "connections", "files", "state", "memory", "schedules"}, sections
+assert sections == {"history", "runs", "operations", "interactions", "connections", "files", "state", "memory", "schedules", "usage"}, sections
 assert last["complete"] and not last["continuation"], last
 print("python-pagination: passed")

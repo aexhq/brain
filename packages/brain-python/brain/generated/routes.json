@@ -41,6 +41,8 @@
   "POST /v2/sessions/{session}/operations/{operation}/claim": "Claim",
   "POST /v2/sessions/{session}/operations/{operation}/receipt": "Receipt",
   "POST /v2/sessions/{session}/operations/{operation}/retry": "Retry",
+  "GET /v2/sessions/{session}/operations/{operation}/usage": "",
+  "POST /v2/sessions/{session}/operations/{operation}/usage": "UsageSupplement",
   "POST /v2/sessions/{session}/participants": "ParticipantGrant",
   "DELETE /v2/sessions/{session}/participants/{participant}": "",
   "GET /v2/sessions/{session}/records": "",

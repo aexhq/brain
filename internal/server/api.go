@@ -377,19 +377,9 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request, p kernel.Principa
 
 func (s *Server) receipt(w http.ResponseWriter, r *http.Request) {
 	err := func() error {
-		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !strings.HasPrefix(token, "r_"+r.PathValue("operation")+".") {
-			return kernel.Fail(wire.ErrorCodeUnauthorized, "receipt authority is invalid")
-		}
-		operation, err := s.Control.Operation(r.Context(), r.PathValue("session"), r.PathValue("operation"))
+		operation, err := s.receiptOperation(r)
 		if err != nil {
-			if kernel.Response(err).Code == wire.ErrorCodeNotFound {
-				return kernel.Fail(wire.ErrorCodeUnauthorized, "receipt authority is invalid")
-			}
 			return err
-		}
-		if !hmacEqual(token, s.receiptToken(operation)) {
-			return kernel.Fail(wire.ErrorCodeUnauthorized, "receipt authority is invalid")
 		}
 		receipt, err := readBody[wire.Receipt](s, w, r, "Receipt")
 		if err != nil {

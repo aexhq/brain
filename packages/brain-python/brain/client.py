@@ -177,6 +177,12 @@ class Session:
     def receipt(self, operation_id: str, receipt: wire.Receipt, receipt_token: str) -> wire.Operation:
         return self._request("POST", "/operations/" + _segment(operation_id) + "/receipt", receipt, token=receipt_token)
 
+    def report_usage(self, operation_id: str, request: wire.UsageSupplement, receipt_token: str | None = None) -> wire.Operation:
+        return self._request("POST", "/operations/" + _segment(operation_id) + "/usage", request, token=receipt_token)
+
+    def usage_evidence(self, operation_id: str, limit: int = 64, after: str = "") -> list[wire.UsageEvidence]:
+        return self._request("GET", f"/operations/{_segment(operation_id)}/usage?limit={limit}&after={_segment(after)}")
+
     def retry(self, operation_id: str, request: wire.Retry) -> wire.CommandReceipt:
         return self._request("POST", "/operations/" + _segment(operation_id) + "/retry", request)
 

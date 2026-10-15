@@ -45,6 +45,8 @@ mod contract {
         Claim,
         Execution,
         Receipt,
+        UsageSupplement,
+        UsageEvidence,
         Retry,
         InteractionCreate,
         Interaction,
@@ -223,6 +225,26 @@ write!(
     "/v2/sessions/{session}/operations/{operation}/receipt",
     contract::Receipt,
     contract::Operation
+);
+#[utoipa::path(
+    post,
+    path = "/v2/sessions/{session}/operations/{operation}/usage",
+    description = "Fill previously absent counters on a settled model operation. Requires the original receipt token or a tenant-scoped operator attestation. Existing values, outcome and original receipt identity cannot change; deleted-session evidence does not restore work.",
+    request_body = contract::UsageSupplement,
+    responses((status = 200, body = contract::Operation)),
+    security(("serverToken" = []))
+)]
+fn usage_report() -> (&'static str, &'static str) {
+    (
+        "post",
+        "/v2/sessions/{session}/operations/{operation}/usage",
+    )
+}
+paged!(
+    usage_evidence,
+    get,
+    "/v2/sessions/{session}/operations/{operation}/usage",
+    Vec<contract::UsageEvidence>
 );
 write!(
     retry,
@@ -439,7 +461,7 @@ read!(
 #[derive(OpenApi)]
 #[openapi(paths(
     identity, create, list, session, delete, input, command, records, internal_record, stream, budget, runs, children, child_result, operations,
-    operation, claim, receipt, retry, interactions, interact, answer, connections,
+    operation, claim, receipt, usage_report, usage_evidence, retry, interactions, interact, answer, connections,
     attach, revoke, state, state_put, state_delete, memory, memory_put, memory_delete,
     files, file_put, file_get, file_delete, schedules, schedule, unschedule, webhook,
     delegate, handoff, token, token_revoke, export, catalog, package, package_get,
@@ -471,6 +493,8 @@ pub fn openapi() -> Value {
         operation(),
         claim(),
         receipt(),
+        usage_report(),
+        usage_evidence(),
         retry(),
         interactions(),
         interact(),

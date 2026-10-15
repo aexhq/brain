@@ -274,20 +274,21 @@ type Execution struct {
 }
 
 type ExportManifest struct {
-	Complete     bool          `json:"complete"`
-	Connections  []Connection  `json:"connections"`
-	Continuation string        `json:"continuation"`
-	Files        []FileInfo    `json:"files"`
-	Format       string        `json:"format"`
-	History      RecordPage    `json:"history"`
-	Interactions []Interaction `json:"interactions"`
-	Memory       []Document    `json:"memory"`
-	Operations   []Operation   `json:"operations"`
-	Runs         []Run         `json:"runs"`
-	Schedules    []Schedule    `json:"schedules"`
-	Section      ExportSection `json:"section"`
-	Session      SessionView   `json:"session"`
-	State        []Document    `json:"state"`
+	Complete     bool            `json:"complete"`
+	Connections  []Connection    `json:"connections"`
+	Continuation string          `json:"continuation"`
+	Files        []FileInfo      `json:"files"`
+	Format       string          `json:"format"`
+	History      RecordPage      `json:"history"`
+	Interactions []Interaction   `json:"interactions"`
+	Memory       []Document      `json:"memory"`
+	Operations   []Operation     `json:"operations"`
+	Runs         []Run           `json:"runs"`
+	Schedules    []Schedule      `json:"schedules"`
+	Section      ExportSection   `json:"section"`
+	Session      SessionView     `json:"session"`
+	State        []Document      `json:"state"`
+	Usage        []UsageEvidence `json:"usage"`
 }
 
 type ExportSection string
@@ -302,6 +303,7 @@ const (
 	ExportSectionState        ExportSection = "state"
 	ExportSectionMemory       ExportSection = "memory"
 	ExportSectionSchedules    ExportSection = "schedules"
+	ExportSectionUsage        ExportSection = "usage"
 )
 
 type FileInfo struct {
@@ -815,6 +817,35 @@ type Usage struct {
 	ProviderUnavailable *UnavailablePayload `json:"provider_unavailable,omitempty"`
 }
 
+type UsageCounters struct {
+	CachedTokens *uint64 `json:"cached_tokens,omitempty"`
+	InputTokens  *uint64 `json:"input_tokens,omitempty"`
+	OutputTokens *uint64 `json:"output_tokens,omitempty"`
+}
+
+type UsageEvidence struct {
+	AcceptedMs  uint64        `json:"accepted_ms"`
+	Counters    UsageCounters `json:"counters"`
+	ID          string        `json:"id"`
+	OperationID string        `json:"operation_id"`
+	RequestID   string        `json:"request_id"`
+	SessionID   string        `json:"session_id"`
+	Source      UsageSource   `json:"source"`
+	Subject     string        `json:"subject"`
+}
+
+type UsageSource string
+
+const (
+	UsageSourceReceipt  UsageSource = "receipt"
+	UsageSourceOperator UsageSource = "operator"
+)
+
+type UsageSupplement struct {
+	Counters  UsageCounters `json:"counters"`
+	RequestID string        `json:"request_id"`
+}
+
 type Wait struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"`
@@ -863,6 +894,8 @@ var Routes = map[string]string{
 	"POST /v2/sessions/{session}/operations/{operation}/claim":      "Claim",
 	"POST /v2/sessions/{session}/operations/{operation}/receipt":    "Receipt",
 	"POST /v2/sessions/{session}/operations/{operation}/retry":      "Retry",
+	"GET /v2/sessions/{session}/operations/{operation}/usage":       "",
+	"POST /v2/sessions/{session}/operations/{operation}/usage":      "UsageSupplement",
 	"POST /v2/sessions/{session}/participants":                      "ParticipantGrant",
 	"DELETE /v2/sessions/{session}/participants/{participant}":      "",
 	"GET /v2/sessions/{session}/records":                            "",

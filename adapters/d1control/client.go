@@ -276,6 +276,14 @@ func (s *Store) DiscardDeletedResults(ctx context.Context, limit int) (value int
 	err = s.call(ctx, "DiscardDeletedResults", []any{limit}, &value)
 	return
 }
+func (s *Store) ReportUsage(ctx context.Context, session, operation string, request wire.UsageSupplement, reporter control.UsageReporter) (value control.Operation, err error) {
+	err = s.call(ctx, "ReportUsage", []any{session, operation, request, reporter}, &value)
+	return
+}
+func (s *Store) UsageEvidence(ctx context.Context, session, operation string, limit int, after ...string) (value []wire.UsageEvidence, err error) {
+	err = s.call(ctx, "UsageEvidence", []any{session, operation, limit, control.After(after)}, &value)
+	return
+}
 func (s *Store) BindResult(ctx context.Context, session string, owner control.Owner, id string, sequence int64, digest string) error {
 	return s.call(ctx, "BindResult", []any{session, owner, id, sequence, digest}, nil)
 }

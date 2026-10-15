@@ -766,6 +766,12 @@
             "$ref": "#/$defs/Document"
           },
           "type": "array"
+        },
+        "usage": {
+          "items": {
+            "$ref": "#/$defs/UsageEvidence"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -780,6 +786,7 @@
         "state",
         "memory",
         "schedules",
+        "usage",
         "history",
         "complete",
         "continuation"
@@ -796,7 +803,8 @@
         "files",
         "state",
         "memory",
-        "schedules"
+        "schedules",
+        "usage"
       ],
       "type": "string"
     },
@@ -2431,6 +2439,97 @@
           "$ref": "#/$defs/UnavailablePayload"
         }
       },
+      "type": "object"
+    },
+    "UsageCounters": {
+      "additionalProperties": false,
+      "properties": {
+        "cached_tokens": {
+          "format": "uint64",
+          "maximum": 1099511627776,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "input_tokens": {
+          "format": "uint64",
+          "maximum": 1099511627776,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "output_tokens": {
+          "format": "uint64",
+          "maximum": 1099511627776,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "UsageEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "counters": {
+          "$ref": "#/$defs/UsageCounters"
+        },
+        "id": {
+          "type": "string"
+        },
+        "operation_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/UsageSource"
+        },
+        "subject": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "session_id",
+        "operation_id",
+        "request_id",
+        "source",
+        "subject",
+        "counters",
+        "accepted_ms"
+      ],
+      "type": "object"
+    },
+    "UsageSource": {
+      "enum": [
+        "receipt",
+        "operator"
+      ],
+      "type": "string"
+    },
+    "UsageSupplement": {
+      "additionalProperties": false,
+      "properties": {
+        "counters": {
+          "$ref": "#/$defs/UsageCounters"
+        },
+        "request_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "counters"
+      ],
       "type": "object"
     },
     "Wait": {
