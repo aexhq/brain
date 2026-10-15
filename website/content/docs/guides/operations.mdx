@@ -1,0 +1,32 @@
+---
+title: Operations & observability
+description: Health, bounded admission, telemetry, and deployment ownership.
+---
+
+## Health
+
+`GET /health/live` returns `{"status":"ok"}`. `GET /health/ready` returns `{"status":"ready"}` or HTTP 503 with `{"status":"not_ready"}` when admission is unavailable, including synchronization backlog pressure or shutdown drain.
+
+Health checks and SSE keepalives never enter model context or invoke inference. Quiet tools remain quiet until they return or reach their timeout.
+
+## Admission
+
+Configure active execution, loaded sessions, input queues, storage bytes, and observer buffers through [host limits](/docs/reference/configuration). Overload rejects new work with HTTP 429 and `Retry-After: 1`.
+
+The checkpoint worker retries storage operations with bounded backoff. It never retries tool actions. Pending data remains local; machine failure can lose anything not externally published.
+
+## Telemetry
+
+Logs use structured JSON and omit request bodies. HTTP responses carry `X-Request-ID`; error bodies also contain `request_id`.
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` for OTLP/HTTP traces and metrics. Exporters are optional and bounded. Measurements cover request latency/errors, input delay, first assistant output, runner startup, active execution, tool duration/outcomes, state growth, and synchronization backlog/failures.
+
+Metrics avoid tenant/session labels. Traces identify sessions; apply your platform's collector access and retention policy. There is no Prometheus `/metrics` endpoint.
+
+## Containers and ownership
+
+The Dockerfile packages Brain and Pi as an unprivileged process. Mount configuration at `/config/brain.json`, set `listen` to `0.0.0.0:8080`, and use `/data` for state.
+
+Your platform owns routing, placement, cross-instance ownership, scaling, and regional failover. Keep one active owner per session. PostgreSQL discovery does not provide a lease or prevent concurrent owners.
+
+Use the [handoff procedure](/docs/guides/persistence) before replacing an owner. Thousands of concurrent sessions remain a design target, not a current qualification claim.

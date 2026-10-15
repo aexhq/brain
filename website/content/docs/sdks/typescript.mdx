@@ -1,0 +1,61 @@
+---
+title: TypeScript SDK
+description: Create sessions and consume events with an async iterator.
+---
+
+The client ships in this repository. Its package is private and is not a published npm release.
+
+```sh
+npm --prefix sdks/typescript ci --ignore-scripts
+npm --prefix sdks/typescript run build
+```
+
+## Conversation
+
+Run this `.mjs` file from the repository root, with Brain running:
+
+```js
+import { Brain } from './sdks/typescript/dist/index.js';
+
+const brain = new Brain('http://127.0.0.1:8080', process.env.BRAIN_API_KEY);
+const session = await brain.create({
+  harness: 'pi',
+  config: { model: 'openai/gpt-4.1-mini', tools: [] },
+});
+const input = await brain.send(session.id, {
+  type: 'user.message', text: 'Explain append-only storage.', key: 'message-1',
+});
+for await (const event of brain.observe(session.id)) {
+  if (event.type === 'assistant.message') console.log(event.data.text);
+  if (event.input_id === input.id && event.type === 'session.status'
+      && ['idle', 'failed', 'interrupted', 'closed'].includes(event.data.status)) break;
+}
+```
+
+In TypeScript, `event.data` is `unknown`: narrow it using the event type and expected shape. See the [event reference](/docs/reference/events). An input acknowledgement is not the model response.
+
+## Methods
+
+| Method | Result / purpose |
+| --- | --- |
+| `create(input, signal?)` | New `Session`. |
+| `get(id, signal?)` | Current `Session`. |
+| `list(after?, limit?)` | Object containing `sessions`. |
+| `send(id, input, signal?)` | Accepted message `Event`; use `interrupt` for interruption. |
+| `history(id, after?, limit?)` | `events` and `next_cursor`. |
+| `observe(id, { after?, signal? }?)` | Async iterator of events. |
+| `interrupt(id)` | Request interruption. |
+| `resume(id)` | Resume from the saved boundary. |
+| `close(id)` | Request terminal closure. |
+| `flush(id, signal?)` | Publish and return `SyncStatus`. |
+| `sync(id)` | Current `SyncStatus`. |
+| `restore(id, checkpoint, signal?)` | Restore a session. |
+| `catalog()` | Object containing authorized `tools`. |
+
+The constructor accepts a third `fetch` argument for instrumentation or testing. Wire types are generated from Go.
+
+## Reconnect and errors
+
+Retain the last nonempty `cursor` and pass it as `after` when reconnecting. The iterator does not reconnect automatically. An `AbortSignal` stops observation without stopping execution.
+
+HTTP errors throw `BrainError` with `status`, `code`, and optional `requestId`. Tool errors arrive as events. Default request timeout is 30 seconds; flush/restore use 60 seconds. Streaming has no overall timeout. Requests are not automatically retried and redirects are rejected.

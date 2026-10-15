@@ -1,0 +1,24 @@
+---
+title: Persistence adapters
+description: Publish checkpoint objects and discover sessions without joining the hot path.
+---
+
+## Objects
+
+`Objects` exposes `Put(ctx, key, bytes, immutable)` and `Get(ctx, key)`. Immutable writes must never replace an existing object. An existing key can count as an already completed write; the archive supplies generation-scoped keys. Missing objects and provider errors must be distinguishable enough for archive recovery and retry policy.
+
+Keys are scoped by Brain's archive; enforce the configured storage prefix. Do not permit path traversal in a filesystem implementation. The existing adapters bound object sizes to 2 MiB.
+
+The archive writes immutable 64 KiB blocks and bounded partial tails, then publishes a manifest only after its dependencies exist. It publishes the latest pointer and optional metadata index afterward. A failed upload can leave unreachable objects, but must not expose a partially readable checkpoint.
+
+## Metadata
+
+`Metadata` exposes `Put`, `Get`, `List`, and `Close`. Reads and lists are tenant-scoped. Ordering and pagination use session IDs. PostgreSQL is an eventual discovery index; it is not an execution lock, transaction coordinator, or authoritative owner election service.
+
+See the [generated interface declarations](/docs/adapters/interfaces) for exact signatures.
+
+## Integration evidence
+
+Exercise immutable-write retries, interrupted publication, missing objects, tenant isolation, backlog pressure, and restore into an empty cache. Verify the next real harness request after relocation, not only that uploaded bytes match.
+
+Filesystem paths are covered locally; PostgreSQL runs in CI. S3/R2 transport tests do not substitute for live cloud-account qualification. Retention, replication, and collection of unreachable objects remain operator concerns. Keep every object referenced by a retained checkpoint.

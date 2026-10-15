@@ -1,0 +1,48 @@
+---
+title: Development & verification
+description: Build locally, run all checks, and contribute documentation from source.
+---
+
+## Repository checks
+
+Install runner, client, and documentation dependencies, then run the complete checks from the repository root:
+
+```sh
+npm --prefix runners/pi ci --ignore-scripts
+npm --prefix sdks/typescript ci --ignore-scripts
+npm --prefix website ci --ignore-scripts
+node scripts/check.mjs
+```
+
+Checks include generated contract drift, Go tests/vet, Pi recording-provider integration, TypeScript/Python clients, user journeys, and the static documentation build and integrity checks. CI covers Linux and Windows; Linux also runs the race detector, PostgreSQL contracts, and Docker smoke tests.
+
+Journeys exercise actual server processes, Pi, external tools, approvals, cancellation, reconnect, tenant isolation, overload, process death, recovery, and telemetry failures. Recording-provider tests need no model credentials; they do not claim live model or cloud qualification.
+
+## Work on the docs
+
+```sh
+npm --prefix website run dev
+```
+
+Open `http://127.0.0.1:3000/docs`. Guides live in `website/content/docs`; Fumadocs compiles their Markdown/MDX and builds search. API pages, Go interfaces, the Pi catalog, and shared persistence/tool guides are generated before development and production builds.
+
+```sh
+npm --prefix website run build
+npm --prefix website test
+npm --prefix website start
+```
+
+The production output is `website/out`. It can be hosted as static files. `start` uses Python's local HTTP server for review, not a production application server.
+
+## Source of truth
+
+| Content | Edit here |
+| --- | --- |
+| API operations and response types | `internal/api/contract.go` and Go wire types; run `go run ./cmd/generate`. |
+| Harness/persistence interfaces | Go interface declarations. |
+| Model inventory | Pinned Pi dependencies and offline runtime policy. |
+| Persistence guide | `docs/running-persistence.md`. |
+| Local tool walkthrough | `examples/tools/README.md`. |
+| Usage guides and explanations | `website/content/docs`. |
+
+Generated site content is not checked in. Build checks reject missing pages, broken local links, and stale published contracts. Keep dependencies pinned and make server, runner, client, and documentation changes together.

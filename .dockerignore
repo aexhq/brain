@@ -6,4 +6,5 @@ brain.json
 **/node_modules
 **/dist
 bin
+website
 

@@ -1,0 +1,64 @@
+---
+title: Host configuration
+description: Configure the listener, grants, harnesses, providers, tools, and bounds.
+---
+
+Pass a JSON file with `go run ./cmd/brain -config brain.json`. Add `-check` to validate without starting the listener. Unknown fields and trailing JSON are rejected. Paths are relative to the process working directory.
+
+## Minimal configuration
+
+```json
+{
+  "listen": "127.0.0.1:8080",
+  "public_url": "http://127.0.0.1:8080",
+  "data_dir": ".brain",
+  "tokens": [{ "token_env": "BRAIN_API_KEY", "tenant": "local", "manage": true }],
+  "harnesses": { "pi": { "command": ["node", "runners/pi/dist/main.js"] } },
+  "providers": { "openai": { "api_key_env": "OPENAI_API_KEY" } },
+  "tools": []
+}
+```
+
+| Field | Purpose |
+| --- | --- |
+| `listen` | Host:port. Defaults to `127.0.0.1:8080`. |
+| `public_url` | Brain URL passed to scoped inspection tools. Defaults to `http://127.0.0.1:8080`. |
+| `data_dir` | SQLite and local session files. Defaults to `.brain`. |
+| `tokens` | [Tenant/session grants](/docs/guides/authentication), with credentials named by environment variable. |
+| `harnesses` | Harness name to command array; at least one is required. |
+| `providers` | Provider name to `api_key_env`, optional `base_url` and `api`. |
+| `tools` | Host-owned [tool bindings](/docs/tools). |
+| `limits` | Optional resource limits below. Omitted fields retain defaults. |
+| `persistence` | Optional external checkpoint configuration below. |
+
+Provider keys must be present for every configured provider. Session model IDs use `provider/model`. Credentials are not model arguments or saved native context.
+
+## Resource limits
+
+| `limits` field | Default | Constraint / meaning |
+| --- | ---: | --- |
+| `active` | 16 | At least 1 active execution slot. |
+| `loaded` | 1024 | At least `active`; loaded session entries. |
+| `queue` | 16 | 1–1024 queued inputs per session. |
+| `input_bytes` | 65536 | 1–1,048,576; input text bound. |
+| `session_bytes` | 1073741824 | At least 16 MiB; per-session storage bounds. |
+| `subscribers` | 128 | At least 1 concurrent SSE observer. |
+| `subscriber_events` | 128 | At least 1 queued event per observer. |
+| `subscriber_bytes` | 2097152 | At least 4096 queued bytes per observer. |
+
+These are configured bounds, not measured throughput guarantees. See [operations](/docs/guides/operations).
+
+## External persistence
+
+| Field | Purpose |
+| --- | --- |
+| `provider` | `filesystem`, `s3`, or `r2`. |
+| `directory` | Required for filesystem storage. |
+| `bucket` | Required for S3/R2. |
+| `region`, `endpoint`, `prefix` | Storage location and optional key prefix. R2 requires an endpoint and defaults to region `auto`. |
+| `access_key_env`, `secret_key_env` | Names of credential variables; required for R2. S3 also supports the AWS SDK credential chain. |
+| `postgres_env` | Optional variable containing the PostgreSQL connection string. |
+| `interval_seconds` | Default 5; range 1–3600. |
+| `queue` | Default 128; range 1–10,000 pending session references. |
+
+Read [persistence and recovery](/docs/guides/persistence) for publication, retries, and handoff. S3/R2 adapters have transport tests; live cloud-account qualification remains pending.

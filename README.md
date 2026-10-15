@@ -36,13 +36,24 @@ The [local tool service](examples/tools/README.md) includes echo, scoped inspect
 
 Recovery loads saved native context without invoking a model. After interruption, explicitly resume before sending new input. Recovery can discard native work beyond the last completed checkpoint; observed history remains available. Remote side effects are not rolled back. Cache warming and native local tools are disabled. Read the [architecture](docs/adr/0001-local-first-session-server.md) for ownership and durability boundaries.
 
+## Documentation
+
+The [Fumadocs site](website/README.md) includes quickstart and usage guides, HTTP API reference, events, configuration, SDKs, model inventory, and adapter interfaces. To browse it locally:
+
+```powershell
+npm --prefix website ci --ignore-scripts
+npm --prefix website run dev
+```
+
+Open `http://127.0.0.1:3000/docs`. The build generates API pages from the Go-owned OpenAPI contract, interfaces from Go declarations, and model inventory from the pinned Pi runtime. It publishes static files without adding a Brain runtime dependency.
+
 ## Checks
 
 ```powershell
 node scripts/check.mjs
 ```
 
-The checks require both npm installations above and Python 3.11+. They build clients/runners, verify generated contracts, run Go tests/vet, exercise the actual Pi SDK against a recording model provider, and test both clients. The [user journey suite](tests/journeys/README.md) runs actual server processes and both SDKs through conversations, tools/approvals, interruption, streaming, tenant isolation, process death, storage recovery, overload, and telemetry failures. Linux and Windows CI require these journeys. Linux CI also runs Go's race detector and PostgreSQL contracts. Portable-state tests restore into an empty cache and verify the next real Pi request preserves the saved prefix. Live cloud/provider verification is separate from recording-provider and SDK transport tests and requires configured credentials.
+The checks require all three npm installations above and Python 3.11+. They build clients/runners and documentation, verify generated contracts and site links, run Go tests/vet, exercise the actual Pi SDK against a recording model provider, and test both clients. The [user journey suite](tests/journeys/README.md) runs actual server processes and both SDKs through conversations, tools/approvals, interruption, streaming, tenant isolation, process death, storage recovery, overload, and telemetry failures. Linux and Windows CI require these journeys. Linux CI also runs Go's race detector and PostgreSQL contracts. Portable-state tests restore into an empty cache and verify the next real Pi request preserves the saved prefix. Live cloud/provider verification is separate from recording-provider and SDK transport tests and requires configured credentials.
 
 Generate API and runner declarations with `go run ./cmd/generate`. [OpenAPI](api/openapi.json) is generated from Go types and route declarations. Clean breaks are the default; dependency pins and standard document metadata do not imply API compatibility.
 

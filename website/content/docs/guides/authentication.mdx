@@ -1,0 +1,35 @@
+---
+title: Authentication & tenants
+description: Host-owned grants keep sessions and tools scoped to their caller.
+---
+
+Session and catalog endpoints require `Authorization: Bearer TOKEN`. Health endpoints are public. The host maps tokens to grants:
+
+```json
+{"tokens":[{"token_env":"BRAIN_API_KEY","tenant":"local","manage":true}]}
+```
+
+Use random tokens of at least 24 bytes, stored in environment variables. Static grants load at startup; restart Brain to change them.
+
+## Grants
+
+| Field | Effect |
+| --- | --- |
+| `tenant` | Required identity; requests cannot select another tenant. |
+| `session` | Optional restriction to one session ID. |
+| `manage` | Permits lifecycle management, subject to session scope. |
+| `read_only` | Rejects non-GET requests, including messages and interrupts. |
+
+Keep management credentials on your backend. Your platform owns user authentication and decides which grants to use. Brain does not issue user accounts or integrate an identity provider.
+
+Cross-tenant lookups return `not_found`. The catalog exposes only tools allowed for the caller's tenant; sessions can select only those names.
+
+## Tool scope
+
+Brain supplies authenticated `tenant_id`, `session_id`, and `call_id` outside model arguments. Tools must authenticate Brain's request and enforce their own resource authorization.
+
+Bindings with `inspect_session: true` receive a short-lived, read-only credential for the calling session. Brain revokes it when the invocation ends. It grants neither cross-session visibility nor lifecycle management.
+
+## Transport
+
+Use a trusted HTTPS ingress outside local development. Brain has no browser CORS policy or cookie authentication. Documentation examples target backend clients and terminals; there is no credential-forwarding documentation proxy.

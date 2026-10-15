@@ -1,0 +1,80 @@
+---
+title: Distributed tools
+description: A language-neutral contract for tools that run outside Brain.
+---
+
+## Bind a tool
+
+The host owns descriptors, endpoints, tenant access, and credentials. Add a binding to its `tools` array:
+
+```json
+{
+  "name": "echo",
+  "description": "Return the supplied text.",
+  "input_schema": {
+    "type": "object",
+    "properties": { "text": { "type": "string" } },
+    "required": ["text"],
+    "additionalProperties": false
+  },
+  "url": "http://127.0.0.1:8081/tools/echo",
+  "token_env": "BRAIN_TOOLS_KEY",
+  "tenants": ["local"],
+  "timeout_seconds": 300,
+  "max_output_bytes": 1048576
+}
+```
+
+Use your service's actual endpoint. `GET /catalog` returns authorized descriptors, without credentials or bindings. Select names with `config.tools`; only those definitions enter the harness.
+
+Names start with a letter and contain up to 64 letters, digits, or underscores. Descriptors require a description, input schema, URL, and tenant allowlist. External schema references are disabled. Optional `output_schema` validates the complete result envelope.
+
+## Receive a call
+
+Brain POSTs JSON to the endpoint, using Bearer authentication when `token_env` is set:
+
+```json
+{
+  "tenant_id": "local",
+  "session_id": "SESSION_ID",
+  "call_id": "HARNESS_CALL_ID",
+  "arguments": { "text": "hello" }
+}
+```
+
+Authenticate the request before trusting its scope. Model arguments must never override the authenticated tenant or session. See [local tools](/docs/tools/local-tools) for scoped inspection.
+
+## Return JSON or SSE
+
+A synchronous response uses `Content-Type: application/json`:
+
+```json
+{"content":[{"type":"text","text":"hello"}]}
+```
+
+A waiting service may use `Content-Type: text/event-stream`, with zero or more progress frames followed by one result:
+
+```text
+event: progress
+data: {"message":"Waiting for the operator"}
+
+event: result
+data: {"content":[{"type":"text","text":"Approved"}]}
+
+```
+
+Progress is observation data, not a completed model tool result. The harness decides when to continue inference. Brain does not wake models to poll progress or keep caches warm.
+
+Text uses `type: "text"` and `text`. Images use `type: "image"`, base64 `data`, and `mime_type`. The current Pi adapter accepts these two types.
+
+## Failure and cancellation
+
+Return `is_error: true` for denial or another tool error. Transport errors, invalid responses, and timeouts also become tool results. `unknown_outcome: true` means an action may have happened without Brain receiving a trustworthy result.
+
+Brain never automatically replays tool requests. The service owns idempotency, jobs, approvals, and cleanup. Cancelling HTTP cannot prove a remote side effect was undone.
+
+A long-running service can wait within its timeout or return a job handle with status/cancel tools. The timeout defaults to 300 seconds, configurable from 1 to 86,400. Output defaults to 1 MiB and is capped at 2 MiB.
+
+## Current catalog
+
+External examples implement `echo`, `inspect_session`, and `ask_approval`. Dedicated search/fetch, storage-resource tools, compute, and sandboxes are planned. S3/R2 checkpoint adapters are persistence integrations, not agent-facing storage tools.

@@ -1,0 +1,55 @@
+---
+title: Events & streaming
+description: Understand retained history, provisional output, and reconnection.
+---
+
+## Event envelope
+
+```json
+{
+  "id": "EVENT_ID",
+  "type": "assistant.message",
+  "time": "2026-10-15T12:00:00Z",
+  "input_id": "ACCEPTED_INPUT_EVENT_ID",
+  "data": { "text": "Hello" },
+  "cursor": "OPAQUE_CURSOR"
+}
+```
+
+`id` identifies the event. `input_id`, when present, associates output with accepted input. `cursor` is a resume position attached to retained events; do not derive one from the event ID or assume an ordering from IDs. The example uses symbolic IDs for readability.
+
+## Types
+
+| Type | Data | Retained? |
+| --- | --- | --- |
+| `user.message` | Accepted input: `type`, `text`, optional `delivery` and `key`. | Yes |
+| `assistant.delta` | `text` fragment. | No |
+| `assistant.message` | Complete `text`; Pi also supplies `usage` and `stop_reason`. | Yes |
+| `tool.call` | `id`, `name`, `arguments`. | Yes |
+| `tool.progress` | `call_id` and tool-defined JSON `data`. | No |
+| `tool.result` | `call_id` and `result` with `content`, optional `is_error`, `unknown_outcome`. | Yes |
+| `session.status` | `status`: idle, running, interrupted, failed, or closed. | Yes |
+| `session.error` | `code` and `message`. | Yes |
+
+The event envelope is generated from Go. Payloads remain open JSON in the SDK types; the table documents the current emitted forms. Pi usage details are harness-owned rather than a normalized billing contract.
+
+## SSE wire format
+
+```text
+id: OPAQUE_CURSOR
+event: assistant.message
+data: {"id":"EVENT_ID","type":"assistant.message","time":"2026-10-15T12:00:00Z","data":{"text":"Hello"},"cursor":"OPAQUE_CURSOR"}
+
+: keepalive
+
+```
+
+Each frame ends with a blank line. `data` contains the complete JSON envelope. Provisional events omit the SSE `id`. Keepalive comments occur approximately every 15 seconds and never cause model activity.
+
+## Reconnection
+
+Retain the last cursor-bearing event. Reconnect with `?after=CURSOR` or `Last-Event-ID: CURSOR`. Replay excludes that event, then follows subsequent output. Provisional fragments from the lost connection cannot be replayed; retained assistant messages provide the complete text.
+
+If restore lost the referenced tail, the server returns `409 cursor_unavailable`. Fetch retained history from the beginning and reconcile it with your UI. Do not silently interpret a missing cursor as a fresh conversation.
+
+Observers remain connected across completed turns until the connection is closed. A slow consumer can be disconnected to keep buffers bounded. Closing observation does not cancel the agent; submit an explicit interrupt to do that.

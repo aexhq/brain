@@ -1,0 +1,37 @@
+---
+title: Errors
+description: Keep client rejections, tool failures, and execution failures distinct.
+---
+
+## HTTP errors
+
+```json
+{"error":{"code":"conflict","message":"resume the interrupted session before sending input"},"request_id":"REQUEST_ID"}
+```
+
+Every response carries `X-Request-ID`. Preserve it when reporting a problem.
+
+| HTTP | Code | Action |
+| --- | --- | --- |
+| 400 | `invalid_request` | Correct JSON or field values. |
+| 401 | `forbidden` | Supply a valid Bearer token. |
+| 403 | `forbidden` | Use a grant authorized for this operation. |
+| 404 | `not_found` | Check identity and scope; another tenant's sessions are hidden. |
+| 409 | `conflict` | Resolve lifecycle or idempotency-key conflict. |
+| 409 | `cursor_unavailable` | Re-read retained history and reconcile missing tail data. |
+| 413 | `invalid_request` | Reduce the request body. |
+| 422 | `unsupported` | Use an implemented/configured capability. |
+| 429 | `overloaded` | Respect `Retry-After: 1`; reduce admission pressure. |
+| 500 | `brain_error` | Investigate server logs with the request ID. |
+
+Rejecting an invalid client request does not terminate a healthy session. Clients do not automatically retry requests.
+
+## Tool errors
+
+Tool denial, timeout, malformed output, or transport failure is delivered as `tool.result` with `result.is_error`. The harness/model decides what to do next. `unknown_outcome` means the remote action may already have occurred. Automatic retries can duplicate effects, so the tool service owns safe retry policy.
+
+## Execution errors
+
+`session.error` identifies execution failure separately from tool results. A `brain_error` means Brain could not maintain trustworthy execution, such as a broken runner protocol or failed append. `provider_error` identifies a model-provider failure. Follow the session status, address the cause, and explicitly resume where allowed.
+
+Interrupting queued input can also produce `session.error` with `conflict`. Inspect its `input_id`; not every error event denotes a server defect.

@@ -1,0 +1,34 @@
+---
+title: Harness adapters
+description: Keep the native model loop behind a small execution interface.
+---
+
+## Lifecycle
+
+`Factory.Open` receives a session directory, frozen configuration, selected tool descriptors, provider credentials, and callbacks for output and tool calls. It returns a `Runner` with `Prompt`, `Steer`, `Interrupt`, `Checkpoint`, and `Close`. See the exact [generated interfaces](/docs/adapters/interfaces).
+
+Opening restored state must be passive. It must not invoke inference, replay tool actions, or start cache warming. `Prompt` returns only after the harness settles. A completed checkpoint contains the native files needed for the next turn, excluding credential directories.
+
+## Process protocol
+
+The current process adapter exchanges newline-delimited JSON on stdin/stdout. Stdout belongs exclusively to the protocol; use stderr for diagnostics without secrets or model payloads.
+
+```json
+{"id":"REQUEST_ID","method":"prompt","params":{"text":"Hello"}}
+```
+
+Replies reuse `id` and contain `result` or `error`. Events use `event` and `data`. Tool calls are reverse requests with `method: "tool.call"`; Brain authenticates and dispatches them to the bound external service, then replies with the correlated result.
+
+Supported request methods are `open`, `prompt`, `steer`, `interrupt`, and `checkpoint`. The process is terminated on close. `RunnerFrame` and the generated TypeScript declarations define the current wire shape. Frames are capped at 4 MiB; concurrent tool work is bounded.
+
+## Ownership and isolation
+
+The harness owns context selection, compaction, and when the model continues after a tool result. Brain owns admission, cancellation, transport, and local event persistence. Ordinary tool errors are results; malformed protocol or failed output persistence stops execution.
+
+Disable ambient local tools and ensure the selected tool names match the supplied descriptors. The Pi adapter also disables local extensions, skills, context-file discovery, and cache warming. Child processes inherit process necessities rather than arbitrary host secrets.
+
+## Recovery and conformance
+
+Checkpoints report relative paths, byte sizes, and whether files are append-only. The external archive currently requires append-only native state. Preserve each captured prefix until publication finishes; do not mutate an earlier prefix in place.
+
+Verify an adapter with real native sessions: passive reopen, the next model request after restore, stable context across relocation, tool-error handling, interruption during tool waits, and rejection of unselected local tools. Steering is disabled in current host wiring even though Pi exposes a native steering operation.

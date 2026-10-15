@@ -1,0 +1,36 @@
+---
+title: Models & providers
+description: Choose a model from the pinned harness catalog and bind host credentials.
+---
+
+## Selection
+
+Set `config.model` to `provider/model`, for example `openai/gpt-4.1-mini`. Configure that provider on the host with `api_key_env`. Brain validates the provider at creation; Pi resolves the model when its runner opens. Unknown model IDs fail explicitly.
+
+The [generated catalog](/docs/reference/model-catalog) is extracted from the pinned Pi runtime with network refresh disabled. It is an inventory, not a promise that every listed provider's authentication or transport is integrated and tested in Brain.
+
+## Current evidence
+
+| Area | Status |
+| --- | --- |
+| Pi harness | Implemented with native completed-turn recovery and external tools. |
+| OpenAI-shaped requests | Exercised with `openai/gpt-4.1-mini` against a local recording provider. |
+| Live provider accounts | Not qualified by the credential-free test suite. |
+| Other catalog entries | Supplied by Pi; validate their transport, auth, and reasoning settings before relying on them. |
+| Codex / OpenCode | Planned adapters; not selectable built-in implementations. |
+
+Brain currently supplies API-key credentials. OAuth login flows and ambient credentials used by some Pi providers are not automatically available: child processes do not inherit arbitrary host credentials.
+
+## Reasoning effort
+
+Brain accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`, or omission. Pi uses `off` when omitted. The selected model must accept the requested level; if Pi changes it, the runner fails instead of silently substituting another value. Accepted API values do not imply every model supports every level.
+
+## Custom endpoints
+
+A host provider can set `base_url` and `api`. These override an existing catalog model; they do not add arbitrary model IDs. Choose a catalog entry and transport that match your endpoint. Brain has no public model-discovery endpoint yet; `/catalog` lists tools only.
+
+## Recovery and prompt caches
+
+Model, instructions, effort, and tool definitions are frozen at creation. Native state is restored alongside visible history to preserve execution context. Brain avoids unnecessary prefix changes and disables cache warming, but provider cache retention and harness prompt construction remain outside Brain's control.
+
+Recovering a session never guarantees a provider prompt-cache hit. Dynamic configuration is planned, not implemented in this preview.

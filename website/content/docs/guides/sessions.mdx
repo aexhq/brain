@@ -1,0 +1,44 @@
+---
+title: Session lifecycle
+description: Create, queue, observe, interrupt, and resume.
+---
+
+## Create a session
+
+A session belongs to one tenant and selects one configured harness. Provide `config.model`, optional instructions and reasoning effort, and the names of its tools. Harness, tenant, and configuration stay fixed for this preview.
+
+Creation saves metadata without calling a model. A runner starts when execution needs it. Brain permits one active execution per session, with a bounded input queue.
+
+## Send input
+
+Submit `user.message` with nonempty `text`. Omit `delivery` or use `queue`. Input accepted during a turn waits. Explicit `steer` currently returns `unsupported`.
+
+An optional `key` makes identical input retries idempotent within retained history. Reusing a key with different input returns `conflict`. This does not make external tool actions idempotent or preserve keys lost with an unsynchronized tail.
+
+## Observe execution
+
+Read JSON history or subscribe to SSE. Retain durable event cursors for reconnect. `assistant.delta` and `tool.progress` are provisional. The complete `assistant.message` contains text to retain.
+
+An assistant message may precede tool calls and more messages. Wait for a terminal status for the accepted input rather than assuming the first assistant message ends execution.
+
+| Status | Meaning |
+| --- | --- |
+| `idle` | Ready for input; the previous turn has settled. |
+| `running` | Executing, including waiting for a tool. |
+| `interrupted` | Stopped; explicitly resume before sending input. |
+| `failed` | Inspect `session.error`, address the cause, then resume. |
+| `closed` | Terminal; cannot resume. |
+
+## Interrupt and resume
+
+Send `user.interrupt` or use the SDK's `interrupt` method. Interrupt accepts no message fields. The acknowledgement requests interruption; observe the resulting status. Queued inputs that did not run receive error events.
+
+Once execution settles, call `resume`. Recovery selects the last completed native checkpoint and may discard later native work. Observed history remains available. Resume alone does not call a model; send a new message to continue.
+
+Disconnecting an observer does not interrupt execution. Slow observers may be disconnected when their buffers fill; reconnect using the last retained cursor.
+
+## Close a session
+
+`close` requests terminal closure and stops pending work. It does not delete history, roll back tool actions, or remove remote resources. Cleanup belongs to the external tool service.
+
+Arbitrary rewind and configuration updates are not exposed in the current API. [External restore](/docs/guides/persistence) uses a complete checkpoint and requires management access.

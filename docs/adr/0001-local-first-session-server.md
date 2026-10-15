@@ -1,6 +1,7 @@
 # ADR 0001 Local first ephemeral session server
 
-Status: Accepted direction; implementation pending  
+Status: Accepted; local preview implemented, further delivery tracked in the roadmap
+
 Date: 2026-10-15
 
 Brain is a standalone agent server for developers building agent platforms for their users. It provides fast session execution and external integrations. The surrounding platform owns placement, cross-instance session ownership, autoscaling, and failover. Losing state that has not reached external storage when a machine dies is acceptable.

@@ -1,0 +1,35 @@
+---
+title: Architecture
+description: Fast local execution with clear ownership boundaries.
+---
+
+## The execution path
+
+Your application sends authenticated HTTP requests to a Go server. Brain records accepted input locally, admits it through a bounded session queue, and starts or reuses the selected harness process. Pi owns model requests and context management.
+
+Tool calls travel back through Brain to an authorized HTTP/SSE service. A result becomes native harness context; the harness decides when to continue. Brain publishes durable events and provisional stream output for observers.
+
+## Working state and external state
+
+SQLite stores session metadata. Local append-only files hold event history and native harness state. A completed turn establishes the resumable native boundary.
+
+Optional background workers publish immutable checkpoint blocks and an eventual external session index. They have small queues, bounded retries, and admission backpressure. They never retry agent tool actions or poll the model.
+
+Local acceptance is not an external durability promise. Machine loss can discard an unsynchronized tail. Restore uses a complete published checkpoint and never silently invents a new session when saved state is unusable.
+
+## Keep responsibilities small
+
+| Component | Owns |
+| --- | --- |
+| Brain | Session coordination, scope, event/tool transport, bounded admission, working state, persistence integration, telemetry. |
+| Harness | Inference, context construction, compaction, continuation, native state. |
+| Tool service | External execution, resource access, approvals, jobs, idempotency, cleanup. |
+| Host platform | User identity, placement, cross-instance ownership, routing, scaling, global quotas, disaster recovery orchestration. |
+
+The documentation site builds separately into static files. It adds no service dependency to the Brain execution path.
+
+## Current direction
+
+The local preview is implemented and covered by process-level journeys. Broader harness support, cloud qualification, resource tools, and production capacity remain planned. Frozen configuration is a launch policy; future edits should use tested execution boundaries rather than require a new user-facing concept.
+
+Read the repository's [ADR](https://github.com/aexhq/brain/blob/successor/docs/adr/0001-local-first-session-server.md) and [roadmap](https://github.com/aexhq/brain/blob/successor/docs/roadmap.md). Plans describe proposed work; implementation and tests own current behavior.

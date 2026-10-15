@@ -9,4 +9,15 @@ node_modules/
 dist/
 __pycache__/
 *.pyc
+/website/.next/
+/website/.source/
+/website/out/
+/website/next-env.d.ts
+/website/tsconfig.tsbuildinfo
+/website/content/docs/api/generated/
+/website/content/docs/reference/model-catalog.mdx
+/website/content/docs/adapters/interfaces.mdx
+/website/content/docs/guides/persistence.mdx
+/website/content/docs/tools/local-tools.mdx
+/website/public/openapi.json
 

@@ -1,0 +1,26 @@
+---
+title: Adapter overview
+description: Extend the runtime where ownership changes.
+---
+
+Brain has three integration boundaries. Each has a concrete job; none requires a new public environment or worker entity.
+
+| Boundary | Owner | Interface |
+| --- | --- | --- |
+| Harness | Model calls, context, compaction, continuation, native state. | Go `Factory` / `Runner`, or the process protocol. |
+| Tool service | External actions, authorization, approvals, jobs, cleanup. | [HTTP/SSE](/docs/tools). |
+| Persistence | External checkpoint objects and eventual metadata discovery. | Go `Objects` / `Metadata`. |
+
+The Go extension points are internal packages. A Go adapter currently ships as part of Brain, rather than loading as an arbitrary runtime plugin. External tool services can be written independently in any language. Process harness commands are supplied by host configuration.
+
+## Implemented adapters
+
+- **Harness:** Pi through a thin TypeScript child process.
+- **Working state:** SQLite metadata and append-only local event/native files.
+- **Checkpoint objects:** filesystem, S3, and R2.
+- **External metadata:** PostgreSQL.
+- **Tool transport:** JSON over HTTP and streaming SSE.
+
+Codex, OpenCode, MCP, other SQL adapters, and the broader resource-tool catalog remain planned. Optional capabilities must fail explicitly when unavailable.
+
+Read [harness authoring](/docs/adapters/harness), [persistence authoring](/docs/adapters/persistence), and the [generated Go interfaces](/docs/adapters/interfaces).

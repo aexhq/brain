@@ -1,0 +1,45 @@
+---
+title: Python SDK
+description: A synchronous client built on the Python standard library.
+---
+
+Use Python 3.11+. The client lives in `sdks/python`; it is not published on PyPI. From the repository root, set `PYTHONPATH=sdks/python` (PowerShell: `$env:PYTHONPATH = "sdks/python"`).
+
+## Conversation
+
+```python
+import os
+from brain import Brain
+
+brain = Brain("http://127.0.0.1:8080", os.environ["BRAIN_API_KEY"])
+session = brain.create({
+    "harness": "pi",
+    "config": {"model": "openai/gpt-4.1-mini", "tools": []},
+})
+accepted = brain.send(session["id"], {
+    "type": "user.message", "text": "Explain append-only storage.", "key": "message-1",
+})
+stream = brain.observe(session["id"])
+try:
+    for event in stream:
+        if event["type"] == "assistant.message":
+            print(event["data"]["text"])
+        if (event.get("input_id") == accepted["id"]
+                and event["type"] == "session.status"
+                and event["data"]["status"] in {"idle", "failed", "interrupted", "closed"}):
+            break
+finally:
+    stream.close()
+```
+
+## Methods
+
+The client exposes `create`, `get`, `list`, `send`, `history`, `observe`, `interrupt`, `resume`, `close`, `flush`, `sync`, `restore`, and `catalog`. Return shapes follow the [HTTP API](/docs/api).
+
+`list(after="", limit=100)` pages metadata. `history(session_id, after="", limit=100)` returns `events` and `next_cursor`. `observe(session_id, after="")` yields events synchronously. Reconnect explicitly using the last retained durable cursor.
+
+## Timeouts and errors
+
+`Brain(url, token, timeout=30)` sets the socket timeout, including streaming reads. Choose an appropriate timeout for external flush/restore. Use a thread or process when embedding this synchronous client into an asynchronous application.
+
+HTTP failures raise `BrainError` with `status`, `code`, and `request_id`. Tool errors are transcript data. Requests are never automatically retried, and redirects are rejected. `brain.types` contains generated `TypedDict` declarations.

@@ -1,0 +1,45 @@
+---
+title: HTTP API
+description: One current contract for sessions, events, tools, and recovery.
+---
+
+The endpoint pages are generated from Brain's Go route declarations and wire types. Download the [OpenAPI document](/openapi.json) for your own tooling.
+
+## Requests
+
+The local default is `http://127.0.0.1:8080`. Send Bearer authentication on session and catalog requests and `Content-Type: application/json` for request bodies. Unknown JSON fields and trailing JSON data are rejected.
+
+Brain uses unversioned routes. The OpenAPI document's `current` metadata is not a compatibility guarantee. Pin the server, runner, and SDK artifacts together.
+
+## Sessions
+
+| Operation | Endpoint |
+| --- | --- |
+| [Create](/docs/api/generated/create) | `POST /sessions` |
+| [List](/docs/api/generated/list) | `GET /sessions` |
+| [Get](/docs/api/generated/get) | `GET /sessions/{id}` |
+| [Send / interrupt](/docs/api/generated/send) | `POST /sessions/{id}/events` |
+| [History / stream](/docs/api/generated/events) | `GET /sessions/{id}/events` |
+| [Resume](/docs/api/generated/resume) | `POST /sessions/{id}/resume` |
+| [Close](/docs/api/generated/close) | `POST /sessions/{id}/close` |
+
+## Persistence and tools
+
+| Operation | Endpoint |
+| --- | --- |
+| [Flush](/docs/api/generated/flush) | `POST /sessions/{id}/flush` |
+| [Synchronization status](/docs/api/generated/sync) | `GET /sessions/{id}/sync` |
+| [Restore](/docs/api/generated/restore) | `POST /sessions/{id}/restore` |
+| [Tool catalog](/docs/api/generated/catalog) | `GET /catalog` |
+
+Health endpoints are described in [operations](/docs/guides/operations). They do not require authentication.
+
+## Pagination and streaming
+
+List endpoints accept `limit` from 1 to 1000, defaulting to 100. For session lists, `after` is the final session ID from the previous page. For event history, use `next_cursor` or the last durable event's opaque `cursor`.
+
+Select SSE with `Accept: text/event-stream`. Reconnect using `after` or `Last-Event-ID`; the query takes precedence. Streaming replays retained history and then follows live output. See [events](/docs/reference/events) and [errors](/docs/reference/errors).
+
+## Running examples
+
+Copy request examples into a terminal or backend client. Brain currently has no browser CORS policy, so this site does not offer a live request playground or forward credentials through a proxy.

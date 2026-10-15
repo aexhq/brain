@@ -1,0 +1,47 @@
+---
+title: Introduction
+description: A small runtime for agents that go further.
+---
+
+<p className="brain-kicker">Agent sessions. Your infrastructure.</p>
+
+<p className="brain-intro">Brain is an open-source server for building, running, and resuming agent sessions. Choose a harness, connect your tools, and keep your state portable.</p>
+
+<div className="brain-actions">
+  <a href="/docs/quickstart">Run your first session <span>→</span></a>
+  <a href="/docs/api">Explore the API <span>↗</span></a>
+</div>
+
+## A small core, by design
+
+Brain handles sessions, tenant isolation, event transport, and persistence. The harness owns the model loop and context. Your tools run wherever they need to: another process, a sandbox, a browser, or a remote service.
+
+<div className="brain-flow" aria-label="Your application sends requests to Brain, which coordinates a harness and external tools">
+  <b>Your app</b><span>→</span><b>Brain</b><span>→</span><b>Harness + tools</b>
+</div>
+
+<div className="brain-grid">
+  <a href="/docs/guides/sessions"><small>01 / SESSIONS</small><strong>Keep the conversation going ↗</strong><span>Stream output, queue input, interrupt execution, and resume from a saved turn.</span></a>
+  <a href="/docs/tools"><small>02 / TOOLS</small><strong>Run tools anywhere ↗</strong><span>Use a language-neutral HTTP/SSE contract. Tool services own actions and approvals.</span></a>
+  <a href="/docs/guides/persistence"><small>03 / STATE</small><strong>Bring your own storage ↗</strong><span>Start with local files and SQLite. Add checkpoint storage and an external session index.</span></a>
+  <a href="/docs/adapters"><small>04 / EXTENSIONS</small><strong>Extend at the boundary ↗</strong><span>Small interfaces for harnesses and persistence keep the core focused.</span></a>
+</div>
+
+## Start local
+
+The current implementation uses **Pi**, a Go server, and a thin TypeScript runner. TypeScript and Python clients expose the same session lifecycle. A local tool service demonstrates echo, scoped session inspection, and operator approvals.
+
+<p className="brain-note">Brain is a local development preview. Codex, OpenCode, MCP, the broader tool catalog, and production capacity qualification are planned. S3/R2 adapters exist; live cloud qualification is still pending.</p>
+
+## Find your starting point
+
+| You want to… | Start here |
+| --- | --- |
+| Run a conversation | [Quickstart](/docs/quickstart) |
+| Integrate an application | [TypeScript](/docs/sdks/typescript) or [Python](/docs/sdks/python) |
+| Understand requests and events | [HTTP API](/docs/api) and [event reference](/docs/reference/events) |
+| Connect a model provider | [Models & providers](/docs/reference/models) |
+| Write a tool or adapter | [Distributed tools](/docs/tools) and [adapter interfaces](/docs/adapters/interfaces) |
+| Read with a coding agent | [Markdown index](/llms.txt) or [full documentation](/llms-full.txt) |
+
+The code and tests define current behavior. Brain makes clean breaks by default; pin the server, runner, and clients together.
