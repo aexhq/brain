@@ -86,6 +86,13 @@ func (e *Engine) SyncStatus(ctx context.Context, g core.Grant, id string) (core.
 	if m == nil || !m.Session.UpdatedAt.Equal(s.UpdatedAt) {
 		status.Pending = true
 	}
+	info, err := os.Stat(filepath.Join(dir, "events.jsonl"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return core.SyncStatus{}, err
+	}
+	if info != nil && info.Size() != status.HistoryBytes {
+		status.Pending = true
+	}
 	return status, nil
 }
 
