@@ -50,6 +50,7 @@ jobs:
       - run: npm --prefix runners/pi ci --ignore-scripts
       - run: npm --prefix sdks/typescript ci --ignore-scripts
       - run: npm --prefix website ci --ignore-scripts
+      - run: npm --prefix services/sandbox ci --ignore-scripts
       - run: node scripts/check.mjs
       - run: go build -o bin/brain ./cmd/brain
       - if: runner.os == 'Linux'

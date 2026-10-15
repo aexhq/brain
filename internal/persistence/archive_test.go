@@ -59,6 +59,11 @@ func appendEvent(t *testing.T, l *store.Log, text string) {
 
 func TestAppendBlocksRestoreAndPublicationFailure(t *testing.T) {
 	a, objects, s, l := fixture(t)
+	archiveContract(t, a, objects, s, l)
+}
+
+func archiveContract(t *testing.T, a *Archive, objects *recordedObjects, s Snapshot, l *store.Log) {
+	t.Helper()
 	ctx := context.Background()
 	native := bytes.Repeat([]byte("n"), 3*int(BlockBytes)+19)
 	if err := os.WriteFile(filepath.Join(s.Directory, "native/session/data.jsonl"), native, 0600); err != nil {

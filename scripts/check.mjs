@@ -8,6 +8,7 @@ const commands = [
   ["go", ["vet", "./..."]],
   ["npm", ["--prefix", "runners/pi", "test"]],
   ["npm", ["--prefix", "sdks/typescript", "test"]],
+  ["npm", ["--prefix", "services/sandbox", "test"]],
   ["python", ["-m", "unittest", "discover", "-s", "sdks/python", "-p", "test_*.py"]],
   ["node", ["--test", "tests/journeys/journeys.test.mjs"]],
   ["npm", ["--prefix", "website", "run", "build"]],

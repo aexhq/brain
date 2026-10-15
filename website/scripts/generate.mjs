@@ -34,6 +34,8 @@ async function page(file, title, description, body) {
 for (const [from, to, title, description] of [
   ['docs/running-persistence.md', 'guides/persistence.mdx', 'Persistence & recovery', 'Configure background checkpoints and move sessions between servers.'],
   ['examples/tools/README.md', 'tools/local-tools.mdx', 'Local tools & approvals', 'Run the example tool server with echo, session inspection, and operator approvals.'],
+  ['services/sandbox/README.md', 'tools/sandboxes.mdx', 'Sandboxes', 'Create, execute, inspect, and terminate remote Modal, E2B, and Daytona sandboxes.'],
+  ['services/resources/README.md', 'tools/resources.mdx', 'Storage & web', 'Run tenant-scoped S3/R2 storage and Brave/Tavily web research tools.'],
 ]) {
   const text = (await readFile(path.join(root, from), 'utf8')).replace(/^# .*\r?\n/, '');
   await page(to, title, description, text);
