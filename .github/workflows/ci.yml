@@ -168,6 +168,7 @@ jobs:
       packages: write
       id-token: write
       attestations: write
+      artifact-metadata: write
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
@@ -188,12 +189,12 @@ jobs:
             digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$ref:sha-$GITHUB_SHA" | cut -d@ -f2)
             echo "$image=$digest" >> "$GITHUB_OUTPUT"
           done
-      - uses: actions/attest-build-provenance@9d57eef8c06cd9d6b433effeeb7a6a77b3ff94ad
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-name: ghcr.io/aexhq/brain
           subject-digest: ${{ steps.images.outputs.brain }}
           push-to-registry: true
-      - uses: actions/attest-build-provenance@9d57eef8c06cd9d6b433effeeb7a6a77b3ff94ad
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-name: ghcr.io/aexhq/brain-sandbox-tools
           subject-digest: ${{ steps.images.outputs.brain-sandbox-tools }}
