@@ -26,6 +26,10 @@ class ErrorDetail(TypedDict):
     code: str
     message: str
 
+class ErrorResponse(TypedDict):
+    error: ErrorDetail
+    request_id: str
+
 class Event(TypedDict):
     id: str
     type: str
@@ -33,6 +37,10 @@ class Event(TypedDict):
     input_id: NotRequired[str]
     data: Any
     cursor: NotRequired[str]
+
+class EventList(TypedDict):
+    events: list[Event]
+    next_cursor: str
 
 class Input(TypedDict):
     type: str
@@ -63,6 +71,12 @@ class SessionConfig(TypedDict):
     instructions: NotRequired[str]
     tools: list[str]
 
+class SessionList(TypedDict):
+    sessions: list[Session]
+
+class Status(TypedDict):
+    status: str
+
 class SyncStatus(TypedDict):
     checkpoint: NotRequired[str]
     history_bytes: int
@@ -77,6 +91,9 @@ class Tool(TypedDict):
     description: str
     input_schema: Any
     output_schema: NotRequired[Any]
+
+class ToolCatalog(TypedDict):
+    tools: list[Tool]
 
 class ToolResult(TypedDict):
     call_id: str

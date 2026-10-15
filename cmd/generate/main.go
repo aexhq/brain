@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -103,7 +104,9 @@ func main() {
 		if route.Input != nil {
 			visit(route.Input)
 		}
+		visit(route.Output)
 	}
+	visit(reflect.TypeFor[api.ErrorResponse]())
 	visit(reflect.TypeFor[core.SyncStatus]())
 	for _, t := range []reflect.Type{reflect.TypeFor[core.CreateSession](), reflect.TypeFor[core.Session](), reflect.TypeFor[core.Input](), reflect.TypeFor[core.Event](), reflect.TypeFor[core.Tool](), reflect.TypeFor[core.Call](), reflect.TypeFor[core.Result](), reflect.TypeFor[core.ToolResult](), reflect.TypeFor[core.Error]()} {
 		visit(t)
@@ -124,9 +127,40 @@ func main() {
 	routeValues := map[string]any{}
 	for _, route := range api.Contract() {
 		routeValues[route.Name] = map[string]string{"method": route.Method, "path": route.Path}
-		op := map[string]any{"operationId": route.Name, "security": []any{map[string]any{"bearer": []string{}}}, "responses": map[string]any{"2XX": map[string]string{"description": "Operation result"}, "default": map[string]string{"description": "Error with code, message, and request_id"}}}
+		_, _, output := visit(route.Output)
+		if route.Name == "send" {
+			_, _, status := visit(reflect.TypeFor[core.Status]())
+			output = map[string]any{"oneOf": []any{output, status}}
+		}
+		content := map[string]any{"application/json": map[string]any{"schema": output}}
+		if route.Name == "events" {
+			content["text/event-stream"] = map[string]any{"schema": map[string]any{"type": "string"}, "example": "id: OPAQUE_CURSOR\nevent: assistant.message\ndata: {\"id\":\"EVENT_ID\",\"type\":\"assistant.message\",\"time\":\"2026-10-15T12:00:00Z\",\"input_id\":\"INPUT_ID\",\"data\":{\"text\":\"Hello\"},\"cursor\":\"OPAQUE_CURSOR\"}\n\n"}
+		}
+		_, _, errorSchema := visit(reflect.TypeFor[api.ErrorResponse]())
+		responses := map[string]any{
+			strconv.Itoa(route.Status): map[string]any{"description": route.Summary, "content": content},
+			"default":                  map[string]any{"description": "Error. 400 invalid_request; 401 missing/invalid Bearer token; 403 forbidden; 404 not_found; 409 conflict or cursor_unavailable; 413 body limit; 422 unsupported; 429 overloaded (Retry-After: 1); 500 brain_error. X-Request-ID is present on every response.", "content": map[string]any{"application/json": map[string]any{"schema": errorSchema}}},
+		}
+		op := map[string]any{"operationId": route.Name, "summary": route.Summary, "description": route.Description, "security": []any{map[string]any{"bearer": []string{}}}, "responses": responses}
+		parameters := []any{}
 		if strings.Contains(route.Path, "{id}") {
-			op["parameters"] = []any{map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]string{"type": "string"}}}
+			parameters = append(parameters, map[string]any{"name": "id", "in": "path", "description": "Opaque session ID.", "required": true, "schema": map[string]string{"type": "string", "pattern": "^[a-fA-F0-9]{32}$"}})
+		}
+		if route.Name == "list" || route.Name == "events" {
+			afterDescription := "Last session ID from the previous page."
+			if route.Name == "events" {
+				afterDescription = "Last retained opaque event cursor. Do not use an event ID or construct cursors."
+			}
+			parameters = append(parameters,
+				map[string]any{"name": "after", "in": "query", "description": afterDescription, "schema": map[string]any{"type": "string"}},
+				map[string]any{"name": "limit", "in": "query", "description": "JSON page size; SSE replays all retained events in batches.", "schema": map[string]any{"type": "integer", "default": 100, "minimum": 1, "maximum": 1000}},
+			)
+		}
+		if route.Name == "events" {
+			parameters = append(parameters, map[string]any{"name": "Last-Event-ID", "in": "header", "description": "Reconnect cursor when the after query is absent.", "schema": map[string]any{"type": "string"}})
+		}
+		if len(parameters) != 0 {
+			op["parameters"] = parameters
 		}
 		if route.Input != nil {
 			_, _, schema := visit(route.Input)
@@ -139,7 +173,7 @@ func main() {
 	}
 	routes, _ := json.MarshalIndent(routeValues, "", "  ")
 	fmt.Fprintf(&ts, "export const routes = %s as const;\n", routes)
-	apiDoc := map[string]any{"openapi": "3.1.0", "info": map[string]string{"title": "Brain", "version": "current"}, "paths": paths, "components": map[string]any{"schemas": schemas, "securitySchemes": map[string]any{"bearer": map[string]string{"type": "http", "scheme": "bearer"}}}}
+	apiDoc := map[string]any{"openapi": "3.1.0", "info": map[string]string{"title": "Brain", "version": "current", "description": "Local agent session server. Code and route declarations own this contract. Clean breaks are the default."}, "servers": []any{map[string]string{"url": "http://127.0.0.1:8080", "description": "Local development"}}, "paths": paths, "components": map[string]any{"schemas": schemas, "securitySchemes": map[string]any{"bearer": map[string]string{"type": "http", "scheme": "bearer"}}}}
 	doc, _ := json.MarshalIndent(apiDoc, "", "  ")
 	visit(reflect.TypeFor[harness.Options]())
 	visit(reflect.TypeFor[harness.RunnerFrame]())

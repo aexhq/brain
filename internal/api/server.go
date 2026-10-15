@@ -82,7 +82,7 @@ func (s *Server) authorize(next scoped) http.HandlerFunc {
 		g, ok := s.Auth.Authenticate(r)
 		if !ok {
 			w.Header().Set("WWW-Authenticate", "Bearer")
-			write(w, 401, map[string]any{"error": core.Error{Code: core.Forbidden, Message: "authentication required"}, "request_id": w.Header().Get("X-Request-ID")})
+			write(w, 401, ErrorResponse{Error: core.Error{Code: core.Forbidden, Message: "authentication required"}, RequestID: w.Header().Get("X-Request-ID")})
 			return
 		}
 		if g.ReadOnly && r.Method != http.MethodGet {
@@ -109,7 +109,7 @@ func (s *Server) decode(w http.ResponseWriter, r *http.Request, value any) error
 func (s *Server) badInput(w http.ResponseWriter, r *http.Request, err error) {
 	var limit *http.MaxBytesError
 	if errors.As(err, &limit) {
-		write(w, 413, map[string]any{"error": core.Error{Code: core.Invalid, Message: "request body limit exceeded"}, "request_id": w.Header().Get("X-Request-ID")})
+		write(w, 413, ErrorResponse{Error: core.Error{Code: core.Invalid, Message: "request body limit exceeded"}, RequestID: w.Header().Get("X-Request-ID")})
 		return
 	}
 	s.fail(w, r, core.E(core.Invalid, "invalid request JSON: "+err.Error()))
@@ -170,7 +170,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request, g core.Grant) {
 	for i := range sessions {
 		sessions[i] = public(sessions[i])
 	}
-	write(w, 200, map[string]any{"sessions": sessions})
+	write(w, 200, SessionList{Sessions: sessions})
 }
 func (s *Server) send(w http.ResponseWriter, r *http.Request, g core.Grant) {
 	var input core.Input
@@ -187,7 +187,7 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, g core.Grant) {
 			s.fail(w, r, err)
 			return
 		}
-		write(w, 202, map[string]string{"status": "interrupt_requested"})
+		write(w, 202, core.Status{Status: "interrupt_requested"})
 		return
 	}
 	event, err := s.Engine.Submit(r.Context(), g, r.PathValue("id"), input)
@@ -210,7 +210,7 @@ func (s *Server) close(w http.ResponseWriter, r *http.Request, g core.Grant) {
 		s.fail(w, r, err)
 		return
 	}
-	write(w, 202, map[string]string{"status": "close_requested"})
+	write(w, 202, core.Status{Status: "close_requested"})
 }
 
 func (s *Server) flush(w http.ResponseWriter, r *http.Request, g core.Grant) {
@@ -273,7 +273,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, g core.Grant) {
 		if len(events) > 0 {
 			next = events[len(events)-1].Cursor
 		}
-		write(w, 200, map[string]any{"events": events, "next_cursor": next})
+		write(w, 200, EventList{Events: events, NextCursor: next})
 		return
 	}
 	select {
@@ -400,5 +400,5 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if status == 500 {
 		s.Logger.Error("request failed", "request_id", w.Header().Get("X-Request-ID"), "error", err)
 	}
-	write(w, status, map[string]any{"error": core.Error{Code: code, Message: message}, "request_id": w.Header().Get("X-Request-ID")})
+	write(w, status, ErrorResponse{Error: core.Error{Code: code, Message: message}, RequestID: w.Header().Get("X-Request-ID")})
 }

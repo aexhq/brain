@@ -29,6 +29,11 @@ export interface ErrorDetail {
   message: string;
 }
 
+export interface ErrorResponse {
+  error: ErrorDetail;
+  request_id: string;
+}
+
 export interface Event {
   id: string;
   type: string;
@@ -36,6 +41,11 @@ export interface Event {
   input_id?: string;
   data: unknown;
   cursor?: string;
+}
+
+export interface EventList {
+  events: Event[];
+  next_cursor: string;
 }
 
 export interface Input {
@@ -102,6 +112,14 @@ export interface SessionConfig {
   tools: string[];
 }
 
+export interface SessionList {
+  sessions: Session[];
+}
+
+export interface Status {
+  status: string;
+}
+
 export interface SyncStatus {
   checkpoint?: string;
   history_bytes: number;
@@ -117,6 +135,10 @@ export interface Tool {
   description: string;
   input_schema: unknown;
   output_schema?: unknown;
+}
+
+export interface ToolCatalog {
+  tools: Tool[];
 }
 
 export interface ToolResult {
