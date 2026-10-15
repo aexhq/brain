@@ -5,6 +5,8 @@ Applies to every release gate in the [roadmap](../roadmap.md)
 
 CI is the release gate. Tests must establish the guarantees advertised by that release, including failure behavior. Do not skip required checks or treat missing provider credentials as a successful integration test. Future adapters do not require tests before implementation, but an advertised adapter must have its required suite enabled.
 
+Implemented local coverage: the [user journey suite](../../tests/journeys/README.md) exercises the actual server, Pi runner, external example tools, and both SDKs on Windows and Linux. Its coverage map distinguishes local guarantees from the later release gates below. `node scripts/check.mjs` runs the journeys together with the existing checks; unavailable prerequisites fail the suite.
+
 | Work item | Implementation | Acceptance |
 | --- | --- | --- |
 | V1 Repository checks | Add builds for supported platforms, formatting/static checks, generated-contract verification, and focused unit tests for state transitions and boundary validation. Set up protected CI for integration credentials. | A clean checkout reproduces the checks. Generated contracts cannot drift silently. A supported platform or required credentialed check cannot be absent from release evidence. |

@@ -42,7 +42,7 @@ Recovery loads saved native context without invoking a model. After interruption
 node scripts/check.mjs
 ```
 
-The checks require both npm installations above and Python 3.11+. They build clients/runners, verify generated contracts, run Go tests/vet, exercise the actual Pi SDK against a recording model provider, and test both clients. Linux CI also runs Go's race detector and PostgreSQL contracts. Portable-state tests restore into an empty cache and verify the next real Pi request preserves the saved prefix. Live cloud/provider verification is separate from recording-provider and SDK transport tests and requires configured credentials.
+The checks require both npm installations above and Python 3.11+. They build clients/runners, verify generated contracts, run Go tests/vet, exercise the actual Pi SDK against a recording model provider, and test both clients. The [user journey suite](tests/journeys/README.md) runs actual server processes and both SDKs through conversations, tools/approvals, interruption, streaming, tenant isolation, process death, storage recovery, overload, and telemetry failures. Linux and Windows CI require these journeys. Linux CI also runs Go's race detector and PostgreSQL contracts. Portable-state tests restore into an empty cache and verify the next real Pi request preserves the saved prefix. Live cloud/provider verification is separate from recording-provider and SDK transport tests and requires configured credentials.
 
 Generate API and runner declarations with `go run ./cmd/generate`. [OpenAPI](api/openapi.json) is generated from Go types and route declarations. Clean breaks are the default; dependency pins and standard document metadata do not imply API compatibility.
 
