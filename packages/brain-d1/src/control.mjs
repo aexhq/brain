@@ -2,23 +2,16 @@ import {
   Fault, Mutation, big, capability, clock, command, commandColumns, decode, digest, encode, field, id, identifiers,
   integer, maximumInteger, need, one, raw, result, rows, run, runColumns, safe, session, sessionColumns, wire,
 } from "./domain.mjs";
-import { bytes, pageRows, runBytes } from "./pages.mjs";
+import { bytes, pageRows, runBytes, runnable } from "./pages.mjs";
 import { documentQuota } from "./quotas.mjs";
 import { createBudget, validateDelegation } from "./budgets.mjs";
 import { cancelLineage, pauseLineage } from "./lineage.mjs";
-import { admitChild, childrenReady, delegations, guardChildWait, wakeParents } from "./children.mjs";
+import { admitChild, delegations, guardChildWait, wakeParents } from "./children.mjs";
 
 export const readyPredicate = `EXISTS(SELECT 1 FROM ownership_transfers t WHERE t.session_id=sessions.id AND t.phase IN ('draining','verifying'))
 OR EXISTS(SELECT 1 FROM commands c WHERE c.session_id=sessions.id AND c.status='accepted')
 OR EXISTS(SELECT 1 FROM operations o WHERE o.session_id=sessions.id AND o.result_sequence=0 AND o.status IN ('completed','failed','unknown'))
-OR (sessions.paused=0 AND EXISTS(SELECT 1 FROM runs r WHERE r.session_id=sessions.id AND (
-r.status IN ('queued','active') OR (r.status='waiting' AND (
-(r.wait_kind='operation' AND EXISTS(SELECT 1 FROM operations o WHERE o.id=r.wait_id AND o.status IN ('completed','failed','unknown')))
-OR (r.wait_kind='interaction' AND EXISTS(SELECT 1 FROM interactions i WHERE i.id=r.wait_id AND i.status<>'pending'))
-OR (r.wait_kind='child' AND NOT EXISTS(SELECT 1 FROM runs child WHERE child.session_id=r.wait_id AND child.status IN ('queued','active','waiting','paused'))
-AND NOT EXISTS(SELECT 1 FROM commands child WHERE child.session_id=r.wait_id AND child.status='accepted' AND child.kind IN ('message','action','event')))
-OR (${childrenReady})
-)))))`;
+OR (sessions.paused=0 AND EXISTS(SELECT 1 FROM runs r WHERE r.session_id=sessions.id AND (${runnable})))`;
 
 export async function acceptInput(m, principal, current, request, dataText) {
   const identifier = await id("input", current.id, request.request_id);
@@ -346,6 +339,15 @@ AND (?='' OR (harness_process=? AND decision_started_step=?))`,
     if (["delegate", "fork"].includes(decision.kind)) {
       m.change("INSERT INTO child_groups VALUES(?,?,?,?) ON CONFLICT DO NOTHING", [identifier, runID, step, delegations(decision).length]);
     }
+    await m.commit();
+  },
+  async WaitDispatch(db, [identifier, owner, runID, step, operation]) {
+    const m = new Mutation(db);
+    await m.owner(identifier, owner);
+    m.change(`UPDATE runs SET status='waiting',wait_kind='dispatch',wait_id=?,updated_ms=${clock}
+WHERE id=? AND session_id=? AND step=? AND decision<>'' AND status IN ('queued','active','waiting')
+AND EXISTS(SELECT 1 FROM operations o WHERE o.id=? AND o.session_id=runs.session_id AND o.run_id=runs.id AND o.step_key=CAST(runs.step AS TEXT))`,
+    [operation, runID, identifier, step, operation], true);
     await m.commit();
   },
   async AdvanceRun(db, [identifier, owner, runID, step, status, wait, failure], text) {

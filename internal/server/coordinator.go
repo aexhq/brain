@@ -236,6 +236,11 @@ func (s *Server) step(ctx context.Context, session control.Session, run control.
 	if run.View.Wait != nil {
 		wait := run.View.Wait
 		switch wait.Kind {
+		case "dispatch":
+			// An approval wait retains the original saved call, not its result.
+			if run.Decision == nil || run.Decision.Kind != "call" {
+				return kernel.Fail(wire.ErrorCodeCorrupt, "dispatch wait has no original saved effect decision")
+			}
 		case "operation":
 			operation, err := s.Control.Operation(ctx, session.View.ID, wait.ID)
 			if err != nil {
@@ -514,7 +519,7 @@ func (s *Server) call(ctx context.Context, session control.Session, run control.
 		if err != nil {
 			<-s.effectSlots
 			if kernel.Response(err).Code == wire.ErrorCodeForbidden {
-				return nil
+				return s.Control.WaitDispatch(ctx, session.View.ID, session.Owner, run.View.ID, run.View.Step, id)
 			}
 			return err
 		}

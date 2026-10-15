@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const baseImage = "node@sha256:862263c612aa437e3037674b85419622a9d93bff80aa1eee5398dfe686375532";
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const containerIdentity = process.getuid ? ["--user", `${process.getuid()}:${process.getgid()}`] : [];
 
 function docker(args, env = {}) {
   return execFileSync("docker", args, { cwd: root, encoding: "utf8", timeout: 30000,
@@ -60,6 +61,7 @@ async function clusterFixture(t) {
   connected = true;
   const sourceMount = `type=bind,source=${root},target=/work,readonly`;
   const fixture = docker(["run", "--detach", "--network", network, "--network-alias", "fixture",
+    ...containerIdentity,
     "--cpus", "0.5", "--memory", "128m", "--pids-limit", "64", "--read-only", "--cap-drop=ALL",
     "--publish", "127.0.0.1::9000", "--mount", sourceMount, baseImage, "node", "/work/tests/fixtures/cluster-model.mjs"]);
   containers.add(fixture);
@@ -88,6 +90,7 @@ async function clusterFixture(t) {
       BRAIN_HARNESSES: JSON.stringify([{ name: harness, version: "1", command: "node",
         arguments: ["/work/tests/fixtures/decision-harness.mjs"], workers: 1, models: ["fixture"], continuation }]) };
     const id = docker(["run", "--detach", "--network", network, "--network-alias", name,
+      ...containerIdentity,
       "--cpus", "1", "--memory", "512m", "--pids-limit", "128", "--read-only", "--cap-drop=ALL",
       "--security-opt=no-new-privileges", "--publish", "127.0.0.1::8080", "--mount", sourceMount,
       "--mount", `type=bind,source=${data},target=/data`, "--mount", `type=bind,source=${archive},target=/archive`,
@@ -98,10 +101,13 @@ async function clusterFixture(t) {
       assert.match(logs(id), /original retained cluster custody key/u);
       return { id };
     }
-    const origin = "http://" + docker(["port", id, "8080/tcp"]);
+    let origin;
     await until(async () => {
-      const running = docker(["inspect", id, "--format", "{{.State.Running}}"]);
-      assert.equal(running, "true", logs(id));
+      const [container] = JSON.parse(docker(["inspect", id]));
+      assert.equal(container.State.Running, true, `${name} exited before readiness: ${logs(id)}`);
+      const binding = container.NetworkSettings.Ports["8080/tcp"]?.[0];
+      if (!binding) return 0;
+      origin = `http://${binding.HostIp}:${binding.HostPort}`;
       return fetch(origin + "/health/ready").then(r => r.status).catch(() => 0);
     }, status => status === 204, `${name} readiness`);
     return { id, origin };

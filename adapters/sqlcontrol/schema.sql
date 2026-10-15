@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS brain_schema (version BIGINT PRIMARY KEY);
-INSERT INTO brain_schema(version) SELECT 11 WHERE NOT EXISTS(SELECT 1 FROM brain_schema);
+INSERT INTO brain_schema(version) SELECT 12 WHERE NOT EXISTS(SELECT 1 FROM brain_schema);
 CREATE TABLE IF NOT EXISTS nodes (
  id TEXT PRIMARY KEY, lease BIGINT NOT NULL, draining BIGINT NOT NULL DEFAULT 0,
  endpoint TEXT NOT NULL DEFAULT '', configuration_digest TEXT NOT NULL DEFAULT ''

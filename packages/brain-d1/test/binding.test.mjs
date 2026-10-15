@@ -179,6 +179,34 @@ test("actual D1 binding authenticates only finite fresh domain requests", async 
   assert.equal((await f.call("Session", ["tenant", f.id])).View.id, f.id);
 });
 
+test("actual D1 parks a saved decision without consuming it until the exact approval arrives", async t => {
+  const f = await fixture(t);
+  const original = await f.prepare("approval-wait");
+  assert.equal((await f.rpc("WaitDispatch", [f.id, f.owner, original.View.run_id, 0, original.View.id])).status, 409);
+  await f.call("SaveDecision", [f.id, f.owner, original.View.run_id, 0,
+    { kind: "call", effect: "model", action: "generate", arguments: original.Arguments, checkpoint: { original: true } }]);
+  await f.database.prepare("UPDATE operations SET approval=1 WHERE id=?").bind(original.View.id).run();
+  const approval = await f.call("Interact", [f.id, { request_id: "approve", kind: "approval", run_id: original.View.run_id,
+    subject: original.View.id, subject_digest: original.View.arguments_digest, prompt: "Approve the original call?",
+    schema: { type: "boolean" }, expires_ms: original.Deadline }]);
+  await f.call("WaitDispatch", [f.id, f.owner, original.View.run_id, 0, original.View.id]);
+  const [waiting] = await f.call("Runs", [f.id, 8, ""]);
+  assert.equal(waiting.View.status, "waiting");
+  assert.equal(String(waiting.View.step), "0");
+  assert.equal(waiting.Decision.kind, "call");
+  assert.deepEqual(await f.call("RunnableRuns", [f.id, 8]), []);
+  await f.call("Answer", [f.id, approval.id, { request_id: "answer", revision: approval.revision,
+    subject_digest: original.View.arguments_digest, accept: true, answer: true }]);
+  assert.equal((await f.call("RunnableRuns", [f.id, 8])).length, 1);
+  await f.call("ClaimDispatch", [f.id, f.owner, original.View.id, f.owner.Node, "one-claim"]);
+  assert.equal((await f.rpc("ClaimDispatch", [f.id, f.owner, original.View.id, f.owner.Node, "one-claim"])).status, 409);
+  await f.call("AdvanceRun", [f.id, f.owner, original.View.run_id, 0, "waiting", { kind: "operation", id: original.View.id }, null]);
+  const [dispatched] = await f.call("Runs", [f.id, 8, ""]);
+  assert.equal(String(dispatched.View.step), "1");
+  assert.equal(dispatched.Decision, null);
+  assert.deepEqual(dispatched.Checkpoint, { original: true });
+});
+
 test("actual D1 reconciles proven scope rollback without losing original receipts or written positions", async t => {
   const f = await fixture(t);
   const original = await f.prepare("contended-result");

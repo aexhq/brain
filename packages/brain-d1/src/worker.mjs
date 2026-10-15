@@ -17,7 +17,7 @@ const counts = {
   Create: 5, Delegate: 7, Session: 2, List: 3, ClaimOwner: 2, Accept: 3, Command: 2, Pending: 2, FinishStep: 2,
   NextInput: 2, ApplyInput: 2, Allocate: 2, Written: 5, SealUnused: 3, Allocations: 3, LocateRecord: 2,
   Runs: 3, RunnableRuns: 2, ChildState: 1, Children: 3, SaveDecision: 5, CompleteRun: 5, AdvanceRun: 7, Prepare: 2, Operation: 2, Operations: 3, PendingResults: 2, ClaimDispatch: 5,
-  SaveHarnessDecision: 6, BeginDecision: 7,
+  SaveHarnessDecision: 6, BeginDecision: 7, WaitDispatch: 5,
   Nodes: 2, BeginTransfer: 2, Transfer: 2, PendingTransfers: 3, SealTransfer: 4, TransferRuns: 4,
   VerifyTransferTail: 4, VerifyTransferRuns: 5, CancelTransfer: 2, FailTransfer: 4,
   RecordReceipt: 5, BindResult: 5, ExpireOperations: 1, PropagateControls: 1, Interact: 2, Interactions: 3, Interaction: 2, Answer: 3,

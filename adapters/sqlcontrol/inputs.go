@@ -315,6 +315,18 @@ func (s *Store) SaveDecision(ctx context.Context, session string, owner control.
 	})
 }
 
+func (s *Store) WaitDispatch(ctx context.Context, session string, owner control.Owner, run string, step uint64, operation string) error {
+	return s.transaction(ctx, func(tx *sql.Tx) error {
+		if _, err := s.guard(ctx, tx, session, owner, false); err != nil {
+			return err
+		}
+		return requireOne(tx.ExecContext(ctx, s.q(`UPDATE runs SET status='waiting',wait_kind='dispatch',wait_id=?,updated_ms=`+s.clock()+`
+WHERE id=? AND session_id=? AND step=? AND decision<>'' AND status IN ('queued','active','waiting')
+AND EXISTS(SELECT 1 FROM operations o WHERE o.id=? AND o.session_id=runs.session_id AND o.run_id=runs.id AND o.step_key=CAST(runs.step AS TEXT))`),
+			operation, run, session, step, operation))
+	})
+}
+
 func (s *Store) AdvanceRun(ctx context.Context, session string, owner control.Owner, run string, step uint64, status wire.RunStatus, wait *wire.Wait, failure *wire.ErrorResponse) error {
 	if status == wire.RunStatusCompleted {
 		return kernel.Fail(wire.ErrorCodeInvalid, "completion requires written matching evidence")

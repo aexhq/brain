@@ -128,7 +128,7 @@ export async function initialize(db) {
   const exists = await one(db, "SELECT name FROM sqlite_master WHERE type='table' AND name='brain_schema'", [], true);
   if (exists) {
     const version = await one(db, "SELECT MAX(version) AS version FROM brain_schema");
-    need(version.version === 11, "unsupported", "D1 control schema requires a verified offline migration");
+    need(version.version === 12, "unsupported", "D1 control schema requires a verified offline migration");
   }
   const statements = sqlSchema.split(";").map(value => value.trim()).filter(Boolean);
   statements.push(

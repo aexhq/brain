@@ -239,6 +239,9 @@ func (s *Store) Children(ctx context.Context, session, run string, step uint64) 
 func (s *Store) CompleteRun(ctx context.Context, session string, owner control.Owner, run string, step uint64, record wire.Record) error {
 	return s.call(ctx, "CompleteRun", []any{session, owner, run, step, record}, nil)
 }
+func (s *Store) WaitDispatch(ctx context.Context, session string, owner control.Owner, run string, step uint64, operation string) error {
+	return s.call(ctx, "WaitDispatch", []any{session, owner, run, step, operation}, nil)
+}
 func (s *Store) AdvanceRun(ctx context.Context, session string, owner control.Owner, run string, step uint64, status wire.RunStatus, wait *wire.Wait, failure *wire.ErrorResponse) error {
 	return s.call(ctx, "AdvanceRun", []any{session, owner, run, step, status, wait, failure}, nil)
 }

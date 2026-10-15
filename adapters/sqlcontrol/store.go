@@ -147,7 +147,7 @@ func Open(ctx context.Context, dsn string, development bool) (*Store, error) {
 			}
 			version = 5
 		}
-		if version != 11 {
+		if version != 12 {
 			return kernel.Fail(wire.ErrorCodeUnsupported, "control database requires verified offline migration")
 		}
 		if _, err := tx.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS sessions_ready ON sessions(ready,tenant,ready_ms,id)"); err != nil {
@@ -754,16 +754,7 @@ func (s *Store) FinishStep(ctx context.Context, session string, owner control.Ow
 OR EXISTS(SELECT 1 FROM commands c WHERE c.session_id=sessions.id AND c.status='accepted')
 OR EXISTS(SELECT 1 FROM operations o WHERE o.session_id=sessions.id AND o.result_sequence=0 AND o.status IN ('completed','failed','unknown'))
 OR (sessions.paused=0 AND EXISTS(
- SELECT 1 FROM runs r WHERE r.session_id=sessions.id AND (
-  r.status IN ('queued','active')
-  OR (r.status='waiting' AND (
-   (r.wait_kind='operation' AND EXISTS(SELECT 1 FROM operations o WHERE o.id=r.wait_id AND o.status IN ('completed','failed','unknown')))
-   OR (r.wait_kind='interaction' AND EXISTS(SELECT 1 FROM interactions i WHERE i.id=r.wait_id AND i.status<>'pending'))
-   OR (r.wait_kind='child' AND NOT EXISTS(SELECT 1 FROM runs child WHERE child.session_id=r.wait_id AND child.status IN ('queued','active','waiting','paused'))
-   AND NOT EXISTS(SELECT 1 FROM commands child WHERE child.session_id=r.wait_id AND child.status='accepted' AND child.kind IN ('message','action','event')))
-   OR (` + childrenReady + `)
-  ))
- )
+ SELECT 1 FROM runs r WHERE r.session_id=sessions.id AND (` + runnablePredicate + `)
 ))`
 		_, err := tx.ExecContext(ctx, s.q("UPDATE sessions SET ready=CASE WHEN "+ready+" THEN 1 ELSE 0 END,ready_ms="+s.clock()+" WHERE id=?"), session)
 		return err

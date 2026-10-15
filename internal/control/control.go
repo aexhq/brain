@@ -174,6 +174,7 @@ type Store interface {
 	Budget(context.Context, string) (wire.SessionBudget, error)
 	BeginDecision(context.Context, string, Owner, string, uint64, string, string, bool) error
 	SaveDecision(context.Context, string, Owner, string, uint64, wire.Decision, ...string) error
+	WaitDispatch(context.Context, string, Owner, string, uint64, string) error
 	CompleteRun(context.Context, string, Owner, string, uint64, wire.Record) error
 	AdvanceRun(context.Context, string, Owner, string, uint64, wire.RunStatus, *wire.Wait, *wire.ErrorResponse) error
 	Prepare(context.Context, Owner, Prepare) (Operation, error)

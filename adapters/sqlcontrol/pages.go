@@ -31,6 +31,9 @@ SELECT ` + projection + ` FROM bounded WHERE page_bytes<=? ORDER BY page_key`
 
 const runnablePredicate = `r.status IN ('queued','active') OR (r.status='waiting' AND (
 (r.wait_kind='operation' AND EXISTS(SELECT 1 FROM operations o WHERE o.id=r.wait_id AND o.status IN ('completed','failed','unknown')))
+OR (r.wait_kind='dispatch' AND EXISTS(SELECT 1 FROM operations o WHERE o.id=r.wait_id AND
+(o.status<>'prepared' OR o.approval=0 OR EXISTS(SELECT 1 FROM interactions i
+WHERE i.session_id=o.session_id AND i.subject=o.id AND i.subject_digest=o.arguments_digest AND i.status='answered'))))
 OR (r.wait_kind='interaction' AND EXISTS(SELECT 1 FROM interactions i WHERE i.id=r.wait_id AND i.status<>'pending'))
 OR (r.wait_kind='child' AND NOT EXISTS(SELECT 1 FROM runs child WHERE child.session_id=r.wait_id AND child.status IN ('queued','active','waiting','paused'))
 AND NOT EXISTS(SELECT 1 FROM commands child WHERE child.session_id=r.wait_id AND child.status='accepted' AND child.kind IN ('message','action','event')))

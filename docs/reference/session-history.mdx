@@ -7,6 +7,12 @@ Brain keeps a conversation's identity when clients disconnect or its execution m
 records separately from its runs and operations: available history does not prove that work
 completed, and missing history does not mean that a completed effect can be repeated.
 
+An action awaiting approval reports a typed `dispatch` wait. Its original saved
+decision and step remain intact until the exact approval permits a one-use claim.
+It does not keep an active loop or consume the approval answer as an action result.
+Use a written approval boundary for planned restarts; killing a process between
+allocation and record confirmation can leave an explicit unresolved position.
+
 This page describes the Session API v2 source distribution. Published v1 runtimes use their
 matching release documentation and data layout; replacing a layout marker is not an upgrade.
 Source setup and verification commands are in

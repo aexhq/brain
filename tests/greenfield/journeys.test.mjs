@@ -184,6 +184,42 @@ async function fixture(t, options = {}) {
     get applicationURL() { return `http://127.0.0.1:${application.address().port}`; } };
 }
 
+test("J05/J10/J23: HTTP approvals park the original decision and resume once after a retained restart", async t => {
+  const f = await fixture(t);
+  const session = await f.create({
+    connections: [{ name: "app", kind: "http", provider: "http", ownership: "borrowed",
+      configuration: { url: f.applicationURL }, secrets: { signing: "signing" } }],
+    actions: [{ name: "deliver", description: "Deliver once after approval", connection: "app", input_schema: { type: "object" },
+      max_output_bytes: 8192, timeout_ms: 60000, approval: true }],
+  });
+  await f.api("POST", `/v2/sessions/${session.id}/connections`, { request_id: "app", template: "app" });
+  await f.api("POST", `/v2/sessions/${session.id}/inputs`, { request_id: "deliver", data: { kind: "action", name: "deliver", arguments: {} } });
+  const [approval] = await waitFor(() => f.api("GET", `/v2/sessions/${session.id}/interactions`), values => values.length === 1, "one durable approval");
+  const [run] = await waitFor(() => f.api("GET", `/v2/sessions/${session.id}/runs`), values =>
+    values.length === 1 && values[0].status === "waiting" && values[0].wait?.kind === "dispatch", "original decision parks before dispatch");
+  assert.equal(run.step, 0, "waiting for authority must not consume the original decision");
+  const page = await waitFor(() => f.api("GET", `/v2/sessions/${session.id}/records?limit=128`), value => value.gaps.length === 0 &&
+    value.records.some(record => record.kind === "operation.prepared" && record.data.id === approval.request.subject),
+  "planned restart has a fully written approval boundary");
+  await delay(600);
+  assert.equal((await f.api("GET", `/v2/sessions/${session.id}`)).sequence, page.next);
+  assert.equal(f.state.applicationCalls, 0);
+  await f.stop();
+  await f.start();
+  const [retained] = await f.api("GET", `/v2/sessions/${session.id}/runs`);
+  assert.equal(retained.step, 0);
+  assert.equal(retained.wait.id, approval.request.subject);
+  const answer = { request_id: "approve-original", revision: approval.revision,
+    subject_digest: approval.request.subject_digest, accept: true, answer: true };
+  await f.api("POST", `/v2/sessions/${session.id}/interactions/${approval.id}`, { ...answer, subject_digest: "wrong" }, { status: 409 });
+  await f.api("POST", `/v2/sessions/${session.id}/interactions/${approval.id}`, answer);
+  await f.settled(session.id);
+  await f.api("POST", `/v2/sessions/${session.id}/interactions/${approval.id}`, answer);
+  assert.equal(f.state.applicationCalls, 1);
+  assert.equal(f.state.modelCalls, 0);
+  assert.equal((await f.api("GET", `/v2/sessions/${session.id}/operations`))[0].status, "completed");
+});
+
 test("J17/J20/J24: admitted receipts survive dirty pressure and oversized metadata without repeating effects", { timeout: 60000 }, async t => {
   const f = await fixture(t, { environment: {
     BRAIN_L2_SHARDS: "1", BRAIN_L2_BYTES: "16777216", BRAIN_DIRTY_BYTES: "1048576", BRAIN_ARCHIVE_FLUSH_MS: "60000",
