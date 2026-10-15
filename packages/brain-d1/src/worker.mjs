@@ -20,7 +20,7 @@ const counts = {
   SaveHarnessDecision: 6, BeginDecision: 7, WaitDispatch: 5,
   Nodes: 2, BeginTransfer: 2, Transfer: 2, PendingTransfers: 3, SealTransfer: 4, TransferRuns: 4,
   VerifyTransferTail: 4, VerifyTransferRuns: 5, CancelTransfer: 2, FailTransfer: 4,
-  RecordReceipt: 5, BindResult: 5, ExpireOperations: 1, PropagateControls: 1, Interact: 2, Interactions: 3, Interaction: 2, Answer: 3,
+  RecordReceipt: 5, ReceiptOutputSchema: 2, DiscardDeletedResults: 1, BindResult: 5, ExpireOperations: 1, PropagateControls: 1, Interact: 2, Interactions: 3, Interaction: 2, Answer: 3,
   Attach: 2, Connections: 3, ActiveConnection: 2, RevokeConnection: 2, Documents: 4, PutDocument: 4, DeleteDocument: 3,
   PutFile: 2, Files: 3, File: 2, DeleteFile: 2, Schedule: 2, Schedules: 3, CancelSchedule: 2, FireTimers: 1,
   Grant: 2, Participant: 1, RevokeParticipant: 2, Handoff: 2, Delete: 1, PublishCoverage: 2,

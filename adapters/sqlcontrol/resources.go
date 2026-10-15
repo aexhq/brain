@@ -512,7 +512,7 @@ func (s *Store) Delete(ctx context.Context, session string) (out control.Session
 			if e = s.cancelLineage(ctx, tx, current); e != nil {
 				return e
 			}
-			if _, e := tx.ExecContext(ctx, s.q("UPDATE sessions SET lifecycle='deleted',generation=generation+1,revision=revision+1 WHERE id=?"), session); e != nil {
+			if _, e := tx.ExecContext(ctx, s.q("UPDATE sessions SET lifecycle='deleted',generation=generation+1,revision=revision+1,ready=0,cleanup_ready=1,cleanup_ms="+s.clock()+" WHERE id=?"), session); e != nil {
 				return e
 			}
 			for _, query := range []string{

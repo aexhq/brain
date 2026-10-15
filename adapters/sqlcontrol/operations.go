@@ -11,27 +11,28 @@ import (
 )
 
 const operationColumns = `id,session_id,run_id,step_key,kind,action,arguments_digest,status,recipient,revision,
-arguments,output_limit,deadline_ms,generation,result_sequence,result_digest,result_body,usage,claimant,retry_of,error,intent_sequence,intent_digest,token_reserve`
+arguments,output_limit,deadline_ms,generation,result_sequence,result_digest,result_body,usage,claimant,retry_of,error,intent_sequence,intent_digest,token_reserve,discarded`
 
 func scanOperation(row scanner) (control.Operation, error) {
 	var out control.Operation
 	var kind, status, arguments, body, usage, retry, failure string
-	var revision int64
+	var revision, discarded int64
 	err := row.Scan(&out.View.ID, &out.View.SessionID, &out.View.RunID, &out.View.StepKey,
 		&kind, &out.View.Action, &out.View.ArgumentsDigest, &status, &out.View.Recipient, &revision,
 		&arguments, &out.OutputLimit, &out.Deadline, &out.Generation, &out.ResultSequence,
-		&out.ResultDigest, &body, &usage, &out.Claimant, &retry, &failure, &out.IntentSequence, &out.IntentDigest, &out.TokenReserve)
+		&out.ResultDigest, &body, &usage, &out.Claimant, &retry, &failure, &out.IntentSequence, &out.IntentDigest, &out.TokenReserve, &discarded)
 	if err != nil {
 		return out, notFound(err)
 	}
 	out.View.Kind = wire.EffectKind(kind)
 	out.View.Status = wire.OperationStatus(status)
 	out.View.Revision = strconv.FormatInt(revision, 10)
+	out.Discarded = discarded != 0
 	out.Arguments = []byte(arguments)
 	if failure != "" {
 		out.View.Error = &failure
 	}
-	if body != "" {
+	if body != "" && !out.Discarded {
 		receipt, err := decode[wire.Receipt](body)
 		if err != nil {
 			return out, err
@@ -58,6 +59,24 @@ func (s *Store) operation(ctx context.Context, q queryer, session, id string) (c
 
 func (s *Store) Operation(ctx context.Context, session, id string) (control.Operation, error) {
 	return s.operation(ctx, s.db, session, id)
+}
+
+func (s *Store) ReceiptOutputSchema(ctx context.Context, session, id string) (string, error) {
+	var config, kind, name string
+	err := s.db.QueryRowContext(ctx, s.q(`SELECT s.config,o.kind,o.action FROM operations o JOIN sessions s ON s.id=o.session_id
+WHERE o.session_id=? AND o.id=? AND o.claimant<>''`), session, id).Scan(&config, &kind, &name)
+	if err != nil {
+		return "", notFound(err)
+	}
+	if kind != string(wire.EffectKindAction) {
+		return "", nil
+	}
+	value, err := decode[wire.SessionConfig](config)
+	if err != nil {
+		return "", err
+	}
+	action, err := kernel.Action(value, name)
+	return string(action.OutputSchema), err
 }
 
 func (s *Store) Operations(ctx context.Context, session string, limit int, after ...string) ([]control.Operation, error) {
@@ -234,9 +253,7 @@ func (s *Store) RecordReceipt(ctx context.Context, session, id string, receipt w
 		if e != nil {
 			return e
 		}
-		if current.View.Lifecycle == wire.LifecycleDeleted {
-			return kernel.Fail(wire.ErrorCodeConflict, "deleted session cannot accept new receipt bodies")
-		}
+		discarded := current.View.Lifecycle == wire.LifecycleDeleted
 		out, e = s.operation(ctx, tx, session, id)
 		if e != nil {
 			return e
@@ -256,11 +273,17 @@ func (s *Store) RecordReceipt(ctx context.Context, session, id string, receipt w
 			return kernel.Fail(wire.ErrorCodeConflict, "receipt request key has different evidence")
 		}
 		if out.View.Status == wire.OperationStatusUnknown && receipt.Outcome == wire.OutcomeUnknown && oldHash == hash {
+			if discarded {
+				return s.discardOperation(ctx, tx, &out)
+			}
 			return nil
 		}
 		if out.View.Status == wire.OperationStatusCompleted || out.View.Status == wire.OperationStatusFailed {
 			if oldHash != hash {
 				return kernel.Fail(wire.ErrorCodeConflict, "conflicting settled receipt")
+			}
+			if discarded {
+				return s.discardOperation(ctx, tx, &out)
 			}
 			return nil
 		}
@@ -284,6 +307,10 @@ func (s *Store) RecordReceipt(ctx context.Context, session, id string, receipt w
 		if receipt.Outcome == wire.OutcomeCompleted && receipt.Result == nil && receipt.Error != nil {
 			body = ""
 		}
+		if discarded {
+			body, sequence, digest = "", 0, ""
+			receipt = kernel.DiscardReceiptBodies(receipt)
+		}
 		if sequence < 0 || (sequence == 0 && digest != "") {
 			return kernel.Fail(wire.ErrorCodeInvalid, "receipt result position is invalid")
 		}
@@ -302,21 +329,24 @@ func (s *Store) RecordReceipt(ctx context.Context, session, id string, receipt w
 			usage = string(kernel.JSON(receipt.Usage))
 		}
 		e = requireOne(tx.ExecContext(ctx, s.q(`UPDATE operations SET status=?,revision=revision+1,
-result_sequence=?,result_digest=?,result_body=?,usage=?,error=?,receipt_hash=?,receipt_key=?
+result_sequence=?,result_digest=?,result_body=?,usage=?,error=?,receipt_hash=?,receipt_key=?,discarded=?
 WHERE id=? AND session_id=? AND status IN ('dispatched','unknown')`), kernel.OutcomeStatus(receipt.Outcome),
-			sequence, digest, body, usage, kernel.Value(receipt.Error), hash, receipt.RequestID, id, session))
+			sequence, digest, body, usage, kernel.Value(receipt.Error), hash, receipt.RequestID, boolInt(discarded), id, session))
 		if e != nil {
 			return e
 		}
-		if e = s.settlePackage(ctx, tx, current, out, receipt); e != nil {
+		if !discarded {
+			e = s.settlePackage(ctx, tx, current, out, receipt)
+		}
+		if e != nil {
 			return e
 		}
 		if receipt.Outcome != wire.OutcomeUnknown {
-			if e = s.settleBudgets(ctx, tx, out, receipt, len(body), false, sequence > 0); e != nil {
+			if e = s.settleBudgets(ctx, tx, out, receipt, len(body), false, discarded || sequence > 0); e != nil {
 				return e
 			}
 		}
-		if _, e = tx.ExecContext(ctx, s.q("UPDATE sessions SET ready=1 WHERE id=?"), session); e != nil {
+		if _, e = tx.ExecContext(ctx, s.q("UPDATE sessions SET ready=CASE WHEN lifecycle='deleted' THEN 0 ELSE 1 END WHERE id=?"), session); e != nil {
 			return e
 		}
 		out, e = s.operation(ctx, tx, session, id)
@@ -381,7 +411,7 @@ WHERE `+s.expiration()+` ORDER BY o.deadline_ms,o.id LIMIT ?`), limit)
 			return e
 		}
 		for _, k := range keys {
-			_, e := s.session(ctx, tx, k.session, true)
+			current, e := s.session(ctx, tx, k.session, true)
 			if e != nil {
 				return e
 			}
@@ -398,20 +428,24 @@ WHERE o.id=? AND `+s.expiration()), k.id).Scan(&expired); e != nil {
 				continue
 			}
 			status, reason := "unknown", "dispatch deadline passed; the original recipient may still supply authenticated evidence"
+			discarded := current.View.Lifecycle == wire.LifecycleDeleted
 			body := ""
 			if op.View.Status == wire.OperationStatusPrepared {
 				status, reason = "failed", "operation was never dispatched before its deadline, cancellation, revocation or rejected approval"
 				body = string(kernel.JSON(wire.Receipt{RequestID: "not-dispatched:" + op.View.ID, Outcome: wire.OutcomeFailed, Error: &reason}))
-				if e = s.settleBudgets(ctx, tx, op, wire.Receipt{}, len(body), true, false); e != nil {
+				if discarded {
+					body = ""
+				}
+				if e = s.settleBudgets(ctx, tx, op, wire.Receipt{}, len(body), true, discarded); e != nil {
 					return e
 				}
 			}
-			if e = requireOne(tx.ExecContext(ctx, s.q(`UPDATE operations AS o SET status=?,result_body=?,error=?,revision=revision+1
+			if e = requireOne(tx.ExecContext(ctx, s.q(`UPDATE operations AS o SET status=?,result_body=?,error=?,discarded=?,revision=revision+1
 WHERE o.id=? AND o.status=? AND EXISTS(SELECT 1 FROM sessions s WHERE s.id=o.session_id AND `+s.expiration()+`)`),
-				status, body, reason, op.View.ID, op.View.Status)); e != nil {
+				status, body, reason, boolInt(discarded), op.View.ID, op.View.Status)); e != nil {
 				return e
 			}
-			if _, e = tx.ExecContext(ctx, s.q("UPDATE sessions SET ready=1 WHERE id=?"), k.session); e != nil {
+			if _, e = tx.ExecContext(ctx, s.q("UPDATE sessions SET ready=CASE WHEN lifecycle='deleted' THEN 0 ELSE 1 END WHERE id=?"), k.session); e != nil {
 				return e
 			}
 			count++

@@ -628,6 +628,102 @@ test("J23/J24: unsupported harness continuation stays blocked while original lat
   assert.equal(f.state.modelCalls, 1, "only explicit fresh work used a model");
 });
 
+test("J02/J17/J24/J30: original receipts survive deletion and restart without restoring bodies or executing again", { timeout: 60000 }, async t => {
+  const f = await fixture(t);
+  const parent = await f.create({
+    connections: [{ name: "worker", kind: "application", provider: "application", ownership: "borrowed" }],
+    actions: ["deliver", "expect_string"].map(name => ({
+      name, description: "Deliver once", connection: "worker", input_schema: { type: "object" },
+      output_schema: { type: "object", required: ["delivered"], properties: {
+        delivered: { type: name === "deliver" ? "integer" : "string" },
+      } }, max_output_bytes: 8192, timeout_ms: 60000,
+    })),
+  });
+  let client = new SessionClient({ url: f.origin, token: "fixture-operator" });
+  let parentSession = client.session(parent.id);
+  const children = [];
+  for (const action of ["deliver", "expect_string"]) {
+    const child = await parentSession.delegate({ request_id: "child-" + action,
+      message: "fixture:action:" + action, config: parent.config, context: [] });
+    const session = client.session(child.id);
+    const connection = await session.attach("worker", { requestId: "worker" });
+    const [operation] = await waitFor(() => session.operations(), values => values.length === 1 && values[0].status === "prepared",
+      "one original application decision");
+    const execution = await session.claim(operation.id, { request_id: "claim", connection_id: connection.id, generation: connection.generation });
+    const body = JSON.stringify(execution);
+    const response = await fetch(f.applicationURL, { method: "POST", headers: { "Content-Type": "application/json",
+      "X-Brain-Operation": operation.id, "X-Brain-Signature": "v1=" + createHmac("sha256", "fixture-signing-key").update(body).digest("hex") }, body });
+    assert.equal(response.status, 200);
+    children.push({ id: child.id, session, operation, execution, receipt: await response.json() });
+  }
+  const [late, prior] = children;
+  assert.equal(f.state.applicationCalls, 2);
+  assert.equal(f.state.modelCalls, 0);
+  const original = await prior.session.receipt(prior.operation.id, prior.receipt, prior.execution.receipt_token);
+  assert.equal(original.status, "completed");
+  assert.match(original.error, /outside its declared output schema/u);
+  for (const child of children) {
+    assert.equal((await child.session.delete()).lifecycle, "deleted");
+    await assert.rejects(child.session.read(), error => error instanceof SessionError && error.status === 404);
+    await assert.rejects(child.session.claim(child.operation.id, { request_id: "again",
+      connection_id: child.execution.operation.recipient, generation: "1" }), error => error.status === 404);
+  }
+  await f.api("POST", `/v2/sessions/${late.id}/operations/${late.operation.id}/receipt`, late.receipt,
+    { token: late.execution.receipt_token + "invalid", status: 401 });
+  const unknown = await late.session.receipt(late.operation.id, {
+    request_id: "delivery-unconfirmed", outcome: "unknown", error: "the original application result has not reached control",
+  }, late.execution.receipt_token);
+  assert.equal(unknown.status, "unknown");
+  assert.equal(unknown.result_available, false);
+  assert.equal(Object.hasOwn(unknown, "result"), false);
+  const held = await parentSession.budget();
+  assert.equal(held.active_operations, 1);
+  assert(held.reserved_output_bytes > 0, "an uncertain original effect keeps its output allowance after deletion");
+  assert((await f.api("GET", "/operator/storage")).reserved_output_bytes > 0);
+  await waitFor(() => parentSession.records(), page => page.records.filter(record => record.kind === "session.delegated").length === 2,
+    "the original parent links are written before restart");
+  await f.stop("SIGKILL");
+  await f.start();
+  client = new SessionClient({ url: f.origin, token: "fixture-operator" });
+  parentSession = client.session(parent.id);
+  const provider = { private: "original application provider metadata" };
+  late.receipt = { ...late.receipt, usage: { input_tokens: 9, provider } };
+  const completed = await client.session(late.id).receipt(late.operation.id, late.receipt, late.execution.receipt_token);
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.result_available, false);
+  assert.equal(Object.hasOwn(completed, "result"), false);
+  assert.equal(completed.usage.input_tokens, 9);
+  assert.equal(Object.hasOwn(completed.usage, "output_tokens"), false);
+  assert.deepEqual(completed.usage.provider, {});
+  assert.deepEqual(completed.usage.provider_unavailable, {
+    digest: createHash("sha256").update(JSON.stringify(provider)).digest("hex"), bytes: Buffer.byteLength(JSON.stringify(provider)),
+  });
+  const reconciled = await client.session(prior.id).receipt(prior.operation.id, prior.receipt, prior.execution.receipt_token);
+  assert.equal(reconciled.status, "completed");
+  assert.equal(reconciled.error, original.error, "the same raw receipt uses its immutable original schema after deletion");
+  assert.equal(reconciled.result_available, false);
+  assert.equal(Object.hasOwn(reconciled, "result"), false);
+  const settled = await waitFor(() => parentSession.budget(), value => value.active_operations === 0 && value.reserved_output_bytes === 0,
+    "late known results release only their original ancestor holds");
+  assert.equal(settled.calls, 2);
+  await waitFor(() => f.api("GET", "/operator/storage"), value => value.reserved_output_bytes === 0,
+    "retained L2 reclaims only positively discarded known-result reserves");
+  await assert.rejects(client.session(late.id).receipt(late.operation.id, { ...late.receipt, result: { delivered: 999 } },
+    late.execution.receipt_token), error => error.code === "conflict");
+  await f.stop();
+  await f.start();
+  const python = await runPython(t, "deleted-receipt.py", { BRAIN_URL: f.origin, BRAIN_SESSION: late.id,
+    BRAIN_OPERATION: late.operation.id, BRAIN_RECEIPT: JSON.stringify(late.receipt), BRAIN_RECEIPT_TOKEN: late.execution.receipt_token });
+  assert.match(python, /Original deleted receipt remains evidence without bodies/u);
+  const budget = await new SessionClient({ url: f.origin, token: "fixture-operator" }).session(parent.id).budget();
+  assert.equal(budget.calls, 2);
+  assert.equal(budget.active_operations, 0);
+  assert.equal(budget.reserved_output_bytes, 0);
+  await delay(300);
+  assert.equal(f.state.applicationCalls, 2, "deletion, late delivery and two restarts never repeat an external effect");
+  assert.equal(f.state.modelCalls, 0);
+});
+
 test("J15: same-session harness handoff is atomic, quiescent and idempotent without replacing history", { timeout: 45000 }, async t => {
   const f = await fixture(t, { harnesses: [fixtureHarness(), fixtureHarness("specialist")] });
   const original = { name: "fixture", version: "1" };

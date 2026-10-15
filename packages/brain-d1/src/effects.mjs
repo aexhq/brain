@@ -4,7 +4,7 @@ import {
 import { journal } from "./control.mjs";
 import { operationBytes, pageRows } from "./pages.mjs";
 import { releaseOutputBudgets, reserveBudgets, settleBudgets, tokenReservation } from "./budgets.mjs";
-import { boundedReceipt, outputReservation } from "./receipts.mjs";
+import { boundedReceipt, discardReceiptBodies, outputReservation } from "./receipts.mjs";
 
 const expiration = `o.status IN ('prepared','dispatched') AND (o.deadline_ms<=${clock}
 OR (o.status='dispatched' AND EXISTS(SELECT 1 FROM nodes n WHERE n.id=o.claimant AND (n.lease<=${clock} OR n.draining<>0)))
@@ -43,12 +43,46 @@ export async function settlePackage(m, current, prior, receipt, receiptText) {
   m.change("UPDATE packages SET body=? WHERE tenant=? AND id=?", [encode(pkg), current.tenant, packageID]);
 }
 
+async function discardOperation(m, prior) {
+  if (prior.discarded) return;
+  const receipt = await discardReceiptBodies(prior.usage ? { usage: decode(prior.usage) } : {});
+  const usage = receipt.usage ? wire("Usage", receipt.usage) : "";
+  m.change("UPDATE operations SET discarded=1,result_body='',usage=? WHERE session_id=? AND id=? AND discarded=0",
+    [usage, prior.session_id, prior.id], true);
+  if (big(prior.result_sequence) === 0n && ["completed", "failed"].includes(prior.status)) {
+    await releaseOutputBudgets(m, prior);
+  }
+}
+
 export const effectHandlers = {
   async Operation(db, [identifier, operationID]) {
     return operation(await one(db, "SELECT " + operationColumns + " FROM operations WHERE session_id=? AND id=?", [identifier, operationID]));
   },
   async Operations(db, [identifier, limit, after]) {
     return (await pageRows(db, operationColumns, "operations", "session_id=? AND id>?", "id", operationBytes, limit, [identifier, after])).map(operation);
+  },
+  async ReceiptOutputSchema(db, [identifier, operationID]) {
+    const value = await one(db, `SELECT s.config,o.kind,o.action FROM operations o JOIN sessions s ON s.id=o.session_id
+WHERE o.session_id=? AND o.id=? AND o.claimant<>''`, [identifier, operationID]);
+    if (value.kind !== "action") return "";
+    const action = (decode(value.config).actions ?? []).find(action => action.name === value.action);
+    need(action, "not_found", "original receipt action is unavailable");
+    return action.output_schema === undefined ? "" : encode(action.output_schema);
+  },
+  async DiscardDeletedResults(db, [limit]) {
+    safe(limit, 1, 1024);
+    const m = new Mutation(db);
+    const candidate = await m.one("SELECT id FROM sessions WHERE cleanup_ready=1 ORDER BY cleanup_ms,id LIMIT 1", [], true);
+    if (!candidate) return 0;
+    const current = await m.session(candidate.id);
+    need(current.lifecycle === "deleted", "corrupt", "result disposal requires a deleted session");
+    const values = await m.rows(`SELECT id,session_id,status,CAST(result_sequence AS TEXT) AS result_sequence,output_limit,usage,discarded
+FROM operations WHERE session_id=? AND discarded=0 ORDER BY id LIMIT 1`, [candidate.id]);
+    for (const value of values) await discardOperation(m, value);
+    m.change(`UPDATE sessions SET cleanup_ready=CASE WHEN
+EXISTS(SELECT 1 FROM operations WHERE session_id=? AND discarded=0) THEN 1 ELSE 0 END,cleanup_ms=${clock} WHERE id=?`, [candidate.id, candidate.id]);
+    await m.commit();
+    return values.length;
   },
   async Prepare(db, [owner, request], text) {
     const m = new Mutation(db);
@@ -122,7 +156,7 @@ AND EXISTS(SELECT 1 FROM runs r WHERE r.id=operations.run_id AND r.status IN ('q
   async RecordReceipt(db, [identifier, operationID, receipt, sequence, resultDigest], text) {
     const m = new Mutation(db);
     const current = await m.session(identifier);
-    need(current.lifecycle !== "deleted", "conflict", "deleted session cannot accept new receipt bodies");
+    const discarded = current.lifecycle === "deleted";
     const prior = await m.one("SELECT " + operationColumns + " FROM operations WHERE session_id=? AND id=?", [identifier, operationID]);
     let body = text[2];
     const resultText = field(body, "result");
@@ -135,6 +169,10 @@ AND EXISTS(SELECT 1 FROM runs r WHERE r.id=operations.run_id AND r.status IN ('q
     if ((prior.status === "unknown" && receipt.outcome === "unknown" && prior.receipt_hash === receiptHash) ||
         ["completed", "failed"].includes(prior.status)) {
       need(prior.receipt_hash === receiptHash, "conflict", "conflicting settled receipt");
+      if (discarded) {
+        await discardOperation(m, prior);
+        return result(m, "SELECT " + operationColumns + " FROM operations WHERE id=?", [operationID], operation);
+      }
       return operation(prior);
     }
     need(["dispatched", "unknown"].includes(prior.status), "conflict", "receipt has no committed dispatch claim");
@@ -150,18 +188,25 @@ AND EXISTS(SELECT 1 FROM runs r WHERE r.id=operations.run_id AND r.status IN ('q
       resultDigest = "";
     }
     if (receipt.outcome === "completed" && receipt.result === undefined && receipt.error !== undefined) body = "";
+    if (discarded) {
+      body = "";
+      sequence = 0;
+      resultDigest = "";
+      receipt = await discardReceiptBodies(receipt);
+      usage = receipt.usage ? wire("Usage", receipt.usage) : "";
+    }
     need(big(sequence) >= 0n && (big(sequence) !== 0n || resultDigest === ""), "invalid", "receipt result position is invalid");
     if (big(sequence) > 0n) {
       m.guard("EXISTS(SELECT 1 FROM allocations WHERE session_id=? AND sequence=? AND status='written' AND digest=?)", [identifier, sequence, resultDigest]);
     }
-    m.change(`UPDATE operations SET status=?,revision=revision+1,result_sequence=?,result_digest=?,result_body=?,usage=?,error=?,receipt_hash=?,receipt_key=?
+    m.change(`UPDATE operations SET status=?,revision=revision+1,result_sequence=?,result_digest=?,result_body=?,usage=?,error=?,receipt_hash=?,receipt_key=?,discarded=?
 WHERE id=? AND session_id=? AND status IN ('dispatched','unknown')`,
-    [receipt.outcome, sequence, resultDigest, body, usage ?? "", error, receiptHash, receipt.request_id, operationID, identifier], true);
-    await settlePackage(m, current, prior, receipt, body || wire("Receipt", receipt));
+    [receipt.outcome, sequence, resultDigest, body, usage ?? "", error, receiptHash, receipt.request_id, discarded ? 1 : 0, operationID, identifier], true);
+    if (!discarded) await settlePackage(m, current, prior, receipt, body || wire("Receipt", receipt));
     if (receipt.outcome !== "unknown") {
-      await settleBudgets(m, prior, receipt, new TextEncoder().encode(body).length, false, big(sequence) > 0n);
+      await settleBudgets(m, prior, receipt, new TextEncoder().encode(body).length, false, discarded || big(sequence) > 0n);
     }
-    m.change("UPDATE sessions SET ready=1 WHERE id=?", [identifier]);
+    m.change("UPDATE sessions SET ready=CASE WHEN lifecycle='deleted' THEN 0 ELSE 1 END WHERE id=?", [identifier]);
     return result(m, "SELECT " + operationColumns + " FROM operations WHERE id=?", [operationID], operation);
   },
   async BindResult(db, [identifier, owner, operationID, sequence, hash]) {
@@ -188,16 +233,17 @@ WHERE ${expiration} ORDER BY o.deadline_ms,o.id LIMIT ?`, [Math.min(safe(limit, 
       if ((await m.one("SELECT CASE WHEN " + predicate + " THEN 1 ELSE 0 END AS valid", [prior.id])).valid !== 1) continue;
       m.guard(predicate, [prior.id]);
       const prepared = prior.status === "prepared";
+      const discarded = current.lifecycle === "deleted";
       const status = prepared ? "failed" : "unknown";
       const reason = prepared ? "operation was never dispatched before expiry, cancellation, revocation or rejected approval"
         : "dispatch deadline or owner was lost; the original recipient may still supply authenticated evidence";
-      const body = prepared ? wire("Receipt", { request_id: "not-dispatched:" + prior.id, outcome: "failed", error: reason }) : "";
+      const body = prepared && !discarded ? wire("Receipt", { request_id: "not-dispatched:" + prior.id, outcome: "failed", error: reason }) : "";
       if (prepared) {
-        await settleBudgets(m, prior, {}, new TextEncoder().encode(body).length, true);
+        await settleBudgets(m, prior, {}, new TextEncoder().encode(body).length, true, discarded);
       }
-      m.change("UPDATE operations SET status=?,result_body=?,error=?,revision=revision+1 WHERE id=? AND status=?",
-        [status, body, reason, prior.id, prior.status], true);
-      m.change("UPDATE sessions SET ready=1 WHERE id=?", [value.session_id]);
+      m.change("UPDATE operations SET status=?,result_body=?,error=?,discarded=?,revision=revision+1 WHERE id=? AND status=?",
+        [status, body, reason, discarded ? 1 : 0, prior.id, prior.status], true);
+      m.change("UPDATE sessions SET ready=CASE WHEN lifecycle='deleted' THEN 0 ELSE 1 END WHERE id=?", [value.session_id]);
       count++;
     }
     const interactions = await m.rows(`SELECT id,session_id FROM interactions WHERE status='pending' AND expires_ms<=${clock} ORDER BY expires_ms,id LIMIT 2`);

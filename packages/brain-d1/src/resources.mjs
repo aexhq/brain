@@ -186,7 +186,7 @@ AND NOT EXISTS(SELECT 1 FROM commands WHERE session_id=? AND status='accepted' A
     const current = await m.session(identifier);
     if (current.lifecycle !== "deleted") {
       await cancelLineage(m, identifier);
-      m.change("UPDATE sessions SET lifecycle='deleted',generation=generation+1,revision=revision+1 WHERE id=?", [identifier]);
+      m.change(`UPDATE sessions SET lifecycle='deleted',generation=generation+1,revision=revision+1,ready=0,cleanup_ready=1,cleanup_ms=${clock} WHERE id=?`, [identifier]);
       for (const sql of [
         "UPDATE runs SET status='cancelled' WHERE session_id=? AND status IN ('queued','active','waiting','paused','blocked')",
         "UPDATE commands SET status='cancelled' WHERE session_id=? AND status='accepted'",

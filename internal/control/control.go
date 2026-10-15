@@ -53,6 +53,7 @@ type Operation struct {
 	IntentSequence int64
 	IntentDigest   string
 	TokenReserve   int64
+	Discarded      bool
 }
 
 type Allocation struct {
@@ -185,6 +186,8 @@ type Store interface {
 	PendingResults(context.Context, string, int) ([]Operation, error)
 	ClaimDispatch(context.Context, string, Owner, string, string, string) (Operation, error)
 	RecordReceipt(context.Context, string, string, wire.Receipt, int64, string) (Operation, error)
+	ReceiptOutputSchema(context.Context, string, string) (string, error)
+	DiscardDeletedResults(context.Context, int) (int, error)
 	BindResult(context.Context, string, Owner, string, int64, string) error
 	ExpireOperations(context.Context, int) (int, error)
 	PropagateControls(context.Context, int) ([]string, error)

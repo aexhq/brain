@@ -101,6 +101,9 @@ func (s *Server) coordinate(ctx context.Context) {
 			if _, err := s.Control.ExpireOperations(ctx, 128); err != nil && ctx.Err() == nil {
 				slog.Warn("operation_expiry_delayed", "code", kernel.Response(err).Code)
 			}
+			if _, err := s.Control.DiscardDeletedResults(ctx, 32); err != nil && ctx.Err() == nil {
+				slog.Warn("deleted_result_disposal_delayed", "code", kernel.Response(err).Code)
+			}
 		case <-ticker.C:
 			if !s.healthy.Load() {
 				continue
@@ -214,7 +217,7 @@ func (s *Server) process(ctx context.Context, id string) error {
 }
 
 func (s *Server) available(ctx context.Context, operation control.Operation) control.Operation {
-	if operation.View.ResultAvailable || operation.ResultSequence == 0 {
+	if operation.Discarded || operation.View.ResultAvailable || operation.ResultSequence == 0 {
 		return operation
 	}
 	record, err := s.History.Get(ctx, operation.View.SessionID, operation.ResultSequence, operation.ResultDigest)

@@ -268,6 +268,14 @@ func (s *Store) RecordReceipt(ctx context.Context, session, id string, receipt w
 	err = s.call(ctx, "RecordReceipt", []any{session, id, receipt, sequence, digest}, &value)
 	return
 }
+func (s *Store) ReceiptOutputSchema(ctx context.Context, session, id string) (value string, err error) {
+	err = s.call(ctx, "ReceiptOutputSchema", []any{session, id}, &value)
+	return
+}
+func (s *Store) DiscardDeletedResults(ctx context.Context, limit int) (value int, err error) {
+	err = s.call(ctx, "DiscardDeletedResults", []any{limit}, &value)
+	return
+}
 func (s *Store) BindResult(ctx context.Context, session string, owner control.Owner, id string, sequence int64, digest string) error {
 	return s.call(ctx, "BindResult", []any{session, owner, id, sequence, digest}, nil)
 }

@@ -813,7 +813,7 @@ func (s *Store) reconcileReserves(ctx context.Context, db *sql.DB, index int) er
 		if err != nil {
 			return err
 		}
-		if operation.ResultSequence > 0 && (operation.View.Status == wire.OperationStatusCompleted || operation.View.Status == wire.OperationStatusFailed) {
+		if (operation.Discarded || operation.ResultSequence > 0) && (operation.View.Status == wire.OperationStatusCompleted || operation.View.Status == wire.OperationStatusFailed) {
 			if err = s.Release(ctx, value.session, value.id); err != nil {
 				return err
 			}

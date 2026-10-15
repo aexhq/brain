@@ -34,7 +34,7 @@ async function fixture(t, options = {}) {
   const session = await call("Create", ["tenant", { request_id: "created", config }, "", "", ["storage:retained"]]);
   const id = session.View.id;
   const owner = await call("ClaimOwner", [id, node]);
-  async function prepare(name = "once") {
+  async function prepare(name = "once", overrides = {}) {
     const command = await call("Accept", [{ Tenant: "tenant", Subject: "operator" }, id,
       { request_id: name, data: { kind: "message", text: name } }]);
     await call("ApplyInput", [id, { Command: command.id, Owner: owner, Sequence: 1, Run: true, Disposition: "", StateKey: "" }]);
@@ -45,11 +45,144 @@ async function fixture(t, options = {}) {
       ID: name, Session: id, Run: stableID("run", id, command.id), StepKey: "0", Kind: "model", Action: "generate",
       Arguments: { escaped: "quote\"slash\\", nested: { number: integer("9007199254740993"), empty: null } },
       Recipient: "model", OutputLimit: 8192, Timeout: 30000, Generation: "", Approval: false, RetryOf: "",
-      IntentSequence: sequence, IntentDigest: digest,
+      IntentSequence: sequence, IntentDigest: digest, ...overrides,
     }]);
   }
   return { ...binding, call, id, owner, config, custody, prepare };
 }
+
+test("actual D1 retains original late outcome and sparse accounting after deletion without bodies or revival", async t => {
+  const f = await fixture(t);
+  const op = await f.prepare("original-dispatch");
+  await f.call("ClaimDispatch", [f.id, f.owner, op.View.id, f.owner.Node, "once"]);
+  const high = (await f.call("Session", ["tenant", f.id])).View.sequence;
+  await f.call("Delete", [f.id]);
+  assert.equal(String(await f.call("DiscardDeletedResults", [32])), "1");
+  await f.call("RetireNode", [f.owner.Node]);
+  assert.equal(String(await f.call("ExpireOperations", [32])), "1");
+  const before = await f.call("Budget", [f.id]);
+  assert.equal(String(before.active_operations), "1");
+  assert(BigInt(String(before.reserved_output_bytes)) > 0n);
+  assert(BigInt(before.reserved_tokens) > 0n);
+  const provider = { private: "original provider payload" };
+  const receipt = { request_id: "original-result", outcome: "completed",
+    result: { private: "original result payload" }, usage: { input_tokens: 3, provider } };
+  const value = await f.call("RecordReceipt", [f.id, op.View.id, receipt, 0, ""]);
+  assert.equal(value.View.status, "completed");
+  assert.equal(value.Discarded, true);
+  assert.equal(value.View.result_available, false);
+  assert.equal(Object.hasOwn(value.View, "result"), false);
+  assert.equal(String(value.ResultSequence), "0");
+  assert.equal(String(value.View.usage.input_tokens), "3");
+  assert.equal(Object.hasOwn(value.View.usage, "output_tokens"), false);
+  assert.deepEqual(value.View.usage.provider, {});
+  assert.equal(value.View.usage.provider_unavailable.digest, hash(JSON.stringify(provider)));
+  assert.equal(String(value.View.usage.provider_unavailable.bytes), String(Buffer.byteLength(JSON.stringify(provider))));
+  const after = await f.call("Budget", [f.id]);
+  assert.equal(String(after.calls), "1");
+  assert.equal(String(after.active_operations), "0");
+  assert.equal(String(after.reserved_output_bytes), "0");
+  assert.equal(after.reported_tokens, "3");
+  assert.equal(after.reserved_tokens, before.reserved_tokens);
+  assert.equal(String(after.incomplete_usages), "1");
+  for (let index = 0; index < 2; index++) {
+    assert.deepEqual(await f.call("RecordReceipt", [f.id, op.View.id, receipt, 0, ""]), value);
+  }
+  assert.deepEqual(await f.call("Budget", [f.id]), after);
+  const changed = { ...receipt, result: "different bytes" };
+  assert.equal((await f.rpc("RecordReceipt", [f.id, op.View.id, changed, 0, ""])).status, 409);
+  assert.equal((await f.rpc("RecordReceipt", [f.id, op.View.id, { ...changed, request_id: "different-key" }, 0, ""])).status, 409);
+  const row = await f.database.prepare(`SELECT s.lifecycle,s.ready,CAST(s.sequence AS TEXT) AS sequence,r.status,o.result_body,o.receipt_hash
+FROM sessions s JOIN runs r ON r.session_id=s.id JOIN operations o ON o.run_id=r.id WHERE o.id=?`).bind(op.View.id).first();
+  assert.equal(row.lifecycle, "deleted");
+  assert.equal(row.ready, 0);
+  assert.equal(row.sequence, high);
+  assert.equal(row.status, "cancelled");
+  assert.equal(row.result_body, "");
+  assert.match(row.receipt_hash, /^[a-f0-9]{64}$/u);
+  assert.equal((await f.rpc("Session", ["tenant", f.id])).status, 404);
+  assert.notEqual((await f.rpc("ClaimDispatch", [f.id, f.owner, op.View.id, f.owner.Node, "again"])).status, 200);
+  assert.equal((await f.rpc("Allocate", [f.id, f.owner])).status, 409, "the retired original incarnation cannot allocate");
+});
+
+test("actual D1 serializes deletion against an original receipt without duplicating settlement", async t => {
+  const f = await fixture(t);
+  const op = await f.prepare("racing-original");
+  await f.call("ClaimDispatch", [f.id, f.owner, op.View.id, f.owner.Node, "once"]);
+  const receipt = { request_id: "original", outcome: "completed", result: "original body",
+    usage: { input_tokens: 2, output_tokens: 3, provider: { private: "original provider body" } } };
+  const responses = await Promise.all([f.rpc("Delete", [f.id]), f.rpc("RecordReceipt", [f.id, op.View.id, receipt, 0, ""])]);
+  for (const response of responses) assert.equal(response.status, 200, response.text);
+  const value = await f.call("RecordReceipt", [f.id, op.View.id, receipt, 0, ""]);
+  assert.equal(value.View.status, "completed");
+  assert.equal(value.Discarded, true);
+  assert.equal(value.View.result_available, false);
+  const budget = await f.call("Budget", [f.id]);
+  assert.equal(String(budget.calls), "1");
+  assert.equal(String(budget.active_operations), "0");
+  assert.equal(String(budget.reserved_output_bytes), "0");
+  assert.equal(budget.reported_tokens, "5");
+  assert.equal(budget.reserved_tokens, "0");
+});
+
+test("actual D1 bounds deleted disposal and releases only known unbound output holds once", async t => {
+  const f = await fixture(t);
+  const receipts = {};
+  for (const name of ["bound", "unbound", "failed", "unsent", "unknown"]) {
+    await f.prepare(name);
+    if (name === "unsent") continue;
+    await f.call("ClaimDispatch", [f.id, f.owner, name, f.owner.Node, "claim"]);
+    const receipt = { request_id: "result-" + name,
+      outcome: name === "failed" ? "failed" : name === "unknown" ? "unknown" : "completed",
+      result: name, usage: { input_tokens: 1, output_tokens: 2 } };
+    receipts[name] = receipt;
+    await f.call("RecordReceipt", [f.id, name, receipt, 0, ""]);
+    if (name === "bound") {
+      const sequence = await f.call("Allocate", [f.id, f.owner]);
+      const digest = hash("original bound result");
+      await f.call("Written", [f.id, f.owner, sequence, digest, 32]);
+      await f.call("BindResult", [f.id, f.owner, name, sequence, digest]);
+    }
+  }
+  const reserve = (8192 + 48 * 1024) * 3 + 4096;
+  await f.call("Delete", [f.id]);
+  for (const name of ["bound", "unbound", "unbound"]) {
+    const value = await f.call("RecordReceipt", [f.id, name, receipts[name], 0, ""]);
+    assert.equal(value.Discarded, true);
+    assert.equal(value.View.result_available, false);
+  }
+  for (const expected of [1, 1, 1, 0]) {
+    assert.equal(String(await f.call("DiscardDeletedResults", [128])), String(expected), "D1 bounds each finite disposal plan to one operation");
+  }
+  const before = await f.call("Budget", [f.id]);
+  assert.equal(String(before.active_operations), "2");
+  assert.equal(String(before.reserved_output_bytes), String(2 * reserve));
+  assert.equal(String(await f.call("ExpireOperations", [32])), "1");
+  const after = await f.call("Budget", [f.id]);
+  assert.equal(String(after.active_operations), "1");
+  assert.equal(String(after.reserved_output_bytes), String(reserve));
+  assert.equal(String(after.calls), "5");
+  for (const name of ["bound", "unbound", "failed", "unsent", "unknown"]) {
+    const value = await f.call("Operation", [f.id, name]);
+    assert.equal(value.Discarded, true);
+    assert.equal(value.View.result_available, false);
+    assert.equal(Object.hasOwn(value.View, "result"), false);
+  }
+  assert.deepEqual(await f.database.prepare("SELECT ready,cleanup_ready FROM sessions WHERE id=?").bind(f.id).first(),
+    { ready: 0, cleanup_ready: 0 });
+});
+
+test("actual D1 keeps the immutable original action receipt schema after deletion", async t => {
+  const output = { type: "object", required: ["delivered"] };
+  const f = await fixture(t, { config: { actions: [{ name: "deliver", output_schema: output }] } });
+  const op = await f.prepare("original-action", { Kind: "action", Action: "deliver", Recipient: "internal" });
+  assert.equal((await f.rpc("ReceiptOutputSchema", [f.id, op.View.id])).status, 404);
+  await f.call("ClaimDispatch", [f.id, f.owner, op.View.id, f.owner.Node, "once"]);
+  for (let index = 0; index < 2; index++) {
+    assert.deepEqual(JSON.parse(await f.call("ReceiptOutputSchema", [f.id, op.View.id])), output);
+    await f.call("Delete", [f.id]);
+  }
+});
 
 test("actual D1 confirms only original retained bytes without reissuing claims or filling absent positions", async t => {
   const f = await fixture(t);

@@ -396,14 +396,12 @@ func (s *Server) receipt(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if operation.View.Kind == wire.EffectKindAction && receipt.Outcome == wire.OutcomeCompleted {
-			session, e := s.Control.Session(r.Context(), "", operation.View.SessionID)
+			schema, e := s.Control.ReceiptOutputSchema(r.Context(), operation.View.SessionID, operation.View.ID)
 			if e != nil {
 				return e
 			}
-			if action, e := kernel.Action(session.View.Config, operation.View.Action); e == nil && len(action.OutputSchema) > 0 {
-				if validation.Validate(action.OutputSchema, receipt.Result) != nil {
-					receipt.Error = kernel.Ptr("completed action returned bytes outside its declared output schema")
-				}
+			if schema != "" && validation.Validate(json.RawMessage(schema), receipt.Result) != nil {
+				receipt.Error = kernel.Ptr("completed action returned bytes outside its declared output schema")
 			}
 		}
 		result, err := s.Control.RecordReceipt(r.Context(), operation.View.SessionID, operation.View.ID, receipt, 0, "")

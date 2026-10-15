@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS brain_schema (version BIGINT PRIMARY KEY);
-INSERT INTO brain_schema(version) SELECT 14 WHERE NOT EXISTS(SELECT 1 FROM brain_schema);
+INSERT INTO brain_schema(version) SELECT 15 WHERE NOT EXISTS(SELECT 1 FROM brain_schema);
 CREATE TABLE IF NOT EXISTS nodes (
  id TEXT PRIMARY KEY, lease BIGINT NOT NULL, draining BIGINT NOT NULL DEFAULT 0,
  endpoint TEXT NOT NULL DEFAULT '', configuration_digest TEXT NOT NULL DEFAULT ''
@@ -30,10 +30,12 @@ CREATE TABLE IF NOT EXISTS sessions (
  sequence BIGINT NOT NULL DEFAULT 0, owner TEXT NOT NULL DEFAULT '', epoch BIGINT NOT NULL DEFAULT 0,
  generation BIGINT NOT NULL DEFAULT 1, paused BIGINT NOT NULL DEFAULT 0, created_ms BIGINT NOT NULL,
  parent TEXT NOT NULL DEFAULT '', budget TEXT NOT NULL,
- ready BIGINT NOT NULL DEFAULT 0, ready_ms BIGINT NOT NULL DEFAULT 0, UNIQUE(tenant, create_key)
+ ready BIGINT NOT NULL DEFAULT 0, ready_ms BIGINT NOT NULL DEFAULT 0,
+ cleanup_ready BIGINT NOT NULL DEFAULT 0, cleanup_ms BIGINT NOT NULL DEFAULT 0, UNIQUE(tenant, create_key)
 );
 CREATE INDEX IF NOT EXISTS sessions_tenant ON sessions(tenant,id);
 CREATE INDEX IF NOT EXISTS sessions_owner ON sessions(owner,lifecycle);
+CREATE INDEX IF NOT EXISTS sessions_cleanup ON sessions(cleanup_ready,cleanup_ms,id);
 CREATE TABLE IF NOT EXISTS commands (
  id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), request_key TEXT NOT NULL,
  digest TEXT NOT NULL, payload TEXT NOT NULL, source TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'accepted',
@@ -97,9 +99,10 @@ CREATE TABLE IF NOT EXISTS operations (
  claimant TEXT NOT NULL DEFAULT '', claim_key TEXT NOT NULL DEFAULT '',
  approval BIGINT NOT NULL DEFAULT 0, retry_of TEXT NOT NULL DEFAULT '',
  intent_sequence BIGINT NOT NULL DEFAULT 0, intent_digest TEXT NOT NULL DEFAULT '',
- token_reserve BIGINT NOT NULL DEFAULT 0,
+ token_reserve BIGINT NOT NULL DEFAULT 0, discarded BIGINT NOT NULL DEFAULT 0,
  UNIQUE(run_id,step_key)
 );
+CREATE INDEX IF NOT EXISTS operations_cleanup ON operations(session_id,id) WHERE discarded=0;
 CREATE INDEX IF NOT EXISTS allocations_transfer ON allocations(session_id,status,archive_key,sequence);
 CREATE INDEX IF NOT EXISTS operations_session ON operations(session_id,id);
 CREATE INDEX IF NOT EXISTS operations_pending ON operations(status,session_id,deadline_ms);

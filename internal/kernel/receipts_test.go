@@ -47,11 +47,37 @@ func TestReceiptFrameFitsItsOutputReserveForWorstCaseEscaping(t *testing.T) {
 		if err != nil || !utf8.ValidString(*value.Error) {
 			t.Fatalf("bounded UTF-8 metadata: %+v %v", value, err)
 		}
+
 		record := wire.Record{SessionID: strings.Repeat("s", 128), Sequence: "9223372036854775807", Kind: "operation.failed",
 			TimeMs: 9007199254740991, RunID: Ptr(strings.Repeat("r", 128)), OperationID: Ptr(strings.Repeat("o", 128)), Data: JSON(value)}
 		frame := len(JSON(record))
 		if frame > 256<<10 || int64(frame*3+1024) > OutputReservation(limit) {
 			t.Fatalf("frame/reserve mismatch: limit=%d frame=%d reserve=%d", limit, frame, OutputReservation(limit))
 		}
+	}
+}
+
+func TestDiscardedReceiptKeepsSparseMetadataWithoutMutatingOriginalBodies(t *testing.T) {
+	provider := JSON(map[string]string{"private": "original provider body"})
+	original := wire.Receipt{RequestID: "original", Outcome: wire.OutcomeCompleted, Result: JSON("original body"),
+		Usage: &wire.Usage{InputTokens: Ptr(uint64(3)), Provider: provider}}
+	value := DiscardReceiptBodies(original)
+	if value.Outcome != original.Outcome || value.RequestID != original.RequestID || value.Result != nil ||
+		*value.Usage.InputTokens != 3 || value.Usage.OutputTokens != nil || string(value.Usage.Provider) != "{}" {
+		t.Fatalf("disposal changed known outcome or sparse counters: %+v", value)
+	}
+	if value.Usage.ProviderUnavailable == nil || value.Usage.ProviderUnavailable.Digest != Digest(provider) ||
+		value.Usage.ProviderUnavailable.Bytes != uint64(len(provider)) {
+		t.Fatal("discarded provider payload lost its original digest and size")
+	}
+	if string(original.Result) != `"original body"` || string(original.Usage.Provider) != string(provider) || original.Usage.ProviderUnavailable != nil {
+		t.Fatal("disposal mutated original receipt identity evidence")
+	}
+	repeated := DiscardReceiptBodies(value)
+	if repeated.Usage.ProviderUnavailable.Digest != value.Usage.ProviderUnavailable.Digest {
+		t.Fatal("repeated disposal replaced the original unavailable-payload evidence")
+	}
+	if value := DiscardReceiptBodies(wire.Receipt{Outcome: wire.OutcomeUnknown}); value.Usage != nil {
+		t.Fatal("disposal invented usage")
 	}
 }

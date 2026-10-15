@@ -69,6 +69,33 @@ An execution notification is never permission to run application code. Claim the
 the API once. An application promising crash recovery must also persist its own claim and receipt
 before reporting the result.
 
+## Delete without losing the original outcome
+
+`session.delete()` immediately hides the session, cancels its work and revokes its
+participants and connections. It cannot recall an already-issued execution permit
+or a packet already sent. An original recipient can still use its retained receipt
+token to report the original outcome, including after a retained-volume restart.
+
+Deleted-session receipts preserve the original outcome digest, bounded error
+metadata and sparse usage counters. Result bodies are discarded; provider payloads
+become unavailable digest-and-size evidence. The receipt response reports
+`result_available: false`. Reporting a known completion never restores history,
+permissions, package readiness or runnable work. Repeating unchanged original
+evidence is idempotent; changing a settled receipt conflicts.
+
+An indexed cleanup queue discards existing control result bodies in bounded
+batches: up to 32 operations in SQLite/PostgreSQL or one operation per D1 atomic
+plan. Partially processed sessions rotate behind other pending deletions. An
+explicit discarded-result fact allows known outcomes to release unbound
+control and retained local output reservations once. Unknown outcomes retain their
+allowances, and incomplete model usage retains its token hold.
+
+This source behavior is not complete physical erasure. Existing transcript/archive
+copies, files, checkpoints, configuration and custody require the full retention
+and backup lifecycle; their physical collection is not implied by a successful
+delete or by reclaiming an output reserve. Keep the matching runtime and retained
+data until a verified migration and rollback are available.
+
 ## Export and reconcile requests
 
 `session.exportPages()` in TypeScript and `session.export_pages()` in Python traverse history,
@@ -123,7 +150,9 @@ consuming capacity needed by an already admitted result.
 Receipt settlement releases execution concurrency, but the control output reserve
 remains held until the result is bound to written transcript evidence. Local
 capacity transfers from the reservation only to a durably written original result.
-An unknown result retains its late-result allowance. Replaying a completed
+An unknown result retains its late-result allowance. A deleted session instead
+records explicit body disposal before reclaiming a known result's reserve.
+Replaying a completed
 binding cannot release that allowance twice. Pending ordinary input cannot block
 an admitted result from using its reserved space; sustained pressure does not
 allocate an endless stream of unused positions.

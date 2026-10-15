@@ -1,8 +1,21 @@
-import { big, digest, need, raw, wire } from "./domain.mjs";
+import { big, digest, encode, need, raw, wire } from "./domain.mjs";
 
 export const receiptMetadataBytes = 48 * 1024;
 export const outputReservation = limit => (limit + receiptMetadataBytes) * 3 + 4096;
 const bytes = value => new TextEncoder().encode(value).byteLength;
+
+export async function discardReceiptBodies(receipt) {
+  delete receipt.result;
+  if (receipt.usage !== undefined) {
+    const usage = { ...receipt.usage }, provider = encode(usage.provider ?? {});
+    if (provider !== "{}" && provider !== "null") {
+      usage.provider_unavailable = { digest: await digest(provider), bytes: bytes(provider) };
+    }
+    usage.provider = {};
+    receipt.usage = usage;
+  }
+  return receipt;
+}
 
 export async function boundedReceipt(receipt, resultText, providerText, limit) {
   need(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(receipt.request_id), "invalid",
