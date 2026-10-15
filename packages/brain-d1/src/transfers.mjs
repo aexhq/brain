@@ -40,6 +40,7 @@ AND NOT EXISTS(SELECT 1 FROM node_capabilities c WHERE c.node_id=n.id AND c.capa
   const valid = await m.one("SELECT CASE WHEN " + predicate + " THEN 1 ELSE 0 END AS valid", [node, current.id]);
   need(valid.valid === 1, "unsupported", "target incarnation lacks a live compatible lease or retained resources");
   m.guard(predicate, [node, current.id]);
+  m.fence(node);
   const started = await m.one(`SELECT COUNT(*) AS count,COALESCE(SUM(CASE WHEN decision_repeatable=0 THEN 1 ELSE 0 END),0) AS opaque
 FROM runs WHERE session_id=? AND ${retainedRuns} AND harness_process<>''`, [current.id]);
   need(started.opaque === 0, "unsupported", "a process-bound harness has unsettled work; resolve or cancel it before transfer");

@@ -62,6 +62,7 @@ type Store struct {
 	remote         func(context.Context, string, string, int64, string) (wire.Record, error)
 	maintenance    sync.Mutex
 	reserveCursors []string
+	confirmCursors []confirmationCursor
 }
 
 type entry struct {
@@ -87,6 +88,7 @@ func Open(ctx context.Context, config Config, authority control.Store, archive A
 	}
 	s := &Store{config: config, control: authority, archive: archive, node: node, watchers: map[string]map[chan struct{}]struct{}{}, hydrations: make(chan struct{}, 4)}
 	s.reserveCursors = make([]string, config.Shards)
+	s.confirmCursors = make([]confirmationCursor, config.Shards)
 	s.cache = cache{items: map[string]*list.Element{}, order: list.New(), max: config.CacheBytes}
 	var err error
 	s.lockDB, err = sql.Open("sqlite", filepath.Join(config.Directory, "writer.sqlite")+"?_txlock=immediate")
@@ -111,7 +113,8 @@ func Open(ctx context.Context, config Config, authority control.Store, archive A
 		db.SetMaxOpenConns(1)
 		s.shards = append(s.shards, db)
 		_, err = db.ExecContext(ctx, `PRAGMA auto_vacuum=INCREMENTAL;
-CREATE TABLE IF NOT EXISTS records(session_id TEXT NOT NULL,sequence INTEGER NOT NULL,body BLOB NOT NULL,digest TEXT NOT NULL,size INTEGER NOT NULL,archived INTEGER NOT NULL DEFAULT 0,created_ms INTEGER NOT NULL,PRIMARY KEY(session_id,sequence));
+CREATE TABLE IF NOT EXISTS records(session_id TEXT NOT NULL,sequence INTEGER NOT NULL,body BLOB NOT NULL,digest TEXT NOT NULL,size INTEGER NOT NULL,archived INTEGER NOT NULL DEFAULT 0,created_ms INTEGER NOT NULL,
+original_writer TEXT NOT NULL DEFAULT '',original_epoch INTEGER NOT NULL DEFAULT 0,confirmed INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(session_id,sequence));
 CREATE INDEX IF NOT EXISTS dirty_records ON records(archived,created_ms,session_id,sequence);
 CREATE TABLE IF NOT EXISTS reserves(id TEXT PRIMARY KEY,bytes INTEGER NOT NULL,session_id TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS totals(id INTEGER PRIMARY KEY,used INTEGER NOT NULL,dirty INTEGER NOT NULL,reserved INTEGER NOT NULL);
@@ -121,6 +124,23 @@ INSERT INTO totals VALUES(1,0,0,0) ON CONFLICT DO NOTHING;`)
 			return nil, err
 		}
 		var column int
+		for name, declaration := range map[string]string{
+			"original_writer": "TEXT NOT NULL DEFAULT ''",
+			"original_epoch":  "INTEGER NOT NULL DEFAULT 0",
+			"confirmed":       "INTEGER NOT NULL DEFAULT 1",
+		} {
+			if err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pragma_table_info('records') WHERE name=?", name).Scan(&column); err == nil && column == 0 {
+				_, err = db.ExecContext(ctx, "ALTER TABLE records ADD COLUMN "+name+" "+declaration)
+			}
+			if err != nil {
+				s.Close()
+				return nil, err
+			}
+		}
+		if _, err = db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS record_confirmations ON records(confirmed,session_id,sequence)"); err != nil {
+			s.Close()
+			return nil, err
+		}
 		if err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pragma_table_info('reserves') WHERE name='session_id'").Scan(&column); err == nil && column == 0 {
 			_, err = db.ExecContext(ctx, "ALTER TABLE reserves ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
 		}
@@ -225,7 +245,7 @@ COALESCE((SELECT bytes FROM reserves WHERE id=?),0) FROM totals WHERE id=1`, ope
 	return nil
 }
 
-func (s *Store) append(ctx context.Context, record wire.Record, operation string, hydrated bool) (string, error) {
+func (s *Store) append(ctx context.Context, record wire.Record, operation string, hydrated bool, original control.Owner) (string, error) {
 	body := kernel.JSON(record)
 	if len(body) > MaxFrame {
 		return "", kernel.Fail(wire.ErrorCodeInvalid, "record exceeds inline frame limit; store large data as a blob")
@@ -273,7 +293,15 @@ func (s *Store) append(ctx context.Context, record wire.Record, operation string
 		archived = 1
 		dirtyCost = 0
 	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO records VALUES(?,?,?,?,?,?,?)", record.SessionID, sequence, body, digest, cost, archived, record.TimeMs); err != nil {
+	confirmed := 1
+	if original.Node != "" {
+		if !kernel.Identifier(original.Node) || original.Epoch < 1 {
+			return "", kernel.Fail(wire.ErrorCodeInvalid, "local write has invalid original allocation authority")
+		}
+		confirmed = 0
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO records(session_id,sequence,body,digest,size,archived,created_ms,original_writer,original_epoch,confirmed)
+VALUES(?,?,?,?,?,?,?,?,?,?)`, record.SessionID, sequence, body, digest, cost, archived, record.TimeMs, original.Node, original.Epoch, confirmed); err != nil {
 		return "", err
 	}
 	if claim > 0 {
@@ -292,8 +320,8 @@ func (s *Store) append(ctx context.Context, record wire.Record, operation string
 	return digest, nil
 }
 
-func (s *Store) Append(ctx context.Context, record wire.Record, operation string) (string, error) {
-	return s.append(ctx, record, operation, false)
+func (s *Store) Append(ctx context.Context, record wire.Record, operation string, original control.Owner) (string, error) {
+	return s.append(ctx, record, operation, false, original)
 }
 
 func (s *Store) SetRemoteReader(read func(context.Context, string, string, int64, string) (wire.Record, error)) {
@@ -350,7 +378,7 @@ func (s *Store) local(ctx context.Context, session string, sequence int64) (wire
 	}
 	var body []byte
 	var digest string
-	err := s.shard(session).QueryRowContext(ctx, "SELECT body,digest FROM records WHERE session_id=? AND sequence=?", session, sequence).Scan(&body, &digest)
+	err := s.shard(session).QueryRowContext(ctx, "SELECT CASE WHEN LENGTH(body)<=? THEN body ELSE NULL END,digest FROM records WHERE session_id=? AND sequence=?", MaxFrame, session, sequence).Scan(&body, &digest)
 	if errors.Is(err, sql.ErrNoRows) {
 		return wire.Record{}, kernel.Fail(wire.ErrorCodeUnavailable, "record body is not local")
 	}
@@ -361,7 +389,7 @@ func (s *Store) local(ctx context.Context, session string, sequence int64) (wire
 		return wire.Record{}, kernel.Fail(wire.ErrorCodeCorrupt, "local transcript digest mismatch")
 	}
 	var record wire.Record
-	if err = json.Unmarshal(body, &record); err != nil {
+	if err = json.Unmarshal(body, &record); err != nil || len(body) > MaxFrame || record.SessionID != session || record.Sequence != strconv.FormatInt(sequence, 10) {
 		return record, kernel.Fail(wire.ErrorCodeCorrupt, "invalid local record")
 	}
 	s.cache.put(record)
@@ -416,7 +444,7 @@ func (s *Store) Get(ctx context.Context, session string, sequence int64, digest 
 				}
 				// A remote L2 copy is not verified archive coverage.
 				if location.CurrentOwner == s.node {
-					if _, err = s.append(ctx, routed, "", false); err != nil && kernel.Response(err).Code != wire.ErrorCodeOverloaded {
+					if _, err = s.append(ctx, routed, "", false, control.Owner{}); err != nil && kernel.Response(err).Code != wire.ErrorCodeOverloaded {
 						return record, err
 					}
 				}
@@ -492,7 +520,7 @@ func (s *Store) archived(ctx context.Context, session string, sequence int64, di
 				if digest != "" && kernel.Digest(kernel.JSON(r)) != digest {
 					return record, kernel.Fail(wire.ErrorCodeCorrupt, "archive record digest disagrees with control")
 				}
-				_, err = s.append(ctx, r, "", true)
+				_, err = s.append(ctx, r, "", true, control.Owner{})
 				if err != nil && kernel.Response(err).Code != wire.ErrorCodeOverloaded {
 					return record, err
 				}
@@ -589,6 +617,9 @@ func (s *Store) Flush(ctx context.Context, session string, owner control.Owner, 
 	if s.archive == nil {
 		return kernel.Fail(wire.ErrorCodeUnavailable, "archive is not configured")
 	}
+	if err := s.ReconcileSession(ctx, session); err != nil {
+		return err
+	}
 	db := s.shard(session)
 	rows, err := db.QueryContext(ctx, "SELECT body FROM records WHERE session_id=? AND archived=0 ORDER BY sequence LIMIT ?", session, MaxFrames)
 	if err != nil {
@@ -682,6 +713,9 @@ func (s *Store) Maintain(ctx context.Context) error {
 	s.maintenance.Lock()
 	defer s.maintenance.Unlock()
 	for index, db := range s.shards {
+		if err := s.reconcilePending(ctx, db, index); err != nil {
+			return err
+		}
 		if err := s.reconcileReserves(ctx, db, index); err != nil {
 			return err
 		}

@@ -101,6 +101,19 @@ Unavailable or unresolved positions are not empty records. Complete corrupt data
 a truncated tail to discard. Returning bytes must match the authoritative identity and digest.
 They restore historical evidence, not an old permission to execute.
 
+The source runtime commits each new local frame together with its original allocating
+node and epoch. If the process stops before SQL confirms that write, a live node with
+the retained volume verifies those physical bytes and reconciles the original allocation
+before continuing affected work. This also works for a returning node that no longer owns
+the session. Reconciliation uses bounded batches of 32 positions and reads one frame at a
+time; it never changes the session's high watermark, owner or execution claims.
+
+Only exact original allocation evidence can resolve a lost confirmation. A conflicting
+digest or byte count is corruption; a positively unused position cannot become a record.
+Missing frames and older unconfirmed frames without retained allocator proof remain
+unresolved. Deleted history cannot be revived. Returning a volume is not permission to
+retry a model or action.
+
 ## Bounded history and asynchronous archive
 
 A node uses a byte-bounded decoded cache and a fixed number of SQLite WAL shards. It reserves
@@ -160,6 +173,7 @@ are never replayed this way.
 Nodes register new incarnation IDs with database-clock leases. Every authoritative write and
 dispatch claim checks the current session epoch and live incarnation. SQL uncertainty stops new
 authority-dependent work. A lease cannot recall a packet or a previously issued execution permit.
+SQL transactions and D1 atomic batches recheck their required live incarnations before commit.
 
 Eligibility is checked atomically in SQL. A session retains its admitted harness/model combination,
 provider configuration identities, scoped secret references, archive identity and local resource

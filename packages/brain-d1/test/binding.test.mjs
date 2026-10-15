@@ -51,6 +51,78 @@ async function fixture(t, options = {}) {
   return { ...binding, call, id, owner, config, custody, prepare };
 }
 
+test("actual D1 confirms only original retained bytes without reissuing claims or filling absent positions", async t => {
+  const f = await fixture(t);
+  const operation = await f.prepare("already-dispatched");
+  await f.call("ClaimDispatch", [f.id, f.owner, operation.View.id, f.owner.Node, "first-claim"]);
+  const sequence = await f.call("Allocate", [f.id, f.owner]);
+  const unused = await f.call("Allocate", [f.id, f.owner]);
+  await f.call("SealUnused", [f.id, f.owner, unused]);
+  const absent = await f.call("Allocate", [f.id, f.owner]);
+  const reference = { session_id: f.id, sequence: String(sequence), digest: hash("original-frame") };
+  for (const node of ["successor", "returning"]) {
+    await f.call("RegisterNode", [node, 60000]);
+    await f.call("ConfigureNode", [node, "http://" + node, f.custody, ["storage:retained"]]);
+  }
+  assert.equal((await f.rpc("ReconcileRecord", ["returning", f.owner, reference, 100])).status, 409);
+  await f.call("RetireNode", [f.owner.Node]);
+  const successor = await f.call("ClaimOwner", [f.id, "successor"]);
+  const before = await f.call("Operation", [f.id, operation.View.id]);
+  for (const invalid of [{ Node: "another-writer", Epoch: f.owner.Epoch }, { Node: f.owner.Node, Epoch: successor.Epoch }]) {
+    assert.equal((await f.rpc("ReconcileRecord", ["returning", invalid, reference, 100])).status, 409);
+  }
+  assert.equal((await f.rpc("ReconcileRecord", ["returning", f.owner, { ...reference, sequence: String(unused) }, 100])).status, 409);
+  await f.call("ReconcileRecord", ["returning", f.owner, reference, 100]);
+  await f.call("ReconcileRecord", ["returning", f.owner, reference, 100]);
+  const different = await f.rpc("ReconcileRecord", ["returning", f.owner, { ...reference, digest: hash("different-frame") }, 100]);
+  assert.equal(different.status, 500, different.text);
+  assert.equal(different.data.code, "corrupt");
+  const changedSize = await f.rpc("ReconcileRecord", ["returning", f.owner, reference, 101]);
+  assert.equal(changedSize.data.code, "corrupt");
+  const [allocations, high] = await f.call("Allocations", [f.id, integer(BigInt(String(sequence)) - 1n), 16]);
+  assert.equal(String(high), String(absent));
+  assert.deepEqual(allocations.map(value => value.Status), ["written", "unused", "unresolved"]);
+  const location = await f.call("LocateRecord", [f.id, sequence]);
+  assert.equal(location.Node, "returning");
+  assert.equal(location.Endpoint, "http://returning");
+  assert.equal(location.CurrentOwner, "successor");
+  assert.deepEqual(await f.call("Operation", [f.id, operation.View.id]), before);
+  assert.equal((await f.rpc("ClaimDispatch", [f.id, successor, operation.View.id, successor.Node, "repeat"])).status, 409);
+  const current = await f.call("Session", ["tenant", f.id]);
+  assert.deepEqual(current.Owner, successor);
+  assert.equal(current.View.sequence, String(absent));
+  await f.call("RetireNode", ["returning"]);
+  assert.equal((await f.rpc("ReconcileRecord", ["returning", f.owner, reference, 100])).status, 409);
+});
+
+test("actual D1 reconciles original coordinates beyond the JavaScript safe integer range", async t => {
+  const f = await fixture(t);
+  await f.database.prepare("UPDATE sessions SET sequence=CAST(? AS INTEGER),epoch=CAST(? AS INTEGER) WHERE id=?")
+    .bind("9007199254740992", "9007199254740993", f.id).run();
+  const original = { ...f.owner, Epoch: integer("9007199254740993") };
+  const sequence = await f.call("Allocate", [f.id, original]);
+  assert.equal(String(sequence), "9007199254740993");
+  const reference = { session_id: f.id, sequence: String(sequence), digest: hash("exact original") };
+  await f.call("ReconcileRecord", [original.Node, original, reference, 64]);
+  await f.call("ReconcileRecord", [original.Node, original, reference, 64]);
+  assert.equal((await f.rpc("Written", [f.id, original, sequence, reference.digest, 65])).status, 409);
+  assert.equal(String((await f.call("LocateRecord", [f.id, sequence])).Sequence), reference.sequence);
+  assert.equal((await f.rpc("ReconcileRecord", [original.Node, { ...original, Epoch: integer("9007199254740992") }, reference, 64])).status, 409);
+  await f.call("Delete", [f.id]);
+  assert.equal((await f.rpc("ReconcileRecord", [original.Node, original, reference, 64])).status, 404);
+});
+
+test("actual D1 rolls back retained confirmation when its reporting lease fails at batch end", async t => {
+  const f = await fixture(t);
+  const sequence = await f.call("Allocate", [f.id, f.owner]);
+  await f.database.prepare(`CREATE TRIGGER expire_reporting_node AFTER UPDATE OF status ON allocations
+BEGIN UPDATE nodes SET lease=0 WHERE id=NEW.owner; END`).run();
+  const reference = { session_id: f.id, sequence: String(sequence), digest: hash("original bytes") };
+  assert.equal((await f.rpc("ReconcileRecord", [f.owner.Node, f.owner, reference, 64])).status, 409);
+  assert.equal((await f.call("LocateRecord", [f.id, sequence])).Status, "reserved");
+  await f.call("RenewNode", [f.owner.Node, 60000]);
+});
+
 test("actual D1 transfers only a frozen covered checkpoint after exact target proof pages", async t => {
   const f = await fixture(t);
   const operation = await f.prepare("retained-operation");

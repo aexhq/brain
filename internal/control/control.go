@@ -165,6 +165,7 @@ type Store interface {
 	ApplyInput(context.Context, string, ApplyInput) error
 	Allocate(context.Context, string, Owner) (int64, error)
 	Written(context.Context, string, Owner, int64, string, int64) error
+	ReconcileRecord(context.Context, string, Owner, wire.RecordReference, int64) error
 	SealUnused(context.Context, string, Owner, int64) error
 	Allocations(context.Context, string, int64, int) ([]Allocation, int64, error)
 	LocateRecord(context.Context, string, int64) (Allocation, error)

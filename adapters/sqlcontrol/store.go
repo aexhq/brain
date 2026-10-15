@@ -147,7 +147,7 @@ func Open(ctx context.Context, dsn string, development bool) (*Store, error) {
 			}
 			version = 5
 		}
-		if version != 13 {
+		if version != 14 {
 			return kernel.Fail(wire.ErrorCodeUnsupported, "control database requires verified offline migration")
 		}
 		if _, err := tx.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS sessions_ready ON sessions(ready,tenant,ready_ms,id)"); err != nil {
@@ -676,8 +676,8 @@ func (s *Store) Written(ctx context.Context, session string, owner control.Owner
 			return err
 		}
 
-		return requireOne(tx.ExecContext(ctx, s.q("UPDATE allocations SET status='written',digest=?,bytes=? WHERE session_id=? AND sequence=? AND owner=? AND epoch=? AND (status='reserved' OR (status='written' AND digest=?))"),
-			digest, bytes, session, sequence, owner.Node, owner.Epoch, digest))
+		return requireOne(tx.ExecContext(ctx, s.q("UPDATE allocations SET status='written',digest=?,bytes=? WHERE session_id=? AND sequence=? AND owner=? AND epoch=? AND (status='reserved' OR (status='written' AND digest=? AND bytes=?))"),
+			digest, bytes, session, sequence, owner.Node, owner.Epoch, digest, bytes))
 	})
 }
 
@@ -713,8 +713,8 @@ func (s *Store) Allocations(ctx context.Context, session string, after int64, li
 
 func (s *Store) LocateRecord(ctx context.Context, session string, sequence int64) (control.Allocation, error) {
 	var a control.Allocation
-	err := s.db.QueryRowContext(ctx, s.q(`SELECT a.sequence,a.status,a.digest,a.bytes,a.owner,COALESCE(n.endpoint,''),s.owner
-FROM allocations a JOIN sessions s ON s.id=a.session_id LEFT JOIN nodes n ON n.id=a.owner WHERE a.session_id=? AND a.sequence=?`),
+	err := s.db.QueryRowContext(ctx, s.q(`SELECT a.sequence,a.status,a.digest,a.bytes,COALESCE(NULLIF(a.recovered_by,''),a.owner),COALESCE(n.endpoint,''),s.owner
+FROM allocations a JOIN sessions s ON s.id=a.session_id LEFT JOIN nodes n ON n.id=COALESCE(NULLIF(a.recovered_by,''),a.owner) WHERE a.session_id=? AND a.sequence=?`),
 		session, sequence).Scan(&a.Sequence, &a.Status, &a.Digest, &a.Bytes, &a.Node, &a.Endpoint, &a.CurrentOwner)
 	return a, notFound(err)
 }

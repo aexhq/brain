@@ -205,6 +205,9 @@ func (s *Store) Allocate(ctx context.Context, session string, owner control.Owne
 func (s *Store) Written(ctx context.Context, session string, owner control.Owner, sequence int64, digest string, bytes int64) error {
 	return s.call(ctx, "Written", []any{session, owner, sequence, digest, bytes}, nil)
 }
+func (s *Store) ReconcileRecord(ctx context.Context, reporter string, original control.Owner, record wire.RecordReference, bytes int64) error {
+	return s.call(ctx, "ReconcileRecord", []any{reporter, original, record, bytes}, nil)
+}
 func (s *Store) SealUnused(ctx context.Context, session string, owner control.Owner, sequence int64) error {
 	return s.call(ctx, "SealUnused", []any{session, owner, sequence}, nil)
 }

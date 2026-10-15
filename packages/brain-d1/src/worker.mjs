@@ -15,7 +15,7 @@ const handlers = { ...controlHandlers, ...effectHandlers, ...resourceHandlers, .
 const counts = {
   Initialize: 0, Clock: 0, RegisterNode: 2, ConfigureNode: 4, RenewNode: 2, RetireNode: 1,
   Create: 5, Delegate: 7, Session: 2, List: 3, ClaimOwner: 2, Accept: 3, Command: 2, Pending: 2, FinishStep: 2,
-  NextInput: 2, ApplyInput: 2, Allocate: 2, Written: 5, SealUnused: 3, Allocations: 3, LocateRecord: 2,
+  NextInput: 2, ApplyInput: 2, Allocate: 2, Written: 5, ReconcileRecord: 4, SealUnused: 3, Allocations: 3, LocateRecord: 2,
   Runs: 3, RunnableRuns: 2, ChildState: 1, Children: 3, SaveDecision: 5, CompleteRun: 5, AdvanceRun: 7, Prepare: 2, Operation: 2, Operations: 3, PendingResults: 2, ClaimDispatch: 5,
   SaveHarnessDecision: 6, BeginDecision: 7, WaitDispatch: 5,
   Nodes: 2, BeginTransfer: 2, Transfer: 2, PendingTransfers: 3, SealTransfer: 4, TransferRuns: 4,

@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS brain_schema (version BIGINT PRIMARY KEY);
-INSERT INTO brain_schema(version) SELECT 13 WHERE NOT EXISTS(SELECT 1 FROM brain_schema);
+INSERT INTO brain_schema(version) SELECT 14 WHERE NOT EXISTS(SELECT 1 FROM brain_schema);
 CREATE TABLE IF NOT EXISTS nodes (
  id TEXT PRIMARY KEY, lease BIGINT NOT NULL, draining BIGINT NOT NULL DEFAULT 0,
  endpoint TEXT NOT NULL DEFAULT '', configuration_digest TEXT NOT NULL DEFAULT ''
@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS allocations (
  session_id TEXT NOT NULL REFERENCES sessions(id), sequence BIGINT NOT NULL,
  owner TEXT NOT NULL, epoch BIGINT NOT NULL, status TEXT NOT NULL DEFAULT 'reserved',
  digest TEXT NOT NULL DEFAULT '', bytes BIGINT NOT NULL DEFAULT 0,
- archive_key TEXT NOT NULL DEFAULT '', PRIMARY KEY(session_id,sequence)
+ archive_key TEXT NOT NULL DEFAULT '', recovered_by TEXT NOT NULL DEFAULT '', PRIMARY KEY(session_id,sequence)
 );
 CREATE TABLE IF NOT EXISTS operations (
  id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), run_id TEXT NOT NULL,

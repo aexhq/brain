@@ -60,7 +60,7 @@ func TestContextUsesNewestBoundedSnapshotAndIgnoresFutureGaps(t *testing.T) {
 		}
 		record := wire.Record{SessionID: session.View.ID, Sequence: strconv.FormatInt(last, 10), Kind: "context",
 			Data: kernel.JSON(map[string]string{"body": strings.Repeat("x", 190000)})}
-		if _, err = records.Append(ctx, record, ""); err != nil {
+		if _, err = records.Append(ctx, record, "", owner); err != nil {
 			t.Fatal(err)
 		}
 		if err = control.Written(ctx, session.View.ID, owner, last, kernel.Digest(kernel.JSON(record)), int64(len(kernel.JSON(record)))); err != nil {

@@ -85,6 +85,7 @@ export const controlHandlers = {
     const capabilities = identifiers(values ?? []);
     const configuration = await digest(encode({ Endpoint: endpoint, Capabilities: capabilities }));
     const m = new Mutation(db);
+    m.fence(node);
     await m.scope("node:" + node);
     const retained = await m.one("SELECT value FROM cluster_configuration WHERE key='custody'", [], true);
     need(!retained || retained.value === custody, "forbidden", "cluster requires its original retained custody key");
@@ -175,6 +176,7 @@ AND lease>${clock} AND draining=0`, [endpoint, configuration, node, configuratio
     const valid = await m.one("SELECT CASE WHEN " + eligible + " THEN 1 ELSE 0 END AS valid", [node, identifier]);
     need(valid.valid === 1, "conflict", "node has no live eligible lease for the retained resources");
     m.guard(eligible, [node, identifier]);
+    m.fence(node);
     if (current.owner !== node) {
       const epoch = big(current.epoch) + 1n;
       need(epoch <= maximumInteger, "overloaded", "ownership epoch exhausted");
@@ -280,7 +282,38 @@ value=excluded.value,request_key=excluded.request_key,request_hash=excluded.requ
     await m.owner(identifier, owner);
     safe(bytes, 1, 262144);
     m.change(`UPDATE allocations SET status='written',digest=?,bytes=? WHERE session_id=? AND sequence=? AND owner=? AND epoch=?
-AND (status='reserved' OR (status='written' AND digest=?))`, [hash, bytes, identifier, sequence, owner.Node, owner.Epoch, hash], true);
+AND (status='reserved' OR (status='written' AND digest=? AND bytes=?))`, [hash, bytes, identifier, sequence, owner.Node, owner.Epoch, hash, bytes], true);
+    await m.commit();
+  },
+  async ReconcileRecord(db, [reporter, original, record, bytes]) {
+    const identifier = value => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
+    need(identifier(reporter) && identifier(original?.Node) && identifier(record?.session_id) &&
+      typeof record.sequence === "string" && /^[1-9][0-9]*$/u.test(record.sequence) &&
+      typeof record.digest === "string" && /^[a-f0-9]{64}$/u.test(record.digest),
+    "invalid", "retained record evidence is invalid");
+    const sequence = big(record.sequence), epoch = big(original.Epoch);
+    need(sequence <= maximumInteger && epoch >= 1n && epoch <= maximumInteger, "invalid", "retained record coordinates exceed their bound");
+    const size = safe(bytes, 1, 262144);
+    const m = new Mutation(db);
+    const current = await m.session(record.session_id);
+    need(current.lifecycle !== "deleted", "not_found", "deleted history cannot be reconciled");
+    const lease = `EXISTS(SELECT 1 FROM nodes WHERE id=? AND lease>${clock} AND draining=0)`;
+    need((await m.one("SELECT CASE WHEN " + lease + " THEN 1 ELSE 0 END AS valid", [reporter])).valid === 1,
+      "conflict", "retained evidence needs a live reporting incarnation");
+    m.guard(lease, [reporter]);
+    m.fence(reporter);
+    const prior = await m.one(`SELECT owner,CAST(epoch AS TEXT) AS epoch,status,digest,bytes FROM allocations
+WHERE session_id=? AND sequence=?`, [record.session_id, sequence]);
+    need(prior.owner === original.Node && big(prior.epoch) === epoch, "conflict", "retained bytes do not belong to the original allocation");
+    if (prior.status === "written") need(prior.digest === record.digest && prior.bytes === size,
+      "corrupt", "retained bytes conflict with known written evidence");
+    else if (prior.status === "reserved") need(reporter === original.Node && current.owner === original.Node && big(current.epoch) === epoch,
+      "conflict", "another live allocation cannot be confirmed by a replacement");
+    else if (prior.status === "unresolved") need(epoch < big(current.epoch), "conflict", "unresolved evidence has no preceding ownership epoch");
+    else need(false, "conflict", "positively unused positions cannot become records");
+    m.change(`UPDATE allocations SET status='written',digest=?,bytes=?,recovered_by=?
+WHERE session_id=? AND sequence=? AND owner=? AND epoch=? AND status=?`,
+      [record.digest, size, reporter, record.session_id, sequence, original.Node, epoch, prior.status], true);
     await m.commit();
   },
   async SealUnused(db, [identifier, owner, sequence]) {
@@ -298,8 +331,8 @@ WHERE session_id=? AND sequence>? AND sequence<=? ORDER BY sequence LIMIT ?`, [i
     return [values.map(value => ({ Sequence: integer(value.sequence), Status: value.status, Digest: value.digest, Bytes: value.bytes })), integer(high.sequence)];
   },
   async LocateRecord(db, [identifier, sequence]) {
-    const value = await one(db, `SELECT CAST(a.sequence AS TEXT) AS sequence,a.status,a.digest,a.bytes,a.owner,COALESCE(n.endpoint,'') AS endpoint,s.owner AS current_owner
-FROM allocations a JOIN sessions s ON s.id=a.session_id LEFT JOIN nodes n ON n.id=a.owner WHERE a.session_id=? AND a.sequence=?`, [identifier, sequence]);
+    const value = await one(db, `SELECT CAST(a.sequence AS TEXT) AS sequence,a.status,a.digest,a.bytes,COALESCE(NULLIF(a.recovered_by,''),a.owner) AS owner,COALESCE(n.endpoint,'') AS endpoint,s.owner AS current_owner
+FROM allocations a JOIN sessions s ON s.id=a.session_id LEFT JOIN nodes n ON n.id=COALESCE(NULLIF(a.recovered_by,''),a.owner) WHERE a.session_id=? AND a.sequence=?`, [identifier, sequence]);
     return { Sequence: integer(value.sequence), Status: value.status, Digest: value.digest, Bytes: value.bytes, Node: value.owner, Endpoint: value.endpoint, CurrentOwner: value.current_owner };
   },
   async Runs(db, [identifier, limit, after]) {

@@ -128,7 +128,7 @@ export async function initialize(db) {
   const exists = await one(db, "SELECT name FROM sqlite_master WHERE type='table' AND name='brain_schema'", [], true);
   if (exists) {
     const version = await one(db, "SELECT MAX(version) AS version FROM brain_schema");
-    need(version.version === 13, "unsupported", "D1 control schema requires a verified offline migration");
+    need(version.version === 14, "unsupported", "D1 control schema requires a verified offline migration");
   }
   const statements = sqlSchema.split(";").map(value => value.trim()).filter(Boolean);
   statements.push(
@@ -217,6 +217,7 @@ export class Mutation {
     this.authority = db.authority;
     this.scopes = new Map();
     this.guards = [];
+    this.fences = new Set();
     this.writes = [];
     this.reads = db.planReads ?? { count: 0 };
   }
@@ -263,6 +264,7 @@ AND s.epoch=? AND s.lifecycle<>'deleted' AND n.lease>${clock} AND n.draining=0${
     const valid = await this.one("SELECT CASE WHEN " + predicate + " THEN 1 ELSE 0 END AS valid", args);
     need(valid.valid === 1, "conflict", "session has no live dispatch authority");
     this.guard(predicate, args);
+    this.fence(owner.Node);
     if (dispatch) {
       await this.lineage(id, true);
       await this.unfrozen(id);
@@ -277,6 +279,10 @@ AND s.epoch=? AND s.lifecycle<>'deleted' AND n.lease>${clock} AND n.draining=0${
     this.guard(predicate, [id]);
   }
   guard(predicate, values = []) { this.guards.push({ predicate, values }); }
+  fence(node) {
+    this.fences.add(node);
+    need(this.fences.size <= 16, "overloaded", "D1 operation fences too many node incarnations");
+  }
   change(sql, values = [], exact = false) { this.writes.push({ sql, values, exact }); }
   async commit(reads = []) {
     let authorityEnd;
@@ -326,6 +332,10 @@ p.expires_ms>${clock} AND NOT EXISTS(${invalidParticipantAncestor(true)}))`);
     for (const { sql, values, exact } of this.writes) {
       batch.push(statement(this.db, sql, values));
       if (exact) changed();
+    }
+    for (const node of this.fences) {
+      batch.push(statement(this.db, `INSERT INTO d1_guards SELECT ?,CASE WHEN
+EXISTS(SELECT 1 FROM nodes WHERE id=? AND lease>${clock} AND draining=0) THEN 1 ELSE 0 END`, ["lease:end:" + node, node]));
     }
     if (authorityEnd) {
       batch.push(statement(this.db, "INSERT INTO d1_guards SELECT ?,CASE WHEN " + authorityEnd.predicate + " THEN 1 ELSE 0 END",

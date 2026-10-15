@@ -46,7 +46,7 @@ async function waitFor(get, predicate, description, timeout = 15000) {
 async function fixture(t, options = {}) {
   const directory = path.join(root, ".test-output", randomUUID());
   await mkdir(directory, { recursive: true });
-  let controlURL, schema, d1;
+  let controlURL, schema, d1, controlProxy;
   const postgres = process.env.BRAIN_TEST_POSTGRES_CONTAINER;
   if (process.env.BRAIN_TEST_POSTGRES_URL) {
     const url = new URL(process.env.BRAIN_TEST_POSTGRES_URL);
@@ -63,6 +63,40 @@ async function fixture(t, options = {}) {
     const { startD1 } = await import("../fixtures/d1.mjs");
     d1 = await startD1(directory);
     controlURL = d1.origin;
+  }
+  if (options.controlFault) {
+    assert(d1, "control transport faults require the actual D1 profile");
+    controlProxy = createServer(async (request, response) => {
+      try {
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of request) {
+          size += chunk.length;
+          assert(size <= 2 << 20);
+          chunks.push(chunk);
+        }
+        const body = Buffer.concat(chunks);
+        const envelope = JSON.parse(body);
+        const fault = await options.controlFault(request.url.split("/").at(-1), envelope.arguments.map(value => JSON.parse(value)));
+        if (fault) {
+          response.writeHead(503, { "Content-Type": "application/json" }).end(JSON.stringify({
+            code: "uncertain", message: "fixture withheld the original control confirmation", retryable: false,
+          }));
+          return;
+        }
+        const upstream = await fetch(d1.origin + request.url, { method: "POST", body, redirect: "error", headers: {
+          "Content-Type": "application/json", "X-Brain-Request-Time": request.headers["x-brain-request-time"],
+          "X-Brain-Control-Signature": request.headers["x-brain-control-signature"],
+        } });
+        response.writeHead(upstream.status, { "Content-Type": "application/json" }).end(await upstream.text());
+      } catch {
+        if (!response.headersSent) response.writeHead(503);
+        response.end();
+      }
+    });
+    controlProxy.listen(0, "127.0.0.1");
+    await once(controlProxy, "listening");
+    controlURL = `http://127.0.0.1:${controlProxy.address().port}`;
   }
   if (options.replicas && !controlURL) controlURL = path.join(directory, "shared-control.sqlite");
   const custody = randomBytes(32).toString("hex");
@@ -140,10 +174,10 @@ async function fixture(t, options = {}) {
     return { origin: address };
   }
   async function start() { await launch("primary", true); }
-  async function stop() {
+  async function stop(signal = "SIGTERM") {
     if (processHandle.exitCode !== null || processHandle.signalCode !== null) return;
     const exited = once(processHandle, "exit");
-    processHandle.kill();
+    processHandle.kill(signal);
     await exited;
   }
   t.after(async () => {
@@ -152,6 +186,10 @@ async function fixture(t, options = {}) {
     await Promise.all([new Promise(resolve => model.close(resolve)), new Promise(resolve => application.close(resolve))]);
     if (schema) execFileSync("docker", ["exec", postgres, "psql", "-U", "brain", "-d", "brain", "-v", "ON_ERROR_STOP=1", "-q", "-c", `DROP SCHEMA ${schema} CASCADE`],
       { cwd: root, stdio: "pipe", timeout: 15000 });
+    if (controlProxy) {
+      controlProxy.closeAllConnections();
+      await new Promise(resolve => controlProxy.close(resolve));
+    }
     await d1?.dispose();
     await rm(directory, { recursive: true, force: true });
   });
@@ -175,13 +213,83 @@ async function fixture(t, options = {}) {
   async function settled(id, expected = "completed", count = 1) {
     return waitFor(() => api("GET", `/v2/sessions/${id}/runs`), runs => runs.length === count && runs.every(run => run.status === expected), `runs settle as ${expected}`);
   }
-  return { api, create, config, state, settled, start, stop, directory, get origin() { return origin; },
+  return { api, create, config, state, settled, start, stop, directory, d1, get origin() { return origin; },
     replica(name = "replica", environment = {}) {
       assert.equal(options.replicas, true, "replicas require shared control, custody and archive admission");
       return launch(name, false, environment);
     },
     releaseModels() { state.holdModels = false; for (const complete of state.pendingModels.splice(0)) complete(); },
     get applicationURL() { return `http://127.0.0.1:${application.address().port}`; } };
+}
+
+if (process.env.BRAIN_TEST_CONTROL === "d1") {
+  test("J19/J21/J23/J24: lost control confirmation recovers original retained WAL bytes without another model request", { timeout: 60000 }, async t => {
+    const { DatabaseSync } = await import("node:sqlite");
+    let armed = false, captured, originalBody;
+    const released = Promise.withResolvers();
+    const f = await fixture(t, { environment: { BRAIN_L1_BYTES: "0", BRAIN_ARCHIVE_FLUSH_MS: "60000" },
+      async controlFault(method, values) {
+        if (method !== "Written" || !armed) return false;
+        let row;
+        for (const shard of ["history-00.sqlite", "history-01.sqlite"]) {
+          const database = new DatabaseSync(path.join(f.directory, "core", "history", shard), { readOnly: true });
+          try {
+            row = database.prepare("SELECT body,original_writer,original_epoch,confirmed FROM records WHERE session_id=? AND sequence=?")
+              .get(values[0], values[2]);
+          } finally { database.close(); }
+          if (row) break;
+        }
+        assert(row, "the service must commit the physical frame before asking control to confirm it");
+        if (JSON.parse(Buffer.from(row.body)).kind !== "operation.ended") return false;
+        assert.equal(row.confirmed, 0);
+        assert.equal(row.original_writer, values[1].Node);
+        assert.equal(row.original_epoch, values[1].Epoch);
+        originalBody = Buffer.from(row.body);
+        armed = false;
+        captured = values;
+        await released.promise;
+        return true;
+      } });
+    t.after(() => released.resolve());
+    f.state.holdModels = true;
+    const session = await f.create({}, "One original charged request");
+    await waitFor(() => f.state.pendingModels.length, count => count === 1, "the actual model request is held");
+    const [operation] = await waitFor(() => f.api("GET", `/v2/sessions/${session.id}/operations`),
+      values => values.length === 1 && values[0].status === "dispatched", "the original model dispatch is claimed");
+    await waitFor(() => f.api("GET", `/v2/sessions/${session.id}/records?limit=128`),
+      page => page.gaps.length === 0, "earlier live positions are durably confirmed");
+    armed = true;
+    f.releaseModels();
+    await waitFor(() => captured, value => Boolean(value), "the result frame reaches WAL before its control confirmation");
+    const [identifier, original, sequence, digest] = captured;
+    assert.equal(identifier, session.id);
+    assert.equal((await f.api("GET", `/v2/sessions/${session.id}/operations/${operation.id}`)).status, "completed");
+    const pending = await f.d1.rpc("LocateRecord", [session.id, sequence]);
+    assert.equal(pending.status, 200);
+    assert.equal(pending.data.value.Status, "reserved");
+    await f.stop("SIGKILL");
+    released.resolve();
+    await f.start();
+    await f.settled(session.id);
+    const restored = await waitFor(() => f.api("GET", `/v2/sessions/${session.id}/records?limit=128`),
+      page => page.gaps.length === 0 && page.records.some(record => record.sequence === String(sequence)),
+      "the exact original record becomes readable after replacement ownership");
+    const recovered = restored.records.find(record => record.sequence === String(sequence));
+    assert.equal(recovered.kind, "operation.ended");
+    assert.equal(recovered.operation_id, operation.id);
+    assert.deepEqual(recovered, JSON.parse(originalBody));
+    assert.equal(createHash("sha256").update(originalBody).digest("hex"), digest);
+    assert.equal(createHash("sha256").update(JSON.stringify(recovered)).digest("hex"), digest,
+      "reconciliation must preserve the original record bytes, not fabricate a replacement at the old sequence");
+    const location = await f.d1.rpc("LocateRecord", [session.id, sequence]);
+    assert.equal(location.data.value.Status, "written");
+    assert.notEqual(location.data.value.Node, original.Node);
+    const current = await f.api("GET", `/v2/sessions/${session.id}`);
+    assert(BigInt(current.owner_epoch) > BigInt(original.Epoch));
+    assert.equal((await f.api("GET", `/v2/sessions/${session.id}/operations/${operation.id}`)).status, "completed");
+    assert.equal(f.state.modelCalls, 1);
+    assert.equal(f.state.applicationCalls, 0);
+  });
 }
 
 test("J02/J16: real JWT keys, tenant isolation, attenuated grants and expiring streams preserve admitted work", { timeout: 60000 }, async t => {

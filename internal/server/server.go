@@ -320,7 +320,7 @@ func (s *Server) append(ctx context.Context, session control.Session, kind strin
 		return wire.Record{}, err
 	}
 	record.Sequence, record.TimeMs = strconv.FormatInt(sequence, 10), uint64(now)
-	digest, err := s.History.Append(ctx, record, reserve)
+	digest, err := s.History.Append(ctx, record, reserve, session.Owner)
 	if err != nil {
 		code := kernel.Response(err).Code
 		if code == wire.ErrorCodeInvalid || code == wire.ErrorCodeOverloaded {
@@ -331,7 +331,7 @@ func (s *Server) append(ctx context.Context, session control.Session, kind strin
 	if err = s.Control.Written(ctx, session.View.ID, session.Owner, sequence, digest, int64(len(kernel.JSON(record)))); err != nil {
 		return record, err
 	}
-	return record, nil
+	return record, s.History.Confirm(ctx, record)
 }
 
 func (s *Server) owned(ctx context.Context, tenant, id string) (control.Session, error) {

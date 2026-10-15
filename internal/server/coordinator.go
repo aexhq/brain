@@ -136,6 +136,9 @@ func (s *Server) process(ctx context.Context, id string) error {
 			slog.Warn("readiness_reconciliation_delayed", "code", kernel.Response(err).Code)
 		}
 	}()
+	if err = s.History.ReconcileSession(ctx, id); err != nil {
+		return err
+	}
 	if err = s.bindResults(ctx, session); err != nil {
 		return err
 	}
