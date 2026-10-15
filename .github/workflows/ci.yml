@@ -51,6 +51,10 @@ jobs:
       - run: npm --prefix sdks/typescript ci --ignore-scripts
       - run: node scripts/check.mjs
       - run: go build -o bin/brain ./cmd/brain
+      - if: runner.os == 'Linux'
+        run: docker build --tag brain:local-dev .
+      - if: runner.os == 'Linux'
+        run: node scripts/container-smoke.mjs
   race:
     runs-on: ubuntu-latest
     timeout-minutes: 20

@@ -52,5 +52,7 @@ Metrics cover request duration/errors, queued-input delay, first assistant outpu
 
 The [Dockerfile](Dockerfile) packages the server and Pi runner as an unprivileged process. Mount a configuration file at `/config/brain.json`; set its listen address to `0.0.0.0:8080` and data directory to `/data`. The surrounding platform owns routing, session placement, cross-instance ownership, and failover.
 
+With Docker running, `docker build --tag brain:local-dev .` followed by `node scripts/container-smoke.mjs` checks the packaged server and real Pi runner using a local recording provider. It needs no model credentials and removes its temporary container afterward. Linux CI runs the same smoke test.
+
 See [persistence and recovery](docs/running-persistence.md) for configuration, explicit flush, cache loss, and handoff.
 
