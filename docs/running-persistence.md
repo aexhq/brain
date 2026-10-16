@@ -2,7 +2,7 @@
 
 External persistence is an optional background archive that uploads local session checkpoints and event logs to a secondary filesystem directory, AWS S3, Cloudflare R2, or Google Cloud Storage (`persistence` in `brain.json`).
 
-Brain always keeps active session state on local disk first (`metadata.sqlite` for session records, plus append-only `events.jsonl` and `native/` files in `data_dir`) so turns never block on remote storage.
+Brain always keeps active session state on local disk first (`metadata.sqlite` for session records, plus append-only `events.jsonl` and `native/` files in `data_dir`, `.brain/` by default) so turns never block on remote storage.
 
 > **Note:** Because uploads run asynchronously in the background, an ungraceful machine crash can lose events written after the last uploaded checkpoint.
 
@@ -38,7 +38,7 @@ Add a `persistence` block to your host configuration file. Using the `filesystem
 - **Bucket isolation:** Keep internal checkpoint storage separate from any S3/R2 buckets exposed to agents as tools.
 - **No credential archiving:** Brain never archives provider API keys or host credential files. When a session is restored on a new server, model and tool credentials come from the new host's configuration.
 
-> **Note:** All three cloud adapters (`s3`, `r2`, and `gcs`) pass local SDK transport contract tests. Live-account qualification is tracked separately; passing a simulated transport test is not evidence of credentials, IAM, or provider availability.
+> **Note:** Before you rely on a store, verify credentials, IAM permissions, and bucket access in your own account, and run a restore drill.
 
 ### Optional PostgreSQL discovery index (`postgres_env`)
 
@@ -94,7 +94,7 @@ Call `POST /sessions/{id}/restore` on the new instance with `{"checkpoint": "RET
 
 Call `POST /sessions/{id}/resume` to move the restored session from `interrupted` to `idle`, then send new input.
 
-When a server receives `GET /sessions/{id}` or `GET /sessions/{id}/events` for a session that is not on local disk, it automatically hydrates the latest published checkpoint from external storage. During a planned handoff, always call `POST /sessions/{id}/restore` with the explicit `checkpoint` ID from step 2 so a stale local cache or delayed upload cannot pick an older boundary.
+When a server receives `GET /sessions/{id}` or `GET /sessions/{id}/events` for a session that is not on local disk, it automatically loads the latest published checkpoint from external storage. During a planned handoff, always call `POST /sessions/{id}/restore` with the explicit `checkpoint` ID from step 2 so a stale local cache or delayed upload cannot pick an older boundary.
 
 > **Note:**
 > - When `restore` replaces an existing local session directory, Brain renames the old directory to `SESSION_ID-replaced-ID` so operators can inspect any unsynced local tail before deleting it.

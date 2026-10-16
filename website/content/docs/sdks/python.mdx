@@ -31,7 +31,7 @@ Generated `TypedDict` definitions for request and response payloads (`Session`, 
 
 ## Create a session and send a message
 
-Call `create()` with a harness name and frozen session configuration (`model`, `tools`, and optional `instructions` and `reasoning_effort`). Then call `send()` to queue a `user.message`:
+Call `create()` with a harness name and the session configuration: `model`, `tools`, and optional `instructions` and `reasoning_effort`. Then call `send()` to queue a `user.message`:
 
 ```python
 session = brain.create({

@@ -37,7 +37,7 @@ brain = Brain("http://127.0.0.1:8080", os.environ["BRAIN_API_KEY"])
 
 ## Create a session
 
-`POST /sessions` creates a session for your token's tenant and returns `201 Created`. The session's harness and config are fixed at creation. Brain records the session on local disk; the harness process starts when you send the first message.
+Create a session with the harness, model, instructions, and tools the agent should use. Brain saves the session right away and starts the harness when you send the first message. See [Create a session](/docs/api/generated/create) for every field and status code.
 
 | Field | Required | Description |
 | --- | --- | --- |
@@ -45,7 +45,7 @@ brain = Brain("http://127.0.0.1:8080", os.environ["BRAIN_API_KEY"])
 | `config.model` | Yes | A model in `provider/model` form, such as `openai/gpt-4.1-mini`, up to 256 characters. The provider must be configured in the host config, and its API key must be set. |
 | `config.tools` | Yes | Names of the tools to enable, up to 128. Pass `[]` for none. Each tool must be available to your tenant. |
 | `config.instructions` | No | The system prompt, up to `input_bytes` (64 KiB by default). Pi uses a generic assistant prompt when you omit it. |
-| `config.reasoning_effort` | No | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Pi defaults to `off`. If the model doesn't support the level, the first turn fails. |
+| `config.reasoning_effort` | No | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Pi defaults to `off`. Choose a level the model supports; otherwise the first turn fails with `session.error`. |
 
 ```sh tab="cURL"
 curl http://127.0.0.1:8080/sessions \
@@ -68,7 +68,7 @@ session = brain.create({
 })
 ```
 
-The response is the session, with status `idle`:
+Brain returns `201 Created` with the session in status `idle`:
 
 ```json
 {
@@ -93,7 +93,7 @@ Creating a session needs a token with `manage` that isn't limited to one session
 | `type` | Yes | `user.message`. |
 | `text` | Yes | The message. It must not be blank and is limited to `input_bytes` (64 KiB by default). |
 | `key` | No | An idempotency key, up to 128 bytes. |
-| `delivery` | No | `queue`, the default. `steer` returns `422`; interrupt the turn instead. |
+| `delivery` | No | `queue`, the default: the message runs after the active turn and any messages queued before it. |
 
 ```sh tab="cURL"
 curl http://127.0.0.1:8080/sessions/SESSION_ID/events \
@@ -128,7 +128,6 @@ Keys are stored with the event log and still apply after Brain restarts.
 | --- | --- | --- |
 | `400` | `invalid_request` | Blank or oversized `text`, a `key` over 128 bytes, or an unknown `delivery`. |
 | `409` | `conflict` | The key was used with a different message, the session is closed, or the session is `interrupted` or `failed`. Resume it before sending. |
-| `422` | `unsupported` | `delivery` is `steer`. |
 | `429` | `overloaded` | The queue is full, the session's event log is near its `session_bytes` limit, the external storage upload backlog is full, or Brain is shutting down. Retry after the `Retry-After` delay. |
 
 ## Stream events
@@ -198,7 +197,7 @@ Brain emits `session.status` with `running` and the message's `input_id` when a 
 
 ### Reconnect after a disconnect
 
-Disconnecting doesn't stop the turn. To pick up where you left off, reconnect with the cursor of the last retained event you processed, as the `after` query parameter or the `Last-Event-ID` header. Neither SDK reconnects automatically.
+Disconnecting doesn't stop the turn. To resume streaming after a disconnect, pass the cursor of the last retained event you processed as `{ after: cursor }` in TypeScript, `after=cursor` in Python, or the `after` query parameter or `Last-Event-ID` header over HTTP.
 
 <Callout type="warn" title="Slow consumers">
 Brain buffers up to `subscriber_events` events (128) and `subscriber_bytes` (2 MiB) for each stream. A client that falls further behind is disconnected and must reconnect from its last cursor. When `subscribers` streams (128) are already open, a new stream gets `429`. A cursor outside the session's retained history returns `409 cursor_unavailable`; this can happen after a restore drops an unsynced tail.
@@ -226,7 +225,7 @@ brain.interrupt(session["id"])
 Brain asks the harness to stop, cancels the turn, and emits `session.error` with code `conflict` for the turn and for each queued message. The session then moves to `interrupted`. An interrupt request accepts no other fields.
 
 <Callout type="warn" title="Remote work may continue">
-Interrupting cancels in-flight tool requests, but a tool service may already have started work, such as a sandbox command or an external job. Brain doesn't retry or undo tool calls; your tool service owns cleanup.
+Interrupting cancels in-flight tool requests, though a tool service may already have started work, such as a sandbox command or an external job. Brain sends each tool call at most once; your tool service owns retries and cleanup.
 </Callout>
 
 ## Resume after an interruption or failure

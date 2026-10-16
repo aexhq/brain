@@ -80,7 +80,7 @@ data: {"id":"8f14e45fceea167a5a36dedd4bea2543","type":"assistant.message","time"
 
 ## Reconnecting with cursors
 
-When subscribing over SSE, Brain captures the current log boundary under lock, replays all retained events after your cursor in batches of 100, and then switches seamlessly to live events without gaps or duplicates.
+When subscribing over SSE, Brain captures the current log boundary under lock, replays all retained events after your cursor in batches of 100, and then switches to live events without gaps or duplicates.
 
 1. Record `event.cursor` whenever it is non-empty.
 2. Reconnect with `GET /sessions/{id}/events?after=CURSOR` or the `Last-Event-ID: CURSOR` header (`?after=` takes precedence if both are sent; cursors longer than 512 bytes are rejected).

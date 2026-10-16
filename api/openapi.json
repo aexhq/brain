@@ -487,7 +487,7 @@
         "summary": "List sessions"
       },
       "post": {
-        "description": "Creates a session for the caller's tenant. Requires a management token. Session settings (harness, model, instructions, reasoning effort, and tools) are fixed at creation. Creating a session records its metadata locally; the harness process starts when the first message is sent.",
+        "description": "Creates a session for the caller's tenant with the given harness, model, instructions, reasoning effort, and tools. Requires a management token. Creating a session records its metadata locally; the harness process starts when the first message is sent.",
         "operationId": "create",
         "requestBody": {
           "content": {
@@ -531,7 +531,7 @@
     },
     "/sessions/{id}": {
       "get": {
-        "description": "Returns metadata and current status for a session. If the session is not on local disk and external storage is configured, Brain hydrates the latest published checkpoint.",
+        "description": "Returns metadata and current status for a session. If the session is not on local disk and external storage is configured, Brain loads the latest published checkpoint.",
         "operationId": "get",
         "parameters": [
           {

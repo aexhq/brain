@@ -108,7 +108,7 @@ A good agent tool does one clearly named job, ...
 Both scripts create a session, send one message, and read events until the turn for that message ends. Here are the same steps with comments:
 
 ```ts tab="TypeScript"
-import { Brain } from ".@aexhq/brain";
+import { Brain } from "@aexhq/brain";
 
 const token = process.env.BRAIN_API_KEY;
 if (!token) throw new Error("Set BRAIN_API_KEY before running this example");
@@ -116,7 +116,7 @@ if (!token) throw new Error("Set BRAIN_API_KEY before running this example");
 // Connect with the token that the host config grants to the "local" tenant.
 const brain = new Brain("http://127.0.0.1:8080", token);
 
-// Create a session. Its harness, model, and tools are fixed from now on.
+// Create a session with the harness, model, and tools the agent should use.
 const session = await brain.create({ harness: "pi", config: { model: "openai/gpt-4.1-mini", tools: [] } });
 console.log(`Session: ${session.id}`);
 
@@ -142,7 +142,7 @@ from brain import Brain
 # Connect with the token that the host config grants to the "local" tenant.
 brain = Brain("http://127.0.0.1:8080", os.environ["BRAIN_API_KEY"])
 
-# Create a session. Its harness, model, and tools are fixed from now on.
+# Create a session with the harness, model, and tools the agent should use.
 session = brain.create({"harness": "pi", "config": {"model": "openai/gpt-4.1-mini", "tools": []}})
 print("Session:", session["id"])
 
@@ -201,7 +201,7 @@ curl -N http://127.0.0.1:8080/sessions/SESSION_ID/events \
 
 The stream replays the session's retained events, then follows new events as they happen. Without `Accept: text/event-stream`, the same URL returns a JSON page of retained events. See [Events & streaming](/docs/reference/events) for every event type.
 
-## What just happened
+## What happened
 
 1. **Brain loaded the host config.** It checked that `BRAIN_API_KEY` and `OPENAI_API_KEY` are set, registered the `pi` harness, and opened local state in `.brain/`.
 2. **The script created a session.** Brain stored it with status `idle` and returned `201 Created`.

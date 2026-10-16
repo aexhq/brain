@@ -36,6 +36,6 @@ Each test compiles the Go binaries into an isolated temporary directory and star
 | Repair corrupt local history | Interior file corruption fails loudly instead of silently truncating history; an explicit `restore` recovers the session from external storage. |
 | Reject invalid API input | Unknown JSON fields, unsupported harnesses, unconfigured models or unauthorized tools, `steer` delivery, and oversized payloads return `400`/`403`/`413`/`422`. |
 | Bound observer memory | Oversized events disconnect slow SSE observers without interrupting the turn or corrupting stored history. |
-| Switch SDKs | A conversation started in TypeScript continues seamlessly in Python across tool calls, streaming, flush/restore, and interrupt/resume. |
+| Switch SDKs | A conversation started in TypeScript continues in Python across tool calls, streaming, flush/restore, and interrupt/resume. |
 | Run concurrent tenants | Active execution limits hold under load, tenants stay isolated, and idle runner eviction preserves native context when reloaded. |
 | Operate with telemetry | Trace IDs propagate from HTTP requests through tool calls; OTLP spans and metrics export cleanly; broken OTLP collectors do not block sessions. |

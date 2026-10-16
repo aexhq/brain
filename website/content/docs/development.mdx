@@ -1,52 +1,55 @@
 ---
 title: Development & verification
-description: Set up the workspace, run the verification suite, regenerate contracts, and preview the docs site.
+description: Set up the workspace, run the verification suite, regenerate contracts, preview the docs site, and see how CI publishes releases.
 ---
 
-This guide covers how to set up a local development environment for Brain, run the full verification suite, regenerate OpenAPI and SDK wire contracts, and preview the documentation site.
+This guide is for contributors. It covers how to set up a local development environment for Brain, run the full verification suite, regenerate the OpenAPI document and SDK wire types, preview the documentation site, and how CI tests and publishes each release.
 
 ## Prerequisites
 
-- **Go `1.26+`** (`go.mod` targets Go `1.26.1`)
+- **Go `1.26+`** (`go.mod` declares `go 1.26.0`)
 - **Node.js `24+`** and `npm`
-- **Python `3.11+`** (for running the Python SDK unit tests)
+- **Python `3.11+`**, available as `python`, to build and test the Python SDK packages
 
 ## 1. Install workspace dependencies
 
 Install the locked Node dependencies for the Pi runner, TypeScript SDK, sandbox service, and documentation site:
 
 ```sh
-npm --prefix runners/pi ci --ignore-scripts
-npm --prefix sdks/typescript ci --ignore-scripts
-npm --prefix services/sandbox ci --ignore-scripts
-npm --prefix website ci --ignore-scripts
+node scripts/setup.mjs
 ```
+
+The script runs `npm ci --ignore-scripts` in `runners/pi`, `sdks/typescript`, `services/sandbox`, and `website`.
 
 ## 2. Run all checks
 
-Run `node scripts/check.mjs` before committing. It executes the full local verification pipeline in order:
+Run `node scripts/check.mjs` before you commit:
 
 ```sh
 node scripts/check.mjs
 ```
 
-`node scripts/check.mjs` runs:
+It runs these steps in order and stops at the first failure:
 
-1. `npm --prefix runners/pi run build` — compiles the TypeScript Pi runner (`runners/pi/dist/main.js`).
-2. `npm --prefix sdks/typescript run build` — compiles the TypeScript SDK (`sdks/typescript/dist/`).
-3. `go run ./cmd/generate -check` — verifies `api/openapi.json`, `runners/pi/src/generated.ts`, `sdks/typescript/src/generated.ts`, and `sdks/python/brain/types.py` match the Go source.
-4. `go test -count=1 ./...` and `go vet ./...` — runs all Go unit and integration tests and static analysis across `cmd/` and `internal/`.
-5. `npm --prefix runners/pi test` — runs Pi runner unit and integration tests against a local recording provider.
-6. `npm --prefix sdks/typescript test` — runs the TypeScript SDK test suite.
-7. `npm --prefix services/sandbox test` — runs the sandbox tool service test suite.
-8. The Python unit suite runs against the installed wheel from `bin/sdk-consumer/python` using `bin/sdk-python`.
-9. `node --test tests/journeys/journeys.test.mjs` — runs the end-to-end process journeys.
-10. `node --test tests/platforms.test.mjs` — validates the platform deployment examples under `examples/platforms/`.
-11. `npm --prefix website run build` and `npm --prefix website test` — generates derived docs pages, builds the static Next.js / Fumadocs export, and runs `website/scripts/site.test.mjs`.
+1. `npm --prefix runners/pi run build`: compiles the TypeScript Pi runner (`runners/pi/dist/main.js`).
+2. `npm --prefix sdks/typescript run build`: compiles the TypeScript SDK (`sdks/typescript/dist/`).
+3. `go run ./cmd/generate -check`: verifies that `api/openapi.json`, `runners/pi/src/generated.ts`, `sdks/typescript/src/generated.ts`, and `sdks/python/brain/types.py` match the Go source.
+4. `node scripts/package-sdks.mjs`: packs the npm package, builds the Python wheel and source distribution, and installs all three in isolated environments. It then runs the TypeScript client tests and a strict type check against the installed npm package, and the Python client tests against both Python installs.
+5. `go test -count=1 ./...`: runs all Go unit and integration tests across `cmd/` and `internal/`.
+6. `go vet ./...`: runs Go static analysis.
+7. `npm --prefix runners/pi test`: runs the Pi runner unit and integration tests against a local recording provider.
+8. `npm --prefix sdks/typescript test`: runs the TypeScript SDK test suite.
+9. `npm --prefix services/sandbox test`: runs the sandbox tool service test suite.
+10. The Python unit suite runs against the installed wheel from `bin/sdk-consumer/python` using `bin/sdk-python`.
+11. `node --test tests/journeys/journeys.test.mjs`: runs the [end-to-end journeys](https://github.com/aexhq/brain/blob/main/tests/journeys/README.md) through the installed clients.
+12. `node --test tests/platforms.test.mjs`: validates the platform deployment examples under `examples/platforms/`.
+13. `node --test tests/registry-artifacts.test.mjs`: tests the SDK release workflow's admission checks and registry publication, including partial uploads, registry outages, and version reuse.
+14. `npm --prefix website run build`: generates the derived docs pages and builds the static Next.js / Fumadocs export.
+15. `npm --prefix website test`: runs `website/scripts/site.test.mjs`.
 
 ## 3. Regenerate contracts and docs
 
-When you edit Go route declarations, wire structs, or shared Markdown guides, regenerate the derived artifacts:
+When you edit Go route declarations, wire structs, or shared Markdown sources, regenerate the derived artifacts:
 
 ```sh
 # Regenerate api/openapi.json, runners/pi/src/generated.ts,
@@ -59,13 +62,13 @@ npm --prefix website run generate
 
 ## 4. Preview the documentation site
 
-Start the local Next.js development server:
+Regenerate the derived pages and start the local Next.js development server:
 
 ```sh
 npm --prefix website run dev
 ```
 
-Open `http://127.0.0.1:3000/docs`. To test the static production export locally:
+Open `http://127.0.0.1:3000/docs`. To test the static production export locally, build it, run the site tests, and serve `website/out` on port 3000:
 
 ```sh
 npm --prefix website run build
@@ -75,7 +78,7 @@ npm --prefix website start
 
 ## Where to edit what
 
-Do not hand-edit generated files (`api/openapi.json`, `runners/pi/src/generated.ts`, `sdks/typescript/src/generated.ts`, `sdks/python/brain/types.py`, `website/public/openapi.json`, or generated MDX pages). Edit the source of truth and run the corresponding generator:
+Don't hand-edit generated files (`api/openapi.json`, `runners/pi/src/generated.ts`, `sdks/typescript/src/generated.ts`, `sdks/python/brain/types.py`, `website/public/openapi.json`, or generated MDX pages). Edit the source of truth and run the corresponding generator:
 
 | Area | Source of truth | Regenerate with |
 | --- | --- | --- |
@@ -87,8 +90,29 @@ Do not hand-edit generated files (`api/openapi.json`, `runners/pi/src/generated.
 | Sandbox service guide | `services/sandbox/README.md` | `npm --prefix website run generate` |
 | Resource service guide | `services/resources/README.md` | `npm --prefix website run generate` |
 | Platform examples guide | `examples/platforms/README.md` | `npm --prefix website run generate` |
+| Roadmap | `docs/roadmap.md` | `npm --prefix website run generate` |
 | Docs pages & guides | `website/content/docs/**/*.mdx` | `npm --prefix website run build` |
 
-## Package verification
+Follow the [writing guide](https://github.com/aexhq/brain/blob/main/docs/writing.md) when you change the README, a docs page, or a shared Markdown source.
 
-`check.mjs` also runs `node scripts/package-sdks.mjs`: it builds npm, wheel, and sdist artifacts, installs all three, checks exported types, and runs client tests. The journeys then use the installed clients. Publishing reuses the tested Linux archives and waits for all CI checks.
+## Design documents
+
+The [roadmap](/docs/roadmap) lists release stages, planned work, and integration status, and links every design document. Start with the [architecture ADR](https://github.com/aexhq/brain/blob/main/docs/adr/0001-local-first-session-server.md) for ownership boundaries and design decisions, and the [implementation plan](https://github.com/aexhq/brain/blob/main/docs/implementation-plan.md) for how the work is split across runtime, persistence, harnesses, tools, API, and operations.
+
+## CI and releases
+
+The [CI workflow](https://github.com/aexhq/brain/blob/main/.github/workflows/ci.yml) runs on every push and pull request, and weekly:
+
+- **Checks:** `node scripts/check.mjs` on Linux and Windows. On Linux, the job also builds the Brain and sandbox tool images and smoke-tests both containers.
+- **Race detection:** `go test -race ./...` on Linux.
+- **PostgreSQL:** the session index tests against a real PostgreSQL server.
+- **Docs:** builds the site for its GitHub Pages path and runs the site tests.
+- **CodeQL:** code scanning for Go, JavaScript/TypeScript, Python, and GitHub Actions.
+
+Nothing publishes unless every job passes. After that, each push to `main`:
+
+1. Publishes the tested images to `ghcr.io/aexhq/brain` and `ghcr.io/aexhq/brain-sandbox-tools`, tagged `sha-<commit>` and `main`, with build provenance attestations.
+2. Deploys the tested docs site to GitHub Pages, then smoke-tests the published site.
+3. Starts the SDK release, which publishes the SDK archives tested on Linux to npm and PyPI through registry trusted publishing, without rebuilding them, and attaches the same archives to a GitHub release.
+
+SDK 1.0.0 is the client for the current server and replaces the predecessor's 0.x API. The server's routes and local state have no versioning or compatibility layer, so pin production images by digest and use the SDK version that matches your server commit. [SDK delivery](https://github.com/aexhq/brain/blob/main/docs/sdk-releases.md) covers versioning, the release workflow, and registry setup.

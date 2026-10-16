@@ -6,7 +6,7 @@ import './global.css';
 
 export const metadata: Metadata = {
   title: { default: 'Brain documentation', template: '%s · Brain' },
-  description: 'Build, run, and resume agent sessions. A minimal server with distributed tools and portable state.',
+  description: 'A minimal and extensible agent server for building agent applications.',
   icons: { icon: assetUrl('/icon.svg') },
 };
 

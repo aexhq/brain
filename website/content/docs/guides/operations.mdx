@@ -59,7 +59,7 @@ export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"
 | --- | --- |
 | `brain.http.requests`, `brain.http.duration` | Requests and their latency, by route and method. SSE streams are counted but not timed. |
 | `brain.http.rejected` | Error responses, by error code. |
-| `brain.executions.active` | Turns currently running. |
+| `brain.executions.active` | Number of running turns. |
 | `brain.input.queue_delay` | Time a message waited before its turn started. |
 | `brain.assistant.first_output` | Time from accepting a message to the first assistant output for it. |
 | `brain.runner.startup` | Time to start a harness process, by harness. |
@@ -93,16 +93,16 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 
 To check a locally built image, run `node scripts/container-smoke.mjs`. It starts `brain:local-dev` with a recording model provider, so it needs no model credentials.
 
-CI publishes tested images for every commit to `main` as `ghcr.io/aexhq/brain` and `ghcr.io/aexhq/brain-sandbox-tools`, tagged `sha-<commit>` and `main`, with provenance attestations. Pin images by digest in production.
+CI publishes tested images for every commit to `main` as `ghcr.io/aexhq/brain` and `ghcr.io/aexhq/brain-sandbox-tools`, tagged `sha-<commit>` and `main`, with provenance attestations. Pin production images by digest, and use the SDK version that matches your server commit.
 
 ## Route sessions across instances
 
-Each session must have exactly one owning Brain instance at a time. Brain doesn't coordinate instances: your routing layer sends every request for a session to its owner and handles failover.
+Each session must have exactly one owning Brain instance at a time. Your routing layer sends every request for a session to its owner and handles failover.
 
 On `SIGINT` or `SIGTERM`, Brain stops accepting new work, interrupts running turns, ends open event streams, and exits within about 20 seconds. Sessions whose turns were interrupted need a resume before they accept new messages. To move sessions to another instance, upload their checkpoints first; see [Persistence & recovery](/docs/guides/persistence) for the handoff steps.
 
-<Callout type="info" title="Scale">
-Multi-instance load and soak benchmarks are future work on the [roadmap](https://github.com/aexhq/brain/blob/main/docs/roadmap.md). Capacity for fleets of thousands of concurrent sessions hasn't been measured, so plan your own load tests.
+<Callout type="info" title="Size your deployment">
+Load-test with your own workload before you size a fleet.
 </Callout>
 
 ## Next steps

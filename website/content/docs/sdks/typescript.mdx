@@ -30,7 +30,7 @@ You can pass a custom `fetch` implementation as the third argument to add custom
 
 ## Create a session and send a message
 
-Call `create()` with a harness name and frozen session configuration (`model`, `tools`, and optional `instructions` and `reasoning_effort`). Then call `send()` to queue a `user.message`:
+Call `create()` with a harness name and the session configuration: `model`, `tools`, and optional `instructions` and `reasoning_effort`. Then call `send()` to queue a `user.message`:
 
 ```ts
 const session = await brain.create({

@@ -47,19 +47,17 @@ Copy the generated JSON descriptors into the `tools` array of your Brain configu
 - **Command execution (`sandbox_exec`):** Commands run inside the remote sandbox through a Python 3 helper with a **30-second** deadline and **64 KiB** combined `stdout`/`stderr` cap. On timeout or excess output, the helper kills the process group. Results include the exit status plus explicit truncation and timeout flags.
 - **No automatic retries:** Provider failures and lost responses become tool errors (`is_error: true`) with `unknown_outcome: true` when the remote outcome is ambiguous; the service never retries a model action.
 - **Disconnect behavior:** Disconnecting a client does not guarantee remote cancellation: an in-flight command retains its 30-second deadline, and the provider's sandbox expiry (see the table above) is the final cleanup bound.
-- **Admission and isolation:** The service admits at most **16** concurrent HTTP requests. Keep provider account quotas and host CPU/memory limits appropriate for your workload. This common interface exposes no GPUs, public port tunnels, persistent disks, arbitrary container images, or cross-provider snapshots, and injects no credentials into sandboxes.
+- **Concurrency and isolation:** The service runs at most **16** concurrent HTTP requests. Keep provider account quotas and host CPU/memory limits appropriate for your workload. This common interface exposes no GPUs, public port tunnels, persistent disks, arbitrary container images, or cross-provider snapshots, and injects no credentials into sandboxes.
 
 ## Verification and security notes
 
-Run the offline test suite to verify SDK types, HTTP lifecycle, authentication, cross-session isolation, handle tampering, service restarts, expiry, ambiguous failures, cleanup, and execution limits:
+`npm --prefix services/sandbox test` runs the local contract tests (SDK types, HTTP lifecycle, authentication, cross-session isolation, handle tampering, service restarts, expiry, ambiguous failures, cleanup, and execution limits):
 
 ```sh
 npm --prefix services/sandbox test
 ```
 
-> **Note:** `npm --prefix services/sandbox test` runs local contract tests, not live-provider qualification.
-
-With live provider credentials configured, run the live qualification script for `modal`, `e2b`, or `daytona`:
+To test against a live provider (`modal`, `e2b`, or `daytona`), configure that provider's credentials and run:
 
 ```sh
 npm --prefix services/sandbox run live -- modal
@@ -77,3 +75,4 @@ Sources: [Modal SDK](https://modal.com/docs/sdk/js), [E2B sandbox API](https://d
 - [Local tools & approvals](https://aexhq.github.io/brain/docs/tools/local-tools)
 - [Storage & web resource tools](https://aexhq.github.io/brain/docs/tools/resources)
 - [Host configuration reference](https://aexhq.github.io/brain/docs/reference/configuration)
+- [Integration status](https://aexhq.github.io/brain/docs/roadmap#integration-status)

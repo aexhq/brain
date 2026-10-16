@@ -8,4 +8,5 @@ Follow `docs/adr/0001-local-first-session-server.md`. Code and tests own impleme
 - No versioning or backward compatibility unless explicitly requested. Pin dependencies for reproducibility.
 - Run all required checks. Never skip tests or treat missing integration credentials as success.
 - Commit complete, verified slices. Do not commit credentials or local session data.
+- Write docs at the level `docs/writing.md` assigns to each page. Planned work and its current gaps belong on the roadmap.
 
