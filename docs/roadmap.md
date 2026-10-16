@@ -16,10 +16,17 @@ Brain is in active development. This page lists what you can use today, what's c
 
 ### Application SDK and session-bound integrations
 
-Build a Brain application in code by installing harness adapters and tool providers, then let clients select and configure authorized integrations for each session.
+Build a Brain application in code with managed tools, and let clients select those tools or declare runtime functions for a session. The SDK will bridge calls to client-side functions through the same transport building blocks available to managed tools.
 
-- **Status:** Planned; design proposed. [ADR 0003](https://github.com/aexhq/brain/blob/main/docs/adr/0003-application-sdk-and-session-bindings.md) selects a Go application SDK and server-default credentials with optional session overrides. Callback execution, credential custody, and shared versus harness-native tool dispatch remain under discussion.
+- **Status:** Planned; design proposed. [ADR 0003](https://github.com/aexhq/brain/blob/main/docs/adr/0003-application-sdk-and-session-bindings.md) selects a Go application SDK, managed and client-runtime tools, local harness-host supervision, and external sandbox services for arbitrary code execution. Server-default credentials with optional session overrides are selected; override custody remains under discussion.
 - **Today:** Configure harness commands and a tenant-scoped tool catalog in the host configuration, and select configured tools by name when creating a session. Custom tools run in HTTP/SSE or remote MCP services; the published SDKs are HTTP clients, not application hosts.
+
+### Local harness-host supervision
+
+Have Brain track and control a bounded fleet of Pi, OpenCode, or Codex processes on its PC or VM, with private session state, idle eviction, and recovery without automatic inference. Model-directed code execution will use authorized external sandbox services, not native execution tools on the Brain host.
+
+- **Status:** Partly available. The Pi runner has lazy startup, bounded residency, cancellation, and passive restore. [ADR 0003](https://github.com/aexhq/brain/blob/main/docs/adr/0003-application-sdk-and-session-bindings.md#brain-supervises-a-local-fleet-of-harness-hosts) proposes the multi-harness supervision contract, process-tree lifecycle qualification, and explicit Brain/native session tracking. Cross-machine provisioning and placement are outside this design.
+- **Today:** Use the Pi runner and the host resource limits. Other harnesses require adapters that pass the isolation and recovery gates; each session still needs a single owning Brain instance.
 
 ### Dynamic session configuration
 
