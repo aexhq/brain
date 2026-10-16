@@ -2,7 +2,7 @@
 
 Measured 2026-10-16 for [ADR 0003](../adr/0003-application-sdk-and-session-bindings.md). These are local architecture experiments, not production capacity figures or qualification of new Brain adapters.
 
-The results support different host-sharing policies by harness and different execution transports by deployment. Sharing Pi hosts saved substantial memory with similar throughput in this fixture. Sharing eight OpenCode sessions saved memory but approximately halved throughput. WebSocket messages performed well for small reverse callbacks; direct HTTP performed better for the larger result payload.
+The results support different host occupancy/concurrency limits by harness and different execution transports by deployment. Sharing Pi hosts saved substantial memory with similar throughput in this fixture. Sharing eight OpenCode sessions saved memory but approximately halved throughput. WebSocket messages performed well for small reverse callbacks; direct HTTP performed better for the larger result payload.
 
 ## Environment and boundaries
 
@@ -23,7 +23,7 @@ Memory below is Windows **private committed memory**, not uniquely resident phys
 
 ## Native harness experiment
 
-Compared one native process per session with one native process containing several sessions. Both used the same adapter fixture for that harness, private homes/state directories outside the repository, explicit environments, and the same model/tool workload. The shared variants are prototypes, not a proposed cross-tenant trust boundary.
+Compared one native process per session with one native process containing several sessions. Both used the same adapter fixture for that harness, private homes/state directories outside the repository, explicit environments, and the same model/tool workload. The shared variants are prototypes; they do not establish cross-tenant isolation.
 
 Each model turn made two local provider requests with a requested 40 ms delay each, with one 20 ms tool wait between them. Pi used the completions protocol; Codex and OpenCode used Responses. Native context and persistence machinery remained in the harness. Cross-harness turn times therefore are not a ranking of LLM performance.
 
@@ -118,7 +118,7 @@ Transport choice does not replace admission limits. Nor does a loopback endpoint
 The native fixtures invoked only `echo`. Their advertised tool lists exposed separate integration work:
 
 - **Pi:** the outgoing request advertised exactly `echo`.
-- **Codex 0.163.0:** with execution/delegation features and web search disabled, it still advertised `request_user_input` alongside `echo`. This reproduces the earlier exact-tool gate.
+- **Codex 0.163.0:** with execution/delegation features and web search disabled, the performance fixture still advertised `request_user_input` alongside `echo`. A [separate follow-up](harness-probes.md#codex-catalog-exclusion-follow-up-2026-10-16) verified that `tools.experimental_request_user_input.enabled = false` removes it. That closes the specific catalog-control gap, not the remaining adapter qualification.
 - **OpenCode 2.0.30:** removing registered native tools and setting the custom tool's `codemode: false` still advertised a generated `execute` tool alongside `echo`. The published core's code-mode tool accepts JavaScript and exposes HTTP `fetch`; ordinary tool-registry filtering alone is not proof of the external-only execution boundary. No `execute` call was made in the spike. A supported exclusion control or qualified adapter change is still required.
 
 OpenCode's recorded startup auto-resume and incremental SQLite checkpoint issues also remain. Fresh empty hosts making no model calls do not prove passive recovery of suspended sessions.
@@ -131,9 +131,9 @@ OpenCode installation encountered a native grammar build failure with the experi
 
 **Tool deployment:** use direct HTTP/service references for already-deployed backend or Lambda tools. Use an SDK-owned reverse connection for browser/backend-local callbacks. A serverless invocation that merely creates a session does not become a lasting callback host.
 
-**Reverse transport:** WebSocket/RPC is the stronger initial candidate for small bidirectional callback/control messages. Keep HTTP/SSE for reachable services and streaming results. Reverse SSE remains an alternative for HTTP-only environments, not a universal transport for every deployment. Confirm the choice against the intended Go server and supported client runtimes before treating these numbers as implementation targets.
+**Transports:** ADR 0003 selects direct HTTP, reverse SSE plus HTTP, and bidirectional RPC. The WebSocket prototype provides evidence for one possible RPC carrier, not a finalized RPC protocol. Use the binding suited to the deployment, and qualify it against the intended Go server and supported clients before treating these numbers as implementation targets.
 
-**Host topology:** keep dedicated hosts as the initial isolation/recovery reference, but do not assume the same eventual sharing policy for every harness. The memory difference justifies a bounded, same-trust-domain Pi-sharing qualification spike. Codex's dedicated-process cost is much smaller. OpenCode sharing needs an active-turn cap and investigation of the measured concurrency loss before adoption. None of these results justify pooling unrelated tenants or removing private state and generation checks.
+**Host topology:** the subsequent design decision selects bounded shared hosts, including cross-tenant occupancy, subject to logical session-isolation qualification. The measurements inform different limits per harness: Pi shows substantial memory savings, Codex's dedicated-process cost is much smaller, and OpenCode sharing needs an active-turn cap and investigation of the concurrency loss. The performance results do not establish safe tenant isolation, session-scoped export/restore, or independent failure domains.
 
 **Capacity:** bound startup separately, evict only idle checkpointed state, and report queue wait separately from active execution. Retained session count is not resident-process count. Fleet sizing, long-history memory, saturation-time interruption, crash recovery, and cloud behavior remain the work described on the [roadmap](../roadmap.md).
 

@@ -1,6 +1,6 @@
 # ADR 0003: Application SDK, session bindings, and harness integration
 
-- **Status:** Proposed. Go application SDK, managed and client-runtime tools, SDK-owned communication bridges, local harness supervision, and external-only arbitrary code execution selected. Server-default credentials and authorized session overrides must survive normal server restarts; encrypted credential storage in the session SQL database is selected, with external vault integration available through application providers. See [Decisions to finalize](#decisions-to-finalize).
+- **Status:** Proposed. Go application SDK, managed and client-runtime tools, direct HTTP/reverse SSE plus HTTP/RPC bindings, bounded shared local harness hosts, and external-only arbitrary code execution selected. Hosts may contain different tenants, subject to session-isolation qualification. Server-default credentials and authorized session overrides must survive normal server restarts; encrypted credential storage in the session SQL database is selected, with external vault integration available through application providers. See [Decisions to finalize](#decisions-to-finalize).
 - **Date:** 2026-10-16
 - **Extends, if accepted:** [ADR 0001](0001-local-first-session-server.md) and [ADR 0002](0002-subsystem-contracts-and-sdk-delivery.md).
 - **Scope:** Architecture and SDK semantics, not implementation, package names, or a final wire schema.
@@ -11,7 +11,7 @@ Make Brain an application developers compose through an application SDK. The app
 
 **All tools share one descriptor, invocation, progress, and result contract.** Registration and execution location differ; authorization, schemas, limits, and event accounting do not. HTTP, SSE, RPC, and MCP adapters are building blocks, not separate application-level tool models. Managed tools can use the same building blocks as runtime tools.
 
-**One application means one owned deployment and lifecycle, not necessarily one process.** Brain supervises a local fleet of harness hosts on its PC or VM. Harnesses own inference and native context; Brain owns public session identity, admission, host lifecycle, tool dispatch, and recovery. No arbitrary model- or client-supplied code executes on the Brain or harness hosts. Explicitly authorized external sandbox services provide code execution.
+**One application means one owned deployment and lifecycle, not necessarily one process.** Brain supervises a bounded local fleet of shared harness hosts on its PC or VM. Sharing may cross tenant boundaries, but grants no access between sessions. Harnesses own inference and native context; Brain owns public session identity, admission, host lifecycle, tool dispatch, and recovery. No arbitrary model- or client-supplied code executes on the Brain or harness hosts. Explicitly authorized external sandbox services provide code execution.
 
 This changes the requirement that every tool needs an independently operated service. It preserves the small session coordinator, harness-owned inference and context, single-owner sessions, local-first state, passive recovery, explicit error layers, and absence of automatic tool-action retries.
 
@@ -62,9 +62,9 @@ The following is pseudocode. Names distinguish executable factories from remote 
 ```text
 server = BrainServer(
   agentloops = {
-    pi: PiRuntime(...),
-    codex: CodexRuntime(...),
-    opencode: OpenCodeRuntime(...)
+    pi: PiRuntime(maxShared = piSessionLimit, maxActiveTurns = piTurnLimit, ...),
+    codex: CodexRuntime(maxShared = codexSessionLimit, maxActiveTurns = codexTurnLimit, ...),
+    opencode: OpenCodeRuntime(maxShared = openCodeSessionLimit, maxActiveTurns = openCodeTurnLimit, ...)
   },
   tools = {
     invoice: Tool(input = ..., output = ..., run = lookupInvoice),
@@ -171,6 +171,16 @@ S3/R2 **agent tools** and S3/R2 **checkpoint stores** are different roles, with 
 
 `FlyMachine`, `ModalSandbox`, and other compute integrations are tool providers, not new Brain environment or job resources. Their operations need not be interchangeable. A provider package may wrap a vendor SDK or an existing MCP server; choose from the required operations, authorization model, and qualification evidence rather than requiring one integration method for every vendor.
 
+### Optional read-only sessions tool
+
+A `sessions` tool is an optional managed integration over Brain's authorized session reads, not an implicit harness capability or a new core session authority. Recommend an official provider package that a self-hosted Brain application or a hosted platform can install. The application chooses its exposure and read policy; a platform supplies fleet-wide discovery and routing when sessions live on several Brain instances. The core continues to own session authorization, bounded reads, and passive access to stored history.
+
+"The same client" means the same authenticated tenant/account, not a browser connection, SDK instance, or shared native process. A source session receives cross-session read access only through an explicitly selected tool binding. The provider derives the tenant and source session from trusted invocation metadata and authorizes each target within that tenant and the binding's permitted scope. A model-supplied target session ID is a lookup argument, not authorization. Sessions in another tenant remain inaccessible even when they share the host.
+
+Limit this provider to selected read operations, such as session metadata and bounded event history. It does not expose native state files, credential records, control handles, or write operations such as sending input, interrupting, or resuming another session. Reading another session never starts its model or tools. Returned history is tool-result data, not authority to alter either session's configuration.
+
+The ordinary call-scoped tool credential remains read-only for its source session; do not silently broaden it to the tenant. The installed provider needs an explicit authorized read capability for its permitted targets, kept outside model arguments and the harness. A local provider can use the application's authorized read interface; an external or platform provider can use a tenant-scoped read client. Neither reads the native host's shared database directly or receives blanket management authority merely because it is an official tool.
+
 ## One tool-call boundary, independent of execution location
 
 The call path is:
@@ -204,9 +214,15 @@ If a runtime callback's browser/backend process or an external tool service disa
 
 The developer supplies the normal tool declaration. The SDK owns the callback registry, authenticated connection, request/result correlation, progress, and cancellation plumbing. Brain dispatches through the same executor boundary as for managed tools; it does not load, inspect, or evaluate the client implementation.
 
-Use the shared transport primitives rather than a separate runtime-tool policy system. A reachable tool host can serve ordinary HTTP requests. For clients behind NAT or without an HTTP listener, an outbound SSE command stream plus HTTP result/progress posts, or a bidirectional RPC connection, can provide the bridge. SSE alone is one-way. The exact first transport is a binding decision, not a requirement to expose networking in tool declarations or implement every transport at once.
+Select three execution bindings built on the shared tool contract:
 
-The [transport spikes](../research/application-sdk-spikes.md#tool-transport-experiment) support WebSocket/RPC as the initial candidate for small reverse callbacks, while direct HTTP remains the fit for deployed services. They also found a larger-payload crossover and do not measure the future Go server or actual browsers. Select transport by deployment and required interaction; do not force a Lambda endpoint to keep a reverse connection open or infer one universal performance winner.
+| Binding | Communication and deployment |
+| --- | --- |
+| Direct HTTP | Brain calls a reachable service; the response carries JSON or streamed SSE progress/results. Fits deployed backend and Lambda tools. |
+| Reverse SSE plus HTTP | The executor opens an outbound SSE command stream and POSTs progress/results back over HTTP. Fits clients that cannot accept inbound connections; SSE alone is one-way. |
+| Bidirectional RPC | An authenticated channel carries correlated calls, progress, cancellation, and results. Fits attached client executors. The carrier and framing remain wire-contract work. |
+
+The application and SDK select the binding from the deployment and supported transports, without changing tool authoring or policy. All three are selected surfaces, not an automatic fallback chain; switching transports must never replay an ambiguously dispatched action. The [transport spikes](../research/application-sdk-spikes.md#tool-transport-experiment) used WebSocket for the bidirectional prototype, not a qualified generic RPC stack. They inform implementation choices but select neither gRPC nor a universal WebSocket requirement. They do not measure the future Go server or actual browsers.
 
 The execution channel is distinct from the replayable session event stream. Replaying a `tool.call` event never invokes a callback. Reading a session grants no right to execute its tools or submit results. Each execution registration is scoped to its authenticated tenant, session, and tool binding; only the current authorized connection can answer its outstanding calls. Queues, outstanding calls, and payloads are bounded.
 
@@ -308,10 +324,12 @@ Require a baseline: harness-owned inference and context; exact Brain-bound tool 
 | Harness | Upstream integration surface | Evidence and remaining architectural issue |
 | --- | --- | --- |
 | Pi | [Embedded SDK][pi-sdk], custom tool callbacks, native `SessionManager` | Existing reference runner. Native session state, not reconstructed event text, owns the next prompt. |
-| Codex | [App Server][codex-app-server], dynamic tools and callbacks | The recorded 0.163.0 probe still exposed `request_user_input` after disabling execution tools. An upstream control, narrow patch, or explicit external question-tool mapping must be qualified. Merely adding dynamic tools or a read-only sandbox does not prove exclusion. |
+| Codex | [App Server][codex-app-server], dynamic tools and callbacks | The original 0.163.0 probes exposed `request_user_input`. A later controlled probe removed it with `tools.experimental_request_user_input.enabled = false`, leaving exactly `echo`. The adapter must enforce the control and still qualify restore, compaction, and shared-session isolation. |
 | OpenCode | [Embedded SDK][opencode-sdk] and [tool transforms][opencode-plugins] | The recorded 2.0.30 host resumed suspended sessions at startup; mutable SQLite state needs a coherent incremental checkpoint adapter. The later spike still advertised generated code-mode `execute` after filtering registered tools. Tool transforms alone do not prove exact tool exclusion. |
 
 These probe findings are version-specific evidence from 2026-10-15 and 2026-10-16, not claims that every later release has the same behavior. Reading newer documentation does not replace rerunning qualification against a selected, pinned release.
+
+Distinguish advertisement from invocation. The performance spikes did not invoke either extra tool. OpenCode's generated `execute` has a JavaScript Code Mode implementation with HTTP `fetch`; it is not established to be an inert descriptor. Codex's question handler is a different capability, with mode-dependent invocation guards and a separately verified registration switch. A native tool that returns an error when called can still violate the exact model-facing catalog contract. See the [follow-up evidence](../research/harness-probes.md#codex-catalog-exclusion-follow-up-2026-10-16).
 
 Wrapping Codex as a tool inside Pi is a valid nested-agent feature, but it does not implement a Codex session harness. It introduces a second agent loop and separate context. The [Agents SDK's Codex tool][agents-tools] illustrates this distinction.
 
@@ -327,9 +345,9 @@ The selected fleet scope is local to each PC/VM running Brain. There is no remot
 Brain application
   session authority: identity, admission, events, checkpoints
   local host supervisor
-    Pi host          -> private native session state
-    OpenCode host    -> private native session state
-    Codex host       -> private native session state
+    Pi hosts         -> bounded, isolated native sessions
+    OpenCode hosts   -> bounded, isolated native sessions
+    Codex hosts      -> bounded, isolated native sessions
   shared tool dispatcher
     managed implementation / HTTP / MCP
     SDK bridge -> client runtime function
@@ -338,22 +356,38 @@ Brain application
 
 ### Identity, isolation, and residency
 
-Use one dedicated harness host per resident Brain session as the initial isolation baseline. An unloaded session is persisted data, not a permanently running server. Upstream support for many native sessions in one process does not require Brain to multiplex tenants into that process.
+Select shared native hosts with application-configured per-harness occupancy and active-turn limits. A host may contain sessions from different tenants/accounts within the same Brain application. This placement choice grants no cross-session access. An unloaded session is persisted data, not a permanently running server. Adapters must qualify this shared-session contract before exposing it as supported.
 
 | State | Owner and lifetime |
 | --- | --- |
 | Brain session ID, tenant, harness selection, configuration, descriptors, event history | Brain; persisted independently of process residency |
 | Opaque native session identity and checkpoint state | Adapter/native harness; retained with the session's native state, not reconstructed from display events |
 | Association between Brain session, native session, and active host | Supervisor; binds exactly one current host to the owning session |
-| Process handle, private endpoint, host generation, active Brain/native turn association, pending requests | Local live state; never treated as portable checkpoint identity |
+| Process handle, private endpoint, host/session-attachment generations, active Brain/native turn association, pending requests | Local live state; never treated as portable checkpoint identity |
 
-Give each host a private working/state directory, isolated harness home/config/cache locations where required, and an explicit environment. Do not inherit the developer's ambient credentials, extensions, plugins, MCP configuration, or workspace discovery. Do not attach to an unrelated existing Pi/OpenCode/Codex service on the PC. Native control endpoints stay private; the Brain API does not proxy arbitrary upstream methods or expose APIs such as command execution.
+Give each host a private root, an explicit environment, and separate session working/state locations or a qualified native storage partition. Do not inherit the developer's ambient credentials, extensions, plugins, MCP configuration, or workspace discovery. Pool only compatible pinned adapters and immutable host settings. Settings that require different process-global credentials or mutable configuration cannot be implemented by switching globals between calls; use a separate compatible host profile or reject the unsupported configuration.
 
-Separate limits for retained session metadata, resident native hosts, active turns, startup work, queued input, and outstanding tool calls. A thousand persisted sessions must not imply a thousand native processes. Load a host lazily for an admitted turn, reuse it for that same session while resident, and evict only an idle, quiescent host at a committed checkpoint boundary. Idle eviction frees the process, not the session.
+The illustrative `maxShared` parameter caps all resident native sessions in one host, including active and idle sessions. Reserve a slot before initializing or restoring a session, so concurrent opens cannot exceed the cap; release it only after detachment and call/channel cleanup complete. `maxActiveTurns` is a separate per-host cap, no greater than `maxShared`. Each session still has at most one active turn. Both limits are positive and finite; `maxShared = 1` is the one-session configuration, not a separate topology. Numeric defaults require qualification rather than being inferred from the eight-session spike.
 
-A multi-session host pool can reduce startup cost and memory, but increases the failure radius and complicates credential, cancellation, event, and checkpoint isolation, especially with native databases. Defer it until measured costs justify it and those boundaries pass conformance; do not start with a general pool scheduler. Keep capacity available for interrupts and tool completions when admission is saturated.
+Separate these limits from retained session metadata, total resident hosts, startup work, queued input, and outstanding tool calls. When a compatible host is full, use another or start one only within the host/startup budgets; otherwise queue within the admission bound or reject before execution. Do not silently exceed occupancy, evict active work, or let one session run concurrent turns to absorb a burst. Keep capacity available for interrupts and tool completions when admission is saturated.
 
-The [native host spikes](../research/application-sdk-spikes.md#native-harness-experiment) now justify targeted sharing work rather than a uniform assumption: shared Pi saved memory with similar synthetic throughput, dedicated Codex processes were much smaller, and eight shared OpenCode sessions lost throughput. Dedicated hosts remain the isolation/recovery reference until a bounded, same-trust-domain sharing profile is qualified. Startup, residency, and active-turn budgets must remain separate even if a host contains several sessions.
+Load native sessions lazily for admitted work and preserve the Brain/native association while resident. Detach an idle session only at a coherent checkpoint boundary and only if the adapter can do so without disturbing its peers. If the adapter requires host-wide quiescence, wait for that condition rather than interrupting other sessions for eviction. Detachment frees a slot; stopping an empty or wholly idle host frees a process. Neither deletes the persisted Brain sessions.
+
+The [native host spikes](../research/application-sdk-spikes.md#native-harness-experiment) inform per-harness caps: shared Pi saved memory with similar synthetic throughput, dedicated Codex processes were much smaller, and eight shared OpenCode sessions lost throughput. These measurements do not establish cross-tenant isolation or justify equal occupancy and concurrency settings for every harness.
+
+### Session isolation inside a shared host
+
+Each native session retains its own context, instructions, tool catalog, pending calls, cancellation state, and private persistence. Session A cannot list, read, mutate, resume, or dispatch through session B merely because they share a host. This applies even within one tenant; the optional authorized `sessions` tool is an explicit read path, not permission to use native cross-session APIs.
+
+| Boundary | Required behavior |
+| --- | --- |
+| Context and credentials | Keep session-specific model credentials, headers, compaction state, tool bindings, and context-bearing caches separate. Session-derived content remains session-scoped even within a tenant. Shared caches may contain non-sensitive common data or separately authorized provider data, never another session's private context. Never mutate process-wide credentials to serve a session. |
+| Events, callbacks, and results | Resolve the current host/session-attachment generations, native session, turn, and call association before delivery. Session IDs or tenant fields in model arguments cannot select the dispatch context. Unknown, stale, or ambiguous associations fail rather than falling back to another active session. |
+| Native control and resources | Keep control channels private to the supervisor. Expose no raw native session-list/read/control methods, host files, ambient plugins, or code execution to sessions. Do not attach to unrelated existing harness services. |
+| Persistence and restore | Export only the selected session's state and authorized recovery material. A shared native SQLite database is not a portable checkpoint for one session. Restoring or evicting A must not expose, overwrite, or resume B; require a coherent session-scoped export/import contract. |
+| Normal cancellation | Cancel the selected session and its calls without closing or changing other sessions. A host-level failure is handled separately and must not be disguised as successful session-local cancellation. |
+
+These requirements address data and authority isolation under the trusted-adapter model. They do not provide separate address spaces, independent CPU/memory capacity, or protection from a compromised harness or malicious installed handler. A shared process crash can affect every resident session. An adapter without demonstrated isolation does not qualify for cross-tenant sharing; placement alone is not a security control.
 
 ### No arbitrary execution on Brain or harness hosts
 
@@ -363,13 +397,13 @@ Model-visible capabilities are exactly the session's registered tools. A managed
 
 Before admitting work to a host, establish that its adapter enforces the tool and configuration boundary. An unexpected native capability or unbound action is an execution failure, not permission to continue with weaker isolation. A read-only sandbox or a native approval UI is not proof that local execution is disabled.
 
-Process separation and private directories reduce accidental state sharing and isolate crashes; they are not a security sandbox against compromised native binaries or malicious application-installed handlers. Run with least OS privilege and scoped credentials. Stronger OS-enforced filesystem/network isolation would require separate qualification. This ADR does not claim hostile code can run safely on the host; it excludes that workload.
+Private directories and host separation reduce accidental state sharing and contain failures between hosts, not between sessions in one host. They are not a security sandbox against compromised native binaries or malicious application-installed handlers. Run with least OS privilege and scoped credentials. Stronger OS-enforced filesystem/network isolation would require separate qualification. This ADR does not claim hostile code can run safely on the host; it excludes that workload.
 
 ### Lifecycle and process ownership
 
-The supervisor owns launch, initialization, readiness, cancellation, idle eviction, draining, and process-tree cleanup. Startup/readiness checks use protocol and state checks, never model prompts. Match responses, events, and callbacks to both the current host generation and the active Brain/native turn association. Late work from an earlier turn or a stopped/replaced host cannot affect a later turn.
+The supervisor owns launch, initialization, readiness, cancellation, idle eviction, draining, and process-tree cleanup. Startup/readiness checks use protocol and state checks, never model prompts. Match responses, events, and callbacks to the current host/session-attachment generations and the active Brain/native turn association. Detaching and reattaching a session changes its attachment identity even when the host and native session ID are reused. Late work from an earlier attachment, turn, or replaced host cannot affect a later turn.
 
-On interruption, request native cancellation and cancel pending tool work. On shutdown, stop admission, drain or interrupt bounded work, close owned channels, and terminate remaining owned processes within the shutdown budget. Normal shutdown and abrupt Brain death must not leave a harness continuing inference independently. Verify process-tree behavior on each supported OS; closing one child PID alone is insufficient evidence. Windows [Job Objects][windows-job-objects] provide process-group lifetime controls, not a security sandbox.
+On interruption, request cancellation for the selected native session and cancel its pending tool work. If failed cancellation requires terminating a shared host, explicitly fail every affected active execution and record uncertain tool outcomes; do not silently restart peers. On shutdown, stop admission, drain or interrupt bounded work, close owned channels, and terminate remaining owned processes within the shutdown budget. Normal shutdown and abrupt Brain death must not leave a harness continuing inference independently. Verify process-tree behavior on each supported OS; closing one child PID alone is insufficient evidence. Windows [Job Objects][windows-job-objects] provide process-group lifetime controls, not a security sandbox.
 
 Never adopt or kill a process based only on a persisted PID: PIDs can be reused. Ownership must follow the launched process handle and OS lifetime group, with instance identity for any reconnectable channel. After Brain restarts, create new host associations from session state rather than trusting stale endpoints or an unverified process registry.
 
@@ -379,10 +413,10 @@ Report host startup failures, resident counts, eviction, unexpected exits, and r
 
 | Event | Required behavior |
 | --- | --- |
-| Idle host eviction | Retain the committed checkpoint and session mapping; reload passively when a later admitted turn needs the harness |
-| Harness crash or broken control channel | Stop the affected execution, cancel reachable tool work, record failure and uncertain outcomes, and discard the live host association |
+| Idle session or host eviction | Retain each session's committed checkpoint and identity; detach only with the required session/host quiescence, and reload passively for later admitted work |
+| Harness crash or broken host control channel | Stop every active execution on that host, cancel reachable tool work, record failures and uncertain outcomes, and discard its live associations without losing persisted session identity |
 | Brain restart | Recover metadata and classify unfinished execution as interrupted; do not start native continuation, replay queued actions, or launch model work merely by reading/restoring a session |
-| Cold restore on an empty PC/VM data directory | Fetch checkpoint data, restore the native context and bindings, and open a new private host only for subsequent admitted execution |
+| Cold restore on an empty PC/VM data directory | Fetch the session checkpoint and restore its context and bindings; attach it to a compatible host only for subsequent admitted execution, without restoring other tenants' state |
 | Missing/corrupt native state or incompatible deployed adapter | Fail explicitly; never create an empty native session as a successful restore |
 | Runtime client unavailable after restore | Preserve its tool descriptor; require authorized SDK rebinding for new calls and return explicit unavailability while disconnected |
 
@@ -426,7 +460,7 @@ For Supabase in particular, a secret/service-role key bypasses row-level securit
 
 ## Decisions to finalize
 
-These are product choices, not implementation details to leave to an adapter author. The discussion selected D1, D2, D3's encrypted persistent custody, D4, and local fleet scope in D5. The first reverse-bridge transport and the host-sharing baseline still need confirmation; key-provider and recovery details require qualification. The overall ADR remains Proposed.
+The discussion selected the application/runtime split, encrypted credential custody, external-only execution, bounded shared hosts including cross-tenant placement, and the three transport bindings below. The optional read-only sessions provider belongs to application integrations rather than the core loop. RPC framing/carrier, numeric host-limit defaults, and key-provider details remain design work; adapter isolation and recovery require qualification. The overall ADR remains Proposed.
 
 ### D1: Application SDK runtime and language
 
@@ -459,7 +493,11 @@ The bridge is selected, not an optional separately operated worker product. Its 
 
 ### D5: Harness fleet management
 
-**Selected scope: local harness processes on each Brain PC/VM.** Brain owns their lifecycle and the Brain/native session association. Recommend a dedicated host for each resident session initially, with lazy loading and bounded idle residency; shared multi-session hosts are a later alternative requiring measured benefit and additional isolation/recovery evidence. Cross-machine provisioning, placement, and leader election are outside this ADR.
+**Selected: bounded shared local harness hosts, including sessions from different tenants/accounts.** Brain owns their lifecycle and the Brain/native session associations. Expose per-harness `maxShared` occupancy and separate active-turn limits, with lazy loading and checkpointed idle eviction. Sharing grants no access to another session; require exact tool exclusion, separate context/credentials, correctly routed events/calls, session-local cancellation, and session-scoped checkpoint recovery. Host crashes remain shared failures. Cross-machine provisioning, placement, and leader election are outside this ADR.
+
+### D6: Tool execution transports
+
+**Selected: direct HTTP, reverse SSE plus HTTP, and bidirectional RPC.** All use the same tool contract and authorization. The SDK owns attached callback plumbing; reachable services need no reverse channel. The RPC carrier/framing is not selected by the WebSocket prototype, and no transport fallback may replay an action.
 
 ## Other alternatives considered
 
@@ -474,7 +512,7 @@ The [OpenAI Agents SDK][agents-tools] is useful prior art for familiar local fun
 
 If accepted, this ADR amends ADR 0001's external-service-only tool rule and ADR 0002's repository-internal-only extension seams. It extends the tool policy path to managed/runtime session bindings, adds encrypted credential persistence and recovery, SDK-owned callback transport, and local host supervision, and changes successful output-schema semantics. It does not authorize automatic inference, automatic action retries, host execution of supplied code, closure uploads, cross-harness state conversion, or a distributed platform scheduler.
 
-The application SDK adds a supported composition surface and lifecycle responsibility. Session bindings add persisted descriptors and credential/resource authorization. Co-packaged handlers reduce separate deployment work but share more of the application's failure domain. Runtime tools add a client availability dependency, not a requirement for users to implement a service. All provider catalogs remain optional dependencies; importing the client or using one provider must not install every harness and cloud SDK.
+The application SDK adds a supported composition surface and lifecycle responsibility. Session bindings add persisted descriptors and credential/resource authorization. Co-packaged handlers reduce separate deployment work but share more of the application's failure domain. Shared native hosts reduce process overhead but require logical session isolation and enlarge the host failure radius. Runtime tools add a client availability dependency, not a requirement for users to implement a service. All provider catalogs remain optional dependencies; importing the client or using one provider must not install every harness and cloud SDK.
 
 Before implementation is considered complete, demonstrate:
 
@@ -486,6 +524,8 @@ Before implementation is considered complete, demonstrate:
 6. Plaintext credentials are excluded from SQL/WAL, archives, public sessions, events, logs, and model input. Direct managed-tool overrides survive browser disconnection, normal server restart, and authorized cold restore using encrypted private records and independently available keys. Missing keys, tampering, revocation, rotation, and retained older backups have explicit outcomes. Overrides cannot mutate server defaults, cross bindings, or fall back to a default after authorization failure. Runtime callback registration transfers no function source or captured credentials.
 7. An ordinary session-creation tool declaration executes in the client without a user-written server; failed registration, bridge loss before/after dispatch, cancellation, duplicate/stale results, and rebinding after restore have the declared outcomes. An event observer cannot execute callbacks or submit results.
 8. Local host limits, idle eviction, Brain/native identity, private state, generation checks, abrupt parent/child death, and process-tree cleanup pass on supported PCs/VMs. A restart never resumes inference or executes queued actions automatically, and native execution tools cannot bypass the external-only boundary.
+9. Concurrent opens/restores obey `maxShared` and active-turn caps. Sessions sharing one host, both within and across tenants, have no context, credential, cache, event, callback, cancellation, or checkpoint crossover. Exercise stale/misattributed identities, session eviction/restore while peers exist, and a host crash with several active sessions; peers never continue or replay actions automatically.
+10. An optional read-only sessions provider uses an explicit binding and authorized target scope, not an expanded ordinary tool token or native host access. Same-tenant permitted reads succeed; unbound, forbidden-target, and cross-tenant reads fail, including targets on the same host. Reading performs no inference, tool action, or session mutation, and exposes no private credentials or native checkpoint files.
 
 These are future acceptance gates, not test results from this design work. Acceptance of the ADR is separate from implementing or advertising its SDKs and integrations.
 
