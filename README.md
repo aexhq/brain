@@ -17,9 +17,9 @@
 
 Brain is a single application you deploy as a service to run the agents behind your products. It's an open-source alternative to Claude Managed Agents and the OpenAI Agents SDK, running on your own infrastructure with the models you choose.
 
-Brain gives you session-oriented primitives for building agents. Your application starts sessions, streams what the agent does, and connects tools from its own services, while Brain runs the agent loop and keeps every session durable and recoverable.
+Brain gives you session-oriented primitives for building agents. Your application starts sessions, streams what the agent does, and connects tools from its own services. Brain runs the agent loop and records each session's history, so you can replay a session or recover it after a failure.
 
-- **[Sessions](https://aexhq.github.io/brain/docs/guides/sessions/)**: durable agent conversations that outlive connections and restarts.
+- **[Sessions](https://aexhq.github.io/brain/docs/guides/sessions/)**: agent conversations that outlive connections and restarts.
 - **[Events](https://aexhq.github.io/brain/docs/reference/events/)**: an ordered record of what the agent does, streamed live or replayed.
 - **[Harnesses](https://aexhq.github.io/brain/docs/adapters/harness/)**: pluggable agent loops that drive the model and manage context.
 - **[Tools](https://aexhq.github.io/brain/docs/tools/)**: capabilities served from your own services, in any language.
@@ -45,12 +45,12 @@ The `echo` tool comes from the [example tool server](examples/tools/README.md), 
 
 ## Why Brain
 
-- **Bring your own tools.** Serve tools from your own services in any language, and scale them independently of the agent.
+- **Keep tools in your own services.** Write them in any language, and scale them separately from the agent.
 - **Decide what the agent can do.** The model sees exactly the tools you enable for each session.
-- **Pick up where you left off.** Sessions keep running when clients disconnect and survive server restarts, so any client can reconnect and carry on.
+- **Reconnect at any time.** Sessions keep running when clients disconnect and survive server restarts, so any client can reconnect and continue from the last event it read.
 - **Move sessions between servers.** Checkpoints let another server recover a session after a failure or take it over in a planned handoff.
 - **Isolate every customer.** Keep each customer's sessions and tools separate, and give each client only the access it needs.
-- **Run it yourself.** Brain is open source and self-hosted, with logs, traces, and metrics for the monitoring tools you already use.
+- **Run it yourself.** Brain is open source and self-hosted, with structured logs and OpenTelemetry traces and metrics.
 
 ## Get started
 

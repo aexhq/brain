@@ -6,7 +6,7 @@
 
 ## Summary of platform templates
 
-| Platform | Path | Role | Ownership & durability model |
+| Platform | Path | Role | Storage |
 | --- | --- | --- | --- |
 | **Docker Compose** | `examples/platforms/docker/compose.json` | Brain server + `resources` tool service on a private Compose network | Named local volume (`brain-data`) for local cache; add `persistence` for external backups. |
 | **Fly.io** | `examples/platforms/fly/fly.toml`, `fly/brain.json` | Single Fly Machine (`--ha=false`, count `1`, `immediate` strategy) | Ephemeral local cache backed by S3/R2 checkpoints; explicit flush/restore handoff on replacement. |
@@ -23,7 +23,7 @@ docker compose -f examples/platforms/docker/compose.json up --build
 
 - Brain listens on `http://localhost:8080` and calls the `resources` tool service over the internal Compose network (`http://resources:8092`).
 - Enable `web_fetch` in `config.tools` when creating a session.
-- The named volume (`brain-data`, mounted as Brain's `data_dir` at `/data`) survives `docker compose down` unless you pass `-v`. A mounted local volume is not an external backup—configure `persistence` for off-host durability.
+- The named volume (`brain-data`, mounted as Brain's `data_dir` at `/data`) survives `docker compose down` unless you pass `-v`. A mounted local volume isn't an external backup. Configure `persistence` to copy session checkpoints to external storage.
 
 ## Fly.io
 

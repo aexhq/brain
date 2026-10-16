@@ -23,12 +23,12 @@ Brain authenticates every caller and stamps `tenant_id`, `session_id`, and `call
 
 ## Waiting on tools vs. returning job handles
 
-Making an HTTP handler async does not make the agent loop non-blocking: if the harness is awaiting the tool's final response, the model cannot do anything else until the tool returns. Two straightforward patterns cover long-running work:
+Making an HTTP handler async does not make the agent loop non-blocking: if the harness is awaiting the tool's final response, the model cannot do anything else until the tool returns. Two patterns cover tools that take a long time:
 
 1. **Hold the request open (HTTP or SSE):** The tool streams optional `progress` frames and finishes with a `result` frame within `timeout_seconds`. Brain stays responsive to SSE observers and `user.interrupt` calls while waiting.
 2. **Return a job handle immediately:** The tool returns a job ID right away, completing the tool call so the model can continue or call separate `status` / `cancel` tools later.
 
-Human approvals work with either pattern. The tool service performing the sensitive action must enforce that approval was granted; simply instructing the model to "ask first" is not an access control boundary.
+Human approvals work with either pattern. The tool service performing the sensitive action must enforce that approval was granted; instructing the model to "ask first" is not an access control boundary.
 
 ### No synthetic heartbeats or cache warming
 

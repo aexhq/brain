@@ -1,11 +1,11 @@
 ---
 title: Architecture
-description: How Brain runs a session, keeps it durable, and divides the work between components.
+description: How Brain runs a session, stores and recovers it, and divides the work between components.
 ---
 
 import { Database, MessagesSquare, Puzzle } from 'lucide-react';
 
-Brain sits between your application and the systems that do the work. Your application talks to Brain, Brain runs a harness for each active session, and the harness's tool calls go to services you run. This page follows one message through Brain, then explains how sessions stay durable and which component owns what.
+Brain sits between your application and the systems that do the work. Your application talks to Brain, Brain runs a harness for each active session, and the harness's tool calls go to services you run. This page follows one message through Brain, then explains how Brain stores and recovers sessions and which component owns what.
 
 ## How a message flows
 
@@ -41,7 +41,7 @@ When the turn completes, Brain records a checkpoint: the position in the session
 </Step>
 </Steps>
 
-## How sessions stay durable
+## How Brain stores and recovers sessions
 
 Each server keeps its sessions on local disk, so a running turn never waits on remote storage. External storage is optional. When you configure it, Brain copies each session's history and checkpoints there in the background, and any server with access to that storage can load the session.
 
@@ -76,7 +76,7 @@ Brain separates three kinds of errors, so a failure in one layer doesn't look li
 - **Fail explicitly:** Tool errors become tool results, and Brain errors stop the affected turn. Missing or damaged state returns an error instead of silently starting a fresh session.
 - **Bound every queue:** Message queues, event streams, and storage retries all have limits. At capacity, Brain turns away new work instead of slowing down running turns, and health checks and stream keepalives never call the model.
 
-## Under the hood
+## Storage details
 
 You don't need these details to use Brain. They show how Brain keeps the guarantees above.
 

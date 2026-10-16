@@ -11,8 +11,8 @@ Brain is a single application you deploy as a service to run the agents behind y
 | --- | --- | --- |
 | **Model API** | Direct requests to a model provider. You write the agent loop, tool dispatch, and conversation storage. | Single completions, or full control over every model call. |
 | **Agent library** | An agent loop that runs inside your application process, such as the OpenAI Agents SDK. | Agents that one process can run from start to finish. |
-| **Managed agent service** | A hosted agent loop and session service that runs on the provider's infrastructure, such as Claude Managed Agents. | Long-running tasks and asynchronous work, without operating your own infrastructure. |
-| **Brain** | An open-source agent server you deploy yourself. It runs sessions for your applications: the agent loop, the event history, tool calls, and recovery. | Long-running sessions for many customers, with tools in your own services and state on your own infrastructure. |
+| **Managed agent service** | A hosted agent loop and session service that runs on the provider's infrastructure, such as Claude Managed Agents. | Agent tasks that run in the background, without operating your own infrastructure. |
+| **Brain** | An open-source agent server you deploy yourself. It runs sessions for your applications: the agent loop, the event history, tool calls, and recovery. | Agents that serve many customers and outlast any one process, with tools in your own services and state on your own infrastructure. |
 
 Brain gives you session-oriented primitives for building agents. Your backend creates a session, sends messages, and streams events. Brain runs the harness (the agent loop that calls the model and manages context), records every event, and sends tool calls to services you run. Sessions outlive client connections and server restarts, so you can reconnect to a session, interrupt it, and resume it later.
 
@@ -27,9 +27,9 @@ Brain gives you session-oriented primitives for building agents. Your backend cr
 
 | Concept | Description |
 | --- | --- |
-| **Session** | A durable agent conversation. You choose its harness, model, instructions, and tools, then exchange messages and events with it over time. |
+| **Session** | An agent conversation that outlives client connections and server restarts. You choose its harness, model, instructions, and tools, then exchange messages and events with it over time. |
 | **Turn** | The work Brain does for one user message: model calls and tool calls until the harness finishes. A session runs one turn at a time and queues further messages in order. |
-| **Event** | A typed record in a session's stream, such as a message, a tool call, or a status change. Follow events live, or replay the history from where you left off. |
+| **Event** | A typed record in a session's stream, such as a message, a tool call, or a status change. Follow events live, or replay the history from the last event you read. |
 | **Harness** | The agent loop that calls the model, manages context, and decides when a turn is done. Brain includes the Pi harness, and you can [add your own](/docs/adapters/harness). |
 | **Tool** | A capability served by your own service or a remote MCP server. Brain calls it when the model asks, and each session uses exactly the tools you enable for it. |
 | **Tenant** | The isolation boundary for sessions, tokens, and tools. |
@@ -72,7 +72,7 @@ Stop a running turn, resume an interrupted session from its last completed turn,
 
 ## When to use Brain
 
-- **Long-running conversations:** Sessions outlive client connections and server restarts. Clients reconnect and continue from the last event they processed.
+- **Background agents:** Sessions outlive client connections and server restarts. Clients reconnect and continue from the last event they processed.
 - **Multi-tenant products:** Each tenant's sessions, tokens, and tools stay separate. Tools receive the session's identity from Brain rather than from the model, so they can authorize every call.
 - **Tools in other systems:** Sandboxes, storage, and human approvals run as services that you deploy and scale on their own, in any language.
 - **State on your infrastructure:** You run the open-source server. Sessions stay on your disks and, if you configure it, in your own object storage.
@@ -90,7 +90,7 @@ With Brain, your application stays in charge of what each agent is. You choose e
 - **Pi harness:** Brain includes the Pi harness, an agent loop that works with models from the providers you configure. Every tool is a service you control, and the model sees exactly the tools you enable for its session, so you decide everything the agent can do.
 - **[Tool connections](/docs/tools):** Answer tool calls over HTTP, stream progress with server-sent events, or connect tools from a remote [MCP server](/docs/tools/mcp).
 - **Tool services:** A [sandbox service](/docs/tools/sandboxes) for Modal, E2B, and Daytona; a [storage and web service](/docs/tools/resources) for S3 or R2 storage, Brave or Tavily search, and public web fetch; and an [example tool server](/docs/tools/local-tools) with an operator approval flow.
-- **[Durable storage](/docs/guides/persistence):** Sessions live on local disk and can sync checkpoints to a directory, Amazon S3, Cloudflare R2, or Google Cloud Storage. An optional PostgreSQL index lets servers find each other's sessions.
+- **[Session storage](/docs/guides/persistence):** Sessions live on local disk and can sync checkpoints to a directory, Amazon S3, Cloudflare R2, or Google Cloud Storage. An optional PostgreSQL index lets servers find each other's sessions.
 - **Clients:** A [TypeScript SDK](/docs/sdks/typescript) on npm, a [Python SDK](/docs/sdks/python) on PyPI, and an [OpenAPI document](/openapi.json).
 - **[Operations](/docs/guides/operations):** Health checks, structured logs, OpenTelemetry traces and metrics, and a published container image.
 

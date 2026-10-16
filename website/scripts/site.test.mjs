@@ -86,11 +86,33 @@ test('static search and agent-readable exports cover the published guides and AP
   assert.ok(full.includes('type Factory interface'));
 });
 
+async function overviewMatches(pattern) {
+  const matches = [];
+  for (const file of ['../README.md', 'content/docs/index.mdx', 'content/docs/architecture.mdx']) {
+    for (const [phrase] of (await readFile(path.join(site, file), 'utf8')).matchAll(pattern)) matches.push(`${file}: "${phrase}"`);
+  }
+  return matches;
+}
+
 test('overview pages leave temporary gaps to the roadmap', async () => {
   const gap = /\b(?:fixed (?:at|on|upon|when)(?: you)? creat\w*|frozen|not supported|(?:isn|aren)['’]t supported|(?:doesn|don)['’]t support|not yet|(?:isn|aren)['’]t yet|for now|currently)\b/gi;
-  const failures = [];
-  for (const file of ['../README.md', 'content/docs/index.mdx', 'content/docs/architecture.mdx']) {
-    for (const [phrase] of (await readFile(path.join(site, file), 'utf8')).matchAll(gap)) failures.push(`${file}: "${phrase}"`);
-  }
-  assert.deepEqual(failures, [], 'Describe what Brain does here; planned work belongs in docs/roadmap.md (see docs/writing.md)');
+  assert.deepEqual(await overviewMatches(gap), [], 'Describe what Brain does here; planned work belongs in docs/roadmap.md (see docs/writing.md)');
+});
+
+test('overview pages name behavior instead of generic product words', async () => {
+  const words = [
+    'durab(?:le|ility)', 'stateful', 'long[- ]running', 'resilien(?:t|ce)', 'fault[- ]toleran(?:t|ce)', 'recoverable', 'reliab[a-z]*', 'scalab[a-z]*', 'at scale',
+    'orchestrat[a-z]*', 'agentic', 'real[- ]time', '(?:production|enterprise)[- ](?:ready|grade)', 'battle[- ]tested',
+    'powerful', 'seamless(?:ly)?', 'robust', 'effortless(?:ly)?', 'blazing', 'cutting[- ]edge', 'state[- ]of[- ]the[- ]art', 'next[- ]generation',
+    '(?:best[- ]in|world|first)[- ]class', 'game[- ]changing', 'revolutionary', 'magic(?:al)?',
+    'unlock[a-z]*', 'empower[a-z]*', 'supercharg[a-z]*', 'unleash[a-z]*', 'streamlin[a-z]*', 'leverag[a-z]*', 'utiliz[a-z]*',
+    'simply', 'simple', 'just', 'easy', 'easily', 'obviously', 'of course',
+    'delv[a-z]*', 'crucial', 'pivotal', 'intricate', 'meticulous(?:ly)?', 'tapestry', 'testament', 'landscape', 'realm',
+    'showcas[a-z]*', 'boasts', 'vibrant', 'foster[a-z]*', 'garner[a-z]*', 'enhanc[a-z]*', 'comprehensive', 'additionally', 'moreover', 'furthermore',
+    'please note', 'note that', 'worth noting', 'in order to', 'basically',
+    'out of the box', 'under the hood', 'pick up where', 'bring your own', 'batteries included', 'plug[- ]and[- ]play', 'turnkey',
+    'best of both worlds', 'heavy lifting', 'tools you already use',
+  ];
+  const generic = new RegExp(`\\b(?:${words.join('|')})\\b`, 'gi');
+  assert.deepEqual(await overviewMatches(generic), [], 'Name the behavior instead of a generic quality (see the Words section of docs/writing.md)');
 });
