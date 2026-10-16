@@ -3,19 +3,13 @@
 JavaScript/TypeScript applications install `@aexhq/brain`; Python applications
 install `aex-brain` and import `brain`. Both are dependency-free at runtime.
 
-The first Python distribution is available as a tested GitHub release wheel.
-PyPI rejected the first upload with `invalid-publisher`; account-side setup below
-is still required before the PyPI install command works. Install the released
-wheel without building anything locally:
-
-```sh
-python -m pip install https://github.com/aexhq/brain/releases/download/release/sha-67afdc3d6403d101af22d3bce3dd8c6c79cb4557/aex_brain-1.0.0-py3-none-any.whl
-```
-
 ```sh
 npm install --save-exact @aexhq/brain@1.0.0
 python -m pip install aex-brain==1.0.0
 ```
+
+Both registries publish the tested 1.0.0 artifacts. The same npm archive, Python
+wheel, and source distribution are also available as [GitHub release downloads](https://github.com/aexhq/brain/releases/tag/release/sha-d93ddf4e0e3d4e79bcd097cb56c629fe2388eddb).
 
 Version 1.0.0 is the client for the current Go session server. The predecessor's
 npm 0.x releases expose a different API and cannot be used with it. There is no

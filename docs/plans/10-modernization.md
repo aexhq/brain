@@ -1,6 +1,6 @@
 # 10: Published clients and subsystem boundaries
 
-Status: merged in PR #269; main CI, images, and docs deployed. npm 1.0.0 accepted and publicly available; tested Python wheel published on GitHub Releases. PyPI is blocked on account-side trusted-publisher setup. Authorized 2026-10-16.
+Status: implemented and deployed. Main CI, images, and docs passed; SDK 1.0.0 is published on npm and PyPI, with tested archives also available on GitHub Releases. Authorized 2026-10-16.
 
 ## Findings and decisions
 
@@ -78,8 +78,8 @@ immutable version collisions. Linux/race/CodeQL remain required in PR CI.
 The existing `npm-production` environment only accepts `release/sha-*` tags and
 requires its configured reviewer. CI therefore dispatches SDK publication at a
 commit tag after images and docs succeed. This preserves that protection and
-keeps provenance tied to the verified source even if main advances. The first
-PyPI upload needs account-side pending-publisher setup; it is not counted as passed.
+keeps provenance tied to the verified source even if main advances. The PyPI
+publisher is configured for `aexhq/brain`, `npm-publish.yml`, environment `pypi`.
 
 ## Rollout evidence
 
@@ -91,6 +91,8 @@ contains the exact tested npm, wheel, and sdist archives plus their source manif
 
 The first npm upload succeeded but the immediate availability check saw a 404
 while the registry processed it. Read-only verification now polls with a bounded
-attempt count, without republishing. PyPI explicitly returned `invalid-publisher`:
-no matching publisher exists for the repository/workflow/environment. The Python
-install guide therefore uses the published wheel URL and labels PyPI as pending.
+attempt count, without republishing. PyPI initially returned `invalid-publisher`.
+After the account owner authorized its pending publisher, [release run 38861459019](https://github.com/aexhq/brain/actions/runs/38861459019)
+passed every job for commit `d93ddf4e0e3d4e79bcd097cb56c629fe2388eddb`, including
+public artifact comparisons and fresh installs from npm and PyPI. The Python
+install guide now uses `python -m pip install aex-brain==1.0.0`.
