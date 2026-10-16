@@ -22,6 +22,14 @@ An embedding replacement for `SessionRestart` or a pinned one-line host patch is
 
 Sources: [SDK](https://opencode.ai/v2/docs/build/sdk/), [session design](https://github.com/anomalyco/opencode/blob/dev/specs/v2/session.md), and published 2.0.30 code at `sdk/dist/internal/host` and `core/dist/session/execution/restart` (bundled filenames can change).
 
+## Local architecture spikes, 2026-10-16
+
+[Startup, residency, transport, and concurrency measurements](application-sdk-spikes.md) exercised Pi 1.2.0, Codex 0.163.0, and OpenCode 2.0.30 against deterministic local model/tool fixtures. They compare dedicated and shared hosts, not completed Brain adapters or live-provider capacity.
+
+The Codex exact-tool gate remained: after disabling web search and the recorded execution/delegation features, the model request still contained `request_user_input`.
+
+The OpenCode fixture removed registered tools through `ctx.tool.transform()` and added only `echo` with `options.codemode: false`. Its model request nevertheless advertised a generated `execute` tool. In the published core, that code-mode tool accepts JavaScript and provides HTTP `fetch`. A per-tool code-mode setting does not establish that the generated code-execution capability is disabled. No code-mode invocation was performed; excluding it remains a qualification gate alongside passive startup and native SQLite recovery.
+
 ## Current supported subset
 
 Pi remains the supported runner. Third-party runners can implement the existing process contract, but Codex/OpenCode are not advertised as equivalent built-ins until the same passive-recovery, exact-tool, compaction, and append-efficiency fixtures pass. This keeps the session API unchanged and allows the remaining adapters to land independently of storage, MCP, tools, or deployment.

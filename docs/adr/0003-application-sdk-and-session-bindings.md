@@ -1,6 +1,6 @@
 # ADR 0003: Application SDK, session bindings, and harness integration
 
-- **Status:** Proposed. Go application SDK, managed and client-runtime tools, SDK-owned communication bridges, local harness supervision, and external-only arbitrary code execution selected. Server-default credentials with optional session overrides selected; override custody remains open. See [Decisions to finalize](#decisions-to-finalize).
+- **Status:** Proposed. Go application SDK, managed and client-runtime tools, SDK-owned communication bridges, local harness supervision, and external-only arbitrary code execution selected. Server-default credentials and authorized session overrides must survive normal server restarts; encrypted credential storage in the session SQL database is selected, with external vault integration available through application providers. See [Decisions to finalize](#decisions-to-finalize).
 - **Date:** 2026-10-16
 - **Extends, if accepted:** [ADR 0001](0001-local-first-session-server.md) and [ADR 0002](0002-subsystem-contracts-and-sdk-delivery.md).
 - **Scope:** Architecture and SDK semantics, not implementation, package names, or a final wire schema.
@@ -29,7 +29,7 @@ The code at `415b7c1`, rather than older plans, establishes the starting point:
 | Harness residency | [`ProcessFactory`](../../internal/harness/process.go) starts child runners; [`Engine`](../../internal/session/engine.go) loads them lazily, limits residency, evicts idle runners, and restores native state. | Extend these responsibilities into an explicit local host-supervision contract. Process-tree cleanup and multi-harness recovery need qualification; a PID and a working directory alone do not establish isolation. |
 | Provider integrations | [`internal/toolservice`](../../internal/toolservice/service.go) and [`services/sandbox`](../../services/sandbox/README.md) contain storage, web, and sandbox services. | Reuse their execution and isolation rules when packaging providers. Do not replace tested provider behavior with new wrappers solely for naming consistency. |
 
-The [registry policy tests](../../internal/tools/registry_test.go), [MCP transport tests](../../internal/tools/mcp_test.go), and [Pi restore tests](../../internal/session/pi_restore_test.go) are existing behavioral evidence. No new harness or live-provider qualification was performed for this ADR. Integration maturity remains on the [roadmap](../roadmap.md).
+The [registry policy tests](../../internal/tools/registry_test.go), [MCP transport tests](../../internal/tools/mcp_test.go), and [Pi restore tests](../../internal/session/pi_restore_test.go) are existing behavioral evidence. The [local architecture spikes](../research/application-sdk-spikes.md) add startup, residency, and synthetic-turn measurements, not adapter qualification or live-provider results. Integration maturity remains on the [roadmap](../roadmap.md).
 
 ## Application and client SDKs have different authority
 
@@ -121,7 +121,7 @@ session = brain.sessions.create(
 
 `CodexRef` selects an installed adapter; it does not run Codex in the caller. `SupabaseBinding` configures an installed provider; importing it does not install server code. A `MyLambda(...)` client helper can produce an authorized remote reference, but importing a function from a local source file does not deploy it to Lambda.
 
-Omitting `credential` selects the tool's authorized server default. `SessionCredential(...)` illustrates an optional private override, not a model argument. Whether that helper accepts a secret value, a reference, or both, and how long a supplied value remains available, is part of the open custody decision.
+Omitting `credential` selects the tool's authorized server default. `SessionCredential(...)` illustrates an optional private override, not a model argument. The helper may accept a direct value or an authorized reference. A direct managed-tool override is encrypted and persisted before session creation succeeds; closing the browser or restarting Brain does not require the user to supply it again.
 
 The SDK accepts `localLookup` as an ordinary tool declaration. It retains `run` and its captured objects in the client, establishes the execution binding, and sends only the descriptor and routing metadata to Brain. The user does not write an HTTP handler, operate a separate worker service, or upload the function.
 
@@ -141,7 +141,7 @@ Keep three concepts distinct:
 | --- | --- | --- |
 | Tool definition | Model-facing name, description, input schema, optional output schema, and a handler in its declaring environment | Application registration for managed tools; client registration for runtime tools |
 | Tool provider | Factory, binding-parameter schema, credential requirements, resource policy, and discovery/execution lifecycle | Groups tools and composes transport building blocks; is not a separate model-visible privilege |
-| Session binding | Managed/runtime source, execution target, alias, selected operations, non-secret configuration and credential-selection metadata, and resolved descriptors | Descriptors and logical identity persist; live connections, functions, process handles, and secret values do not |
+| Session binding | Managed/runtime source, execution target, alias, selected operations, non-secret configuration and credential-selection metadata, and resolved descriptors | Descriptors and logical identity persist; private credential records persist separately in encrypted form. Live connections, functions, process handles, and plaintext secrets are not session configuration |
 
 A single function is a provider with one tool and no configurable resource. S3, Supabase, a sandbox, and an MCP server can each supply several tools. The model sees the selected operations, not a generic privileged `runAnything` method.
 
@@ -198,11 +198,15 @@ An in-process managed handler is trusted application code, not permission to eva
 
 Provider SDK retry defaults must not silently reintroduce action retries. Reopening a connection or restarting a process for a future call is different from replaying the previous call. Restoring history and reconnecting event observers never execute tools.
 
+If a runtime callback's browser/backend process or an external tool service disappears, return a tool failure to the harness. Brain does not keep that execution environment alive or reconstruct its function. The model may request another call in response; that is a new logical call, not an automatic transport retry. An unknown-outcome error must state that an action may already have happened, because another call can duplicate its effects. Configurable automatic retry policies are deferred unless a demonstrated use case requires a separate design for retry conditions and idempotency.
+
 ### SDK-owned runtime bridge
 
 The developer supplies the normal tool declaration. The SDK owns the callback registry, authenticated connection, request/result correlation, progress, and cancellation plumbing. Brain dispatches through the same executor boundary as for managed tools; it does not load, inspect, or evaluate the client implementation.
 
 Use the shared transport primitives rather than a separate runtime-tool policy system. A reachable tool host can serve ordinary HTTP requests. For clients behind NAT or without an HTTP listener, an outbound SSE command stream plus HTTP result/progress posts, or a bidirectional RPC connection, can provide the bridge. SSE alone is one-way. The exact first transport is a binding decision, not a requirement to expose networking in tool declarations or implement every transport at once.
+
+The [transport spikes](../research/application-sdk-spikes.md#tool-transport-experiment) support WebSocket/RPC as the initial candidate for small reverse callbacks, while direct HTTP remains the fit for deployed services. They also found a larger-payload crossover and do not measure the future Go server or actual browsers. Select transport by deployment and required interaction; do not force a Lambda endpoint to keep a reverse connection open or infer one universal performance winner.
 
 The execution channel is distinct from the replayable session event stream. Replaying a `tool.call` event never invokes a callback. Reading a session grants no right to execute its tools or submit results. Each execution registration is scoped to its authenticated tenant, session, and tool binding; only the current authorized connection can answer its outstanding calls. Queues, outstanding calls, and payloads are bounded.
 
@@ -211,6 +215,24 @@ At session creation, the SDK establishes a usable route without executing the fu
 An unavailable bridge before dispatch produces a tool-unavailable error with no action dispatched. Loss after dispatch without a definitive result produces an unknown-outcome tool error. Reconnect must not re-execute the call; late, duplicate, or superseded results cannot complete another call. The same live SDK can rebind its retained handlers after reconnect. A restarted client must redeclare and rebind them; neither Brain nor a checkpoint reconstructs its closure.
 
 SDK shutdown and session closure release the relevant registrations. Ordinary observers may disconnect without affecting execution, but the process serving runtime callbacks must remain available for those tools. A bridge outage does not delete session history or silently remove tools from the model's catalog. The same limits and errors apply whether a transport primitive was used by a managed or runtime tool.
+
+### Browser, backend, and serverless lifetimes
+
+Choose an execution binding from the tool's deployment and lifetime, not from the language of the session-creating SDK.
+
+| Use case | Execution binding | What happens when the initiating request or browser closes |
+| --- | --- | --- |
+| Web app using managed tools or deployed services | Serializable provider references; Brain dispatches independently of the browser | Work can continue using persisted credentials. The browser is an observer, not an executor. |
+| Browser-local function using the DOM, a selected file, or other local state | SDK-owned outbound execution connection | The function is unavailable when its browser execution environment is gone. Return a tool error; do not migrate the closure. |
+| Function registered by a long-lived backend | SDK-owned outbound connection, or an explicitly exposed HTTP service | An individual web request can finish while the backend serves tools. If the backend process stops, its callbacks become unavailable. |
+| Deployed Lambda used as a tool | Authorized HTTP or Lambda invocation adapter targeting the deployed function | Brain invokes the function on demand. Its availability does not depend on the browser or the process that created the session. |
+| Ordinary Lambda invocation used as a session client | Only callbacks served during that invocation's lifetime | Returning from the Lambda invocation does not leave a callback server running. Use a deployed reference for later work. |
+
+A deployed service reference contains its descriptor and authorized routing/configuration, not executable client code. The application installs the transport adapter and endpoint policy. A helper such as `MyLambda(...)` can select an already-deployed function through that adapter; it does not upload a closure or require the browser to forward every invocation.
+
+Browser-facing connections need origin controls and scoped authentication; do not place an application-wide management token in a browser bundle. The published browser-client gap remains on the roadmap. A backend proxy and a future browser execution bridge have different authentication and lifetime responsibilities.
+
+For a Lambda tool, prefer a request/response invocation for an ordinary call/result contract. An asynchronous acceptance response is not the function's completed result. A deliberate job-style tool can return a handle, but that is a provider contract rather than an implicit Brain worker. Lambda's asynchronous invocation and event sources can retry independently; account for those semantics rather than assuming Brain's no-retry rule controls the platform. See [Lambda lifecycle][lambda-lifecycle] and [invocation retries][lambda-retries]. No cloud timing or concurrency guarantee follows from a loopback transport spike.
 
 ### Input, output, and progress
 
@@ -287,9 +309,9 @@ Require a baseline: harness-owned inference and context; exact Brain-bound tool 
 | --- | --- | --- |
 | Pi | [Embedded SDK][pi-sdk], custom tool callbacks, native `SessionManager` | Existing reference runner. Native session state, not reconstructed event text, owns the next prompt. |
 | Codex | [App Server][codex-app-server], dynamic tools and callbacks | The recorded 0.163.0 probe still exposed `request_user_input` after disabling execution tools. An upstream control, narrow patch, or explicit external question-tool mapping must be qualified. Merely adding dynamic tools or a read-only sandbox does not prove exclusion. |
-| OpenCode | [Embedded SDK][opencode-sdk] and [tool transforms][opencode-plugins] | The recorded 2.0.30 host resumed suspended sessions at startup; mutable SQLite state also needs a coherent incremental checkpoint adapter. Documented embedding alone does not satisfy passive restore. |
+| OpenCode | [Embedded SDK][opencode-sdk] and [tool transforms][opencode-plugins] | The recorded 2.0.30 host resumed suspended sessions at startup; mutable SQLite state needs a coherent incremental checkpoint adapter. The later spike still advertised generated code-mode `execute` after filtering registered tools. Tool transforms alone do not prove exact tool exclusion. |
 
-These probe findings are version-specific evidence from 2026-10-15, not claims that every later release has the same behavior. Reading newer documentation does not replace rerunning qualification against a selected, pinned release.
+These probe findings are version-specific evidence from 2026-10-15 and 2026-10-16, not claims that every later release has the same behavior. Reading newer documentation does not replace rerunning qualification against a selected, pinned release.
 
 Wrapping Codex as a tool inside Pi is a valid nested-agent feature, but it does not implement a Codex session harness. It introduces a second agent loop and separate context. The [Agents SDK's Codex tool][agents-tools] illustrates this distinction.
 
@@ -331,6 +353,8 @@ Separate limits for retained session metadata, resident native hosts, active tur
 
 A multi-session host pool can reduce startup cost and memory, but increases the failure radius and complicates credential, cancellation, event, and checkpoint isolation, especially with native databases. Defer it until measured costs justify it and those boundaries pass conformance; do not start with a general pool scheduler. Keep capacity available for interrupts and tool completions when admission is saturated.
 
+The [native host spikes](../research/application-sdk-spikes.md#native-harness-experiment) now justify targeted sharing work rather than a uniform assumption: shared Pi saved memory with similar synthetic throughput, dedicated Codex processes were much smaller, and eight shared OpenCode sessions lost throughput. Dedicated hosts remain the isolation/recovery reference until a bounded, same-trust-domain sharing profile is qualified. Startup, residency, and active-turn budgets must remain separate even if a host contains several sessions.
+
 ### No arbitrary execution on Brain or harness hosts
 
 Trust is limited to application-installed handlers and pinned harness/adapter code. The model and remote clients cannot choose host executables, install host packages/plugins, or submit programs/container images for local execution. Validated parameters for an external sandbox remain permitted. Disable native shell/file tools, local container APIs, code-interpreter/code-mode paths that execute generated programs, and ambient extensions. Normal native state reads/writes and model requests remain part of the trusted harness implementation.
@@ -368,19 +392,33 @@ Restoring state is separate from executing the next turn. Native startup recover
 
 ## Credentials and untrusted configuration
 
-For managed tools, supply default credentials when constructing the tool/provider in the Brain application, and allow an authorized session to supply its own credentials for that binding. A default can be a credential value or an application resolver. Reusing the default and supplying an override use the same installed tool implementation; neither requires a new agent loop or tool deployment.
+For managed tools, supply default credentials when constructing the tool/provider in the Brain application, and allow an authorized session to supply its own credentials for that binding. Both defaults and accepted overrides must survive an ordinary server restart. Defaults can use encrypted application credential records or stable deployment/vault configuration. Session bindings reference a default rather than duplicating its secret into every session. Reusing the default and supplying an override use the same installed tool implementation.
+
+This guarantee covers explicit credential bindings. Application-owned handlers remain responsible for reconstructing private state they keep outside those bindings; Brain cannot discover arbitrary credentials captured inside their implementations.
 
 Credentials captured by a runtime function remain in the client with that function. Its descriptor and bridge registration do not serialize captured values. This differs from explicitly supplying an override to a managed tool that executes in Brain.
 
 An override affects only its binding and never mutates the provider's shared default. Application policy authorizes use of both defaults and overrides. An invalid or revoked override fails rather than falling back to a possibly more privileged server credential. Tool credentials go only to the execution component that needs them, not the model or harness.
 
-The remaining choice is custody, not whether overrides are useful. The SDK may accept a convenient credential value while separating it from the persisted session configuration. Direct values need an authenticated, protected ingress path and an explicit lifetime. A reference can resolve through the host environment, the application's existing secret store, or an external credential service. Authorize references against the authenticated tenant and permitted provider/resource; an opaque name alone is not authorization.
+The selected default for direct per-session overrides is an encrypted private record in the authoritative session SQL database. In the accepted local-first architecture, that database is SQLite; the optional PostgreSQL discovery index does not become the credential authority. The SDK accepts the credential through a protected, authenticated ingress path. Public session configuration stores only credential-selection metadata and an opaque reference, not the value or ciphertext.
 
-Recommend references for persisted bindings, without requiring that every user-facing SDK call expose a reference-registration step. A helper that accepts a raw key still needs an explicit storage or transient-use policy underneath it. Transient secrets disappear on restart and must be resupplied before calls can execute. Persistent custody requires encryption/key ownership, rotation, deletion, and recovery rules. Brain-managed secret storage has not been selected.
+Persist the session, binding, and encrypted override coherently before acknowledging creation. Encryption or persistence failure rejects admission; it must not create a session that can execute only while a browser retains a key. Browser disconnection, native host eviction, and harness restart do not delete the credential. Session-retention and explicit credential-revocation policies govern its lifetime instead.
 
-An application-provided resolver does not require Brain to become a vault, identity provider, or OAuth control plane. Rotation changes the resolved secret without expanding the authorized binding; revocation affects subsequent dispatch.
+Encrypt credential payloads before writing them to SQL, including its WAL, rather than placing plaintext in the serialized public session object. Use a standard authenticated-encryption implementation, fresh nonces, a key identifier, and authenticated ownership metadata tied to the tenant and binding; session overrides also bind to their owning session. This addresses database/backup disclosure and copying ciphertext into a different authorized binding. It does not protect against a compromised running Brain process or a malicious trusted handler.
 
-Credentials must stay out of descriptors, model arguments, session events, checkpoints, and diagnostics. This prevents the framework from serializing credentials; it cannot make a trusted tool safe if the tool itself deliberately returns a secret. Provider code still owns what it emits.
+The application supplies a stable key provider independently of the database and session archive, such as deployment-managed key material or a KMS-backed provider. Never generate a replacement key at every startup, store the decrypting key beside its ciphertext in the same archive, or fall back to plaintext. Required key configuration is a startup requirement. Key loss, failed authentication of ciphertext, and unavailable credential storage must have explicit failure paths, not a fallback to a different credential.
+
+Keep the error layers: core SQL/decryption failures stop the affected execution as Brain errors; credential revocation and external tool/vault denials or outages become tool failures when resolving a call. Failure to establish the required credential storage during startup stops startup. None of these paths dispatches an action using a different credential.
+
+An external credential provider can resolve authorized references from a vault instead of storing those values in Brain's SQL database. Supabase Vault is one option: it stores authenticated encrypted secrets in PostgreSQL and exposes decryption through a privileged view. Its database permissions and bootstrap credentials remain the provider's responsibility; it is not automatically available because a Supabase data tool is installed. See [Supabase Vault][supabase-vault]. Persisted references must be authorized against the tenant and resource, not trusted merely because they are opaque.
+
+Cold restore must recover the required credential material as well as the native context. A checkpoint containing a directly supplied override needs a private, authenticated encrypted credential record, with the corresponding key available independently on the restoring host. External references need their configured vault/resolver. Application-wide defaults remain application configuration, not exported secrets in every user's session archive. The unsynced-tail allowance still applies; a committed checkpoint must not describe a usable override while omitting the record required to recover it.
+
+Rotation, revocation, deletion, and backup retention are part of the storage contract. Restoring an older session checkpoint must not overwrite newer credential or revocation state in an existing store. Deleting a live SQL row does not erase encrypted copies in retained archives. If old backups must be unable to use a revoked credential after a cold restore, upstream credential revocation or an independently maintained key/authorization revocation mechanism is required. Do not promise immediate erasure from immutable backups. Key-provider integration and these lifecycle procedures need qualification before shipping.
+
+Plaintext credentials must stay out of descriptors, model arguments, session events, archives, and diagnostics. Ciphertext belongs only in private credential storage and authorized recovery material, not public read responses. This prevents framework serialization of secrets; it cannot make a trusted tool safe if the tool itself deliberately returns a secret. Provider code still owns what it emits.
+
+Credential persistence and execution continuation are separate decisions. Closing an observing browser does not interrupt a healthy Brain execution that uses managed or deployed tools. Persisting a key does not keep a browser callback alive or authorize automatic continuation after a Brain crash; passive recovery remains the selected policy.
 
 Per-session URLs are also authority, not harmless configuration. Allow them only through a registered provider's endpoint policy, with credential audience binding, redirect rules, and network restrictions appropriate to that provider. Otherwise a session creator could cause server-side requests to internal services or send credentials to a different host. These checks address new reachable failures introduced by client-supplied bindings.
 
@@ -388,7 +426,7 @@ For Supabase in particular, a secret/service-role key bypasses row-level securit
 
 ## Decisions to finalize
 
-These are product choices, not implementation details to leave to an adapter author. The discussion selected D1, D2, D4, local fleet scope in D5, and the default/override model in D3. Credential custody and the detailed transport binding remain design work; the overall ADR remains Proposed.
+These are product choices, not implementation details to leave to an adapter author. The discussion selected D1, D2, D3's encrypted persistent custody, D4, and local fleet scope in D5. The first reverse-bridge transport and the host-sharing baseline still need confirmation; key-provider and recovery details require qualification. The overall ADR remains Proposed.
 
 ### D1: Application SDK runtime and language
 
@@ -413,7 +451,7 @@ The bridge is selected, not an optional separately operated worker product. Its 
 
 ### D3: Credential custody
 
-**Selected: server-default managed-tool credentials, with optional authorized session overrides.** How overrides are supplied and retained remains open. References to application-managed credentials, explicitly transient client-supplied secrets, and Brain-managed persistent connections are different custody options, not competing default/override models. Recommend references for persisted state; choose Brain-managed custody only if built-in credential onboarding is part of the product. Runtime functions retain their captured credentials on the client.
+**Selected: server-default managed-tool credentials and authorized session overrides that survive normal server restarts.** Persist direct overrides as authenticated encrypted private records in the session SQL database; allow application-managed external vault references as an alternative. Reject memory-only custody as the default user experience. Keep encryption keys independent of session storage and define encrypted checkpoint recovery, rotation, revocation, and retention. This adds credential storage responsibility, not an identity provider or OAuth onboarding product. Runtime functions still retain their captured credentials in their own execution environment.
 
 ### D4: Harness tool ownership
 
@@ -434,7 +472,7 @@ The [OpenAI Agents SDK][agents-tools] is useful prior art for familiar local fun
 
 ## Consequences and acceptance criteria
 
-If accepted, this ADR amends ADR 0001's external-service-only tool rule and ADR 0002's repository-internal-only extension seams. It extends the tool policy path to managed/runtime session bindings, adds SDK-owned callback transport and local host supervision, and changes successful output-schema semantics. It does not authorize automatic inference, automatic action retries, host execution of supplied code, closure uploads, cross-harness state conversion, or a distributed platform scheduler.
+If accepted, this ADR amends ADR 0001's external-service-only tool rule and ADR 0002's repository-internal-only extension seams. It extends the tool policy path to managed/runtime session bindings, adds encrypted credential persistence and recovery, SDK-owned callback transport, and local host supervision, and changes successful output-schema semantics. It does not authorize automatic inference, automatic action retries, host execution of supplied code, closure uploads, cross-harness state conversion, or a distributed platform scheduler.
 
 The application SDK adds a supported composition surface and lifecycle responsibility. Session bindings add persisted descriptors and credential/resource authorization. Co-packaged handlers reduce separate deployment work but share more of the application's failure domain. Runtime tools add a client availability dependency, not a requirement for users to implement a service. All provider catalogs remain optional dependencies; importing the client or using one provider must not install every harness and cloud SDK.
 
@@ -445,7 +483,7 @@ Before implementation is considered complete, demonstrate:
 3. Managed functions, client-runtime functions, and HTTP/SSE/RPC/MCP adapters pass the same authorization, input/output, cancellation, progress, and unknown-outcome cases. Provider SDKs and bridge reconnection do not replay actions.
 4. MCP catalog changes, unavailable selected tools, name collisions, credential revocation, disallowed endpoints, and stdio process loss have explicit outcomes without silent tool-set changes.
 5. Every advertised harness exposes the exact bound tools and preserves the next model request after compaction and cold restore, without startup model/tool calls or whole-history checkpoint rewrites.
-6. Credentials are excluded from persisted sessions, archives, events, logs, and model input. Per-session overrides cannot mutate server defaults, cross bindings, or fall back to a default after authorization failure. Runtime callback registration transfers no function source or captured credentials.
+6. Plaintext credentials are excluded from SQL/WAL, archives, public sessions, events, logs, and model input. Direct managed-tool overrides survive browser disconnection, normal server restart, and authorized cold restore using encrypted private records and independently available keys. Missing keys, tampering, revocation, rotation, and retained older backups have explicit outcomes. Overrides cannot mutate server defaults, cross bindings, or fall back to a default after authorization failure. Runtime callback registration transfers no function source or captured credentials.
 7. An ordinary session-creation tool declaration executes in the client without a user-written server; failed registration, bridge loss before/after dispatch, cancellation, duplicate/stale results, and rebinding after restore have the declared outcomes. An event observer cannot execute callbacks or submit results.
 8. Local host limits, idle eviction, Brain/native identity, private state, generation checks, abrupt parent/child death, and process-tree cleanup pass on supported PCs/VMs. A restart never resumes inference or executes queued actions automatically, and native execution tools cannot bypass the external-only boundary.
 
@@ -464,6 +502,8 @@ Primary documentation reviewed on 2026-10-16; moving upstream documentation esta
 | [MCP authorization][mcp-auth] and [security guidance][mcp-security] | Resource-scoped credentials, token audience, proxy and endpoint trust |
 | [OpenAI Agents SDK tools][agents-tools] | Local function versus hosted/MCP execution; nested Codex tool versus session harness |
 | [Supabase API keys][supabase-keys] | Application credentials versus user identity; secret-key RLS bypass |
+| [Supabase Vault][supabase-vault] | Authenticated encrypted SQL storage, private decryption access, and external credential-provider integration |
+| [Lambda lifecycle][lambda-lifecycle] and [invocation retries][lambda-retries] | Invocation-scoped clients versus deployed tool endpoints, suspension, and platform-owned retry behavior |
 | [LangSmith Agent Server][langsmith-server] | Deployed code/factories with remote configuration, and the cost of a larger server model |
 | [Windows Job Objects][windows-job-objects] | Owned process-group lifecycle and limits; distinct from a security sandbox |
 
@@ -484,5 +524,8 @@ Primary documentation reviewed on 2026-10-16; moving upstream documentation esta
 [mcp-security]: https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices
 [agents-tools]: https://openai.github.io/openai-agents-js/guides/tools/
 [supabase-keys]: https://supabase.com/docs/guides/getting-started/api-keys
+[supabase-vault]: https://supabase.com/docs/guides/database/vault
+[lambda-lifecycle]: https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtime-environment.html
+[lambda-retries]: https://docs.aws.amazon.com/lambda/latest/dg/invocation-retries.html
 [langsmith-server]: https://docs.langchain.com/langsmith/agent-server
 [windows-job-objects]: https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects
