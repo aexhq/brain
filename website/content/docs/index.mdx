@@ -1,41 +1,112 @@
 ---
 title: Introduction
-description: A standalone server for agent sessions.
+description: Brain is an open-source server that runs AI agent sessions behind an authenticated HTTP API.
 ---
 
-import Link from 'next/link';
+import { BookOpen, MessagesSquare, Rocket, Wrench } from 'lucide-react';
 
-<p className="brain-kicker">Agent sessions. Your infrastructure.</p>
+Brain is an open-source server that runs AI agent sessions behind an authenticated HTTP API. It stores each session on local disk, streams its events to your application, and calls your tools over HTTP.
 
-<p className="brain-intro">Brain is an open-source server for creating, running, and resuming agent sessions. Pick a harness, connect your tools over HTTP, and keep session state on your own storage.</p>
+| Approach | What it is | Best for |
+| --- | --- | --- |
+| **Model API** | Direct requests to a model provider. You write the agent loop, tool dispatch, and conversation storage. | Single completions, or full control over every model call. |
+| **Agent library** | An agent loop that runs inside your application process. | Agents that one process can run from start to finish. |
+| **Brain** | A server that runs agent sessions for your application: the harness process, the event log, tool calls, and recovery. | Long-running, multi-tenant sessions whose tools live in other services. |
 
-<div className="brain-actions">
-  <Link href="/docs/quickstart">Run your first session <span>→</span></Link>
-  <Link href="/docs/api">Explore the API <span>↗</span></Link>
-</div>
+Your backend creates a session, sends messages, and reads events. Brain runs the harness (the agent loop that calls the model and decides when a turn is done) in a separate process, records every event, and sends tool calls to services you run. Session history outlives client connections and server restarts, so you can reconnect to a session, interrupt it, and resume it.
+
+<Cards>
+  <Card icon={<Rocket />} title="Quickstart" href="/docs/quickstart">Start Brain on your machine and run your first session.</Card>
+  <Card icon={<MessagesSquare />} title="Sessions" href="/docs/guides/sessions">Send messages, stream events, interrupt turns, and resume.</Card>
+  <Card icon={<Wrench />} title="Tools" href="/docs/tools">Connect HTTP, SSE, and MCP tools to your sessions.</Card>
+  <Card icon={<BookOpen />} title="API reference" href="/docs/api">Routes, payloads, and status codes.</Card>
+</Cards>
+
+## Core concepts
+
+| Concept | Description |
+| --- | --- |
+| **Session** | One agent conversation owned by one tenant. Its harness, model, instructions, reasoning effort, and enabled tools are fixed when you create it. |
+| **Turn** | The work Brain runs for one `user.message`: model calls and tool calls until the harness finishes. A session runs one turn at a time and queues further messages in order. |
+| **Event** | A typed record in a session's stream, such as `assistant.message`, `tool.call`, or `session.status`. Retained events carry a `cursor` you can resume from; live-only `assistant.delta` and `tool.progress` events don't. |
+| **Harness** | The agent loop that builds prompts, calls the model, compacts context, and decides when a turn is done. Brain ships the Pi harness, which runs as a child process (the Pi runner). |
+| **Tool** | An HTTP or SSE endpoint you run in any language, or a remote MCP tool, that Brain calls when the model asks. You declare tools in the host config and enable them per session by name. |
+| **Tenant** | The isolation boundary. Each API token is bound to one tenant and never sees another tenant's data. |
+| **Host config** | The JSON file you pass to Brain with `-config`. It declares tokens, harnesses, model providers, tools, limits, and persistence. |
+| **Checkpoint** | A snapshot of a session's event log and native harness state. Brain records one after each completed turn and can upload it to external storage for recovery and handoff. |
 
 ## How it works
 
-Brain manages session state, tenant isolation, event streaming, and tool calls. The agent harness (currently **Pi**) runs the model loop and manages conversation context. Your tools run outside Brain in whatever environment they need—a separate service, a sandbox, a browser worker, or an internal API.
+<Steps>
+<Step>
+### Configure and start Brain
 
-<div className="brain-flow" aria-label="Your application sends requests to Brain, which coordinates a harness and external tools">
-  <b>Your app</b><span>→</span><b>Brain</b><span>→</span><b>Harness + tools</b>
-</div>
+Declare API tokens, the Pi harness, model providers, and tools in a host config, then start the server with `-config`.
+</Step>
 
-<div className="brain-grid">
-  <Link href="/docs/guides/sessions"><small>01 / SESSIONS</small><strong>Manage the conversation ↗</strong><span>Stream events over SSE, queue messages, interrupt turns, and resume from checkpoints.</span></Link>
-  <Link href="/docs/tools"><small>02 / TOOLS</small><strong>Run tools anywhere ↗</strong><span>Expose tools over HTTP, SSE, or MCP. Keep sandboxes and approvals in your own services.</span></Link>
-  <Link href="/docs/guides/persistence"><small>03 / STATE</small><strong>Local speed, cloud backup ↗</strong><span>Run on local SQLite and append-only files, with optional background checkpoints to S3, R2, or GCS.</span></Link>
-  <Link href="/docs/adapters"><small>04 / ADAPTERS</small><strong>Clean extension points ↗</strong><span>Small Go interfaces for harnesses and object storage keep the server simple.</span></Link>
-</div>
+<Step>
+### Create a session
 
-## Where to start
+Choose a harness, a model such as `openai/gpt-4.1-mini`, optional instructions, and the tools to enable. Brain stores the session and returns its ID.
+</Step>
 
-| Goal | Guide |
+<Step>
+### Send a message
+
+Brain saves the `user.message` event, queues it, and starts a turn. The harness calls the model. When the model calls a tool, Brain sends the call to your tool service with the authenticated tenant and session IDs, then returns the result to the harness.
+</Step>
+
+<Step>
+### Stream events
+
+Read the session's events as JSON pages or as a live server-sent events (SSE) stream. Disconnecting doesn't stop the turn; reconnect from the last cursor you processed.
+</Step>
+
+<Step>
+### Interrupt, resume, or close
+
+Stop a running turn, roll an interrupted session back to its last completed turn, or close the session. With external storage configured, Brain uploads checkpoints in the background so another instance can restore the session.
+</Step>
+</Steps>
+
+## When to use Brain
+
+- **Long-running conversations:** Session history lives on disk. Clients disconnect and reconnect from the last event cursor, and sessions remain available after a restart.
+- **Multi-tenant products:** Every API token is bound to one tenant. Tools receive the authenticated tenant and session IDs outside the model's arguments.
+- **Tools in other systems:** Sandboxes, browsers, storage, and human approvals run as separate services, in any language. Brain enforces a timeout and an output limit on every call.
+- **State on your infrastructure:** You run the MIT-licensed server. Sessions stay on your disk and, if you configure it, your object storage.
+
+If one process can run the whole agent, an agent library is simpler. Choose Brain when the agent needs its own API, its own process, and tools that run elsewhere.
+
+## What's included
+
+- **Pi harness:** The Pi runner (`runners/pi`) runs the Pi agent loop in a child process. It has no built-in tools; the model sees only the tools you enable for the session.
+- **Tool transports:** Synchronous HTTP JSON, streaming server-sent events, and remote MCP over Streamable HTTP.
+- **Tool services:** A sandbox service for Modal, E2B, and Daytona; a resource service for S3 or R2 storage, Brave or Tavily search, and public web fetch; and an example tool server with an operator approval flow.
+- **Persistence:** SQLite and append-only files on local disk, with optional background checkpoints to a local directory, Amazon S3, Cloudflare R2, or Google Cloud Storage, and an optional PostgreSQL session index.
+- **Clients:** TypeScript and Python SDKs that you build from the repository, and an [OpenAPI document](/openapi.json).
+- **Operations:** Health endpoints, structured JSON logs, OpenTelemetry traces and metrics, and a container image published to `ghcr.io/aexhq/brain`.
+
+<Callout type="info" title="Project status">
+Pi is the supported harness. The [integration evidence](https://github.com/aexhq/brain/blob/main/docs/research/qualification.md) separates integrations tested against live services from those covered only by local tests.
+</Callout>
+
+## Choose your path
+
+| Goal | Start here |
 | --- | --- |
 | Start the server and send a message | [Quickstart](/docs/quickstart) |
+| Understand how Brain runs a session | [Architecture](/docs/architecture) |
 | Connect from your backend | [TypeScript SDK](/docs/sdks/typescript) or [Python SDK](/docs/sdks/python) |
+| Stream, interrupt, and resume sessions | [Session lifecycle](/docs/guides/sessions) |
 | Inspect routes and event payloads | [HTTP API](/docs/api) and [Events & streaming](/docs/reference/events) |
 | Configure models and API keys | [Models & providers](/docs/reference/models) |
-| Build a tool service or adapter | [Distributed tools](/docs/tools) and [Go interfaces](/docs/adapters/interfaces) |
-| Feed docs to a coding agent | [`/llms.txt`](/llms.txt) or [`/llms-full.txt`](/llms-full.txt) |
+| Build a tool service | [Distributed tools](/docs/tools) and [Local tools & approvals](/docs/tools/local-tools) |
+| Connect a remote MCP server | [MCP tools](/docs/tools/mcp) |
+| Back up sessions and move them between servers | [Persistence & recovery](/docs/guides/persistence) |
+| Deploy and monitor Brain | [Operations & observability](/docs/guides/operations) |
+| Write a harness or storage adapter | [Adapter overview](/docs/adapters) and [Go interfaces](/docs/adapters/interfaces) |
+
+## Docs for coding agents
+
+These docs are also available as plain text for LLMs and coding agents. [`/llms.txt`](/llms.txt) lists every page, and [`/llms-full.txt`](/llms-full.txt) contains the full text of all pages.

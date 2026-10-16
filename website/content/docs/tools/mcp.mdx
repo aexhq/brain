@@ -1,26 +1,110 @@
 ---
 title: MCP tools
-description: Connect remote MCP tools through the same authorization and limits as HTTP tools.
+description: Connect tools from a remote MCP server, with the same tenant checks, validation, and limits as HTTP tools.
 ---
 
-Brain supports remote Streamable HTTP MCP tools using the official Go SDK. API keys are sufficient; Brain does not manage OAuth accounts. Native command transports, sampling, resource catalogs, and MCP input requests are outside this integration.
+import { Braces, ShieldCheck, Wrench } from 'lucide-react';
 
-## Discover selected tools
+The Model Context Protocol (MCP) is an open protocol for serving tools to AI applications. Brain connects to remote MCP servers over Streamable HTTP with the official MCP Go SDK, so you can give sessions tools from an MCP server you already run. MCP tools go through the same tenant allowlist, input validation, timeout, and output limits as [HTTP tools](/docs/tools).
+
+## What's supported
+
+| Supported | Not supported |
+| --- | --- |
+| Remote servers over Streamable HTTP | Local servers started as a command |
+| API keys sent as bearer tokens | OAuth |
+| Tool calls that return text, images, or structured content | Sampling, resource catalogs, and MCP input requests |
+| Progress notifications during a call | Background subscriptions and automatic retries |
+
+## Discover tools
+
+Run `cmd/mcp-tools` to turn tools from an MCP server into Brain tool bindings:
 
 ```sh
 go run ./cmd/mcp-tools -url https://YOUR_SERVER/mcp -token-env MCP_API_KEY -tenant local -tools search,fetch
 ```
 
-The command prints bindings for the named tools. Review and copy them into `tools` in your host configuration. Descriptions and schemas stay static until you change configuration; discovery never changes an active session's tool set.
+| Flag | Description |
+| --- | --- |
+| `-url` | The server's Streamable HTTP endpoint. |
+| `-token-env` | The environment variable that holds the server's API key. The command uses it to connect, and the bindings tell Brain to send it as a bearer token. |
+| `-tenant` | The tenant allowed to use the tools. |
+| `-tools` | A comma-separated list of 1 to 128 remote tool names to include. |
 
-Each binding uses the normal descriptor fields plus `mcp_tool`, the remote tool name. Its `name` is the model-visible Brain name, so you can explicitly rename tools to avoid collisions. `url` is the MCP endpoint; `token_env` supplies its bearer credential.
+The command connects to the server, reads its tool list, and prints a JSON array with one binding for each named tool. It fails if a named tool doesn't exist or if discovery takes longer than 30 seconds. The output looks like this:
 
-## Calls and identity
+```json
+[
+  {
+    "name": "search",
+    "description": "Search the knowledge base.",
+    "input_schema": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"] },
+    "url": "https://YOUR_SERVER/mcp",
+    "mcp_tool": "search",
+    "token_env": "MCP_API_KEY",
+    "tenants": ["local"],
+    "timeout_seconds": 300,
+    "max_output_bytes": 1048576
+  }
+]
+```
 
-Calls run through Brain's tenant allowlist, input validation, timeout, and output bounds. The service receives trusted `tenant_id`, `session_id`, and `call_id` in `_meta["brain.dev/scope"]`. Metadata is attribution: the server must authenticate Brain and enforce resource access itself. Inspection credentials are not sent to MCP servers.
+Review the descriptions and schemas, then copy the bindings into the `tools` array of your host config. Bindings are static: a tool's description and schema change only when you edit the config and restart Brain, and discovery never changes the tools of a running session.
 
-Each invocation opens a separate MCP session while reusing pooled HTTP connections. This avoids sharing a remote server's session state across tenants, at the cost of one discovery/initialization round trip per invocation. There is no persistent background subscription or automatic action retry.
+## Configure an MCP binding
 
-Text and image content map to Brain content blocks; structured content is appended as JSON text. Other content types fail explicitly. Tool-declared errors remain tool results. A call interrupted after dispatch has an unknown outcome; the model can inspect the resource using another tool. Cancellation closes the request; whether remote work stops depends on the server.
+An MCP binding is a regular tool binding with one extra field, `mcp_tool`:
 
-The SDK is pinned in `go.mod`. Local tests exercise actual SDK discovery, streaming progress, content, authorization, cancellation, and output limits. No particular third-party MCP service is claimed as live-qualified.
+- **`name`** is the name the model sees. Rename tools to avoid collisions, for example `docs_search` for a `search` tool.
+- **`mcp_tool`** is the tool's name on the MCP server.
+- **`url`** is the server's MCP endpoint.
+- **`token_env`** names the environment variable with the server's API key. Brain sends it as a bearer token on every request to the server.
+
+`tenants`, `timeout_seconds`, `max_output_bytes`, and `output_schema` work as they do for [HTTP tools](/docs/tools). MCP bindings can't use `inspect_session`; Brain doesn't start if one does.
+
+## How Brain calls an MCP tool
+
+1. **Check the call.** Brain confirms that the tool is allowed for the session's tenant and validates the arguments against `input_schema`.
+2. **Open an MCP session.** Brain starts a new MCP session with the server for this call, over pooled HTTP connections. A separate MCP session per call keeps server-side session state from crossing tenants or calls, at the cost of one initialization round trip per call.
+3. **Call the tool.** Brain sends the arguments and puts the session's identity in `_meta["brain.dev/scope"]` as `tenant_id`, `session_id`, and `call_id`. The call ID is also the progress token.
+4. **Stream progress.** Each progress notification from the server becomes a live-only `tool.progress` event.
+5. **Return the result.** Brain converts the result into a `tool.result` event, returns it to the harness, and closes the MCP session.
+
+<Callout type="warn" title="Scope metadata is for attribution">
+The `_meta["brain.dev/scope"]` values tell your server which tenant and session a call belongs to. Your server must still authenticate Brain's API key and enforce access to its own resources. Brain never sends session inspection tokens to MCP servers.
+</Callout>
+
+## Results and errors
+
+Brain converts MCP results into Brain content blocks:
+
+| MCP result | Brain result |
+| --- | --- |
+| Text content | A text block. |
+| Image content | An image block with base64 `data` and `mime_type`. |
+| Structured content | An extra text block that contains the JSON. |
+| `isError: true` | `is_error: true`. The model sees the error as a tool result. |
+| Any other content type | The call fails. |
+
+When a call fails, the `tool.result` has `is_error: true`:
+
+| What happened | `unknown_outcome` |
+| --- | --- |
+| Brain refused the call or couldn't connect to the server, so the tool was never called | No |
+| The call failed after Brain sent it: the connection dropped, the call timed out, or the server returned a protocol error | Yes |
+| The server asked for user input | Yes. Handle approval inside the tool instead. |
+| The result had an unsupported content type, exceeded `max_output_bytes`, or didn't match `output_schema` | Yes |
+
+Brain never retries an MCP call. With an unknown outcome, the model can use another tool to check the resource. Interrupting the session or reaching the timeout cancels the request; whether the work stops on the server depends on the server.
+
+## Testing status
+
+Brain pins the MCP Go SDK in `go.mod`. Local tests run the SDK's client against an SDK test server to cover discovery, streamed progress, errors, structured content, tenant isolation, output limits, and cancellation, and to check that calls are never replayed. No third-party MCP service has been tested live; see the [integration evidence](https://github.com/aexhq/brain/blob/main/docs/research/qualification.md).
+
+## Next steps
+
+<Cards>
+  <Card icon={<Wrench />} title="Distributed tools" href="/docs/tools">Tool bindings, request payloads, and result formats.</Card>
+  <Card icon={<ShieldCheck />} title="Authentication & tenants" href="/docs/guides/authentication">How tools receive the session's identity.</Card>
+  <Card icon={<Braces />} title="Host configuration" href="/docs/reference/configuration">Every host config field and default.</Card>
+</Cards>

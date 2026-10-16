@@ -3,29 +3,52 @@ title: Persistence adapters
 description: Object storage and metadata indexing interfaces for background checkpoints.
 ---
 
-Persistence adapters implement two small Go interfaces in `internal/persistence` (see [Go interfaces](/docs/adapters/interfaces)).
+Persistence adapters implement two small Go interfaces in `internal/persistence`: `Objects` for immutable checkpoint blocks and manifests, and `Metadata` for optional cross-instance session discovery (see [Go interfaces](/docs/adapters/interfaces)).
+
+## Built-in implementations
+
+| Interface | Purpose | Built-in implementations |
+| --- | --- | --- |
+| `persistence.Objects` | Stores 64 KiB immutable file blocks, bounded tail objects, checkpoint manifests, and per-session `latest` pointers. | `FileObjects` (`filesystem`), `S3Objects` (`s3` and `r2` in `internal/persistence/objects.go`), `GCSObjects` (`gcs` in `internal/persistence/gcs.go`). |
+| `persistence.Metadata` | Maintains an eventually consistent tenant-scoped index of sessions and their latest checkpoint IDs. | `Postgres` (`postgres_env` in `internal/persistence/metadata.go`). |
 
 ## `Objects` interface
 
 `Objects` provides `Put(ctx, key, bytes, immutable)` and `Get(ctx, key)`:
 
-- **Immutable writes:** When `immutable` is `true`, `Put` must never overwrite an existing object with different content (if the key already exists from an earlier attempt, returning success is fine because keys are generation-scoped).
-- **Error distinction:** Missing objects must wrap `os.ErrNotExist` so the archive layer can distinguish missing checkpoints from transient network/storage errors.
-- **Scoping and bounds:** Implementations must enforce the configured key prefix, reject path traversal, and cap individual object sizes at 2 MiB.
+- **Immutable writes:** When `immutable` is `true`, `Put` must never overwrite an existing object with different content (`FileObjects` uses hard links; `S3Objects` sends `If-None-Match: "*"`; `GCSObjects` sets `DoesNotExist: true`). If the key already exists from an earlier upload attempt, returning `nil` is safe because block and manifest keys are generation- and checkpoint-scoped.
+- **Error distinction:** Missing objects on `Get` must wrap `os.ErrNotExist` so `persistence.Archive` can distinguish missing checkpoints (`404 not_found`) from transient network or storage failures (`500 brain_error`).
+- **Scoping and bounds:** Implementations must validate keys with `validKey` (rejecting empty keys, leading slashes, backslashes, or path traversal), prepend the configured `prefix`, and cap individual object sizes at `2 MiB` (`MaxObjectBytes = 2 << 20`).
 
-The archive coordinator splits transcripts and append-only native files into 64 KiB immutable blocks plus bounded tail objects. It writes the checkpoint manifest only after every referenced block is uploaded, then updates the `latest` pointer and optional metadata index.
+### How `Archive` publishes and restores checkpoints
+
+`persistence.Archive` (`internal/persistence/archive.go`) coordinates incremental uploads of `events.jsonl` and append-only `native/` files (up to 128 files per checkpoint):
+
+<Steps>
+  <Step title="Split into 64 KiB immutable blocks">
+    Complete `64 KiB` (`BlockBytes = 64 << 10`) blocks are uploaded once under `sessions/<id>/blocks/<generation>/<index>` (`immutable: true`). Subsequent checkpoints reuse the same `generation` ID and upload only newly appended full blocks plus the bounded remainder tail under `sessions/<id>/tails/<checkpoint_id>/<generation>` (`immutable: true`).
+  </Step>
+  <Step title="Write the immutable checkpoint manifest">
+    Only after every referenced block and tail object is stored does `Archive.Publish` write `sessions/<id>/checkpoints/<checkpoint_id>` (`immutable: true`). A failed upload can leave unreachable blocks, never a partially readable checkpoint.
+  </Step>
+  <Step title="Update `latest` and optional metadata">
+    `Archive.Publish` updates the mutable pointer `sessions/<id>/latest` (`immutable: false`), updates `Metadata.Put` if `postgres_env` is configured, and saves `uploaded.json` in the local session directory.
+  </Step>
+</Steps>
 
 ## `Metadata` interface
 
-`Metadata` provides `Put`, `Get`, `List`, and `Close` for external session discovery (implemented by the PostgreSQL adapter):
+`Metadata` provides `Put(ctx, session, checkpointID)`, `Get(ctx, tenant, id)`, `List(ctx, tenant, after, limit)`, and `Close()`:
 
-- `Get` and `List` are scoped by `tenant` and ordered by session ID.
-- External metadata is an eventually consistent index updated after checkpoint publication; it is not used for locking or leader election.
+- `Get` and `List` are strictly scoped by `tenant`, and `List` returns sessions ordered by `id` ascending (`id > after`, `limit` `1`–`1000`).
+- `Put` upserts `(id, tenant, data, checkpoint)` and rejects cross-tenant collisions with `403 forbidden` (`metadata tenant mismatch`).
+- External metadata is an eventually consistent discovery index updated after checkpoint publication; it is never used for locking or leader election.
 
 ## Testing an adapter
 
 Every storage adapter should pass the contract tests in `internal/persistence/`:
-- Immutable block writes and idempotent retries
-- Interrupted manifest publication (unreachable blocks must not expose a half-written checkpoint)
-- Missing object detection and tenant/path isolation
-- Restoring into an empty local cache and verifying the next Pi model request preserves conversation history
+
+- Immutable block writes (`immutable: true`) and idempotent retries when a block or manifest already exists
+- Interrupted manifest publication (unreachable blocks must never expose a half-written checkpoint)
+- Missing object detection (`errors.Is(err, os.ErrNotExist)`) and tenant/path isolation
+- Restoring into an empty local cache and verifying the next Pi model turn preserves conversation history

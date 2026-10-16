@@ -1,24 +1,34 @@
 ---
 title: Adapter overview
-description: How harnesses, storage backends, and tools plug into Brain.
+description: Extend Brain with custom harness runners, external tool services, and persistence backends.
 ---
 
-Brain has three extension boundaries:
+Brain keeps its session coordinator (`internal/session`) small by delegating model execution, tool execution, and external durability to three extension boundaries.
 
-| Boundary | What it does | Interface |
-| --- | --- | --- |
-| **Harness** | Runs the model loop, manages prompt context and compaction, and writes native session state. | Go `harness.Factory` / `Runner` (or JSON-over-stdio child process). |
-| **Tool service** | Executes tools, manages sandboxes/jobs, and enforces resource permissions or approvals. | [HTTP / SSE protocol](/docs/tools) (any language). |
-| **Persistence** | Uploads immutable checkpoint blocks and maintains an optional session discovery index. | Go `persistence.Objects` and `persistence.Metadata`. |
+<Cards>
+  <Card title="Harness adapters" href="/docs/adapters/harness">
+    Implement a custom agent loop over `harness.Factory` / `harness.Runner` or the stdio JSON protocol.
+  </Card>
+  <Card title="Persistence adapters" href="/docs/adapters/persistence">
+    Store immutable checkpoint blocks and session discovery indexes via `persistence.Objects` and `persistence.Metadata`.
+  </Card>
+  <Card title="Go interfaces" href="/docs/adapters/interfaces">
+    Read the generated Go interface and struct definitions from `internal/harness` and `internal/persistence`.
+  </Card>
+</Cards>
 
-External tools run out-of-process over HTTP/SSE and require no changes to Brain. Harness and persistence adapters are internal Go packages compiled into the Brain binary (with harness runners typically executed as child processes configured in `harnesses`).
+## Extension boundaries at a glance
 
-## Built-in implementations
+| Boundary | Go interface / protocol | When to build one | Built-in implementations |
+| --- | --- | --- | --- |
+| **Harness** | `harness.Factory` and `harness.Runner` (`internal/harness`), or newline-delimited JSON over `stdin`/`stdout` (`harness.ProcessFactory`). | You want to run a different agent loop, prompt compaction strategy, or runtime behind Brain's session API. | `pi` (`runners/pi`, a Node.js child process wrapping `@earendil-works/pi-coding-agent` via `harness.ProcessFactory`). |
+| **Tool service** | [HTTP JSON / SSE tool protocol](/docs/tools) and [MCP Streamable HTTP](/docs/tools/mcp) (`internal/tools`). | You want to expose external tools, sandboxes, resource gates, or operator approvals in any language without changing Brain. | `tools.Registry` (`internal/tools/http.go` and `internal/tools/mcp.go`), plus reference services in `examples/tools`, `services/sandbox`, and `services/resources`. |
+| **Persistence** | `persistence.Objects` and `persistence.Metadata` (`internal/persistence`). | You want to publish checkpoint blocks or index session metadata in a storage backend not covered by the built-in drivers. | **Checkpoint object stores (`persistence.Objects`):** `filesystem`, `s3`, `r2`, and `gcs`.<br />**External metadata index (`persistence.Metadata`):** PostgreSQL (`postgres_env`). |
 
-- **Harness:** `pi` (`runners/pi`, a Node.js child process wrapping `@earendil-works/pi-coding-agent`).
-- **Local store:** SQLite metadata plus append-only event and native state files.
-- **Checkpoint object stores:** `filesystem`, `s3`, and `r2`.
-- **External metadata index:** PostgreSQL (`postgres_env`).
-- **Tool transport:** HTTP JSON and streaming SSE.
+## How each boundary plugs in
 
-See [Harness adapters](/docs/adapters/harness), [Persistence adapters](/docs/adapters/persistence), and the [Go interface definitions](/docs/adapters/interfaces) for implementation details.
+1. **External tool services** run out of process over HTTP JSON, `text/event-stream`, or MCP Streamable HTTP (`mcp_tool`). You bind them directly in the `"tools"` array of your configuration file without modifying or recompiling Brain.
+2. **Harness runners** can be plugged in as external child processes under `"harnesses"` (speaking the `RunnerFrame` stdio protocol implemented by `harness.ProcessFactory`) or compiled into the binary by implementing `harness.Factory` in `internal/harness`.
+3. **Persistence adapters** live in `internal/persistence` and are wired into `persistence.NewObjects` and `persistence.NewPostgres` from the `"persistence"` configuration block. Local durability always uses SQLite metadata (`metadata.sqlite`) plus append-only `events.jsonl` and `native/` files in `data_dir`.
+
+See [Harness adapters](/docs/adapters/harness), [Persistence adapters](/docs/adapters/persistence), and [Go interfaces](/docs/adapters/interfaces) for implementation details and contract requirements.

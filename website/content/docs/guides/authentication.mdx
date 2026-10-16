@@ -1,33 +1,105 @@
 ---
 title: Authentication & tenants
-description: Host-owned grants keep sessions and tools scoped to their caller.
+description: Authenticate requests with bearer tokens, keep each tenant's sessions separate, and verify Brain's calls to your tools.
 ---
 
-Session and catalog endpoints require `Authorization: Bearer TOKEN`. Health endpoints are public. The host maps tokens to grants:
+import { MessagesSquare, Settings, Wrench } from 'lucide-react';
 
-```json
-{"tokens":[{"token_env":"BRAIN_API_KEY","tenant":"local","manage":true}]}
+Brain authenticates every session and catalog request with a bearer token. Each token in the host config maps to a grant: the tenant the token acts for and the operations it may perform. Brain doesn't authenticate end users; your backend does, then calls Brain with the token for the user's tenant. Health endpoints are public.
+
+## Send a token
+
+Send the token in the `Authorization` header of every request to `/sessions` and `/catalog`:
+
+```sh
+curl http://127.0.0.1:8080/sessions \
+  -H "Authorization: Bearer $BRAIN_API_KEY"
 ```
 
-Tokens must be at least 24 random bytes and are loaded from environment variables when Brain starts.
+The SDKs take the token as their second argument: `new Brain(url, token)` in TypeScript and `Brain(url, token)` in Python.
 
-## Token grants
-
-| Field | Effect |
+| Status | Cause |
 | --- | --- |
-| `tenant` | **Required.** Binds the token to a tenant. Requests can never access another tenant's data. |
-| `session` | Optional. Restricts the token to a single session ID. |
-| `manage` | Allows creating, resuming, flushing, restoring, and closing sessions within the token's scope. |
-| `read_only` | Allows `GET` requests only (rejects messages, interrupts, and lifecycle changes). |
+| `401` | The header is missing, doesn't use the `Bearer` scheme, is longer than 1024 characters, or names an unknown token. The error code is `forbidden`, and the response includes `WWW-Authenticate: Bearer`. |
+| `403` | The token is `read_only` and the request isn't a `GET`, or the token's grant doesn't allow the operation. |
+| `404` | The session doesn't exist or belongs to another tenant. |
 
-Your backend authenticates end users and chooses which Brain token to use. Cross-tenant requests always return `404 not_found`, and `GET /catalog` only lists tools enabled for the caller's tenant.
+## Configure tokens
 
-## How tools receive identity
+Declare tokens in the `tokens` list of the host config. Each entry names the environment variable that holds the token value and the grant that goes with it:
 
-When Brain invokes an external tool, it includes the authenticated `tenant_id`, `session_id`, and `call_id` in the top-level request body alongside the model's `arguments`. Tool services should verify Brain's bearer token and use the top-level `tenant_id` and `session_id` rather than trusting model-supplied arguments.
+```json
+{
+  "tokens": [
+    { "token_env": "BRAIN_API_KEY", "tenant": "local", "manage": true },
+    { "token_env": "BRAIN_READER_KEY", "tenant": "local", "read_only": true }
+  ]
+}
+```
 
-If a tool binding sets `inspect_session: true`, Brain also passes a short-lived, read-only token scoped to that single session so the tool can read session status or events while the call is active. Brain revokes the token as soon as the tool call returns.
+| Field | Required | Description |
+| --- | --- | --- |
+| `token_env` | Yes | The environment variable that holds the token. The value must be at least 24 bytes. |
+| `tenant` | Yes | The tenant the token acts for, up to 128 characters. |
+| `manage` | No | Allows creating, resuming, closing, flushing, and restoring sessions. |
+| `read_only` | No | Allows `GET` requests only. |
+| `session` | No | Limits the token to one session ID. The token can't create sessions and sees only that session. |
 
-## Network security
+Brain reads token values once, at startup, and fails to start if a variable is missing, a value is shorter than 24 bytes, or two entries share a value. It keeps only SHA-256 hashes of the values in memory. To rotate a token, change the environment variable and restart Brain.
 
-Run Brain behind TLS in production. Brain does not enable browser CORS or cookie auth; call it from your backend or CLI rather than directly from browser JavaScript.
+<Callout type="warn" title="Use random tokens">
+Generate each token from a cryptographically secure random source, for example `openssl rand -hex 32`. Keep tokens in a secret store, not in the host config file or source control.
+</Callout>
+
+## Choose what each token can do
+
+| Operation | Token requirement |
+| --- | --- |
+| List and read sessions, events, sync status, and the tool catalog | Any token for the tenant |
+| Send a message or interrupt a turn | Not `read_only` |
+| Create a session | `manage`, and no `session` limit |
+| Resume or close a session | `manage`, and not `read_only` |
+| Flush a session to external storage or restore a checkpoint | `manage`, and not `read_only` |
+
+A typical setup gives your backend one `manage` token per tenant. Give components that only display sessions, such as a dashboard backend, a `read_only` token.
+
+## Keep tenants separate
+
+- **Sessions:** A request for another tenant's session returns `404`, the same response as a session that doesn't exist. Lists include only the token's tenant.
+- **Tools:** Each tool binding lists the tenants allowed to use it. `GET /catalog` returns only those tools, and Brain refuses to enable or call a tool for any other tenant.
+- **Telemetry:** Metrics carry no tenant or session labels.
+
+## Verify calls to your tools
+
+When Brain calls a tool, it identifies itself and the session the call belongs to:
+
+- **Credential:** If the tool binding sets `token_env`, Brain sends that variable's value as a bearer token. Your tool service should reject requests without it.
+- **Identity:** The request body carries the authenticated `tenant_id`, `session_id`, and `call_id` at the top level, next to the model's `arguments`. Authorize with these fields, never with values the model put in `arguments`.
+- **Session access:** If the binding sets `inspect_session: true`, Brain adds an `inspection_token` and `brain_url` (the host config's `public_url`). The token is read-only, limited to that session, and revoked as soon as the tool call returns. MCP tools don't receive one.
+
+```json
+{
+  "tenant_id": "local",
+  "session_id": "7d1c9e04b3a24f6e8c5a0b2d9e3f4a61",
+  "call_id": "c41f8a2e6b0d4e9f8a1c3b5d7e9f0a2b",
+  "inspection_token": "TOKEN_FOR_THIS_CALL",
+  "brain_url": "http://127.0.0.1:8080",
+  "arguments": { "question": "Approve the deployment?" }
+}
+```
+
+See [Distributed tools](/docs/tools) for the full request and response format.
+
+## Secure the network
+
+- **Use TLS:** Brain serves plain HTTP. Outside your own machine, put it behind a load balancer or reverse proxy that terminates TLS.
+- **Call Brain from servers:** Brain doesn't support CORS or cookie authentication. Call it from your backend or a CLI, not from browser JavaScript.
+- **Limit exposure:** The default listen address, `127.0.0.1:8080`, accepts only local connections. Listen on `0.0.0.0` only inside a container or a private network.
+
+## Next steps
+
+<Cards>
+  <Card icon={<MessagesSquare />} title="Session lifecycle" href="/docs/guides/sessions">Create, stream, interrupt, and resume sessions.</Card>
+  <Card icon={<Wrench />} title="Distributed tools" href="/docs/tools">Configure tool bindings and their tenant allowlists.</Card>
+  <Card icon={<Settings />} title="Host configuration" href="/docs/reference/configuration">Every host config field and default.</Card>
+</Cards>

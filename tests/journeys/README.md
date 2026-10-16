@@ -1,8 +1,8 @@
 # End-to-end journey tests
 
-The journey suite (`tests/journeys/journeys.test.mjs`) tests the compiled Brain server, the Pi runner, the example HTTP/SSE tool server, and both the TypeScript and Python SDKs against a local recording model provider. It runs offline with no external API keys, cloud accounts, or Docker required.
+The journey suite (`tests/journeys/journeys.test.mjs`) verifies the compiled Brain server, the Pi runner, the example HTTP/SSE tool server, and both the TypeScript and Python SDKs against a local recording model provider. It runs offline with no external API keys, cloud accounts, or Docker required.
 
-## Running the suite
+## Run the suite
 
 To run all repository checks including journeys:
 
@@ -16,7 +16,7 @@ To run only the journey suite (after building `runners/pi` and `sdks/typescript`
 node --test tests/journeys/journeys.test.mjs
 ```
 
-Each test compiles the Go binaries into a temp directory and starts isolated processes with their own ports, tokens, and storage directories. Crash tests kill the server and runner processes directly and verify cleanup and recovery on both Linux and Windows.
+Each test compiles the Go binaries into an isolated temporary directory and starts separate processes with their own ports, tokens, and storage directories. Crash tests terminate the server and runner processes directly and verify cleanup and recovery on both Linux and Windows.
 
 ## What is covered
 
@@ -34,7 +34,7 @@ Each test compiles the Go binaries into a temp directory and starts isolated pro
 | Recover from an archive outage | Local turns succeed while storage is down; full sync queues reject new input and mark readiness `503`; explicit `flush` clears the backlog once storage recovers. |
 | Diagnose provider and Brain failures | Model provider errors and broken runner protocols fail the turn explicitly instead of masquerading as tool errors; credentials never leak into logs. |
 | Repair corrupt local history | Interior file corruption fails loudly instead of silently truncating history; an explicit `restore` recovers the session from external storage. |
-| Reject invalid API input | Unknown JSON fields, unsupported harnesses/models/tools, `steer` delivery, and oversized payloads return `400`/`413`/`422`. |
+| Reject invalid API input | Unknown JSON fields, unsupported harnesses, unconfigured models or unauthorized tools, `steer` delivery, and oversized payloads return `400`/`403`/`413`/`422`. |
 | Bound observer memory | Oversized events disconnect slow SSE observers without interrupting the turn or corrupting stored history. |
 | Switch SDKs | A conversation started in TypeScript continues seamlessly in Python across tool calls, streaming, flush/restore, and interrupt/resume. |
 | Run concurrent tenants | Active execution limits hold under load, tenants stay isolated, and idle runner eviction preserves native context when reloaded. |

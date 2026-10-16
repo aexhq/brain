@@ -1,93 +1,164 @@
-# Brain
+<pre align="center">
+              ______ ______ _______ _______ _______
+  ▄████▄     |   __ \   __ \   _   |_     _|    |  |
+▄██▄██▄██▄   |   __ <      <       |_|   |_|       |
+  ▀▀  ▀▀     |______/___|__|___|___|_______|__|____|
+</pre>
 
-Brain is a standalone server for running agent sessions.
+<p align="center"><strong>Run agent sessions behind one HTTP API. Keep their tools in your own services.</strong></p>
 
-[Documentation](https://aexhq.github.io/brain/docs/) · [API reference](https://aexhq.github.io/brain/docs/api/) · [Platform examples](examples/platforms/README.md) · [Integration evidence](docs/research/qualification.md)
+<p align="center">
+<a href="https://aexhq.github.io/brain/docs/quickstart/">Quickstart</a> ·
+<a href="https://aexhq.github.io/brain/docs/">Docs</a> ·
+<a href="https://aexhq.github.io/brain/docs/api/">API reference</a> ·
+<a href="examples/platforms/README.md">Platform examples</a> ·
+<a href="docs/research/qualification.md">Integration evidence</a>
+</p>
 
-It handles HTTP APIs, tenant isolation, event streaming, local storage, and checkpoint syncing. An agent harness (currently **Pi**) runs the model loop and manages context in a child process. Tools run as external HTTP or SSE services—meaning sandboxes, browsers, storage, and human approvals live outside the Brain process.
+Brain is an open-source server that runs AI agent sessions behind an authenticated HTTP API. It has a small set of primitives:
 
-## Quickstart
+- **Sessions**, one agent conversation owned by one tenant, with its model and tools fixed at creation.
+- **Events**, the ordered record of a session, which you page through or stream with server-sent events (SSE).
+- **Harnesses**, the agent loop that calls the model. Brain ships the Pi harness and runs it as a child process.
+- **Tools**, HTTP, SSE, or MCP endpoints in your own services that Brain calls when the model asks.
+- **Checkpoints**, saved session state that Brain can upload to external storage to recover or move a session.
 
-You need **Go 1.26+**, **Node.js 24+**, and an API key for your model provider.
+```ts
+import { Brain } from "./sdks/typescript/dist/index.js";
 
-From the repository root, build the Pi runner and start the server:
+const brain = new Brain("http://127.0.0.1:8080", process.env.BRAIN_API_KEY!);
+const session = await brain.create({ harness: "pi", config: { model: "openai/gpt-4.1-mini", tools: ["echo"] } });
+const input = await brain.send(session.id, { type: "user.message", text: "Use echo to say hello." });
 
-```powershell
+for await (const event of brain.observe(session.id)) {
+  const data = event.data as { text?: string; message?: string; status?: string };
+  if (event.type === "assistant.message") console.log(data.text);
+  if (event.input_id !== input.id) continue;
+  if (event.type === "session.error") throw new Error(data.message);
+  if (event.type === "session.status" && data.status === "idle") break;
+}
+```
+
+Brain runs the Pi harness in a child process on its own host. `echo` runs in a tool service you deploy, such as the [example tool server](examples/tools/README.md), and Brain calls it over HTTP with the authenticated tenant and session IDs.
+
+## Why Brain
+
+- **Keep tools in your own services.** Each tool is an HTTP, SSE, or MCP endpoint you write in any language. Sandboxes, storage, browsers, and human approvals stay outside the Brain process, and Brain enforces a timeout and an output limit on every call.
+- **Reconnect without losing work.** Brain keeps each session's event history on disk. Clients stream over SSE, reconnect from the last cursor, interrupt a turn, and resume an interrupted session.
+- **Recover on another server.** Sessions survive restarts. With a checkpoint store configured, Brain uploads checkpoints in the background so another instance can restore a session.
+- **Separate tenants.** Every API token is bound to one tenant and can be read-only or limited to one session. Each tool lists the tenants allowed to call it.
+- **Run it on your infrastructure.** Brain is one Go binary plus the Pi runner, MIT licensed, with a container image, health checks, JSON logs, and OpenTelemetry traces and metrics.
+
+## Get started
+
+You need Go 1.26+, Node.js 24+, and an OpenAI API key. Brain and its SDKs aren't published to npm or PyPI; you build them from this repository.
+
+Build the Pi runner and start Brain:
+
+```sh
+git clone https://github.com/aexhq/brain.git
+cd brain
 npm --prefix runners/pi ci --ignore-scripts
 npm --prefix runners/pi run build
-$env:BRAIN_API_KEY = "replace-with-a-random-token-of-at-least-24-bytes"
-$env:OPENAI_API_KEY = "your-provider-key"
+export BRAIN_API_KEY="replace-with-a-random-token-of-at-least-24-bytes"
+export OPENAI_API_KEY="your-provider-key"
 go run ./cmd/brain -config examples/local.json
 ```
 
-Copy `examples/local.json` to `brain.json` (gitignored) if you want to customize settings locally. Pass `-check` to validate your config file without starting the server.
-
 In a second terminal, build the TypeScript SDK and run the example session:
 
-```powershell
+```sh
+export BRAIN_API_KEY="replace-with-a-random-token-of-at-least-24-bytes"
 npm --prefix sdks/typescript ci --ignore-scripts
 npm --prefix sdks/typescript run build
-$env:BRAIN_API_KEY = "replace-with-a-random-token-of-at-least-24-bytes"
-node examples/session.mjs
+node examples/session.mjs "Explain what makes a good agent tool."
 ```
+
+The [quickstart](https://aexhq.github.io/brain/docs/quickstart/) has PowerShell commands, the Python example, and cURL calls. To customize settings, copy `examples/local.json` to `brain.json`, which is gitignored and loaded when you omit `-config`. Add `-check` to validate a config without starting the server.
+
+| I want to… | Read |
+| --- | --- |
+| Run my first session | [Quickstart](https://aexhq.github.io/brain/docs/quickstart/) |
+| Understand how Brain runs a session | [Architecture](https://aexhq.github.io/brain/docs/architecture/) |
+| Stream events, interrupt turns, and resume sessions | [Session lifecycle](https://aexhq.github.io/brain/docs/guides/sessions/) |
+| Write a tool service | [Distributed tools](https://aexhq.github.io/brain/docs/tools/) |
+| Connect a remote MCP server | [MCP tools](https://aexhq.github.io/brain/docs/tools/mcp/) |
+| Issue tokens and separate tenants | [Authentication & tenants](https://aexhq.github.io/brain/docs/guides/authentication/) |
+| Back up sessions and move them between servers | [Persistence & recovery](https://aexhq.github.io/brain/docs/guides/persistence/) |
+| Deploy and monitor Brain | [Operations & observability](https://aexhq.github.io/brain/docs/guides/operations/) |
+| Call Brain from my backend | [TypeScript SDK](https://aexhq.github.io/brain/docs/sdks/typescript/) or [Python SDK](https://aexhq.github.io/brain/docs/sdks/python/) |
+| Look up routes and config fields | [HTTP API](https://aexhq.github.io/brain/docs/api/) and [Host configuration](https://aexhq.github.io/brain/docs/reference/configuration/) |
+
+## When to use Brain
+
+- **Long-running conversations:** Session history lives on disk, so clients can disconnect, reconnect from the last event cursor, and find their sessions after a restart.
+- **Multi-tenant products:** Tokens are bound to tenants, and tools receive the authenticated tenant and session IDs outside the model's arguments.
+- **Tools in other systems:** Sandboxes, browsers, storage, and approvals run as separate services that you deploy and scale on their own.
+
+### Brain or an embedded agent library?
+
+**Use an agent library** when one process can run the whole agent: your application owns the loop, the tools, and the conversation state, and nothing else needs to reach the session.
+
+**Use Brain** when the agent needs to run as its own service: several clients or tenants reach sessions over HTTP, tools live in other systems, and sessions must outlast client connections and server restarts.
+
+Brain has no built-in tools, agent definitions, or multi-agent handoffs. The model sees only the tools you deploy and enable for its session.
 
 ## Tools
 
-Tools are configured on the host and invoked over HTTP or SSE. When a model calls a tool, Brain sends the tool's arguments along with the authenticated `tenant_id`, `session_id`, and `call_id`. Synchronous tools return JSON (`content` and optional `is_error`); streaming tools emit `progress` events before a final `result`.
+You declare tools in the host config, and Brain calls them over HTTP, SSE, or MCP. Each call carries the model's arguments plus the authenticated `tenant_id`, `session_id`, and `call_id`. A synchronous tool returns JSON `content` and an optional `is_error`; a streaming tool sends `progress` events, then one `result`.
 
-See [`examples/tools`](examples/tools/README.md) for a standalone local tool server that implements `echo`, `inspect_session`, and an operator approval flow (`ask_approval`).
+The repository includes tool services that you deploy separately from Brain:
 
-Built-in integrations also include [remote MCP discovery and calls](website/content/docs/tools/mcp.mdx), [Modal/E2B/Daytona sandbox services](services/sandbox/README.md), and [S3/R2 storage plus Brave/Tavily search and public web fetch](services/resources/README.md). Provider keys are ordinary service configuration. These services deploy separately; Brain does not manage customer cloud accounts.
+- [`examples/tools`](examples/tools/README.md): a local tool server with `echo`, `inspect_session`, and an operator approval tool, `ask_approval`.
+- [`services/sandbox`](services/sandbox/README.md): Modal, E2B, and Daytona sandboxes, published as `ghcr.io/aexhq/brain-sandbox-tools`.
+- [`services/resources`](services/resources/README.md): S3 or R2 storage, Brave or Tavily search, and public web fetch, built from `cmd/resource-tools` and included in the Brain image as `/app/resource-tools`.
+- [MCP tools](https://aexhq.github.io/brain/docs/tools/mcp/): discovery and calls for remote MCP servers over Streamable HTTP.
+
+Provider keys are ordinary service configuration. Brain doesn't manage your cloud accounts.
 
 ## Persistence and recovery
 
-By default, Brain stores session metadata in SQLite and writes events and native harness state to local append-only files in `.brain/`. You can optionally configure background checkpoint uploads to a local directory, S3, Cloudflare R2, or Google Cloud Storage, plus an eventual session index in PostgreSQL.
+Brain stores session metadata in SQLite and writes events and native harness state to append-only files in `data_dir` (`.brain/` by default). Optionally, it uploads checkpoints in the background to a local directory, Amazon S3, Cloudflare R2, or Google Cloud Storage, and keeps an eventually consistent session index in PostgreSQL. [Persistence & recovery](https://aexhq.github.io/brain/docs/guides/persistence/) covers explicit flushes and moving sessions between servers.
 
-See [Persistence and recovery](docs/running-persistence.md) for configuration, explicit flushes, and session handoff between servers.
+## Operations
 
-## Observability and Docker
+- **Health:** `GET /health/live` and `GET /health/ready`.
+- **Logs:** Structured JSON on stderr, without request bodies or credentials.
+- **Telemetry:** Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export traces and metrics over OTLP/HTTP.
+- **Container:** Build the image and smoke-test it locally, without model credentials:
 
-- **Health checks:** `GET /health/live` and `GET /health/ready`.
-- **Logs:** Structured JSON on stdout/stderr (request bodies and secrets are omitted).
-- **OpenTelemetry:** Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export traces and metrics over OTLP/HTTP.
+  ```sh
+  docker build --tag brain:local-dev .
+  node scripts/container-smoke.mjs
+  ```
 
-To build and smoke-test the container image locally (no model credentials needed):
+  In production, mount your config at `/config/brain.json`, set `listen` to `0.0.0.0:8080` and `data_dir` to `/data`, and mount a volume at `/data`.
 
-```powershell
-docker build --tag brain:local-dev .
-node scripts/container-smoke.mjs
-```
+## Development
 
-When running the container in production, mount your config at `/config/brain.json`, bind `listen` to `0.0.0.0:8080`, and mount `/data` for local state.
+Install dependencies and run every local check (needs Go 1.26+, Node.js 24+, and Python 3.11+):
 
-## Documentation
-
-The [`website/`](website/README.md) directory contains the Fumadocs site covering the HTTP API, events, configuration, SDKs, model catalog, and adapter interfaces:
-
-```powershell
-npm --prefix website ci --ignore-scripts
-npm --prefix website run dev
-```
-
-Then open `http://127.0.0.1:3000/docs`.
-
-## Development and checks
-
-Run the full test and verification suite (requires Go 1.26+, Node.js 24+, and Python 3.11+):
-
-```powershell
+```sh
 node scripts/setup.mjs
 node scripts/check.mjs
 ```
 
-This builds the Pi runner and TypeScript SDK, checks generated wire types and OpenAPI specs (`go run ./cmd/generate -check`), runs Go tests and `go vet`, tests both SDKs, runs the [end-to-end journey suite](tests/journeys/README.md), and builds and verifies the docs site.
+`check.mjs` builds the Pi runner and TypeScript SDK, checks generated wire types and the OpenAPI document (`go run ./cmd/generate -check`), runs Go tests and `go vet`, tests the Pi runner, both SDKs, and the sandbox service, runs the [end-to-end journeys](tests/journeys/README.md) and the platform example tests, and builds and tests the [docs site](website/README.md). To preview the docs site after setup, run `npm --prefix website run dev` and open `http://127.0.0.1:3000/docs`.
 
-CI also runs Linux race detection, real PostgreSQL, container smoke tests, sandbox service tests, platform configuration/Worker tests, and CodeQL for every source language. Every gate must pass before publication. Main publishes tested images to `ghcr.io/aexhq/brain` and `ghcr.io/aexhq/brain-sandbox-tools`, tagged by commit SHA with provenance, and deploys the tested Fumadocs export to GitHub Pages. Pin production images by digest. No compatibility/versioned API layer is introduced.
+CI runs `check.mjs` on Linux and Windows, plus Linux race detection, tests against a real PostgreSQL, container smoke tests for both images, and CodeQL for Go, JavaScript/TypeScript, Python, and GitHub Actions. Nothing publishes unless every job passes. Each push to `main` publishes the tested images to `ghcr.io/aexhq/brain` and `ghcr.io/aexhq/brain-sandbox-tools`, tagged `sha-<commit>` and `main` with build provenance attestations, and deploys the tested docs site to GitHub Pages. Brain has no versioned API or compatibility layer, so pin production images by digest.
 
-Pi is the supported harness. [Codex/OpenCode feasibility results](docs/research/harness-probes.md) explain the remaining controls required before those adapters can claim the same recovery and tool guarantees. Live cloud support and local fixtures are distinguished in the integration evidence; thousand-session fleet capacity has not been claimed from local tests.
+## Project
 
-## Project docs
+> [!NOTE]
+> Pi is the supported harness. The [Codex and OpenCode feasibility results](docs/research/harness-probes.md) list the controls those adapters still need before they can offer the same recovery and tool guarantees. The [integration evidence](docs/research/qualification.md) separates integrations tested against live cloud services from those covered by local fixtures. Local tests don't establish thousand-session fleet capacity, and the project doesn't claim it.
 
-- [Architecture ADR](docs/adr/0001-local-first-session-server.md) — ownership boundaries and design decisions
-- [Roadmap](docs/roadmap.md) — release milestones from local preview (R0) to operational release (R4)
-- [Implementation plan](docs/implementation-plan.md) — work breakdown across runtime, persistence, harnesses, tools, API, and operations
+The [architecture ADR](docs/adr/0001-local-first-session-server.md) records ownership boundaries and design decisions. The [roadmap](docs/roadmap.md) tracks release stages from local preview (R0) to operational release (R4), and the [implementation plan](docs/implementation-plan.md) breaks the work down across runtime, persistence, harnesses, tools, API, and operations.
+
+<p align="center">
+<a href="docs/adr/0001-local-first-session-server.md">Architecture ADR</a> ·
+<a href="docs/roadmap.md">Roadmap</a> ·
+<a href="docs/implementation-plan.md">Implementation plan</a> ·
+<a href="docs/research/qualification.md">Integration evidence</a> ·
+<a href="LICENSE">MIT license</a> ·
+<a href="https://github.com/aexhq/brain/issues">Issues</a>
+</p>
