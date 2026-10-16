@@ -36,7 +36,7 @@ func TestExternalApprovalAndDelegatedInspection(t *testing.T) {
 	defer registry.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	scope := tools.Scope{Tenant: "a", Session: sessionID, Call: core.ID(), BrainURL: brain.URL, InspectionToken: "scoped-token"}
+	scope := core.ToolScope{Tenant: "a", Session: sessionID, Call: core.ID(), BrainURL: brain.URL, InspectionToken: "scoped-token"}
 	inspected := registry.Call(ctx, scope, core.Call{Name: "inspect_session", Arguments: json.RawMessage(`{}`)}, nil)
 	if inspected.IsError || len(inspected.Content) != 1 {
 		t.Fatalf("inspection failed: %+v", inspected)

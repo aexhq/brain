@@ -57,7 +57,7 @@ func TestStorageJourneyAndTenantIsolation(t *testing.T) {
 	}
 	defer registry.Close()
 	call := func(name, args string) core.Result {
-		return registry.Call(context.Background(), tools.Scope{Tenant: "a", Session: "session", Call: "call"}, core.Call{Name: name, Arguments: json.RawMessage(args)}, nil)
+		return registry.Call(context.Background(), core.ToolScope{Tenant: "a", Session: "session", Call: "call"}, core.Call{Name: name, Arguments: json.RawMessage(args)}, nil)
 	}
 	if got := call("storage_write", `{"key":"note.txt","text":"hello"}`); got.IsError {
 		t.Fatal(got)
@@ -65,7 +65,7 @@ func TestStorageJourneyAndTenantIsolation(t *testing.T) {
 	if got := call("storage_read", `{"key":"note.txt"}`); got.IsError || !strings.Contains(got.Content[0].Text, "hello") {
 		t.Fatal(got)
 	}
-	if got := service.storage(context.Background(), "/storage_read", tools.Request{Scope: tools.Scope{Tenant: "b"}, Arguments: json.RawMessage(`{"key":"note.txt"}`)}); !got.IsError {
+	if got := service.storage(context.Background(), "/storage_read", tools.Request{ToolScope: core.ToolScope{Tenant: "b"}, Arguments: json.RawMessage(`{"key":"note.txt"}`)}); !got.IsError {
 		t.Fatal("cross tenant read")
 	}
 	if got := call("storage_read", `{"key":"../escape"}`); !got.IsError {

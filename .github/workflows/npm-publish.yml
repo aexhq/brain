@@ -1,0 +1,116 @@
+name: Publish SDKs
+on:
+  workflow_dispatch:
+    inputs:
+      ci_run:
+        description: Main push CI run containing the tested SDK archives
+        type: string
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: sdk-publication
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: npm-production
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+      - name: Require the exact verified main commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CI_RUN: ${{ inputs.ci_run }}
+        run: node scripts/validate-sdk-release.mjs
+
+  npm:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: sdk-packages
+          path: dist/sdk
+          run-id: ${{ inputs.ci_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: npm install --global npm@11.19.0
+      - name: Publish and verify the tested npm archive
+        env:
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: node scripts/publish-sdk.mjs npm publish
+      - name: Install from the public registry
+        run: |
+          version=$(node -p 'require("./dist/sdk/release.json").version')
+          mkdir -p "$RUNNER_TEMP/brain-npm-consumer"
+          cd "$RUNNER_TEMP/brain-npm-consumer"
+          npm install --ignore-scripts --no-audit --no-fund --save-exact "@aexhq/brain@$version"
+          node --input-type=module -e 'import {Brain, BrainError} from "@aexhq/brain"; if (!Brain || !BrainError) throw Error("missing SDK exports")'
+
+  pypi:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: pypi
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: sdk-packages
+          path: dist/sdk
+          run-id: ${{ inputs.ci_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Check immutable versions and select missing distributions
+        id: prepare
+        env:
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: node scripts/publish-sdk.mjs pypi prepare
+      - if: steps.prepare.outputs.publish == 'true'
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
+        with:
+          packages-dir: dist/pypi-upload/
+      - name: Verify public Python distributions
+        env:
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: node scripts/publish-sdk.mjs pypi verify
+      - name: Install from the public registry
+        run: |
+          version=$(node -p 'require("./dist/sdk/release.json").version')
+          python -m venv "$RUNNER_TEMP/brain-python-consumer"
+          "$RUNNER_TEMP/brain-python-consumer/bin/python" -m pip install --no-deps "aex-brain==$version"
+          "$RUNNER_TEMP/brain-python-consumer/bin/python" -I -c 'from brain import Brain, BrainError; from brain.types import Session'

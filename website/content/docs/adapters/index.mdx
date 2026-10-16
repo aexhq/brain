@@ -3,7 +3,7 @@ title: Adapter overview
 description: Extend Brain with custom harness runners, external tool services, and persistence backends.
 ---
 
-Brain keeps its session coordinator (`internal/session`) small by delegating model execution, tool execution, and external durability to three extension boundaries.
+Brain keeps its session coordinator (`internal/session`) small by delegating model execution, tool execution, and external durability to explicit extension boundaries.
 
 <Cards>
   <Card title="Harness adapters" href="/docs/adapters/harness">
@@ -22,13 +22,26 @@ Brain keeps its session coordinator (`internal/session`) small by delegating mod
 | Boundary | Go interface / protocol | When to build one | Built-in implementations |
 | --- | --- | --- | --- |
 | **Harness** | `harness.Factory` and `harness.Runner` (`internal/harness`), or newline-delimited JSON over `stdin`/`stdout` (`harness.ProcessFactory`). | You want to run a different agent loop, prompt compaction strategy, or runtime behind Brain's session API. | `pi` (`runners/pi`, a Node.js child process wrapping `@earendil-works/pi-coding-agent` via `harness.ProcessFactory`). |
-| **Tool service** | [HTTP JSON / SSE tool protocol](/docs/tools) and [MCP Streamable HTTP](/docs/tools/mcp) (`internal/tools`). | You want to expose external tools, sandboxes, resource gates, or operator approvals in any language without changing Brain. | `tools.Registry` (`internal/tools/http.go` and `internal/tools/mcp.go`), plus reference services in `examples/tools`, `services/sandbox`, and `services/resources`. |
+| **Tool service** | [HTTP JSON / SSE tool protocol](/docs/tools) and [MCP Streamable HTTP](/docs/tools/mcp) (`internal/tools`). | You want to expose external tools, sandboxes, resource gates, or operator approvals in any language without changing Brain. | `tools.Registry` (`internal/tools/registry.go`, with HTTP and MCP transports), plus reference services in `examples/tools`, `services/sandbox`, and `services/resources`. |
 | **Persistence** | `persistence.Objects` and `persistence.Metadata` (`internal/persistence`). | You want to publish checkpoint blocks or index session metadata in a storage backend not covered by the built-in drivers. | **Checkpoint object stores (`persistence.Objects`):** `filesystem`, `s3`, `r2`, and `gcs`.<br />**External metadata index (`persistence.Metadata`):** PostgreSQL (`postgres_env`). |
+
+## Coordinator contracts
+
+`session.Repository`, `session.ToolExecutor`, and `session.Checkpoints` contain only
+operations used by the session owner. `cmd/brain` constructs concrete implementations
+and owns their shutdown. The HTTP API depends only on `api.Catalog` for tool discovery.
+These Go extension points live under `internal/` and require a source build.
+
+`tools.Registry` owns authorization, schemas, deadlines, inspection delegation,
+and output policy. `tools.Transport` owns one call's wire protocol and connection
+cleanup. `tools.NewWithTransports` accepts compiled transport implementations;
+adding a protocol does not change scheduling. External tools still use HTTP/SSE/MCP
+without changing Go code.
 
 ## How each boundary plugs in
 
 1. **External tool services** run out of process over HTTP JSON, `text/event-stream`, or MCP Streamable HTTP (`mcp_tool`). You bind them directly in the `"tools"` array of your configuration file without modifying or recompiling Brain.
 2. **Harness runners** can be plugged in as external child processes under `"harnesses"` (speaking the `RunnerFrame` stdio protocol implemented by `harness.ProcessFactory`) or compiled into the binary by implementing `harness.Factory` in `internal/harness`.
-3. **Persistence adapters** live in `internal/persistence` and are wired into `persistence.NewObjects` and `persistence.NewPostgres` from the `"persistence"` configuration block. Local durability always uses SQLite metadata (`metadata.sqlite`) plus append-only `events.jsonl` and `native/` files in `data_dir`.
+3. **Persistence adapters** live in `internal/persistence` and are wired into `persistence.NewObjects` and `persistence.NewPostgres` from the `"persistence"` configuration block. The default local database is SQLite (`store.SQLite`); a compiled replacement implements `store.Metadata` and is supplied through `store.New`. Append-only `events.jsonl` and `native/` files remain in the local `data_dir`.
 
 See [Harness adapters](/docs/adapters/harness), [Persistence adapters](/docs/adapters/persistence), and [Go interfaces](/docs/adapters/interfaces) for implementation details and contract requirements.

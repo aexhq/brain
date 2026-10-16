@@ -5,17 +5,16 @@ description: Create sessions, send messages, and stream events with the zero-dep
 
 `Brain` is a synchronous Python 3.11+ client built entirely on the Python standard library (`urllib.request`, `json`). It requires no third-party packages.
 
-## Install from the repository
+## Install
 
-The Python SDK lives in `sdks/python` inside the repository and is not published to PyPI. Point `PYTHONPATH` at `sdks/python` from the repository root before running your code:
-
-```sh tab="macOS / Linux"
-export PYTHONPATH="sdks/python"
+```sh
+python -m pip install aex-brain==1.0.0
 ```
 
-```powershell tab="Windows"
-$env:PYTHONPATH = "sdks/python"
-```
+The distribution is named `aex-brain`; the import package is `brain`. Wheels and
+source distributions include generated types and the PEP 561 `py.typed` marker.
+No checkout or `PYTHONPATH` setting is needed. Pin the client and matching server
+commit from the release workflow.
 
 ## Create a client
 
@@ -58,7 +57,7 @@ accepted = brain.send(session["id"], {
 
 Call `observe(session_id)` to receive a synchronous generator over SSE frames. Always close the generator in a `finally` block (or with `contextlib.closing`) when you break out of the loop early so the underlying HTTP socket closes cleanly.
 
-Run this script from the repository root while Brain is running (see `examples/session.py` for the CLI version):
+Run this script while Brain is running (see `examples/session.py` for the CLI version):
 
 ```python
 import os

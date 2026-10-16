@@ -41,7 +41,10 @@ func (e *Engine) flush(ctx context.Context, id string) (core.SyncStatus, error) 
 	a.mu.Lock()
 	snapshot := persistence.Snapshot{Session: clone(a.meta), HistoryBytes: a.log.Size()}
 	a.mu.Unlock()
-	snapshot.Directory, _ = e.opts.Store.Dir(id)
+	snapshot.Directory, err = e.opts.Store.Dir(id)
+	if err != nil {
+		return core.SyncStatus{}, err
+	}
 	m, err := e.opts.Archive.Publish(ctx, snapshot)
 	if err != nil {
 		return core.SyncStatus{}, err
@@ -76,7 +79,10 @@ func (e *Engine) SyncStatus(ctx context.Context, g core.Grant, id string) (core.
 	if err != nil {
 		return core.SyncStatus{}, err
 	}
-	dir, _ := e.opts.Store.Dir(id)
+	dir, err := e.opts.Store.Dir(id)
+	if err != nil {
+		return core.SyncStatus{}, err
+	}
 	m, err := persistence.ReadState(dir)
 	if err != nil {
 		return core.SyncStatus{}, err
@@ -181,7 +187,10 @@ func (e *Engine) hydrate(ctx context.Context, g core.Grant, id, reference string
 	if m.Session.Status != "closed" {
 		m.Session.Status = "interrupted"
 	}
-	dir, _ := e.opts.Store.Dir(id)
+	dir, err := e.opts.Store.Dir(id)
+	if err != nil {
+		return core.Session{}, err
+	}
 	if err := os.MkdirAll(filepath.Dir(dir), 0700); err != nil {
 		return core.Session{}, err
 	}

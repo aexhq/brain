@@ -182,3 +182,12 @@ type Grant struct {
 func (g Grant) Allows(s Session) bool {
 	return g.Tenant == s.Tenant && (g.Session == "" || g.Session == s.ID)
 }
+
+// ToolScope is authenticated host context, never model-provided arguments.
+type ToolScope struct {
+	Tenant          string `json:"tenant_id"`
+	Session         string `json:"session_id"`
+	Call            string `json:"call_id"`
+	InspectionToken string `json:"inspection_token,omitempty"`
+	BrainURL        string `json:"brain_url,omitempty"`
+}

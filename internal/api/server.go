@@ -16,16 +16,18 @@ import (
 	"github.com/aexhq/brain/internal/core"
 	"github.com/aexhq/brain/internal/session"
 	"github.com/aexhq/brain/internal/telemetry"
-	"github.com/aexhq/brain/internal/tools"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 )
 
+// Catalog is the only tool dependency of the HTTP API.
+type Catalog interface{ Catalog(string) []core.Tool }
+
 type Server struct {
 	Engine  *session.Engine
-	Tools   *tools.Registry
+	Tools   Catalog
 	Auth    *Auth
 	Limits  config.Limits
 	Metrics *telemetry.Metrics

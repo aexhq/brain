@@ -5,28 +5,23 @@ description: Create sessions, send messages, and stream events in Node.js 24+ wi
 
 `Brain` is a zero-dependency TypeScript client for the Brain HTTP API and server-sent event (SSE) streams. It runs on Node.js 24+ using standard `fetch` and `AsyncGenerator` streams.
 
-## Install and build
+## Install
 
-The TypeScript SDK lives in `sdks/typescript` inside the repository and is not published to npm. Install its build dependencies and compile it from the repository root before importing:
-
-```sh tab="macOS / Linux"
-npm --prefix sdks/typescript ci --ignore-scripts
-npm --prefix sdks/typescript run build
+```sh
+npm install --save-exact @aexhq/brain@1.0.0
 ```
 
-```powershell tab="Windows"
-npm --prefix sdks/typescript ci --ignore-scripts
-npm --prefix sdks/typescript run build
-```
-
-Compiling writes `sdks/typescript/dist/index.js` and `sdks/typescript/dist/index.d.ts`.
+JavaScript and TypeScript use the same ESM package, including generated type declarations.
+No checkout or compilation is needed. Version 1 replaces the predecessor's incompatible
+0.x SDK; use it with the current Go session server. Pin the client and matching
+server commit from the release workflow.
 
 ## Create a client
 
 Pass the Brain server base URL and your bearer token to `new Brain(url, token, fetchImpl?)`:
 
 ```ts
-import { Brain } from './sdks/typescript/dist/index.js';
+import { Brain } from '@aexhq/brain';
 
 const brain = new Brain('http://127.0.0.1:8080', process.env.BRAIN_API_KEY!);
 ```
@@ -64,7 +59,7 @@ Call `observe(session.id)` to iterate over the session's SSE stream. Brain repla
 Run this `.mjs` script from the repository root while Brain is running (see `examples/session.mjs` for the CLI version):
 
 ```js
-import { Brain } from './sdks/typescript/dist/index.js';
+import { Brain } from '@aexhq/brain';
 
 const brain = new Brain('http://127.0.0.1:8080', process.env.BRAIN_API_KEY);
 const session = await brain.create({
@@ -128,7 +123,7 @@ Live-only events (`assistant.delta` and `tool.progress`) do not carry a `cursor`
 Non-2xx HTTP responses throw `BrainError`:
 
 ```ts
-import { Brain, BrainError } from './sdks/typescript/dist/index.js';
+import { Brain, BrainError } from '@aexhq/brain';
 
 try {
   await brain.send(session.id, { type: 'user.message', text: 'Continue.' });

@@ -94,7 +94,10 @@ func (s *syncer) scan(ctx context.Context) error {
 			if known {
 				continue
 			}
-			dir, _ := s.engine.opts.Store.Dir(session.ID)
+			dir, err := s.engine.opts.Store.Dir(session.ID)
+			if err != nil {
+				return err
+			}
 			state, err := persistence.ReadState(dir)
 			if err != nil {
 				return err

@@ -9,10 +9,10 @@ A session is one agent conversation that belongs to one tenant. You [create a se
 
 ## Before you begin
 
-The examples use a client for the `local` tenant from the [Quickstart](/docs/quickstart). Build the TypeScript SDK or set `PYTHONPATH=sdks/python` as described there, and run your code from the repository root.
+The examples use a client for the `local` tenant from the [Quickstart](/docs/quickstart). Install the JavaScript/TypeScript or Python package as described there.
 
 ```ts tab="TypeScript"
-import { Brain } from "./sdks/typescript/dist/index.js";
+import { Brain } from "@aexhq/brain";
 
 const brain = new Brain("http://127.0.0.1:8080", process.env.BRAIN_API_KEY!);
 ```

@@ -1,7 +1,16 @@
 {
   "name": "@aexhq/brain",
-  "private": true,
+  "version": "1.0.0",
+  "description": "Typed client for Brain sessions, tools, checkpoints, and event streams",
+  "license": "MIT",
+  "homepage": "https://aexhq.github.io/brain/docs/sdks/typescript/",
+  "repository": { "type": "git", "url": "git+https://github.com/aexhq/brain.git", "directory": "sdks/typescript" },
+  "bugs": { "url": "https://github.com/aexhq/brain/issues" },
+  "engines": { "node": ">=24" },
+  "files": ["dist", "README.md", "LICENSE"],
+  "publishConfig": { "access": "public" },
   "type": "module",
+  "types": "./dist/index.d.ts",
   "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
   "scripts": { "build": "tsc", "check": "tsc --noEmit", "test": "node --test test/*.test.mjs" },
   "devDependencies": { "typescript": "5.9.3" }

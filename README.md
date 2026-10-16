@@ -24,7 +24,7 @@ Brain is an open-source server that runs AI agent sessions behind an authenticat
 - **Checkpoints**, saved session state that Brain can upload to external storage to recover or move a session.
 
 ```ts
-import { Brain } from "./sdks/typescript/dist/index.js";
+import { Brain } from "@aexhq/brain";
 
 const brain = new Brain("http://127.0.0.1:8080", process.env.BRAIN_API_KEY!);
 const session = await brain.create({ harness: "pi", config: { model: "openai/gpt-4.1-mini", tools: ["echo"] } });
@@ -51,7 +51,7 @@ Brain runs the Pi harness in a child process on its own host. `echo` runs in a t
 
 ## Get started
 
-You need Go 1.26+, Node.js 24+, and an OpenAI API key. Brain and its SDKs aren't published to npm or PyPI; you build them from this repository.
+The SDKs install from npm (`@aexhq/brain`) and PyPI (`aex-brain`); client applications do not need a checkout or Go. To build the server yourself, you need Go 1.26+, Node.js 24+, and a model provider key. You can also run the published [container image](https://github.com/aexhq/brain/pkgs/container/brain).
 
 Build the Pi runner and start Brain:
 
@@ -65,12 +65,11 @@ export OPENAI_API_KEY="your-provider-key"
 go run ./cmd/brain -config examples/local.json
 ```
 
-In a second terminal, build the TypeScript SDK and run the example session:
+In a second terminal, install the JavaScript/TypeScript SDK and run the example session:
 
 ```sh
 export BRAIN_API_KEY="replace-with-a-random-token-of-at-least-24-bytes"
-npm --prefix sdks/typescript ci --ignore-scripts
-npm --prefix sdks/typescript run build
+npm install --no-save --package-lock=false @aexhq/brain@1.0.0
 node examples/session.mjs "Explain what makes a good agent tool."
 ```
 
@@ -145,7 +144,7 @@ node scripts/check.mjs
 
 `check.mjs` builds the Pi runner and TypeScript SDK, checks generated wire types and the OpenAPI document (`go run ./cmd/generate -check`), runs Go tests and `go vet`, tests the Pi runner, both SDKs, and the sandbox service, runs the [end-to-end journeys](tests/journeys/README.md) and the platform example tests, and builds and tests the [docs site](website/README.md). To preview the docs site after setup, run `npm --prefix website run dev` and open `http://127.0.0.1:3000/docs`.
 
-CI runs `check.mjs` on Linux and Windows, plus Linux race detection, tests against a real PostgreSQL, container smoke tests for both images, and CodeQL for Go, JavaScript/TypeScript, Python, and GitHub Actions. Nothing publishes unless every job passes. Each push to `main` publishes the tested images to `ghcr.io/aexhq/brain` and `ghcr.io/aexhq/brain-sandbox-tools`, tagged `sha-<commit>` and `main` with build provenance attestations, and deploys the tested docs site to GitHub Pages. Brain has no versioned API or compatibility layer, so pin production images by digest.
+CI runs `check.mjs` on Linux and Windows, plus Linux race detection, tests against a real PostgreSQL, container smoke tests for both images, and CodeQL for Go, JavaScript/TypeScript, Python, and GitHub Actions. Nothing publishes unless every job passes. Each push to `main` publishes the tested images to `ghcr.io/aexhq/brain` and `ghcr.io/aexhq/brain-sandbox-tools`, tagged `sha-<commit>` and `main` with build provenance attestations, and deploys the tested docs site to GitHub Pages. Brain has no versioned server API or compatibility layer, so pin production images by digest. A successful main CI run also publishes the tested SDK archives through registry trusted publishing. SDK 1.0.0 replaces the incompatible predecessor 0.x API; pin client versions and the matching server commit. See [SDK delivery](docs/sdk-releases.md).
 
 ## Project
 

@@ -1,4 +1,4 @@
-import { Brain } from "../sdks/typescript/dist/index.js";
+import { Brain } from ".@aexhq/brain";
 
 if (!process.env.BRAIN_API_KEY) throw new Error("Set BRAIN_API_KEY before running this example");
 const brain = new Brain("http://127.0.0.1:8080", process.env.BRAIN_API_KEY);

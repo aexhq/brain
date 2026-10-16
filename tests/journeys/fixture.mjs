@@ -6,9 +6,11 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import { promisify } from "node:util";
-import { Brain, BrainError } from "../../sdks/typescript/dist/index.js";
+const requireSDK = createRequire(new URL("../../bin/sdk-consumer/package.json", import.meta.url));
+const { Brain, BrainError } = await import(pathToFileURL(requireSDK.resolve("@aexhq/brain")).href);
 
 export { Brain, BrainError, delay };
 export const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -274,10 +276,9 @@ export async function fixture(t, binaries, options = {}) {
       return { operator, pending: async () => (await (await operator()).json()).approvals };
     },
     async python(script, extra = {}) {
-      // A .bat launcher is common on Windows; only these fixed arguments enter
-      // the shell. All dynamic values are passed through environment variables.
-      const args = [path.relative(root, script)];
-      const proc = startProcess("python", args, { ...env, PYTHONPATH: path.join(root, "sdks/python"), JOURNEY_URL: url, ...extra }, { shell: process.platform === "win32" });
+      const executable = path.join(root, "bin/sdk-python", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
+      const args = ["-I", script];
+      const proc = startProcess(executable, args, { ...env, PYTHONPATH: "", JOURNEY_URL: url, ...extra });
       processes.push(proc);
       const ended = await until(() => proc.ended, Boolean, "Python SDK journey", 30000);
       assert.equal(ended.code, 0, proc.output);

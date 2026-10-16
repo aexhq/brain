@@ -14,3 +14,6 @@ updates:
   - package-ecosystem: docker
     directories: [/, /services/sandbox]
     schedule: { interval: weekly }
+  - package-ecosystem: pip
+    directories: [/sdks/python, /scripts]
+    schedule: { interval: weekly }

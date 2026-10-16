@@ -39,7 +39,7 @@ node scripts/check.mjs
 5. `npm --prefix runners/pi test` — runs Pi runner unit and integration tests against a local recording provider.
 6. `npm --prefix sdks/typescript test` — runs the TypeScript SDK test suite.
 7. `npm --prefix services/sandbox test` — runs the sandbox tool service test suite.
-8. `python -m unittest discover -s sdks/python -p test_*.py` — runs the Python SDK test suite (`PYTHONPATH=sdks/python`).
+8. The Python unit suite runs against the installed wheel from `bin/sdk-consumer/python` using `bin/sdk-python`.
 9. `node --test tests/journeys/journeys.test.mjs` — runs the end-to-end process journeys.
 10. `node --test tests/platforms.test.mjs` — validates the platform deployment examples under `examples/platforms/`.
 11. `npm --prefix website run build` and `npm --prefix website test` — generates derived docs pages, builds the static Next.js / Fumadocs export, and runs `website/scripts/site.test.mjs`.
@@ -88,3 +88,7 @@ Do not hand-edit generated files (`api/openapi.json`, `runners/pi/src/generated.
 | Resource service guide | `services/resources/README.md` | `npm --prefix website run generate` |
 | Platform examples guide | `examples/platforms/README.md` | `npm --prefix website run generate` |
 | Docs pages & guides | `website/content/docs/**/*.mdx` | `npm --prefix website run build` |
+
+## Package verification
+
+`check.mjs` also runs `node scripts/package-sdks.mjs`: it builds npm, wheel, and sdist artifacts, installs all three, checks exported types, and runs client tests. The journeys then use the installed clients. Publishing reuses the tested Linux archives and waits for all CI checks.

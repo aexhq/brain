@@ -5,6 +5,21 @@ description: Object storage and metadata indexing interfaces for background chec
 
 Persistence adapters implement two small Go interfaces in `internal/persistence`: `Objects` for immutable checkpoint blocks and manifests, and `Metadata` for optional cross-instance session discovery (see [Go interfaces](/docs/adapters/interfaces)).
 
+## Authoritative local database
+
+`store.Metadata` is separate from the eventual `persistence.Metadata` index. Its
+`Create`, `Get`, `Save`, `List`, `Scan`, and `Import` operations must preserve durable
+writes and tenant ownership. `List` and host-only `Scan` page by ascending ID.
+`Save` cannot create a missing record; `Import` cannot transfer a session to another
+tenant. All operations honor context cancellation.
+
+`store.SQLite` is the built-in implementation. `store.New(root, metadata)` combines
+an adapter with local session files and takes ownership of its lifecycle. It
+prepares native directories before creating metadata; a database failure propagates
+to the caller. Run `internal/store/metadata_test.go` against each implementation,
+plus the restart/recovery journeys. A remote SQL database alone does not provide
+session placement, distributed ownership, or remote native files.
+
 ## Built-in implementations
 
 | Interface | Purpose | Built-in implementations |
