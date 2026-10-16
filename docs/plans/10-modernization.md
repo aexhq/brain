@@ -1,6 +1,6 @@
 # 10: Published clients and subsystem boundaries
 
-Status: implemented and locally verified; registry publication and rollout pending. Authorized 2026-10-16.
+Status: merged in PR #269; main CI, images, and docs deployed. npm 1.0.0 accepted and publicly available; tested Python wheel published on GitHub Releases. PyPI is blocked on account-side trusted-publisher setup. Authorized 2026-10-16.
 
 ## Findings and decisions
 
@@ -80,3 +80,17 @@ requires its configured reviewer. CI therefore dispatches SDK publication at a
 commit tag after images and docs succeed. This preserves that protection and
 keeps provenance tied to the verified source even if main advances. The first
 PyPI upload needs account-side pending-publisher setup; it is not counted as passed.
+
+## Rollout evidence
+
+Commit `67afdc3d6403d101af22d3bce3dd8c6c79cb4557` passed main CI run
+[38858353063](https://github.com/aexhq/brain/actions/runs/38858353063). Both published
+GHCR images were pulled and smoke-tested; the deployed docs, SDK guides, and
+adapter reference were fetched and verified. The [1.0.0 release](https://github.com/aexhq/brain/releases/tag/release/sha-67afdc3d6403d101af22d3bce3dd8c6c79cb4557)
+contains the exact tested npm, wheel, and sdist archives plus their source manifest.
+
+The first npm upload succeeded but the immediate availability check saw a 404
+while the registry processed it. Read-only verification now polls with a bounded
+attempt count, without republishing. PyPI explicitly returned `invalid-publisher`:
+no matching publisher exists for the repository/workflow/environment. The Python
+install guide therefore uses the published wheel URL and labels PyPI as pending.

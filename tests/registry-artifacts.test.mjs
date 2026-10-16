@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { missingArtifacts } from '../scripts/registry-artifacts.mjs';
+import { missingArtifacts, waitForArtifacts } from '../scripts/registry-artifacts.mjs';
 import { validateRelease } from '../scripts/validate-sdk-release.mjs';
 
 test('release admission rejects PR runs, another source, and failed verification or deployment', () => {
@@ -34,4 +34,17 @@ test('publication distinguishes missing versions, immutable matches, partial upl
     await assert.rejects(missingArtifacts(registry, release, directory, request('different bytes')), /bump both SDK versions/);
   }
   assert.deepEqual(await missingArtifacts('pypi', release, directory, async url => url.startsWith('https://files.test/') ? new Response('tested bytes') : Response.json({ urls: [{ filename: 'sdk.whl', url: 'https://files.test/sdk.whl' }] })), ['sdk.tar.gz']);
+
+  let reads = 0, waits = 0;
+  const pause = async () => { waits++; };
+  const request = async url => {
+    if (url.startsWith('https://files.test/')) return new Response('tested bytes');
+    if (++reads < 3) return new Response('', { status: 404 });
+    return Response.json({ dist: { tarball: 'https://files.test/sdk' } });
+  };
+  await waitForArtifacts('npm', release, directory, { request, pause, attempts: 3 });
+  assert.equal(reads, 3);
+  assert.equal(waits, 2);
+  await assert.rejects(waitForArtifacts('npm', release, directory, { request: async () => new Response('', { status: 404 }), pause, attempts: 2 }), /verification deadline/);
+  await assert.rejects(waitForArtifacts('npm', release, directory, { request: async () => new Response('', { status: 503 }), pause, attempts: 2 }), /HTTP 503/);
 });

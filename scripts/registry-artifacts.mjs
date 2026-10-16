@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 // A 404 means unpublished. Auth failures, outages, and version reuse must fail.
 export async function missingArtifacts(registry, release, directory, request = fetch) {
@@ -26,4 +27,14 @@ export async function missingArtifacts(registry, release, directory, request = f
       `${file} already exists with different bytes; bump both SDK versions`);
   }
   return missing;
+}
+
+// Registries acknowledge uploads before public metadata becomes visible. Poll
+// only reads; never repeat a publish. Outages and byte mismatches still fail fast.
+export async function waitForArtifacts(registry, release, directory, { request = fetch, pause = delay, attempts = 20 } = {}) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if ((await missingArtifacts(registry, release, directory, request)).length === 0) return;
+    if (attempt + 1 < attempts) await pause(15000);
+  }
+  throw new Error(`${registry} did not expose the tested distributions before the verification deadline`);
 }
