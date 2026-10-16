@@ -5,15 +5,16 @@ description: A minimal and extensible agent server for building agent applicatio
 
 import { BookOpen, MessagesSquare, Rocket, Wrench } from 'lucide-react';
 
-Brain is an open-source agent server with session-oriented primitives for building agent applications. Your application starts sessions, streams what the agent does, and connects tools from its own services. Brain runs the agent loop and keeps every session durable and recoverable.
+Brain is a single application you deploy as a service to run the agents behind your products. It's an open-source alternative to Claude Managed Agents and the OpenAI Agents SDK, running on your own infrastructure with the models you choose.
 
 | Approach | What it is | Best for |
 | --- | --- | --- |
 | **Model API** | Direct requests to a model provider. You write the agent loop, tool dispatch, and conversation storage. | Single completions, or full control over every model call. |
-| **Agent library** | An agent loop that runs inside your application process. | Agents that one process can run from start to finish. |
-| **Brain** | An agent server that runs sessions for your application: the agent loop, the event history, tool calls, and recovery. | Long-running sessions for many customers, with tools in your own services. |
+| **Agent library** | An agent loop that runs inside your application process, such as the OpenAI Agents SDK. | Agents that one process can run from start to finish. |
+| **Managed agent service** | A hosted agent loop and session service that runs on the provider's infrastructure, such as Claude Managed Agents. | Long-running tasks and asynchronous work, without operating your own infrastructure. |
+| **Brain** | An open-source agent server you deploy yourself. It runs sessions for your applications: the agent loop, the event history, tool calls, and recovery. | Long-running sessions for many customers, with tools in your own services and state on your own infrastructure. |
 
-Your backend creates a session, sends messages, and streams events. Brain runs the harness (the agent loop that calls the model and manages context), records every event, and sends tool calls to services you run. Sessions outlive client connections and server restarts, so you can reconnect to a session, interrupt it, and resume it later.
+Brain gives you session-oriented primitives for building agents. Your backend creates a session, sends messages, and streams events. Brain runs the harness (the agent loop that calls the model and manages context), records every event, and sends tool calls to services you run. Sessions outlive client connections and server restarts, so you can reconnect to a session, interrupt it, and resume it later.
 
 <Cards>
   <Card icon={<Rocket />} title="Quickstart" href="/docs/quickstart">Start Brain on your machine and run your first session.</Card>

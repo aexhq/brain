@@ -15,7 +15,9 @@
 <a href="https://aexhq.github.io/brain/docs/roadmap/">Roadmap</a>
 </p>
 
-Brain is an open-source agent server with session-oriented primitives for building agent applications. Your application starts sessions, streams what the agent does, and connects tools from its own services. Brain runs the agent loop and keeps every session durable and recoverable.
+Brain is a single application you deploy as a service to run the agents behind your products. It's an open-source alternative to Claude Managed Agents and the OpenAI Agents SDK, running on your own infrastructure with the models you choose.
+
+Brain gives you session-oriented primitives for building agents. Your application starts sessions, streams what the agent does, and connects tools from its own services, while Brain runs the agent loop and keeps every session durable and recoverable.
 
 - **[Sessions](https://aexhq.github.io/brain/docs/guides/sessions/)**: durable agent conversations that outlive connections and restarts.
 - **[Events](https://aexhq.github.io/brain/docs/reference/events/)**: an ordered record of what the agent does, streamed live or replayed.

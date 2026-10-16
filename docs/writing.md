@@ -40,7 +40,7 @@ Session configuration, as the levels describe it:
 ## Patterns
 
 - **L0:** Use one tagline everywhere: *A minimal and extensible agent server for building agent applications*. Change it in every L0 surface at once.
-- **L1:** Introduce each primitive as a bold, linked name plus one outcome clause. Present design choices as benefits. Show at most one short code example, and link every item to the page that owns its detail.
+- **L1:** Open the README and the Introduction with the same pitch, which places Brain next to products readers know: *Brain is a single application you deploy as a service to run the agents behind your products. It's an open-source alternative to Claude Managed Agents and the OpenAI Agents SDK.* Then introduce each primitive as a bold, linked name plus one outcome clause. Present design choices as benefits. Show at most one short code example, and link every item to the page that owns its detail.
 - **L2:** Use task-shaped headings ("Create a session"), numbered steps, and complete, runnable code. State the constraints the reader hits during the task as instructions. End with next steps.
 - **L3:** Use tables (`Field | Type | Required | Default | Description`). Give exact limits, defaults, status codes, and validation rules.
 - **L4:** For each item, say what you'll be able to do and what to do today. Label status as Available, Partly available, or Planned. Record how each integration was verified in the integration status table, and link to it from the integration's setup page.
