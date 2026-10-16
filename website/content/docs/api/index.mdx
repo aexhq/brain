@@ -1,38 +1,68 @@
 ---
 title: HTTP API
-description: Endpoints for sessions, event streams, checkpoints, and tools.
+description: Endpoints, authentication, request rules, pagination, and streaming for the Brain HTTP API.
 ---
 
-Endpoint pages are generated directly from Brain's Go route declarations and wire types. You can also download the raw [OpenAPI 3.1 spec](/openapi.json).
+Brain exposes a small JSON and server-sent events (SSE) HTTP API for creating sessions, sending messages, streaming events, and managing checkpoints. Every endpoint page is generated directly from Brain's Go route declarations and wire types (`internal/api/contract.go` and `internal/core/types.go`), and you can download the full [OpenAPI 3.1 contract](/openapi.json).
 
-## Making requests
+## Base URL and authentication
 
-The local server listens on `http://127.0.0.1:8080` by default. Send Bearer authentication on session and catalog requests and `Content-Type: application/json` for request bodies. Unknown JSON fields and trailing JSON data are rejected.
+By default, a local Brain server listens on `http://127.0.0.1:8080`.
 
-## Sessions
+- **Session and catalog endpoints:** Send `Authorization: Bearer <token>` on every request. Each token is bound to one tenant and optional session or permission scope (`manage` or `read_only`). Missing or invalid tokens return `401 forbidden` with `WWW-Authenticate: Bearer`. See [Authentication & tenants](/docs/guides/authentication).
+- **Health endpoints:** `GET /health/live` and `GET /health/ready` are public and require no authentication. See [Operations & observability](/docs/guides/operations).
 
-| Operation | Endpoint |
-| --- | --- |
-| [Create](/docs/api/generated/create) | `POST /sessions` |
-| [List](/docs/api/generated/list) | `GET /sessions` |
-| [Get](/docs/api/generated/get) | `GET /sessions/{id}` |
-| [Send / interrupt](/docs/api/generated/send) | `POST /sessions/{id}/events` |
-| [History / stream](/docs/api/generated/events) | `GET /sessions/{id}/events` |
-| [Resume](/docs/api/generated/resume) | `POST /sessions/{id}/resume` |
-| [Close](/docs/api/generated/close) | `POST /sessions/{id}/close` |
+```sh
+curl -sS http://127.0.0.1:8080/sessions \
+  -H "Authorization: Bearer $BRAIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "harness": "pi",
+    "config": {
+      "model": "openai/gpt-4.1-mini",
+      "tools": []
+    }
+  }'
+```
 
-## Persistence and tools
+## Request and response rules
 
-| Operation | Endpoint |
-| --- | --- |
-| [Flush](/docs/api/generated/flush) | `POST /sessions/{id}/flush` |
-| [Sync status](/docs/api/generated/sync) | `GET /sessions/{id}/sync` |
-| [Restore](/docs/api/generated/restore) | `POST /sessions/{id}/restore` |
-| [Tool catalog](/docs/api/generated/catalog) | `GET /catalog` |
+- **Content types:** Send `Content-Type: application/json` on `POST` requests with a body. Standard responses return `Content-Type: application/json`. Streaming responses from `GET /sessions/{id}/events` with `Accept: text/event-stream` return `Content-Type: text/event-stream`.
+- **Strict JSON decoding:** Request bodies must contain a single JSON object. Unknown JSON fields and trailing data after the root object are rejected with `400 invalid_request`.
+- **Body size limits:** Request bodies are capped at `limits.input_bytes + 16 KiB` (default `65536 + 16384` bytes). Larger payloads fail with `413 invalid_request`.
+- **Request IDs and tracing:** Every HTTP response includes an `X-Request-ID` header (and `X-Content-Type-Options: nosniff`). Error responses also echo `request_id` in the JSON body. If you send W3C `traceparent` headers, Brain propagates the trace context through session execution and outbound tool calls.
 
-Public health endpoints (`/health/live` and `/health/ready`) are covered in [Operations & observability](/docs/guides/operations).
+## Session endpoints
 
-## Pagination and streaming
+| Operation | Method & path | Auth scope | Status | Description |
+| --- | --- | --- | --- | --- |
+| [Create a session](/docs/api/generated/create) | `POST /sessions` | `manage: true` (tenant-wide) | `201` | Creates a session with a fixed harness, model, instructions, reasoning effort, and tool list. |
+| [List sessions](/docs/api/generated/list) | `GET /sessions` | Any valid token | `200` | Lists sessions belonging to the caller's tenant in ascending ID order. |
+| [Get a session](/docs/api/generated/get) | `GET /sessions/{id}` | Any valid token | `200` | Returns session metadata and current status (`idle`, `running`, `interrupted`, `failed`, or `closed`). Loads from external storage on a local cache miss. |
+| [Send input](/docs/api/generated/send) | `POST /sessions/{id}/events` | Write token (`read_only: false`) | `202` | Queues a `user.message` (returning the recorded `Event`) or requests an interruption with `user.interrupt` (returning `{"status": "interrupt_requested"}`). |
+| [Read or stream events](/docs/api/generated/events) | `GET /sessions/{id}/events` | Any valid token | `200` | Returns a JSON page of retained events, or streams retained history and live events over SSE when called with `Accept: text/event-stream`. |
+| [Resume a session](/docs/api/generated/resume) | `POST /sessions/{id}/resume` | `manage: true` | `200` | Moves an `interrupted` or `failed` session back to `idle` from its last completed checkpoint. |
+| [Close a session](/docs/api/generated/close) | `POST /sessions/{id}/close` | `manage: true` | `202` | Permanently closes a session and stops active or queued work. Event history remains readable. |
 
-- **Pagination:** List endpoints accept `limit` (`1`–`1000`, default `100`). Pass the last session ID as `after` on `GET /sessions`, or pass `next_cursor` (or the last retained event's `cursor`) as `after` on `GET /sessions/{id}/events`.
-- **SSE streaming:** Send `Accept: text/event-stream` to `GET /sessions/{id}/events` to replay retained history and stream live events. To resume after a disconnect, pass `?after=CURSOR` or `Last-Event-ID: CURSOR` (`after` takes precedence). See [Events & streaming](/docs/reference/events) and [Errors](/docs/reference/errors).
+## Persistence and tool endpoints
+
+| Operation | Method & path | Auth scope | Status | Description |
+| --- | --- | --- | --- | --- |
+| [Flush external state](/docs/api/generated/flush) | `POST /sessions/{id}/flush` | `manage: true` | `200` | Forces an immediate upload of local event history and the latest completed checkpoint to external storage and returns `SyncStatus`. |
+| [Read synchronization status](/docs/api/generated/sync) | `GET /sessions/{id}/sync` | Any valid token | `200` | Returns the latest published checkpoint reference, byte offsets, pending upload state, and any sync error. |
+| [Restore a checkpoint](/docs/api/generated/restore) | `POST /sessions/{id}/restore` | `manage: true` | `200` | Replaces settled local session state with a specific checkpoint from external storage. |
+| [List available tools](/docs/api/generated/catalog) | `GET /catalog` | Any valid token | `200` | Lists tool descriptors (`name`, `description`, `input_schema`, `output_schema`) enabled for the caller's tenant. |
+
+## Pagination
+
+`GET /sessions` and JSON requests to `GET /sessions/{id}/events` accept two query parameters:
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `limit` | integer | `100` | Maximum items to return (`1`–`1000`). Values outside this range return `400 invalid_request`. |
+| `after` | string | `""` | Cursor for the next page. On `GET /sessions`, pass the last session's `id`. On `GET /sessions/{id}/events`, pass `next_cursor` (or the last retained event's `cursor`). |
+
+## Streaming and errors
+
+- **Server-sent events:** Send `Accept: text/event-stream` to `GET /sessions/{id}/events` to replay retained history and stay connected for live events (`assistant.delta`, `tool.progress`, and subsequent turns). To reconnect after a network drop, pass `?after=CURSOR` or `Last-Event-ID: CURSOR` (`after` takes precedence when both are present). See [Events & streaming](/docs/reference/events) for the event envelope and SSE wire format.
+- **Errors:** Failed HTTP requests return a structured JSON body (`{"error": {"code": "...", "message": "..."}, "request_id": "..."}`). See [Errors](/docs/reference/errors) for status codes, retry headers, tool errors, and session error events.

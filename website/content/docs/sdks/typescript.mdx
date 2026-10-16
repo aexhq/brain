@@ -1,18 +1,67 @@
 ---
 title: TypeScript SDK
-description: Create sessions and stream events with an async iterator.
+description: Create sessions, send messages, and stream events in Node.js 24+ with the TypeScript client.
 ---
 
-The TypeScript client lives in `sdks/typescript` inside the repository. Build it before importing:
+`Brain` is a zero-dependency TypeScript client for the Brain HTTP API and server-sent event (SSE) streams. It runs on Node.js 24+ using standard `fetch` and `AsyncGenerator` streams.
 
-```sh
+## Install and build
+
+The TypeScript SDK lives in `sdks/typescript` inside the repository and is not published to npm. Install its build dependencies and compile it from the repository root before importing:
+
+```sh tab="macOS / Linux"
 npm --prefix sdks/typescript ci --ignore-scripts
 npm --prefix sdks/typescript run build
 ```
 
-## Example
+```powershell tab="Windows"
+npm --prefix sdks/typescript ci --ignore-scripts
+npm --prefix sdks/typescript run build
+```
 
-Run this `.mjs` script from the repository root while Brain is running:
+Compiling writes `sdks/typescript/dist/index.js` and `sdks/typescript/dist/index.d.ts`.
+
+## Create a client
+
+Pass the Brain server base URL and your bearer token to `new Brain(url, token, fetchImpl?)`:
+
+```ts
+import { Brain } from './sdks/typescript/dist/index.js';
+
+const brain = new Brain('http://127.0.0.1:8080', process.env.BRAIN_API_KEY!);
+```
+
+You can pass a custom `fetch` implementation as the third argument to add custom headers, logging, or test doubles.
+
+## Create a session and send a message
+
+Call `create()` with a harness name and frozen session configuration (`model`, `tools`, and optional `instructions` and `reasoning_effort`). Then call `send()` to queue a `user.message`:
+
+```ts
+const session = await brain.create({
+  harness: 'pi',
+  config: {
+    model: 'openai/gpt-4.1-mini',
+    instructions: 'Answer in two sentences or fewer.',
+    reasoning_effort: 'low',
+    tools: [],
+  },
+});
+
+const input = await brain.send(session.id, {
+  type: 'user.message',
+  text: 'Explain append-only storage.',
+  key: 'message-1',
+});
+```
+
+`send()` returns the recorded `user.message` event once Brain writes it to disk (`202 Accepted`). Keep `input.id` to match status updates and errors produced during that turn.
+
+## Stream events
+
+Call `observe(session.id)` to iterate over the session's SSE stream. Brain replays retained events first, then streams live events across turns. The stream stays open until you break out of the loop or abort the signal, even after the session closes, so stop when you see the status you're waiting for.
+
+Run this `.mjs` script from the repository root while Brain is running (see `examples/session.mjs` for the CLI version):
 
 ```js
 import { Brain } from './sdks/typescript/dist/index.js';
@@ -23,39 +72,93 @@ const session = await brain.create({
   config: { model: 'openai/gpt-4.1-mini', tools: [] },
 });
 const input = await brain.send(session.id, {
-  type: 'user.message', text: 'Explain append-only storage.', key: 'message-1',
+  type: 'user.message',
+  text: 'Explain append-only storage.',
+  key: 'message-1',
 });
+
 for await (const event of brain.observe(session.id)) {
-  if (event.type === 'assistant.message') console.log(event.data.text);
-  if (event.input_id === input.id && event.type === 'session.status'
-      && ['idle', 'failed', 'interrupted', 'closed'].includes(event.data.status)) break;
+  if (event.type === 'assistant.delta') {
+    process.stdout.write(event.data.text);
+  }
+  if (event.type === 'assistant.message') {
+    console.log(event.data.text);
+  }
+  if (event.input_id === input.id && event.type === 'session.error') {
+    throw new Error(event.data.message);
+  }
+  if (
+    event.input_id === input.id &&
+    event.type === 'session.status' &&
+    ['idle', 'failed', 'interrupted', 'closed'].includes(event.data.status)
+  ) {
+    break;
+  }
 }
 ```
 
-In TypeScript, `event.data` is typed as `unknown`—narrow it based on `event.type` (see [Events & streaming](/docs/reference/events)).
+<Callout type="info" title="Breaking out of observe()">
+Exiting the `for await` loop cancels the client's HTTP stream without stopping the session on the server. To stop an active turn, call `await brain.interrupt(session.id)`.
+</Callout>
 
-## Methods
+In TypeScript, `event.data` is typed as `unknown`. Check `event.type`, then cast `event.data` to that event's payload from [Events & streaming](/docs/reference/events). All wire types (`Session`, `SessionConfig`, `CreateSession`, `Input`, `Event`, `EventList`, `SessionList`, `Tool`, `ToolCatalog`, `Call`, `Content`, `Result`, `ToolResult`, `Checkpoint`, `Restore`, `Status`, `SyncStatus`, `ErrorDetail`, `ErrorResponse`) are re-exported from the package entrypoint.
 
-| Method | Returns / description |
-| --- | --- |
-| `create(input, signal?)` | Creates and returns a `Session`. |
-| `get(id, signal?)` | Fetches a `Session` by ID. |
-| `list(after?, limit?)` | Returns `{ sessions }`. |
-| `send(id, input, signal?)` | Queues a `user.message` and returns the accepted `Event`. |
-| `history(id, after?, limit?)` | Returns `{ events, next_cursor }`. |
-| `observe(id, { after?, signal? }?)` | Async iterator yielding session events over SSE. |
-| `interrupt(id)` | Stops the active turn. |
-| `resume(id)` | Resumes an interrupted or failed session from its last checkpoint. |
-| `close(id)` | Permanently closes the session. |
-| `flush(id, signal?)` | Uploads local state to external storage and returns `SyncStatus`. |
-| `sync(id)` | Returns current `SyncStatus`. |
-| `restore(id, checkpoint, signal?)` | Restores a session from an external `checkpoint` ID. |
-| `catalog()` | Returns `{ tools }` available to the caller's tenant. |
+## Reconnect with cursors
 
-`new Brain(url, token, fetchImpl?)` accepts an optional custom `fetch` implementation for testing or instrumentation.
+Every retained event includes an opaque `event.cursor`. Save the latest non-empty cursor as you consume the stream, and pass it in `{ after }` to resume from that exact log position without re-reading earlier history:
 
-## Reconnection, timeouts, and errors
+```ts
+let cursor: string | undefined;
+const controller = new AbortController();
 
-- **Reconnecting:** Save the last non-empty `event.cursor` and pass `{ after: cursor }` to `brain.observe(id, { after })`. Passing an `AbortSignal` closes the client stream without interrupting the session on the server.
-- **Timeouts:** Standard requests time out after 30 seconds (`flush` and `restore` allow 60 seconds). Streaming connections have no overall wall-clock timeout.
-- **Errors:** HTTP errors throw `BrainError` (with `status`, `code`, and optional `requestId`). Tool failures arrive as normal `tool.result` events in the stream. The client never follows HTTP redirects or retries failed requests automatically.
+for await (const event of brain.observe(session.id, {
+  after: cursor,
+  signal: controller.signal,
+})) {
+  if (event.cursor) cursor = event.cursor;
+  if (event.input_id !== input.id) continue;
+  if (event.type === 'session.status' && (event.data as { status: string }).status === 'idle') break;
+}
+```
+
+Live-only events (`assistant.delta` and `tool.progress`) do not carry a `cursor`. You can also fetch paginated retained history without opening an SSE stream by calling `await brain.history(session.id, after, limit)`.
+
+## Handle errors and timeouts
+
+Non-2xx HTTP responses throw `BrainError`:
+
+```ts
+import { Brain, BrainError } from './sdks/typescript/dist/index.js';
+
+try {
+  await brain.send(session.id, { type: 'user.message', text: 'Continue.' });
+} catch (err) {
+  if (err instanceof BrainError) {
+    console.error(err.status, err.code, err.message, err.requestId);
+  }
+  throw err;
+}
+```
+
+- **`BrainError` fields:** `status` (HTTP status number), `code` (machine-readable string such as `"conflict"` or `"overloaded"`, falling back to `"http_error"`), `message`, and `requestId` (from the response body's `request_id`).
+- **Tool failures vs. HTTP errors:** Failed or denied tool calls do not throw `BrainError`; they arrive in the event stream as `tool.result` events with `result.is_error: true`. Model provider or harness crashes arrive as `session.error` events. See [Errors](/docs/reference/errors).
+- **Timeouts:** Standard requests default to `AbortSignal.timeout(30_000)` (30 seconds). `flush()` and `restore()` default to `AbortSignal.timeout(60_000)` (60 seconds). `observe()` has no overall wall-clock timeout and rejects individual SSE events larger than 4 MiB or streams that end mid-frame.
+- **No automatic retries or redirects:** The client sets `redirect: "error"` and never retries failed requests automatically.
+
+## Methods reference
+
+| Method | Signature | Returns | Description |
+| --- | --- | --- | --- |
+| `create` | `create(input: CreateSession, signal?: AbortSignal)` | `Promise<Session>` | Creates a session (`POST /sessions`). Default timeout: 30s. |
+| `get` | `get(id: string, signal?: AbortSignal)` | `Promise<Session>` | Fetches session metadata and status (`GET /sessions/{id}`). Default timeout: 30s. |
+| `list` | `list(after = "", limit = 100)` | `Promise<{ sessions: Session[] }>` | Lists tenant sessions in ascending ID order (`GET /sessions`). |
+| `send` | `send(id: string, input: Input, signal?: AbortSignal)` | `Promise<Event>` | Queues a `user.message` and returns the recorded event (`POST /sessions/{id}/events`). Default timeout: 30s. |
+| `interrupt` | `interrupt(id: string)` | `Promise<void>` | Sends `{"type": "user.interrupt"}` to stop the active turn (`POST /sessions/{id}/events`). |
+| `history` | `history(id: string, after = "", limit = 100)` | `Promise<{ events: Event[]; next_cursor: string }>` | Returns a page of retained events and the next cursor (`GET /sessions/{id}/events`). |
+| `observe` | `observe(id: string, options?: { after?: string; signal?: AbortSignal })` | `AsyncGenerator<Event>` | Streams retained and live events over SSE (`GET /sessions/{id}/events`). |
+| `resume` | `resume(id: string)` | `Promise<Session>` | Moves an `interrupted` or `failed` session back to `idle` (`POST /sessions/{id}/resume`). |
+| `close` | `close(id: string)` | `Promise<void>` | Permanently closes a session (`POST /sessions/{id}/close`). |
+| `flush` | `flush(id: string, signal?: AbortSignal)` | `Promise<SyncStatus>` | Uploads local state to external storage immediately (`POST /sessions/{id}/flush`). Default timeout: 60s. |
+| `sync` | `sync(id: string)` | `Promise<SyncStatus>` | Reads background checkpoint sync status (`GET /sessions/{id}/sync`). |
+| `restore` | `restore(id: string, checkpoint: string, signal?: AbortSignal)` | `Promise<Session>` | Replaces local session state with a specific external checkpoint (`POST /sessions/{id}/restore`). Default timeout: 60s. |
+| `catalog` | `catalog()` | `Promise<{ tools: Tool[] }>` | Lists tools available to the caller's tenant (`GET /catalog`). |

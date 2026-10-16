@@ -1,15 +1,64 @@
 ---
 title: Python SDK
-description: Zero-dependency synchronous client built on the Python standard library.
+description: Create sessions, send messages, and stream events with the zero-dependency Python 3.11+ client.
 ---
 
-Requires Python 3.11+. The client lives in `sdks/python` in this repository. Add `sdks/python` to your `PYTHONPATH` before running:
+`Brain` is a synchronous Python 3.11+ client built entirely on the Python standard library (`urllib.request`, `json`). It requires no third-party packages.
 
-```powershell
+## Install from the repository
+
+The Python SDK lives in `sdks/python` inside the repository and is not published to PyPI. Point `PYTHONPATH` at `sdks/python` from the repository root before running your code:
+
+```sh tab="macOS / Linux"
+export PYTHONPATH="sdks/python"
+```
+
+```powershell tab="Windows"
 $env:PYTHONPATH = "sdks/python"
 ```
 
-## Example
+## Create a client
+
+Import `Brain` from `brain` and pass the server base URL, your bearer token, and an optional socket `timeout` in seconds (default `30`):
+
+```python
+import os
+from brain import Brain
+
+brain = Brain("http://127.0.0.1:8080", os.environ["BRAIN_API_KEY"], timeout=30)
+```
+
+Generated `TypedDict` definitions for request and response payloads (`Session`, `SessionConfig`, `CreateSession`, `Input`, `Event`, `EventList`, `SessionList`, `Tool`, `ToolCatalog`, `Call`, `Content`, `Result`, `ToolResult`, `Checkpoint`, `Restore`, `Status`, `SyncStatus`, `ErrorDetail`, `ErrorResponse`) live in `brain.types`.
+
+## Create a session and send a message
+
+Call `create()` with a harness name and frozen session configuration (`model`, `tools`, and optional `instructions` and `reasoning_effort`). Then call `send()` to queue a `user.message`:
+
+```python
+session = brain.create({
+    "harness": "pi",
+    "config": {
+        "model": "openai/gpt-4.1-mini",
+        "instructions": "Answer in two sentences or fewer.",
+        "reasoning_effort": "low",
+        "tools": [],
+    },
+})
+
+accepted = brain.send(session["id"], {
+    "type": "user.message",
+    "text": "Explain append-only storage.",
+    "key": "message-1",
+})
+```
+
+`send()` returns the recorded `user.message` event once Brain writes it to disk (`202 Accepted`). Keep `accepted["id"]` to correlate events emitted during that turn.
+
+## Stream events
+
+Call `observe(session_id)` to receive a synchronous generator over SSE frames. Always close the generator in a `finally` block (or with `contextlib.closing`) when you break out of the loop early so the underlying HTTP socket closes cleanly.
+
+Run this script from the repository root while Brain is running (see `examples/session.py` for the CLI version):
 
 ```python
 import os
@@ -21,32 +70,84 @@ session = brain.create({
     "config": {"model": "openai/gpt-4.1-mini", "tools": []},
 })
 accepted = brain.send(session["id"], {
-    "type": "user.message", "text": "Explain append-only storage.", "key": "message-1",
+    "type": "user.message",
+    "text": "Explain append-only storage.",
+    "key": "message-1",
 })
+
 stream = brain.observe(session["id"])
 try:
     for event in stream:
+        if event["type"] == "assistant.delta":
+            print(event["data"]["text"], end="", flush=True)
         if event["type"] == "assistant.message":
             print(event["data"]["text"])
-        if (event.get("input_id") == accepted["id"]
-                and event["type"] == "session.status"
-                and event["data"]["status"] in {"idle", "failed", "interrupted", "closed"}):
+        if event.get("input_id") == accepted["id"]:
+            if event["type"] == "session.error":
+                raise RuntimeError(event["data"]["message"])
+            if (event["type"] == "session.status"
+                    and event["data"]["status"] in {"idle", "failed", "interrupted", "closed"}):
+                break
+finally:
+    stream.close()
+```
+
+<Callout type="info" title="Closing the observer stream">
+Calling `stream.close()` only closes the client's HTTP connection. The session remains open on the server, and any running turn continues unless you call `brain.interrupt(session["id"])`.
+</Callout>
+
+## Reconnect with cursors
+
+Every retained event carries an opaque `cursor` string. Save the latest non-empty `event.get("cursor")` and pass it as `after` to `observe()` to resume streaming from that position:
+
+```python
+cursor = ""
+stream = brain.observe(session["id"], after=cursor)
+try:
+    for event in stream:
+        if event.get("cursor"):
+            cursor = event["cursor"]
+        if event["type"] == "session.status" and event["data"]["status"] == "idle":
             break
 finally:
     stream.close()
 ```
 
-## Methods
+Live-only events (`assistant.delta` and `tool.progress`) do not include a `cursor`. To read retained events in batches without opening an SSE stream, call `brain.history(session["id"], after=cursor, limit=100)`.
 
-The `Brain` client provides `create`, `get`, `list`, `send`, `history`, `observe`, `interrupt`, `resume`, `close`, `flush`, `sync`, `restore`, and `catalog`, matching the [HTTP API](/docs/api). Generated `TypedDict` definitions live in `brain.types`.
+## Handle errors and timeouts
 
-- `list(after="", limit=100)` returns a page of sessions.
-- `history(session_id, after="", limit=100)` returns `{"events": [...], "next_cursor": "..."}`.
-- `observe(session_id, after="")` returns a synchronous iterator over SSE frames. Pass the last non-empty `event["cursor"]` as `after` to reconnect.
+Non-2xx HTTP responses raise `BrainError`:
 
-## Timeouts and errors
+```python
+from brain import Brain, BrainError
 
-- `Brain(url, token, timeout=30)` sets the socket timeout in seconds (increase this if you call `flush` or `restore` over large checkpoints).
-- HTTP errors raise `BrainError` with `.status`, `.code`, and `.request_id`.
-- Tool failures are delivered as `tool.result` events with `is_error: True`.
-- The client rejects HTTP redirects and does not retry requests automatically.
+try:
+    brain.send(session["id"], {"type": "user.message", "text": "Continue."})
+except BrainError as err:
+    print(err.status, err.code, err, err.request_id)
+    raise
+```
+
+- **`BrainError` attributes:** `status` (HTTP status int), `code` (machine-readable error code such as `"conflict"` or `"overloaded"`, falling back to `"http_error"`), `request_id` (`str | None`), and the error message via `str(err)`.
+- **Tool failures vs. HTTP errors:** Failed or denied tool calls do not raise `BrainError`; they appear in the event stream as `tool.result` events with `is_error: True`. Model provider or harness failures appear as `session.error` events. See [Errors](/docs/reference/errors).
+- **Timeouts:** `Brain(url, token, timeout=30)` sets the socket read/connect timeout in seconds for all calls on that client instance, including `flush()`, `restore()`, and individual socket reads in `observe()` (where keepalives arrive roughly every 15 seconds). Increase `timeout` (for example, `timeout=60`) when calling `flush()` or `restore()` on large checkpoints. `observe()` raises `ValueError` if a single SSE event exceeds 4 MiB or the stream closes mid-frame.
+- **No automatic retries or redirects:** The client installs a custom `HTTPRedirectHandler` that rejects all HTTP redirects and never retries failed requests automatically.
+
+## Methods reference
+
+| Method | Signature | Returns | Description |
+| --- | --- | --- | --- |
+| `create` | `create(config: CreateSession)` | `Session` | Creates a session (`POST /sessions`). |
+| `get` | `get(session_id: str)` | `Session` | Fetches session metadata and status (`GET /sessions/{id}`). |
+| `list` | `list(after: str = "", limit: int = 100)` | `dict[str, Any]` | Returns `{"sessions": [...]}` in ascending ID order (`GET /sessions`). |
+| `send` | `send(session_id: str, event: Input)` | `Event` | Queues a `user.message` (or sends `user.interrupt`) (`POST /sessions/{id}/events`). |
+| `interrupt` | `interrupt(session_id: str)` | `None` | Sends `{"type": "user.interrupt"}` to stop the active turn (`POST /sessions/{id}/events`). |
+| `history` | `history(session_id: str, after: str = "", limit: int = 100)` | `dict[str, Any]` | Returns `{"events": [...], "next_cursor": "..."}` (`GET /sessions/{id}/events`). |
+| `observe` | `observe(session_id: str, after: str = "")` | `Iterator[Event]` | Yields retained and live events over SSE (`GET /sessions/{id}/events`). |
+| `resume` | `resume(session_id: str)` | `Session` | Moves an `interrupted` or `failed` session back to `idle` (`POST /sessions/{id}/resume`). |
+| `close` | `close(session_id: str)` | `None` | Permanently closes a session (`POST /sessions/{id}/close`). |
+| `flush` | `flush(session_id: str)` | `SyncStatus` | Uploads local state to external storage immediately (`POST /sessions/{id}/flush`). |
+| `sync` | `sync(session_id: str)` | `SyncStatus` | Reads background checkpoint sync status (`GET /sessions/{id}/sync`). |
+| `restore` | `restore(session_id: str, checkpoint: str)` | `Session` | Replaces local session state with a specific external checkpoint (`POST /sessions/{id}/restore`). |
+| `catalog` | `catalog()` | `dict[str, Any]` | Returns `{"tools": [...]}` available to the caller's tenant (`GET /catalog`). |

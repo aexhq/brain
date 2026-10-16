@@ -1,51 +1,178 @@
 ---
 title: Quickstart
-description: Start the server and send your first message.
+description: Start Brain on your machine, create a Pi session, and stream the reply with the TypeScript or Python SDK.
 ---
+
+import { BookOpen, Braces, Code, Database, MessagesSquare, Wrench } from 'lucide-react';
+
+This guide walks you through running Brain on your machine and sending your first message. You start the server with the example host config, create a session that uses the Pi harness and an OpenAI model, and stream the reply with the TypeScript or Python SDK.
+
+| Concept | In this guide |
+| --- | --- |
+| **Host config** | `examples/local.json`: one API token for the `local` tenant, the `pi` harness, the OpenAI provider, and no tools. |
+| **Session** | One conversation that uses the `pi` harness and the `openai/gpt-4.1-mini` model. |
+| **Turn** | The work Brain runs for your message: model calls until Pi finishes its reply. |
+| **Event** | Records such as `assistant.message` and `session.status` that the example reads from the session's stream. |
 
 ## Prerequisites
 
-Install **Go 1.26+** and **Node.js 24+**, and grab an API key for your model provider (this guide uses OpenAI). You also need Python 3.11+ if you plan to use the Python SDK or run the full test suite.
+- **Go 1.26 or newer** to run the server.
+- **Node.js 24 or newer** to build the Pi runner and the TypeScript SDK.
+- **Python 3.11 or newer**, only if you use the Python SDK or run the full test suite.
+- An **OpenAI API key**. To use another provider, see [Models & providers](/docs/reference/models).
 
-Clone the repository and build the Pi runner:
+Brain and its SDKs aren't published to npm or PyPI. You build the Pi runner and the SDKs from the repository.
+
+<Steps>
+<Step>
+### Get the code and build the Pi runner
+
+Clone the repository and build the Pi runner. Brain starts the runner as a child process for each session that runs a turn.
 
 ```sh
-git clone --branch successor https://github.com/aexhq/brain.git
+git clone https://github.com/aexhq/brain.git
 cd brain
 npm --prefix runners/pi ci --ignore-scripts
 npm --prefix runners/pi run build
 ```
+</Step>
 
-## 1. Start Brain
+<Step>
+### Set your keys and start Brain
 
-Set `BRAIN_API_KEY` (at least 24 random bytes) and `OPENAI_API_KEY`, then start the server:
+Brain reads two secrets from the environment:
 
-```powershell
+- `BRAIN_API_KEY` is the token your application sends to Brain. It must be at least 24 bytes. Use a long random value anywhere other than your own machine.
+- `OPENAI_API_KEY` is the model provider key that Brain passes to the Pi runner.
+
+```sh tab="macOS / Linux"
+export BRAIN_API_KEY="replace-with-a-random-token-of-at-least-24-bytes"
+export OPENAI_API_KEY="your-provider-key"
+go run ./cmd/brain -config examples/local.json
+```
+
+```powershell tab="Windows"
 $env:BRAIN_API_KEY = "replace-with-a-random-token-of-at-least-24-bytes"
 $env:OPENAI_API_KEY = "your-provider-key"
 go run ./cmd/brain -config examples/local.json
 ```
 
-On macOS or Linux, use `export BRAIN_API_KEY=...` and `export OPENAI_API_KEY=...`.
+When the server is ready, it writes a JSON log line with `"msg":"brain listening"` to stderr. With `examples/local.json`, Brain listens on `http://127.0.0.1:8080`, writes local state to `.brain/`, grants `BRAIN_API_KEY` the `local` tenant with permission to manage sessions, registers the `pi` harness, and enables no tools.
 
-With `examples/local.json`, Brain listens on `http://127.0.0.1:8080` and writes local state to `.brain/`. To customize your setup without touching tracked files, copy `examples/local.json` to `brain.json` (gitignored).
+<Callout type="info" title="Customize the config">
+Copy `examples/local.json` to `brain.json` to change settings without editing tracked files. `brain.json` is gitignored, and Brain loads it when you omit `-config`. Add `-check` to validate a config, including the environment variables it names, and exit without starting the server.
+</Callout>
+</Step>
 
-## 2. Run a session with the SDK
+<Step>
+### Open a second terminal
 
-In a second terminal, set the same `BRAIN_API_KEY`, build the TypeScript client, and run the example script:
+Leave the server running. Open a second terminal in the repository root and set the same `BRAIN_API_KEY`. The Python SDK also needs `PYTHONPATH` to point at `sdks/python`.
 
-```powershell
+```sh tab="macOS / Linux"
+export BRAIN_API_KEY="replace-with-a-random-token-of-at-least-24-bytes"
+export PYTHONPATH=sdks/python
+```
+
+```powershell tab="Windows"
 $env:BRAIN_API_KEY = "replace-with-a-random-token-of-at-least-24-bytes"
+$env:PYTHONPATH = "sdks/python"
+```
+</Step>
+
+<Step>
+### Run a session
+
+Run the example script for your language. The TypeScript SDK needs a one-time build. If your system has no `python` command, use `python3`.
+
+```sh tab="TypeScript"
 npm --prefix sdks/typescript ci --ignore-scripts
 npm --prefix sdks/typescript run build
 node examples/session.mjs "Explain what makes a good agent tool."
 ```
 
-This creates a Pi session using `openai/gpt-4.1-mini`, sends your prompt, and streams the response. See [Models & providers](/docs/reference/models) to use a different model.
+```sh tab="Python"
+python examples/session.py "Explain what makes a good agent tool."
+```
 
-## Or call the HTTP API directly
+The script prints the session ID and the assistant's reply, then exits when the turn ends. Example output:
 
-Create a session:
+```text
+Session: 7d1c9e04b3a24f6e8c5a0b2d9e3f4a61
+A good agent tool does one clearly named job, ...
+```
+</Step>
+</Steps>
+
+## How the example works
+
+Both scripts create a session, send one message, and read events until the turn for that message ends. Here are the same steps with comments:
+
+```ts tab="TypeScript"
+import { Brain } from "../sdks/typescript/dist/index.js";
+
+const token = process.env.BRAIN_API_KEY;
+if (!token) throw new Error("Set BRAIN_API_KEY before running this example");
+
+// Connect with the token that the host config grants to the "local" tenant.
+const brain = new Brain("http://127.0.0.1:8080", token);
+
+// Create a session. Its harness, model, and tools are fixed from now on.
+const session = await brain.create({ harness: "pi", config: { model: "openai/gpt-4.1-mini", tools: [] } });
+console.log(`Session: ${session.id}`);
+
+// Send a message. The random key makes the request safe to retry.
+const input = await brain.send(session.id, { type: "user.message", text: "Say hello.", key: crypto.randomUUID() });
+
+// Read events until the turn for this message ends.
+for await (const event of brain.observe(session.id)) {
+  const data = event.data as { text?: string; message?: string; status?: string };
+  if (event.type === "assistant.message") console.log(data.text);
+  if (event.input_id !== input.id) continue;
+  if (event.type === "session.error") throw new Error(data.message);
+  if (event.type === "session.status" && data.status === "idle") break;
+}
+```
+
+```python tab="Python"
+import os
+import uuid
+
+from brain import Brain  # found through PYTHONPATH=sdks/python
+
+# Connect with the token that the host config grants to the "local" tenant.
+brain = Brain("http://127.0.0.1:8080", os.environ["BRAIN_API_KEY"])
+
+# Create a session. Its harness, model, and tools are fixed from now on.
+session = brain.create({"harness": "pi", "config": {"model": "openai/gpt-4.1-mini", "tools": []}})
+print("Session:", session["id"])
+
+# Send a message. The random key makes the request safe to retry.
+message = brain.send(session["id"], {"type": "user.message", "text": "Say hello.", "key": str(uuid.uuid4())})
+
+# Read events until the turn for this message ends.
+stream = brain.observe(session["id"])
+try:
+    for event in stream:
+        if event["type"] == "assistant.message":
+            print(event["data"]["text"])
+        if event.get("input_id") != message["id"]:
+            continue
+        if event["type"] == "session.error":
+            raise RuntimeError(event["data"]["message"])
+        if event["type"] == "session.status" and event["data"]["status"] == "idle":
+            break
+finally:
+    stream.close()
+```
+
+The scripts in `examples/` take the prompt from their arguments. `examples/session.mjs` also reads a comma-separated list of tool names from `BRAIN_TOOLS`, and `examples/session.py` reads `BRAIN_URL` and `BRAIN_MODEL`. Ending the loop doesn't close the session; it stays available for more messages.
+
+## Call the HTTP API with cURL
+
+The SDKs wrap Brain's HTTP API. You can make the same calls with cURL from a macOS or Linux shell.
+
+Create a session. Brain returns `201 Created` with the session; save its `id`.
 
 ```sh
 curl http://127.0.0.1:8080/sessions \
@@ -54,7 +181,7 @@ curl http://127.0.0.1:8080/sessions \
   -d '{"harness":"pi","config":{"model":"openai/gpt-4.1-mini","tools":[]}}'
 ```
 
-Then send a message using the returned session `id`:
+Send a message using the returned session `id`:
 
 ```sh
 curl http://127.0.0.1:8080/sessions/SESSION_ID/events \
@@ -63,10 +190,33 @@ curl http://127.0.0.1:8080/sessions/SESSION_ID/events \
   -d '{"type":"user.message","text":"Hello","key":"first-message"}'
 ```
 
-`POST /sessions/{id}/events` returns `202 Accepted` once the message is saved and queued. Stream or poll `GET /sessions/{id}/events` to read the assistant's reply—see [Events & streaming](/docs/reference/events).
+`POST /sessions/{id}/events` returns `202 Accepted` with the saved `user.message` event once the message is stored and queued. The event's `id` is the `input_id` on the events of the turn it starts.
+
+Stream the session's events:
+
+```sh
+curl -N http://127.0.0.1:8080/sessions/SESSION_ID/events \
+  -H "Authorization: Bearer $BRAIN_API_KEY" \
+  -H "Accept: text/event-stream"
+```
+
+The stream replays the session's retained events, then follows new events as they happen. Without `Accept: text/event-stream`, the same URL returns a JSON page of retained events. See [Events & streaming](/docs/reference/events) for every event type.
+
+## What just happened
+
+1. **Brain loaded the host config.** It checked that `BRAIN_API_KEY` and `OPENAI_API_KEY` are set, registered the `pi` harness, and opened local state in `.brain/`.
+2. **The script created a session.** Brain stored it with status `idle` and returned `201 Created`.
+3. **The script sent a message.** Brain saved a `user.message` event, queued it, and returned `202 Accepted`.
+4. **Brain ran a turn.** It emitted `session.status` with `running`, started the Pi runner, and streamed `assistant.delta` events while the model wrote. The complete reply arrived as `assistant.message`.
+5. **The session went idle.** A `session.status` event with `idle` and the message's `input_id` ended the turn. The session stays open for more messages until you close it.
 
 ## Next steps
 
-- Try the [local tool server](/docs/tools/local-tools) (`echo`, `inspect_session`, and `ask_approval`)
-- Connect with the [TypeScript SDK](/docs/sdks/typescript) or [Python SDK](/docs/sdks/python)
-- Set up [checkpoint persistence and recovery](/docs/guides/persistence)
+<Cards>
+  <Card icon={<Wrench />} title="Add a tool" href="/docs/tools/local-tools">Run the local tool server with `echo`, `inspect_session`, and `ask_approval`.</Card>
+  <Card icon={<MessagesSquare />} title="Session lifecycle" href="/docs/guides/sessions">Queue messages, interrupt turns, resume, and close sessions.</Card>
+  <Card icon={<Braces />} title="TypeScript SDK" href="/docs/sdks/typescript">Call Brain from a Node.js or TypeScript backend.</Card>
+  <Card icon={<Code />} title="Python SDK" href="/docs/sdks/python">Call Brain from a Python backend.</Card>
+  <Card icon={<Database />} title="Persistence & recovery" href="/docs/guides/persistence">Back up checkpoints and restore sessions on another server.</Card>
+  <Card icon={<BookOpen />} title="HTTP API" href="/docs/api">Every route, request body, and response.</Card>
+</Cards>

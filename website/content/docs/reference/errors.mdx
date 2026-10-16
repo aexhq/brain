@@ -1,42 +1,80 @@
 ---
 title: Errors
-description: HTTP status codes, tool errors, and session error events.
+description: HTTP status codes, error envelopes, tool errors, and session error events.
 ---
 
-Brain separates errors into three layers so you always know whether a request was rejected, a tool call failed, or a turn crashed:
+Brain separates failures into three distinct error layers so your application can tell whether an HTTP request was rejected, a tool call failed during a turn, or the turn itself stopped:
 
-1. **HTTP errors** — invalid requests, auth failures, state conflicts, or rate limits returned directly to the caller.
-2. **Tool errors (`tool.result`)** — failed, denied, or timed-out tool calls passed back to the model so it can decide how to proceed.
-3. **Session errors (`session.error`)** — model provider failures or internal runner errors that stop the current turn.
+- **Client request errors (`4xx` / `500` HTTP responses):** Reject bad inputs, missing permissions, or capacity limits without breaking a healthy session.
+- **Tool errors (`tool.result` events):** Tool failures become tool results (`result.is_error: true`) so the model can inspect the error and decide how to proceed.
+- **Execution errors (`session.error` events):** Brain errors and model provider failures stop the affected execution and move the session to `interrupted` or `failed`.
 
-## HTTP errors
+## HTTP error shape
+
+Every failed HTTP request returns a JSON error envelope containing `error.code`, `error.message`, and `request_id`:
 
 ```json
-{"error":{"code":"conflict","message":"resume the interrupted session before sending input"},"request_id":"REQUEST_ID"}
+{
+  "error": {
+    "code": "conflict",
+    "message": "resume the interrupted session before sending input"
+  },
+  "request_id": "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+}
 ```
 
-Every HTTP response includes an `X-Request-ID` header.
+In the TypeScript and Python SDKs, non-2xx HTTP responses raise `BrainError` with `status`, `code`, `message`, and `requestId` / `request_id`.
 
-| HTTP | Code | What to do |
-| --- | --- | --- |
-| 400 | `invalid_request` | Fix malformed JSON or invalid field values. |
-| 401 | `forbidden` | Supply a valid Bearer token. |
-| 403 | `forbidden` | Use a token with sufficient permissions (`manage` or non-`read_only`). |
-| 404 | `not_found` | Check the session ID and tenant scope. |
-| 409 | `conflict` | Session is in the wrong state (for example, needs `resume`), or an idempotency `key` was reused with different input. |
-| 409 | `cursor_unavailable` | The requested cursor was lost after a checkpoint restore; reload event history from the beginning. |
-| 413 | `invalid_request` | Request body exceeds `input_bytes`. |
-| 422 | `unsupported` | Requested harness, model, tool, or delivery mode (`steer`) is not available. |
-| 429 | `overloaded` | Queue or active limit reached; back off (`Retry-After: 1`) and retry. |
-| 500 | `brain_error` | Check server logs for the `request_id`. |
+## HTTP status codes
+
+| HTTP status | `error.code` | Meaning | What to do |
+| --- | --- | --- | --- |
+| `400` | `invalid_request` | Malformed JSON, unknown fields, trailing data, invalid session config, invalid pagination `limit`, missing/invalid checkpoint reference, or unconfigured model provider. | Fix the request body or query parameters before retrying. |
+| `401` | `forbidden` | Missing or unrecognized `Authorization: Bearer <token>` header (also sets `WWW-Authenticate: Bearer`). | Supply a valid bearer token configured in `tokens`. |
+| `403` | `forbidden` | Token is `read_only`, lacks `manage: true` for a management route, is scoped to a different session, or requests a tool not authorized for the tenant. | Use a token with the required tenant and management permissions. |
+| `404` | `not_found` | Unknown route, unknown session ID, session belongs to another tenant, or external checkpoint was not found. | Verify the URL path, session ID, checkpoint ID, and tenant token. |
+| `409` | `conflict` | Session is in the wrong state (for example, `interrupted`, `failed`, `closed`, or actively running during `restore`), or an idempotency `key` was reused with different input. | Call `POST /sessions/{id}/resume` before sending input, wait for active work to settle before restoring, or use a new idempotency `key`. |
+| `409` | `cursor_unavailable` | The `after` or `Last-Event-ID` cursor is malformed, exceeds 512 bytes, or points to an unsynced event tail lost after a checkpoint restore. | Reload retained event history from the beginning (`after=""`) to resync client state. |
+| `413` | `invalid_request` | Request body exceeds `limits.input_bytes + 16 KiB`. | Reduce the message `text` or `instructions` length, or increase `limits.input_bytes`. |
+| `422` | `unsupported` | Requested harness is not configured, `delivery: "steer"` was requested, or `flush`/`sync`/`restore` was called without `persistence` configured. | Use a configured harness, `"queue"` delivery, or enable `persistence` in the host config. |
+| `429` | `overloaded` | Session input queue (`limits.queue`), session log size (`limits.session_bytes`), loaded sessions (`limits.loaded`), SSE subscribers (`limits.subscribers`), or persistence sync queue (`persistence.queue`) is full, or the server is draining. | Wait for the `Retry-After: 1` header window (or flush external storage if the sync backlog is full) and retry. |
+| `500` | `brain_error` | Unexpected local storage, runner, or internal server failure (`message` is `"internal server error"` unless a typed internal error is returned). | Inspect the server's structured JSON logs using `request_id`. |
+
+## Request IDs
+
+Every HTTP response includes an `X-Request-ID` header (a 32-character hex ID). When a request fails, the same value is returned in the JSON body's `request_id` field, and `500` responses log `"request failed"` with `request_id` to `stderr`. Include `request_id` whenever diagnosing failed requests.
+
+## Retries and `Retry-After`
+
+- **HTTP client requests:** Neither the TypeScript SDK nor the Python SDK retries failed HTTP requests automatically. When Brain returns `429 overloaded`, it sets the `Retry-After: 1` response header. When retrying `POST /sessions/{id}/events`, pass the same idempotency `key` on your `user.message` so duplicate submissions return the originally recorded event instead of queueing a second turn.
+- **Tool dispatches:** Brain never retries tool calls automatically. A transient network failure or timeout on a tool call is reported to the model so the harness or tool service can decide whether retrying is safe.
 
 ## Tool errors (`tool.result`)
 
-When a tool returns `is_error: true`, returns an HTTP error, outputs invalid JSON, or times out, Brain records a `tool.result` event with `result.is_error: true` and passes it to the harness. If the network connection drops or times out after the tool request was sent, `result.unknown_outcome` is also set to `true` because the remote side effect may have already happened.
+Tool errors do not fail the HTTP request or stop the turn. When a tool call is denied, fails input/output schema validation, returns a non-2xx HTTP status, outputs invalid JSON, exceeds `max_output_bytes`, or times out, Brain records a `tool.result` event with `result.is_error: true` and passes the error text back to the harness:
+
+```json
+{
+  "call_id": "CALL_ID",
+  "result": {
+    "content": [{ "type": "text", "text": "tool transport failed; remote outcome may be unknown" }],
+    "is_error": true,
+    "unknown_outcome": true
+  }
+}
+```
+
+- **`unknown_outcome: false` (omitted):** The failure happened before the tool service received the request (for example, unauthorized tool, schema validation error, missing local credential, or MCP connection failure before dispatch). No remote side effect occurred.
+- **`unknown_outcome: true`:** The failure happened after Brain sent the request (for example, network drop, timeout, HTTP 5xx, oversized response, or broken SSE stream). The remote side effect may have already happened.
 
 ## Session errors (`session.error`)
 
-A `session.error` event means the turn itself could not finish:
-- `provider_error` — the LLM provider rejected the request or failed mid-stream.
-- `brain_error` — the harness process crashed, violated the stdio protocol, or local disk writes failed.
-- `conflict` — a queued message was cancelled because the session was interrupted or closed before that message ran (check `input_id` on the event).
+When an execution failure stops a turn (or cancels a queued message), Brain emits a retained `session.error` event with `input_id` set to the affected `user.message` `id`, followed by a `session.status` event:
+
+| `data.code` | Resulting session status | When it fires |
+| --- | --- | --- |
+| `provider_error` | `interrupted` | The model provider rejected the request or failed mid-stream. |
+| `conflict` | `interrupted` or `closed` | The active turn was interrupted (`user.interrupt`, session close, or server shutdown), or a queued `user.message` was cancelled before it could run (`"queued input interrupted before execution"`). |
+| `brain_error` (or other internal codes) | `failed` | The harness process crashed, violated the stdio framing protocol, selected an unsupported model or reasoning effort, or local disk writes failed. |
+
+To continue a session after it enters `interrupted` or `failed`, call `POST /sessions/{id}/resume` (`brain.resume(id)`) to reset the session to `idle` at its last completed checkpoint before sending new input.

@@ -1,45 +1,284 @@
 ---
 title: Session lifecycle
-description: Create sessions, send messages, stream events, and handle interruptions.
+description: Create sessions, send messages, stream events, and interrupt, resume, or close a session.
 ---
+
+import { BookOpen, Database, Radio, Wrench } from 'lucide-react';
+
+A session is one agent conversation that belongs to one tenant. You [create a session](#create-a-session) with its harness, model, and tools, then [send messages](#send-a-message) and [stream events](#stream-events) while each turn runs. When a turn needs to stop, you [interrupt it](#interrupt-a-turn), then [resume](#resume-after-an-interruption-or-failure) or [close](#close-a-session) the session.
+
+## Before you begin
+
+The examples use a client for the `local` tenant from the [Quickstart](/docs/quickstart). Build the TypeScript SDK or set `PYTHONPATH=sdks/python` as described there, and run your code from the repository root.
+
+```ts tab="TypeScript"
+import { Brain } from "./sdks/typescript/dist/index.js";
+
+const brain = new Brain("http://127.0.0.1:8080", process.env.BRAIN_API_KEY!);
+```
+
+```python tab="Python"
+import os
+
+from brain import Brain
+
+brain = Brain("http://127.0.0.1:8080", os.environ["BRAIN_API_KEY"])
+```
+
+## Session statuses
+
+| Status | Meaning | What you can do next |
+| --- | --- | --- |
+| `idle` | No turn is running. | Send a message or close the session. |
+| `running` | A turn is running, or messages are waiting in the queue. | Send more messages (they queue), interrupt, or close. |
+| `interrupted` | A turn stopped before it finished: you interrupted it, the model provider returned an error, Brain stopped during the turn, or Brain loaded the session from external storage. | Resume, then send a message. Or close. |
+| `failed` | Brain stopped the turn because of its own failure, such as a crashed harness process or a failed disk write. | Resume, then send a message. Or close. |
+| `closed` | The session is permanently closed. | Read its event history. |
 
 ## Create a session
 
-Each session belongs to a single tenant and runs on a chosen harness (`pi`). When creating a session, pass `config.model`, optional `instructions` and `reasoning_effort`, and the list of `tools` enabled for that session.
+`POST /sessions` creates a session for your token's tenant and returns `201 Created`. The session's harness and config are fixed at creation. Brain records the session on local disk; the harness process starts when you send the first message.
 
-Session settings are fixed at creation. Creating a session writes its metadata to SQLite immediately; Brain starts the harness process when the first message arrives.
+| Field | Required | Description |
+| --- | --- | --- |
+| `harness` | Yes | A harness name from the host config, such as `pi`. |
+| `config.model` | Yes | A model in `provider/model` form, such as `openai/gpt-4.1-mini`, up to 256 characters. The provider must be configured in the host config, and its API key must be set. |
+| `config.tools` | Yes | Names of the tools to enable, up to 128. Pass `[]` for none. Each tool must be available to your tenant. |
+| `config.instructions` | No | The system prompt, up to `input_bytes` (64 KiB by default). Pi uses a generic assistant prompt when you omit it. |
+| `config.reasoning_effort` | No | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Pi defaults to `off`. If the model doesn't support the level, the first turn fails. |
 
-## Send messages
+```sh tab="cURL"
+curl http://127.0.0.1:8080/sessions \
+  -H "Authorization: Bearer $BRAIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"harness":"pi","config":{"model":"openai/gpt-4.1-mini","instructions":"Answer in one paragraph.","tools":[]}}'
+```
 
-Send a `user.message` event with non-empty `text`. Each session runs one turn at a time and queues incoming messages in order (`delivery: "queue"`, the default). Passing `delivery: "steer"` currently returns `422 unsupported`.
+```ts tab="TypeScript"
+const session = await brain.create({
+  harness: "pi",
+  config: { model: "openai/gpt-4.1-mini", instructions: "Answer in one paragraph.", tools: [] },
+});
+```
 
-You can pass an optional `key` to make retries idempotent:
-- Sending the same `key` and identical payload returns the original accepted event.
-- Reusing a `key` with different text returns `409 conflict`.
-- If a request is rejected (for example with `429 overloaded`), the key is not consumed and can be retried.
+```python tab="Python"
+session = brain.create({
+    "harness": "pi",
+    "config": {"model": "openai/gpt-4.1-mini", "instructions": "Answer in one paragraph.", "tools": []},
+})
+```
 
-## Stream and read events
+The response is the session, with status `idle`:
 
-You can fetch paginated history as JSON or stream live events over Server-Sent Events (`Accept: text/event-stream`).
+```json
+{
+  "id": "7d1c9e04b3a24f6e8c5a0b2d9e3f4a61",
+  "harness": "pi",
+  "config": { "model": "openai/gpt-4.1-mini", "instructions": "Answer in one paragraph.", "tools": [] },
+  "status": "idle",
+  "created_at": "2025-01-01T12:00:00Z",
+  "updated_at": "2025-01-01T12:00:00Z",
+  "checkpoint": { "id": "0f8e2a6c1d3b4e5f9a7c6b5d4e3f2a1b", "offset": 0, "time": "2025-01-01T12:00:00Z" }
+}
+```
 
-A single user message can trigger multiple assistant messages and tool calls before the turn finishes. Keep reading until you see a `session.status` event for your `input_id` with a terminal state (`idle`, `interrupted`, `failed`, or `closed`):
+Creating a session needs a token with `manage` that isn't limited to one session; other tokens get `403`. An unknown harness returns `422`. A malformed model, a provider that isn't configured, an invalid reasoning effort, more than 128 tools, or a duplicate tool returns `400`. A tool that isn't available to your tenant returns `403`.
 
-| Status | Meaning |
-| --- | --- |
-| `idle` | Turn completed; ready for the next message. |
-| `running` | Model inference or a tool call is in progress. |
-| `interrupted` | Turn was stopped; call `resume` before sending new messages. |
-| `failed` | Turn stopped due to an error (`session.error`); fix the underlying cause and call `resume`. |
-| `closed` | Session is permanently closed. |
+## Send a message
 
-During streaming, `assistant.delta` and `tool.progress` provide live updates; the completed text is saved in `assistant.message`. Disconnecting an SSE stream does not cancel the running turn.
+`POST /sessions/{id}/events` with a `user.message` adds the message to the session's queue and returns `202 Accepted` with the saved event. The event's `id` is the `input_id` on every event of the turn it starts. Any token for the session's tenant that isn't read-only can send messages; `manage` isn't required.
 
-## Interrupt and resume
+| Field | Required | Description |
+| --- | --- | --- |
+| `type` | Yes | `user.message`. |
+| `text` | Yes | The message. It must not be blank and is limited to `input_bytes` (64 KiB by default). |
+| `key` | No | An idempotency key, up to 128 bytes. |
+| `delivery` | No | `queue`, the default. `steer` returns `422`; interrupt the turn instead. |
 
-To stop a running turn, send `{"type": "user.interrupt"}` to `POST /sessions/{id}/events` (or call `interrupt(id)` in the SDK). Any queued messages that haven't run yet fail with a `conflict` error event.
+```sh tab="cURL"
+curl http://127.0.0.1:8080/sessions/SESSION_ID/events \
+  -H "Authorization: Bearer $BRAIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"user.message","text":"Summarize our plan.","key":"msg-0001"}'
+```
 
-Once the session settles into `interrupted` (or `failed`), call `POST /sessions/{id}/resume`. Resuming rolls native harness state back to the last completed turn checkpoint and sets the status back to `idle` without calling the model. You can then send your next message.
+```ts tab="TypeScript"
+const input = await brain.send(session.id, { type: "user.message", text: "Summarize our plan.", key: "msg-0001" });
+```
+
+```python tab="Python"
+message = brain.send(session["id"], {"type": "user.message", "text": "Summarize our plan.", "key": "msg-0001"})
+```
+
+A session runs one turn at a time. Messages sent while a turn runs wait in order, up to `queue` messages (16 by default).
+
+### Retry safely with idempotency keys
+
+Send a `key` with each message so you can retry after a timeout or a dropped connection:
+
+- **Same key, same message:** Brain returns the original event and doesn't queue the message again.
+- **Same key, different message:** Brain returns `409 conflict`.
+- **Rejected request:** A key is recorded only when Brain accepts the message, so a request rejected with `429` doesn't use up its key.
+
+Keys are stored with the event log and still apply after Brain restarts.
+
+### Handle send errors
+
+| Status | Code | Cause |
+| --- | --- | --- |
+| `400` | `invalid_request` | Blank or oversized `text`, a `key` over 128 bytes, or an unknown `delivery`. |
+| `409` | `conflict` | The key was used with a different message, the session is closed, or the session is `interrupted` or `failed`. Resume it before sending. |
+| `422` | `unsupported` | `delivery` is `steer`. |
+| `429` | `overloaded` | The queue is full, the session's event log is near its `session_bytes` limit, the external storage upload backlog is full, or Brain is shutting down. Retry after the `Retry-After` delay. |
+
+## Stream events
+
+`GET /sessions/{id}/events` returns the session's events in two ways:
+
+- **JSON pages:** By default, Brain returns `{"events": [...], "next_cursor": "..."}` with up to `limit` retained events (1 to 1000, default 100). Pass `next_cursor` as `after` to read the next page.
+- **Server-sent events:** With `Accept: text/event-stream`, Brain replays retained events after the `after` cursor (or from the start of the session), then sends new events as they happen.
+
+Each SSE message has an `event:` line with the event type and a `data:` line with the event as JSON. Retained events also have an `id:` line with their cursor. Brain sends a `: keepalive` comment every 15 seconds while the stream is idle.
+
+| Event | Retained | Description |
+| --- | --- | --- |
+| `user.message` | Yes | A message you sent. Its `id` is the `input_id` for the turn it starts. |
+| `session.status` | Yes | The session's new status, such as `running` or `idle`. |
+| `assistant.delta` | No | A chunk of assistant text while the model writes. |
+| `assistant.message` | Yes | A complete assistant message. A turn can contain several. |
+| `tool.call` | Yes | A tool call, with the `id` Brain assigned, the tool name, and arguments. |
+| `tool.progress` | No | A progress update from a streaming tool. |
+| `tool.result` | Yes | The tool's result, including errors. |
+| `session.error` | Yes | Why a turn or a queued message stopped. |
+
+Live-only events (`assistant.delta` and `tool.progress`) reach only clients connected when they happen; they never appear in JSON pages or replays. See [Events & streaming](/docs/reference/events) for each event's payload.
+
+```sh tab="cURL"
+curl -N http://127.0.0.1:8080/sessions/SESSION_ID/events \
+  -H "Authorization: Bearer $BRAIN_API_KEY" \
+  -H "Accept: text/event-stream"
+```
+
+```ts tab="TypeScript"
+let cursor = "";
+for await (const event of brain.observe(session.id, { after: cursor })) {
+  if (event.cursor) cursor = event.cursor; // save for reconnecting
+  if (event.type === "assistant.delta") process.stdout.write((event.data as { text: string }).text);
+  if (event.input_id !== input.id) continue;
+  if (event.type === "session.error") throw new Error((event.data as { message: string }).message);
+  if (event.type === "session.status" && (event.data as { status: string }).status === "idle") break;
+}
+```
+
+```python tab="Python"
+cursor = ""
+stream = brain.observe(session["id"], after=cursor)
+try:
+    for event in stream:
+        cursor = event.get("cursor") or cursor  # save for reconnecting
+        if event["type"] == "assistant.delta":
+            print(event["data"]["text"], end="", flush=True)
+        if event.get("input_id") != message["id"]:
+            continue
+        if event["type"] == "session.error":
+            raise RuntimeError(event["data"]["message"])
+        if event["type"] == "session.status" and event["data"]["status"] == "idle":
+            break
+finally:
+    stream.close()
+```
+
+### Know when a turn ends
+
+Brain emits `session.status` with `running` and the message's `input_id` when a turn starts. A turn ends in one of three ways:
+
+- **It completes and the queue is empty:** `session.status` with `idle` and the same `input_id`.
+- **It completes and another message is queued:** `session.status` with `running` and the next message's `input_id`. There's no `idle` in between.
+- **It stops early:** `session.error` with the message's `input_id`, followed by `session.status` with `interrupted`, `failed`, or `closed`. Each queued message also gets a `session.error` with code `conflict`.
+
+### Reconnect after a disconnect
+
+Disconnecting doesn't stop the turn. To pick up where you left off, reconnect with the cursor of the last retained event you processed, as the `after` query parameter or the `Last-Event-ID` header. Neither SDK reconnects automatically.
+
+<Callout type="warn" title="Slow consumers">
+Brain buffers up to `subscriber_events` events (128) and `subscriber_bytes` (2 MiB) for each stream. A client that falls further behind is disconnected and must reconnect from its last cursor. When `subscribers` streams (128) are already open, a new stream gets `429`. A cursor outside the session's retained history returns `409 cursor_unavailable`; this can happen after a restore drops an unsynced tail.
+</Callout>
+
+## Interrupt a turn
+
+Send `{"type":"user.interrupt"}` to the events endpoint to stop the running turn. Brain returns `202 Accepted` with `{"status":"interrupt_requested"}`. If no turn is running, the request does nothing. Like sending, interrupting doesn't require `manage`.
+
+```sh tab="cURL"
+curl http://127.0.0.1:8080/sessions/SESSION_ID/events \
+  -H "Authorization: Bearer $BRAIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"user.interrupt"}'
+```
+
+```ts tab="TypeScript"
+await brain.interrupt(session.id);
+```
+
+```python tab="Python"
+brain.interrupt(session["id"])
+```
+
+Brain asks the harness to stop, cancels the turn, and emits `session.error` with code `conflict` for the turn and for each queued message. The session then moves to `interrupted`. An interrupt request accepts no other fields.
+
+<Callout type="warn" title="Remote work may continue">
+Interrupting cancels in-flight tool requests, but a tool service may already have started work, such as a sandbox command or an external job. Brain doesn't retry or undo tool calls; your tool service owns cleanup.
+</Callout>
+
+## Resume after an interruption or failure
+
+`POST /sessions/{id}/resume` moves an `interrupted` or `failed` session back to `idle`. Brain restores the harness's native state and the session config from the last completed turn's checkpoint, then emits `session.status` with `idle` and no `input_id`. Resuming doesn't call the model or re-run tools. Events from the stopped turn stay in the history, but the harness no longer sees them.
+
+```sh tab="cURL"
+curl -X POST http://127.0.0.1:8080/sessions/SESSION_ID/resume \
+  -H "Authorization: Bearer $BRAIN_API_KEY"
+```
+
+```ts tab="TypeScript"
+await brain.resume(session.id);
+```
+
+```python tab="Python"
+brain.resume(session["id"])
+```
+
+Resuming needs a token with `manage` and returns the session. An `idle` session is returned unchanged. A running or closed session returns `409`. After resuming, send a new message to continue.
 
 ## Close a session
 
-Call `POST /sessions/{id}/close` to permanently end a session and cancel any active or queued work. Closing a session keeps its event history readable; any external sandboxes or jobs created by tools must be cleaned up by their respective tool services.
+`POST /sessions/{id}/close` permanently closes a session and returns `202 Accepted` with `{"status":"close_requested"}`. An idle session closes immediately. If a turn is running, Brain interrupts it and fails the queued messages first. Closing needs a token with `manage`.
+
+```sh tab="cURL"
+curl -X POST http://127.0.0.1:8080/sessions/SESSION_ID/close \
+  -H "Authorization: Bearer $BRAIN_API_KEY"
+```
+
+```ts tab="TypeScript"
+await brain.close(session.id);
+```
+
+```python tab="Python"
+brain.close(session["id"])
+```
+
+The event history stays readable after you close a session; new messages return `409`. Resources that tools created, such as sandboxes, belong to the tool services, which clean them up.
+
+## List and inspect sessions
+
+- **List:** `GET /sessions` returns `{"sessions": [...]}` for your tenant, sorted by ID. Pass the last ID as `after` to get the next page, with `limit` from 1 to 1000 (default 100). With a PostgreSQL index configured, the list includes sessions stored by other Brain instances.
+- **Inspect:** `GET /sessions/{id}` returns the session with its current status and latest checkpoint.
+
+A session that belongs to another tenant returns `404`, the same as a session that doesn't exist. A token limited to one session sees only that session. The SDKs expose these routes as `list(after, limit)` and `get(id)`.
+
+## Next steps
+
+<Cards>
+  <Card icon={<Radio />} title="Events & streaming" href="/docs/reference/events">Payloads for every event type.</Card>
+  <Card icon={<Wrench />} title="Distributed tools" href="/docs/tools">Give sessions tools that run in your services.</Card>
+  <Card icon={<Database />} title="Persistence & recovery" href="/docs/guides/persistence">Upload checkpoints and restore sessions on another server.</Card>
+  <Card icon={<BookOpen />} title="HTTP API" href="/docs/api">Every route, request body, and status code.</Card>
+</Cards>

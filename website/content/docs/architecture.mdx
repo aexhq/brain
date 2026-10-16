@@ -1,34 +1,96 @@
 ---
 title: Architecture
-description: How Brain coordinates harnesses, external tools, and storage.
+description: How Brain runs a session, where session state lives, and which component owns each responsibility.
 ---
 
-## Request flow
+import { Database, MessagesSquare, Puzzle } from 'lucide-react';
 
-1. **Client to Brain:** Your backend sends authenticated HTTP requests to Brain. Brain writes incoming messages to disk, queues them per session, and spawns or reuses the harness runner process.
-2. **Brain to Harness:** The harness (**Pi**) runs in a child process over stdio. It constructs prompts, calls the LLM provider, manages context compaction, and decides when the turn is finished.
-3. **Brain to Tools:** When the model calls a tool, the harness forwards the call to Brain. Brain attaches the authenticated `tenant_id`, `session_id`, and `call_id` and POSTs the call to the configured HTTP/SSE tool endpoint.
-4. **Streaming to observers:** As the turn runs, Brain appends durable events to disk and broadcasts both durable events and live deltas (`assistant.delta`, `tool.progress`) to connected SSE clients.
+Brain sits between your application and the systems that do the work. It accepts authenticated requests, keeps each session's state on local disk, runs a harness process for each active session, and calls your tools over HTTP. This page follows one message through Brain and explains where state lives and which component owns what.
 
-## Local state vs. external checkpoints
+## How a message flows
 
-Active sessions run against local disk so turns never block on remote storage:
+<Steps>
+<Step>
+### Your backend sends a message
 
-- **SQLite** stores session metadata, tenant ownership, and frozen session config.
-- **Append-only files** store the session event log and native harness state.
+Your backend calls Brain over HTTP with a tenant's API token. Brain checks the token's grant, appends the `user.message` event to the session's log on disk, and queues the message. Each session runs one turn at a time; further messages wait in order.
+</Step>
 
-When external persistence is configured (local archive directory, S3, or R2), a background worker uploads 64 KiB transcript blocks and completed native checkpoints asynchronously. If a machine crashes before a background upload finishes, only the unsynced tail is lost; restoring from external storage always lands on the latest complete checkpoint.
+<Step>
+### Brain runs the harness
+
+Brain starts the session's harness runner, or reuses the one already running, and talks to it over stdio. The harness (Pi) builds prompts, calls the model provider, compacts context, and decides when the turn is finished. The runner process gets a minimal environment; Brain passes it the provider API key when it opens the session.
+</Step>
+
+<Step>
+### Brain calls your tools
+
+When the model calls a tool, the harness hands the call to Brain. Brain checks that the tool is enabled for the session, assigns a `call_id`, and records a `tool.call` event. It then validates the arguments against the tool's input schema and sends the call to the configured HTTP, SSE, or MCP endpoint with the authenticated `tenant_id` and `session_id`. Brain records the outcome as a `tool.result` event and returns it to the harness.
+</Step>
+
+<Step>
+### Brain streams events
+
+As the turn runs, Brain appends retained events to the log and broadcasts them, together with live-only `assistant.delta` and `tool.progress` events, to connected SSE clients.
+</Step>
+
+<Step>
+### Brain records a checkpoint
+
+When the turn completes, Brain records a checkpoint: the position in the event log and the harness's native state files. If external storage is configured, a background worker uploads it.
+</Step>
+</Steps>
+
+## Local state and external checkpoints
+
+Active sessions run against local disk, so a turn never waits on remote storage:
+
+- **SQLite** stores session metadata, tenant ownership, and the session config fixed at creation.
+- **Append-only files** store each session's event log and native harness state.
+
+External persistence is optional. When you configure it, a background worker uploads immutable 64 KiB event-log blocks and completed native checkpoints to a local directory, Amazon S3, Cloudflare R2, or Google Cloud Storage. An optional PostgreSQL index lets `GET /sessions` list sessions stored by other instances.
+
+When a request names a session that isn't on local disk, Brain loads the session's latest checkpoint from external storage. The loaded session is `interrupted` until you resume it. You can also force an upload with `POST /sessions/{id}/flush`, check upload progress with `GET /sessions/{id}/sync`, and restore a specific checkpoint with `POST /sessions/{id}/restore`.
+
+<Callout type="warn" title="Unsynced data">
+If a machine fails before a background upload finishes, only the unsynced tail is lost. Restoring from external storage always lands on the latest complete checkpoint.
+</Callout>
+
+After a restart, Brain loads each session from local disk the next time a request uses it. A session whose turn was running when Brain stopped comes back as `interrupted`; resume it to continue. See [Persistence & recovery](/docs/guides/persistence) for configuration and for handing a session to another server.
 
 ## Ownership boundaries
 
-| Layer | Responsibility |
+| Component | Owns |
 | --- | --- |
 | **Brain** | HTTP API, tenant auth, input queueing, SSE streaming, tool dispatch, local state, background checkpoint sync, OpenTelemetry. |
 | **Harness** | LLM requests, prompt construction, context compaction, native session state. |
 | **Tool service** | Tool execution, sandboxes, external jobs, human approvals, retries, resource cleanup. |
-| **Host platform** | End-user auth, session routing/placement, single-owner enforcement, scaling, failover. |
+| **Host platform** | End-user auth, session routing and placement, single-owner enforcement, scaling, failover. |
+
+## How errors are handled
+
+Brain separates three kinds of errors, so a failure in one layer doesn't look like a failure in another:
+
+- **Request errors:** A bad request gets a `4xx` response and leaves the session unchanged.
+- **Tool failures:** Denials, error statuses, timeouts, and dropped connections become `tool.result` events with `is_error: true`, so the model can react. Brain never retries a tool call.
+- **Execution failures:** Provider errors, a broken harness process, or a failed disk write stop the turn and emit `session.error`. The session stays `interrupted` or `failed` until you resume it.
+
+## Design principles
+
+- **Keep the core small:** Harnesses own inference and context; external services own tools and approvals.
+- **Fail explicitly:** Tool errors become tool results, and Brain errors stop the affected turn. Missing or corrupted state returns an error instead of silently starting a fresh session.
+- **Bound every queue:** Input queues, SSE subscriber buffers, and storage retries all have limits. Health checks and SSE keepalives never call the model.
 
 ## Design references
 
-- [ADR 0001: Local-first ephemeral session server](https://github.com/aexhq/brain/blob/successor/docs/adr/0001-local-first-session-server.md)
-- [Roadmap](https://github.com/aexhq/brain/blob/successor/docs/roadmap.md)
+- [ADR 0001: Local-first ephemeral session server](https://github.com/aexhq/brain/blob/main/docs/adr/0001-local-first-session-server.md)
+- [Roadmap](https://github.com/aexhq/brain/blob/main/docs/roadmap.md)
+- [Implementation plan](https://github.com/aexhq/brain/blob/main/docs/implementation-plan.md)
+
+## Next steps
+
+<Cards>
+  <Card icon={<MessagesSquare />} title="Session lifecycle" href="/docs/guides/sessions">Send messages, stream events, and handle interruptions.</Card>
+  <Card icon={<Database />} title="Persistence & recovery" href="/docs/guides/persistence">Configure external checkpoints and move sessions between servers.</Card>
+  <Card icon={<Puzzle />} title="Adapters" href="/docs/adapters">Add a harness or a storage backend through small Go interfaces.</Card>
+</Cards>

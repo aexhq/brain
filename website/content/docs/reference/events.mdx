@@ -1,57 +1,93 @@
 ---
 title: Events & streaming
-description: Event payloads, SSE wire format, and cursor-based reconnection.
+description: Event envelope, payload schemas, SSE wire format, and cursor-based reconnection.
 ---
+
+Every turn in a session produces a sequence of typed events. Brain appends retained events to the session's local log (`events.jsonl`) and broadcasts both retained and live-only events over server-sent events (SSE).
 
 ## Event envelope
 
+Every event returned by `POST /sessions/{id}/events` or `GET /sessions/{id}/events` shares the same outer JSON envelope:
+
 ```json
 {
-  "id": "EVENT_ID",
+  "id": "8f14e45fceea167a5a36dedd4bea2543",
   "type": "assistant.message",
   "time": "2026-10-15T12:00:00Z",
-  "input_id": "ACCEPTED_INPUT_EVENT_ID",
-  "data": { "text": "Hello" },
-  "cursor": "OPAQUE_CURSOR"
+  "input_id": "c9f0f895fb98ab9159f51fd0297e236d",
+  "data": {
+    "text": "Append-only logs write new records at the end of a file without modifying existing bytes.",
+    "usage": { "input": 42, "output": 19 },
+    "stop_reason": "stop"
+  },
+  "cursor": "eyJvIjoxMjgsImkiOiI4ZjE0ZTQ1ZmNlZWExNjdhNWEzNmRlZGQ0YmVhMjU0MyJ9"
 }
 ```
 
-- `id` — unique identifier for the event.
-- `input_id` — links assistant messages, tool events, status changes, and errors back to the `user.message` `id` that triggered them.
-- `cursor` — opaque position token present on retained (durable) events. Pass it as `after` when paginating or reconnecting. Never construct cursors yourself or pass `id` as a cursor.
+| Field | Type | Present on | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | All events | Unique 32-character hex identifier for this event. |
+| `type` | `string` | All events | Event type name in `{domain}.{action}` format (see [Event types](#event-types)). |
+| `time` | `string` | All events | UTC RFC 3339 timestamp when Brain recorded or published the event. |
+| `input_id` | `string` | Turn events | The `id` of the `user.message` event that triggered this event. Omitted on `user.message` itself and on session-level status changes (such as `close`). |
+| `data` | `object` | All events | Type-specific payload (see [Event types](#event-types)). |
+| `cursor` | `string` | Retained events | Opaque position token encoding the byte offset and event ID in `events.jsonl`. Omitted on live-only events (`assistant.delta` and `tool.progress`). |
+
+<Callout type="warn" title="Do not construct cursors or pass id as after">
+Always pass the exact `cursor` string from a retained event (or `next_cursor` from a history page) as `after`. Passing an event `id` or a fabricated string returns `409 cursor_unavailable`.
+</Callout>
 
 ## Event types
 
-| Type | `data` fields | Saved to history? |
-| --- | --- | --- |
-| `user.message` | `type`, `text`, optional `delivery` and `key`. | Yes |
-| `assistant.delta` | `text` chunk streamed during generation. | No |
-| `assistant.message` | Complete `text` (plus `usage` and `stop_reason` from Pi). | Yes |
-| `tool.call` | `id`, `name`, `arguments`. | Yes |
-| `tool.progress` | `call_id` and tool-supplied `data`. | No |
-| `tool.result` | `call_id` and `result` (`content`, optional `is_error`, `unknown_outcome`). | Yes |
-| `session.status` | `status`: `idle`, `running`, `interrupted`, `failed`, or `closed`. | Yes |
-| `session.error` | `code` and `message`. | Yes |
+Brain emits eight event types. Six are saved to disk (`events.jsonl`) and replayed on history/stream requests; two are live-only progress signals sent to connected SSE subscribers.
+
+| Type | Saved to history? | `data` fields | Description |
+| --- | --- | --- | --- |
+| `user.message` | Yes | `type` (`"user.message"`), `text`, `delivery` (`"queue"`), optional `key` | User message accepted by `POST /sessions/{id}/events`. |
+| `assistant.delta` | No (live only) | `text` | Incremental text chunk streamed while the model generates a response. |
+| `assistant.message` | Yes | `text`, plus `usage` and `stop_reason` from Pi | Complete assistant message emitted at the end of a model generation step. |
+| `tool.call` | Yes | `id`, `name`, `arguments` | Tool invocation requested by the model before Brain dispatches the HTTP, SSE, or MCP call. |
+| `tool.progress` | No (live only) | `call_id`, `data` | Intermediate JSON progress frame emitted by an SSE tool (`event: progress`) or MCP progress notification. |
+| `tool.result` | Yes | `call_id`, `result` (`content[]`, optional `is_error`, optional `unknown_outcome`) | Final outcome of a tool call returned to the harness. Each item in `content` has `type: "text"` (`text`) or `type: "image"` (`data`, `mime_type`). |
+| `session.status` | Yes | `status` (`"running"`, `"idle"`, `"interrupted"`, `"failed"`, or `"closed"`) | Lifecycle transition for the session. When a turn finishes and the input queue is empty, Brain emits `status: "idle"` with `input_id` set to that turn's `user.message` `id`. |
+| `session.error` | Yes | `code` (`"provider_error"`, `"brain_error"`, `"conflict"`, etc.), `message` | Fatal turn error or cancelled queued input. See [Errors](/docs/reference/errors#session-errors-sessionerror). |
+
+Each retained record in `events.jsonl` is capped at 4 MiB, and the total log file is capped at `limits.session_bytes` (default 1 GiB).
 
 ## SSE wire format
 
-Request `GET /sessions/{id}/events` with `Accept: text/event-stream`:
+Send `GET /sessions/{id}/events` with `Accept: text/event-stream` to open an SSE stream:
 
 ```text
-id: OPAQUE_CURSOR
+id: eyJvIjowLCJpIjoiYzlmMGY4OTVmYjk4YWI5MTU5ZjUxZmQwMjk3ZTIzNmQifQ
+event: user.message
+data: {"id":"c9f0f895fb98ab9159f51fd0297e236d","type":"user.message","time":"2026-10-15T12:00:00Z","data":{"type":"user.message","text":"Hello","delivery":"queue"},"cursor":"eyJvIjowLCJpIjoiYzlmMGY4OTVmYjk4YWI5MTU5ZjUxZmQwMjk3ZTIzNmQifQ"}
+
+event: assistant.delta
+data: {"id":"45c48cce2e2d7fbdea1afc51c7c6ad26","type":"assistant.delta","time":"2026-10-15T12:00:01Z","input_id":"c9f0f895fb98ab9159f51fd0297e236d","data":{"text":"Hello"}}
+
+id: eyJvIjoxMjgsImkiOiI4ZjE0ZTQ1ZmNlZWExNjdhNWEzNmRlZGQ0YmVhMjU0MyJ9
 event: assistant.message
-data: {"id":"EVENT_ID","type":"assistant.message","time":"2026-10-15T12:00:00Z","data":{"text":"Hello"},"cursor":"OPAQUE_CURSOR"}
+data: {"id":"8f14e45fceea167a5a36dedd4bea2543","type":"assistant.message","time":"2026-10-15T12:00:01Z","input_id":"c9f0f895fb98ab9159f51fd0297e236d","data":{"text":"Hello"},"cursor":"eyJvIjoxMjgsImkiOiI4ZjE0ZTQ1ZmNlZWExNjdhNWEzNmRlZGQ0YmVhMjU0MyJ9"}
 
 : keepalive
 
 ```
 
-Each SSE event ends with a blank line. `data` contains the full JSON event envelope. Live-only events (`assistant.delta` and `tool.progress`) omit the SSE `id:` line because they are not stored on disk. Keepalive comments (`: keepalive`) are sent roughly every 15 seconds.
+- **Framing:** Every SSE frame includes `event: <type>` and `data: <json-envelope>`, followed by a blank line (`\n\n`).
+- **Event IDs:** Retained events include `id: <cursor>` before `event:`. Live-only events (`assistant.delta` and `tool.progress`) omit the `id:` line so standard `EventSource` clients never overwrite their last valid reconnection cursor.
+- **Keepalives and deadlines:** Brain writes `: keepalive\n\n` every 15 seconds while idle and applies a 15-second write deadline per frame or keepalive. Keepalives never touch model state or trigger LLM calls.
 
-## Reconnecting
+## Reconnecting with cursors
 
-Track the `cursor` of the last retained event you received and reconnect with `?after=CURSOR` or `Last-Event-ID: CURSOR`. Brain replays any retained events recorded after that cursor and then switches to live streaming.
+When subscribing over SSE, Brain captures the current log boundary under lock, replays all retained events after your cursor in batches of 100, and then switches seamlessly to live events without gaps or duplicates.
 
-If a session was restored from an older external checkpoint and your cursor points to an unsynced tail that no longer exists, Brain returns `409 cursor_unavailable`. When that happens, fetch the event history from the start (`after=""`) to resync your client state.
+1. Record `event.cursor` whenever it is non-empty.
+2. Reconnect with `GET /sessions/{id}/events?after=CURSOR` or the `Last-Event-ID: CURSOR` header (`?after=` takes precedence if both are sent; cursors longer than 512 bytes are rejected).
+3. If the session was restored from an older external checkpoint and your cursor points into an unsynced tail that no longer exists, Brain responds with `409 cursor_unavailable`. Reset your local state and read from `after=""`.
 
-SSE streams stay open across turns until the client disconnects or the session is closed. If a slow client falls behind its per-subscriber buffer (`subscriber_events` or `subscriber_bytes`), Brain closes that connection so the client can reconnect with its last cursor.
+## Stream lifecycle and backpressure
+
+- **Multi-turn streams:** SSE streams stay open across `idle` transitions and future turns until the client disconnects, the server shuts down, or the session is closed.
+- **Client disconnects:** Closing an SSE connection never interrupts a running turn on the server.
+- **Slow-consumer eviction:** Each SSE subscriber has a bounded in-memory buffer (`limits.subscriber_events`, default `128`, and `limits.subscriber_bytes`, default `2 MiB`). If a slow client falls behind either limit during live streaming, Brain closes that subscriber's connection without affecting the turn or other subscribers; the client can immediately reconnect with its last `cursor`.

@@ -1,15 +1,19 @@
 ---
 title: Host configuration
-description: Configure the listener, auth tokens, harnesses, model providers, tools, and resource limits.
+description: Reference for brain.json fields, authentication tokens, harnesses, model providers, tools, resource limits, and external persistence.
 ---
 
-Pass your configuration file with `-config`:
+Brain reads its host configuration from a JSON file passed with `-config` (defaults to `brain.json`). You can validate the configuration file and all referenced environment variables without starting the HTTP server by passing `-check`:
 
-```sh
-go run ./cmd/brain -config brain.json
+```sh tab="macOS / Linux"
+go run ./cmd/brain -config brain.json -check
 ```
 
-Add `-check` to validate the file and exit without starting the server. Unknown JSON fields and trailing data are rejected. Relative paths resolve from the working directory of the Brain process.
+```powershell tab="Windows"
+go run ./cmd/brain -config brain.json -check
+```
+
+Configuration files are limited to 4 MiB. Unknown JSON fields and trailing JSON data are rejected at startup. Relative paths (such as `data_dir` or `persistence.directory`) resolve from the working directory of the Brain process.
 
 ## Minimal example
 
@@ -18,51 +22,110 @@ Add `-check` to validate the file and exit without starting the server. Unknown 
   "listen": "127.0.0.1:8080",
   "public_url": "http://127.0.0.1:8080",
   "data_dir": ".brain",
-  "tokens": [{ "token_env": "BRAIN_API_KEY", "tenant": "local", "manage": true }],
-  "harnesses": { "pi": { "command": ["node", "runners/pi/dist/main.js"] } },
-  "providers": { "openai": { "api_key_env": "OPENAI_API_KEY" } },
+  "tokens": [
+    { "token_env": "BRAIN_API_KEY", "tenant": "local", "manage": true }
+  ],
+  "harnesses": {
+    "pi": { "command": ["node", "runners/pi/dist/main.js"] }
+  },
+  "providers": {
+    "openai": { "api_key_env": "OPENAI_API_KEY" }
+  },
   "tools": []
 }
 ```
 
-| Field | Description |
-| --- | --- |
-| `listen` | Address and port to bind. Defaults to `127.0.0.1:8080`. |
-| `public_url` | Base URL passed to tools with `inspect_session: true`. Defaults to `http://127.0.0.1:8080`. |
-| `data_dir` | Local directory for SQLite and session files. Defaults to `.brain`. |
-| `tokens` | [Token grants](/docs/guides/authentication); each entry reads its secret from `token_env`. |
-| `harnesses` | Map of harness name (`pi`) to command array. At least one harness is required. |
-| `providers` | Map of provider name to `api_key_env` (plus optional `base_url` and `api`). |
-| `tools` | Array of [external tool descriptors](/docs/tools). |
-| `limits` | Optional resource limits (see table below). |
-| `persistence` | Optional external checkpoint storage settings (see table below). |
+## Top-level fields
 
-Every configured provider must have its `api_key_env` environment variable set at startup.
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `listen` | `string` | `"127.0.0.1:8080"` | TCP `host:port` address to bind. Validated with `net.SplitHostPort`. |
+| `public_url` | `string` | `"http://127.0.0.1:8080"` | Base `http` or `https` URL passed as `brain_url` to tools with `inspect_session: true`. Must not contain credentials, query parameters, or fragments. |
+| `data_dir` | `string` | `".brain"` | Local directory for `metadata.sqlite` and per-session directories (`sessions/<id>/`). Must be non-empty. |
+| `tokens` | `Token[]` | Required | Non-empty array of API token grants (see [`tokens`](#authentication-tokens-tokens)). |
+| `harnesses` | `Record<string, Runner>` | Required | Map of harness name (`1`–`64` characters) to child process command (see [`harnesses`](#harnesses-harnesses)). At least one harness is required. |
+| `providers` | `Record<string, Provider>` | `{}` | Map of model provider prefix to credentials and optional transport overrides (see [`providers`](#model-providers-providers)). |
+| `tools` | `Binding[]` | `[]` | Array of external HTTP, SSE, or MCP tool bindings (see [`tools`](#external-tools-tools)). |
+| `limits` | `Limits` | See below | In-memory, disk, queue, and SSE subscriber bounds (see [`limits`](#resource-limits-limits)). |
+| `persistence` | `Settings` | `null` | Optional background checkpoint storage and session index settings (see [`persistence`](#external-persistence-persistence)). |
+
+## Authentication tokens (`tokens`)
+
+Each entry in `tokens` binds an environment variable containing a bearer secret to a tenant and permission scope. Duplicate token values across entries are rejected at startup. See [Authentication & tenants](/docs/guides/authentication).
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `token_env` | `string` | Yes | — | Name of the environment variable holding the bearer token. The environment variable must be set at startup and contain at least 24 bytes. |
+| `tenant` | `string` | Yes | — | Tenant identifier (`1`–`128` bytes). All operations using this token are isolated to this tenant. |
+| `session` | `string` | No | `""` | Optional 32-character hex session ID. When set, the token can only access that single session and cannot create new sessions. |
+| `manage` | `boolean` | No | `false` | Permits management operations (`POST /sessions`, `resume`, `close`, `flush`, and `restore`). |
+| `read_only` | `boolean` | No | `false` | Restricts the credential to `GET` requests (`list`, `get`, `events`, `sync`, and `catalog`). |
+
+## Harnesses (`harnesses`)
+
+Each key in `harnesses` is the harness name clients pass in `POST /sessions` (for example, `"pi"`).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `command` | `string[]` | Yes | Non-empty command and arguments used to spawn the harness child process (for example, `["node", "runners/pi/dist/main.js"]`). `command[0]` must be non-empty. |
+
+## Model providers (`providers`)
+
+Each key in `providers` matches the `provider` prefix in `config.model` (`provider/model`). Every configured provider must have its `api_key_env` environment variable set and non-empty when Brain starts. See [Models & providers](/docs/reference/models).
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `api_key_env` | `string` | Yes | — | Environment variable containing the provider API key. Passed to the harness runner via stdio `open` options. |
+| `base_url` | `string` | No | `""` | Optional `http` or `https` base URL override for proxies or compatible endpoints (must not include user credentials). |
+| `api` | `string` | No | `""` | Optional transport override in the Pi model registry (for example, `"openai-completions"`). |
+
+## External tools (`tools`)
+
+Each element in `tools` registers one tool that sessions belonging to authorized `tenants` can enable in `config.tools`. See [External tools](/docs/tools) and [MCP tools](/docs/tools/mcp) for protocol and discovery details.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | Yes | — | Unique tool name matching `^[a-zA-Z][a-zA-Z0-9_]{0,63}$`. |
+| `description` | `string` | Yes | — | Non-empty description shown to the model. |
+| `input_schema` | `object` | Yes | — | JSON Schema for tool arguments. External `$ref` URLs are rejected. |
+| `output_schema` | `object` | No | `null` | Optional JSON Schema used to validate the tool's `Result` envelope. |
+| `url` | `string` | Yes | — | Target `http` or `https` endpoint URL (no credentials or URL fragments). |
+| `tenants` | `string[]` | Yes | — | Non-empty list of tenant IDs permitted to see and enable this tool. |
+| `token_env` | `string` | No | `""` | Optional environment variable holding the bearer token Brain sends in `Authorization: Bearer <token>`. Must be non-empty at startup when specified. |
+| `mcp_tool` | `string` | No | `""` | Remote MCP tool name. When set, Brain calls `url` using the MCP Streamable HTTP transport instead of the native HTTP/SSE tool protocol. |
+| `timeout_seconds` | `integer` | No | `300` | Per-call deadline in seconds. Allowed range: `1`–`86400` (24 hours). |
+| `max_output_bytes` | `integer` | No | `1048576` | Maximum response body size in bytes. Allowed range: `1`–`2097152` (2 MiB). |
+| `inspect_session` | `boolean` | No | `false` | When `true`, Brain issues a short-lived, read-only session token (`inspection_token`) and `brain_url` for the duration of each call. Cannot be combined with `mcp_tool`. |
 
 ## Resource limits (`limits`)
 
-| Field | Default | Allowed range / meaning |
-| --- | ---: | --- |
-| `active` | 16 | Minimum `1`. Maximum concurrent running turns across the server. |
-| `loaded` | 1024 | Minimum `active`. Maximum in-memory/loaded sessions. |
-| `queue` | 16 | `1`–`1024`. Maximum queued inputs per session. |
-| `input_bytes` | 65536 | `1`–`1048576` (1 MiB). Maximum byte length of a user message. |
-| `session_bytes` | 1073741824 | Minimum `16777216` (16 MiB). Maximum local disk usage per session. |
-| `subscribers` | 128 | Minimum `1`. Maximum concurrent SSE connections across the server. |
-| `subscriber_events` | 128 | Minimum `1`. Buffered events per SSE subscriber before disconnect. |
-| `subscriber_bytes` | 2097152 | Minimum `4096`. Buffered bytes per SSE subscriber before disconnect. |
+Every field is optional. Fields you omit keep the defaults below, so you can override only the limits you need. Brain validates the combined values at startup.
+
+| Field | Type | Default | Allowed range | Description |
+| --- | --- | ---: | --- | --- |
+| `active` | `integer` | `16` | `>= 1` | Maximum concurrent running turns (and resident harness processes) across the server. |
+| `loaded` | `integer` | `1024` | `>= active` | Maximum sessions held in memory at once. Idle unreferenced sessions are evicted when full. |
+| `queue` | `integer` | `16` | `1`–`1024` | Maximum queued `user.message` inputs per session. |
+| `input_bytes` | `integer` | `65536` | `1`–`1048576` (1 MiB) | Maximum byte length of `user.message` `text` or session `instructions`. |
+| `session_bytes` | `integer` | `1073741824` | `>= 16777216` (16 MiB) | Maximum local event log (`events.jsonl`) and checkpoint artifact size per session (default 1 GiB). |
+| `subscribers` | `integer` | `128` | `>= 1` | Maximum concurrent SSE connections across the server. |
+| `subscriber_events` | `integer` | `128` | `>= 1` | Maximum buffered live events per SSE subscriber before Brain disconnects the slow client. |
+| `subscriber_bytes` | `integer` | `2097152` | `>= 4096` | Maximum buffered live event bytes per SSE subscriber before disconnect (default 2 MiB; each event accounts for `len(data) + 256` bytes). |
 
 ## External persistence (`persistence`)
 
-| Field | Description |
-| --- | --- |
-| `provider` | `"filesystem"`, `"s3"`, `"r2"`, or `"gcs"`. |
-| `directory` | Target path on disk (required when `provider` is `"filesystem"`). |
-| `bucket` | Bucket name (required for all cloud providers). |
-| `region`, `endpoint`, `prefix` | Region, custom S3/R2 endpoint URL, and optional object key prefix. R2 requires `endpoint` and defaults to region `"auto"`. |
-| `access_key_env`, `secret_key_env` | Environment variable names for credentials (required for R2; optional for S3 when using IAM/default credential chain). |
-| `postgres_env` | Optional environment variable containing a PostgreSQL connection string for session indexing. |
-| `interval_seconds` | Background sync interval in seconds. Default `5`, range `1`–`3600`. |
-| `queue` | Maximum pending session sync entries. Default `128`, range `1`–`10000`. |
+Configure `persistence` to upload immutable 64 KiB transcript blocks and native checkpoints in the background. See [Persistence & recovery](/docs/guides/persistence) for provider setup and handoff steps.
 
-See [Persistence & recovery](/docs/guides/persistence) for setup details and handoff steps.
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `provider` | `string` | Yes | — | Storage backend: `"filesystem"`, `"s3"`, `"r2"`, or `"gcs"`. |
+| `directory` | `string` | When `filesystem` | `""` | Target directory on disk for `"filesystem"` checkpoints. |
+| `bucket` | `string` | When `s3`, `r2`, or `gcs` | `""` | Object storage bucket name. |
+| `region` | `string` | No | `"auto"` for `r2` | AWS/S3 region. Rejected when `provider` is `"gcs"`. |
+| `endpoint` | `string` | When `r2` | `""` | Custom `http` or `https` S3/R2 endpoint URL (enables path-style addressing). Rejected when `provider` is `"gcs"`. |
+| `prefix` | `string` | No | `""` | Optional relative object key prefix (must not start with `/`, contain `\`, or traverse `..`). |
+| `access_key_env` | `string` | When `r2` | `""` | Environment variable holding the S3/R2 access key ID. Optional for `"s3"` (which falls back to the default AWS credential chain); rejected for `"gcs"`. Both `access_key_env` and `secret_key_env` must be set together. |
+| `secret_key_env` | `string` | When `r2` | `""` | Environment variable holding the S3/R2 secret access key. Rejected for `"gcs"`. |
+| `postgres_env` | `string` | No | `""` | Optional environment variable containing a PostgreSQL connection string (`postgres://...`) for cross-instance session discovery. Must be non-empty at startup when specified. |
+| `interval_seconds` | `integer` | No | `5` | Background sync scan interval in seconds (`1`–`3600`). |
+| `queue` | `integer` | No | `128` | Maximum pending dirty sessions in the background sync queue (`1`–`10000`). When full, Brain rejects new writes with `429 overloaded` and marks `/health/ready` as `503`. |

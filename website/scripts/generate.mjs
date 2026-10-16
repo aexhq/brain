@@ -32,11 +32,11 @@ async function page(file, title, description, body) {
 }
 
 for (const [from, to, title, description] of [
-  ['docs/running-persistence.md', 'guides/persistence.mdx', 'Persistence & recovery', 'Configure background checkpoints and move sessions between servers.'],
-  ['examples/tools/README.md', 'tools/local-tools.mdx', 'Local tools & approvals', 'Run the example tool server with echo, session inspection, and operator approvals.'],
-  ['services/sandbox/README.md', 'tools/sandboxes.mdx', 'Sandboxes', 'Create, execute, inspect, and terminate remote Modal, E2B, and Daytona sandboxes.'],
-  ['services/resources/README.md', 'tools/resources.mdx', 'Storage & web', 'Run tenant-scoped S3/R2 storage and Brave/Tavily web research tools.'],
-  ['examples/platforms/README.md', 'guides/platforms.mdx', 'Platform examples', 'Docker Compose, Fly.io, ECS/Fargate, and Cloudflare integration examples.'],
+  ['docs/running-persistence.md', 'guides/persistence.mdx', 'Persistence & recovery', 'Configure background checkpoints across filesystem, S3, R2, and GCS, and hand off sessions between servers.'],
+  ['examples/tools/README.md', 'tools/local-tools.mdx', 'Local tools & approvals', 'Run the example Go tool server with HTTP JSON echo, delegated session inspection, and SSE operator approvals.'],
+  ['services/sandbox/README.md', 'tools/sandboxes.mdx', 'Sandboxes', 'Create, execute, inspect, and terminate remote Modal, E2B, and Daytona sandboxes over the HTTP tool protocol.'],
+  ['services/resources/README.md', 'tools/resources.mdx', 'Storage & web', 'Run tenant-scoped S3/R2 text storage, public web fetch, and Brave/Tavily web search tools.'],
+  ['examples/platforms/README.md', 'guides/platforms.mdx', 'Platform examples', 'Single-owner deployment examples for Docker Compose, Fly.io, AWS ECS/Fargate, and Cloudflare R2 tool Workers.'],
 ]) {
   const text = (await readFile(path.join(root, from), 'utf8')).replace(/^# .*\r?\n/, '');
   await page(to, title, description, text);
@@ -44,15 +44,15 @@ for (const [from, to, title, description] of [
 
 const models = JSON.parse(execFileSync(process.execPath, ['runners/pi/scripts/model-catalog.mjs'], { cwd: root, encoding: 'utf8' }));
 const runner = JSON.parse(await readFile(path.join(root, 'runners/pi/package.json'), 'utf8'));
-let inventory = `Extracted from the pinned Pi \`${runner.dependencies['@earendil-works/pi-coding-agent']}\` model registry.\n\n> **Note:** This list is an offline catalog inventory, **not live-provider qualification**. Brain passes API keys configured in \`providers\`; providers that require interactive OAuth or ambient host credentials are not supported out of the box. See [Models & providers](/docs/reference/models) for setup details.\n\n`;
+let inventory = `Extracted from the pinned Pi \`${runner.dependencies['@earendil-works/pi-coding-agent']}\` model registry (\`runners/pi/scripts/model-catalog.mjs\`).\n\n> **Note:** This list is an offline catalog inventory, **not live-provider qualification**. Brain passes explicit API keys configured in \`providers\`; providers that require interactive OAuth or ambient host credentials are not supported out of the box. See [Models & providers](/docs/reference/models) for provider configuration, reasoning effort, and custom endpoints.\n\n`;
 for (const provider of [...new Set(models.map(m => m.provider))]) {
   inventory += `## ${provider}\n\n| Model ID | Transport | Context window |\n| --- | --- | ---: |\n`;
   for (const m of models.filter(m => m.provider === provider)) inventory += `| \`${m.provider}/${m.id}\` | \`${m.api}\` | ${m.contextWindow} |\n`;
   inventory += '\n';
 }
-await page('reference/model-catalog.mdx', 'Model catalog', 'Models bundled in the pinned Pi runtime registry.', inventory);
+await page('reference/model-catalog.mdx', 'Model catalog', 'Offline model IDs, transports, and context windows bundled in the pinned Pi runtime registry.', inventory);
 
-let interfaces = 'Extracted from the Go source during the docs build. These packages live under `internal/`, so adding a new harness or storage adapter means modifying the Brain codebase directly.\n\n';
+let interfaces = 'Extracted directly from the Go source (`internal/harness` and `internal/persistence`) during the documentation build. Because these packages live under `internal/`, adding a compiled Go harness or persistence adapter requires modifying the Brain codebase directly (child-process harnesses and HTTP/SSE/MCP tool services run out of process without Go changes).\n\n';
 for (const [pkg, symbols] of [
   ['harness', ['Factory', 'Runner', 'Options', 'RunnerFrame']],
   ['persistence', ['Objects', 'Metadata']],
@@ -63,5 +63,5 @@ for (const [pkg, symbols] of [
     interfaces += `### ${symbol}\n\n\`\`\`go\n${code.trim()}\n\`\`\`\n\n`;
   }
 }
-await page('adapters/interfaces.mdx', 'Go interfaces', 'Harness and persistence extension points, generated from source.', interfaces);
+await page('adapters/interfaces.mdx', 'Go interfaces', 'Harness and persistence Go interfaces and structs generated from internal/harness and internal/persistence.', interfaces);
 console.log(`Generated ${operations.length} API pages, ${models.length} model entries, interfaces, and shared guides.`);

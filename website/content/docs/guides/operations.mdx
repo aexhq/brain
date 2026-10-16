@@ -1,27 +1,114 @@
 ---
 title: Operations & observability
-description: Health checks, rate limits, OpenTelemetry, and container deployment.
+description: Check health, set capacity limits, read logs and OpenTelemetry signals, and run Brain in a container.
 ---
 
-## Health endpoints
+import { Database, KeyRound, Settings } from 'lucide-react';
 
-- `GET /health/live` — returns `200` with `{"status":"ok"}` when the HTTP server is up.
-- `GET /health/ready` — returns `200` with `{"status":"ready"}` when the server can accept new work, or `503` with `{"status":"not_ready"}` if the checkpoint sync queue is full or the server is shutting down.
+This guide covers what you need to run Brain as a service: health checks, capacity limits, logs, OpenTelemetry traces and metrics, the container image, and request routing when you run more than one instance.
 
-## Capacity and backpressure
+## Check health
 
-You can tune concurrency, memory, and disk limits in your [host configuration](/docs/reference/configuration) (`active` turns, `loaded` sessions, per-session `queue` depth, `input_bytes`, `session_bytes`, and SSE `subscribers`). When a limit is reached, Brain returns `429 overloaded` with `Retry-After: 1` so in-flight turns and tool completions can finish cleanly.
+Health endpoints need no token and never call a model.
 
-## Logs and OpenTelemetry
+| Endpoint | Response | Use it for |
+| --- | --- | --- |
+| `GET /health/live` | `200` with `{"status":"ok"}` while the HTTP server is running. | Liveness probes. |
+| `GET /health/ready` | `200` with `{"status":"ready"}` when Brain can accept new work, otherwise `503` with `{"status":"not_ready"}`. | Readiness probes and load balancer health checks. |
 
-Brain writes structured JSON logs without request bodies or credentials. Every HTTP response includes an `X-Request-ID` header (and error responses include `request_id` in the JSON body).
+`/health/ready` returns `503` while Brain is shutting down. With external persistence configured, it also returns `503` until Brain has checked which local sessions still need uploading after startup, and whenever the upload backlog is full.
 
-Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export traces and metrics over OTLP/HTTP:
-- **Metrics** track request latency and error counts, input queue delay, time to first assistant output, runner startup time, active executions, tool latency and outcomes, transcript/checkpoint byte growth, and sync queue depth/failures. Metrics omit high-cardinality `tenant` and `session` labels.
-- **Traces** carry session and call IDs across HTTP admission, harness execution, and outbound tool calls.
+## Set capacity limits
 
-## Containers and session routing
+Every queue and buffer in Brain has a limit. Set them in the `limits` object of the [host config](/docs/reference/configuration):
 
-The repository `Dockerfile` packages the Brain binary and the Pi runner as an unprivileged user. Mount your config at `/config/brain.json`, set `listen` to `0.0.0.0:8080`, and mount `/data` for local storage.
+| Limit | Default | What it bounds | When the limit is reached |
+| --- | --- | --- | --- |
+| `active` | 16 | Turns that run at the same time, and harness processes kept running between turns. | New turns wait for a slot. Brain stops an idle harness process to start a new one. |
+| `loaded` | 1024 | Sessions held in memory. Must be at least `active`. | Brain unloads an idle session. If none is idle, the request gets `429`. |
+| `queue` | 16 | Messages waiting in one session, from 1 to 1024. | Sending returns `429`. |
+| `input_bytes` | 64 KiB | Message text and session instructions, up to 1 MiB. Request bodies may be 16 KiB larger. | Oversized text returns `400`; an oversized body returns `413`. |
+| `session_bytes` | 1 GiB | One session's event log, at least 16 MiB. | Sending returns `429` near the limit. |
+| `subscribers` | 128 | Open SSE streams on the server. | A new stream returns `429`. |
+| `subscriber_events` | 128 | Events buffered for one SSE stream. | Brain disconnects the slow client. |
+| `subscriber_bytes` | 2 MiB | Bytes buffered for one SSE stream, at least 4096. | Brain disconnects the slow client. |
 
-Each active session must have a single owning Brain instance at a time. Your routing layer is responsible for sticky session placement and failover; see [Persistence & recovery](/docs/guides/persistence) for the handoff sequence between instances.
+When Brain is out of capacity, it returns `429` with code `overloaded` and `Retry-After: 1` instead of slowing down turns that are already running. Retry with backoff. Brain also returns `429` while it shuts down and, with external persistence, while the upload backlog is full.
+
+## Read logs
+
+Brain writes structured JSON logs, one object per line, to stderr. Logs don't include request bodies or credentials.
+
+Every HTTP response has an `X-Request-ID` header, and every error response body includes the same value as `request_id`:
+
+```json
+{ "error": { "code": "not_found", "message": "session not found" }, "request_id": "5f0c1e7a9b2d4c6e8f1a3b5c7d9e0f2a" }
+```
+
+Brain logs each `500` response with its `request_id`, and each stopped turn with its session ID and error. Quote the request ID when you report a problem.
+
+## Export traces and metrics
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export OpenTelemetry traces and metrics over OTLP/HTTP. Brain reports as service `brain` and exports metrics every 15 seconds. Without the variable, Brain exports nothing.
+
+```sh
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"
+```
+
+| Metric | Measures |
+| --- | --- |
+| `brain.http.requests`, `brain.http.duration` | Requests and their latency, by route and method. SSE streams are counted but not timed. |
+| `brain.http.rejected` | Error responses, by error code. |
+| `brain.executions.active` | Turns currently running. |
+| `brain.input.queue_delay` | Time a message waited before its turn started. |
+| `brain.assistant.first_output` | Time from accepting a message to the first assistant output for it. |
+| `brain.runner.startup` | Time to start a harness process, by harness. |
+| `brain.tool.calls`, `brain.tool.duration` | Tool calls and their latency, by tool and outcome (`success` or `tool_error`). |
+| `brain.transcript.bytes`, `brain.native.appended_bytes` | Growth of event logs and native harness state. |
+| `brain.sync.pending`, `brain.sync.duration`, `brain.sync.failures` | External storage upload backlog, upload time, and failures. |
+
+Metrics carry no tenant or session labels, so their cardinality stays bounded as sessions grow.
+
+Brain records a `session.execute` span for each turn, with the session ID and harness name, and a `tool.call` span for each tool call, with the tool name. Brain propagates W3C trace context: if the request that sends a message has a `traceparent` header, the turn joins that trace, and Brain forwards `traceparent` to HTTP tools so their spans join it too.
+
+## Run Brain in a container
+
+The repository's `Dockerfile` builds an image with the Brain server at `/app/brain`, the Pi runner at `/app/runners/pi`, and the resource tool service at `/app/resource-tools`. The image runs as the unprivileged `node` user (uid 1000), exposes port 8080, and starts Brain with `-config /config/brain.json`.
+
+To run the image:
+
+1. **Mount your host config** at `/config/brain.json`.
+2. **Listen on all interfaces:** Set `"listen": "0.0.0.0:8080"` in the config.
+3. **Store state on a volume:** Set `"data_dir": "/data"` and mount a volume at `/data`.
+4. **Pass secrets as environment variables:** For example `BRAIN_API_KEY` and your provider keys.
+
+```sh
+docker build --tag brain:local-dev .
+docker run --rm -p 127.0.0.1:8080:8080 \
+  --mount type=bind,source="$PWD/brain.json",target=/config/brain.json,readonly \
+  --mount type=volume,source=brain-data,target=/data \
+  -e BRAIN_API_KEY -e OPENAI_API_KEY \
+  brain:local-dev
+```
+
+To check a locally built image, run `node scripts/container-smoke.mjs`. It starts `brain:local-dev` with a recording model provider, so it needs no model credentials.
+
+CI publishes tested images for every commit to `main` as `ghcr.io/aexhq/brain` and `ghcr.io/aexhq/brain-sandbox-tools`, tagged `sha-<commit>` and `main`, with provenance attestations. Pin images by digest in production.
+
+## Route sessions across instances
+
+Each session must have exactly one owning Brain instance at a time. Brain doesn't coordinate instances: your routing layer sends every request for a session to its owner and handles failover.
+
+On `SIGINT` or `SIGTERM`, Brain stops accepting new work, interrupts running turns, ends open event streams, and exits within about 20 seconds. Sessions whose turns were interrupted need a resume before they accept new messages. To move sessions to another instance, upload their checkpoints first; see [Persistence & recovery](/docs/guides/persistence) for the handoff steps.
+
+<Callout type="info" title="Scale">
+Multi-instance load and soak benchmarks are future work on the [roadmap](https://github.com/aexhq/brain/blob/main/docs/roadmap.md). Capacity for fleets of thousands of concurrent sessions hasn't been measured, so plan your own load tests.
+</Callout>
+
+## Next steps
+
+<Cards>
+  <Card icon={<Settings />} title="Host configuration" href="/docs/reference/configuration">Every config field, default, and range.</Card>
+  <Card icon={<Database />} title="Persistence & recovery" href="/docs/guides/persistence">Configure external storage and hand sessions between instances.</Card>
+  <Card icon={<KeyRound />} title="Authentication & tenants" href="/docs/guides/authentication">Tokens, grants, and network security.</Card>
+</Cards>

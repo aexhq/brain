@@ -1,29 +1,65 @@
 ---
 title: Development & verification
-description: Build from source, run the test suite, and preview the docs site.
+description: Set up the workspace, run the verification suite, regenerate contracts, and preview the docs site.
 ---
 
-## Run all checks
+This guide covers how to set up a local development environment for Brain, run the full verification suite, regenerate OpenAPI and SDK wire contracts, and preview the documentation site.
 
-Install the Node dependencies for the runner, TypeScript SDK, and docs site, then run `scripts/check.mjs`:
+## Prerequisites
+
+- **Go `1.26+`** (`go.mod` targets Go `1.26.1`)
+- **Node.js `24+`** and `npm`
+- **Python `3.11+`** (for running the Python SDK unit tests)
+
+## 1. Install workspace dependencies
+
+Install the locked Node dependencies for the Pi runner, TypeScript SDK, sandbox service, and documentation site:
 
 ```sh
 npm --prefix runners/pi ci --ignore-scripts
 npm --prefix sdks/typescript ci --ignore-scripts
+npm --prefix services/sandbox ci --ignore-scripts
 npm --prefix website ci --ignore-scripts
+```
+
+## 2. Run all checks
+
+Run `node scripts/check.mjs` before committing. It executes the full local verification pipeline in order:
+
+```sh
 node scripts/check.mjs
 ```
 
 `node scripts/check.mjs` runs:
-1. Pi runner and TypeScript SDK builds
-2. `go run ./cmd/generate -check` (verifies OpenAPI and SDK wire types are up to date)
-3. `go test ./...` and `go vet ./...`
-4. Pi runner unit/integration tests (against a local recording provider)
-5. TypeScript and Python SDK test suites
-6. End-to-end process journeys (`tests/journeys/journeys.test.mjs`)
-7. Docs site static build and link/contract verification (`website/scripts/site.test.mjs`)
 
-## Preview the documentation site
+1. `npm --prefix runners/pi run build` — compiles the TypeScript Pi runner (`runners/pi/dist/main.js`).
+2. `npm --prefix sdks/typescript run build` — compiles the TypeScript SDK (`sdks/typescript/dist/`).
+3. `go run ./cmd/generate -check` — verifies `api/openapi.json`, `runners/pi/src/generated.ts`, `sdks/typescript/src/generated.ts`, and `sdks/python/brain/types.py` match the Go source.
+4. `go test -count=1 ./...` and `go vet ./...` — runs all Go unit and integration tests and static analysis across `cmd/` and `internal/`.
+5. `npm --prefix runners/pi test` — runs Pi runner unit and integration tests against a local recording provider.
+6. `npm --prefix sdks/typescript test` — runs the TypeScript SDK test suite.
+7. `npm --prefix services/sandbox test` — runs the sandbox tool service test suite.
+8. `python -m unittest discover -s sdks/python -p test_*.py` — runs the Python SDK test suite (`PYTHONPATH=sdks/python`).
+9. `node --test tests/journeys/journeys.test.mjs` — runs the end-to-end process journeys.
+10. `node --test tests/platforms.test.mjs` — validates the platform deployment examples under `examples/platforms/`.
+11. `npm --prefix website run build` and `npm --prefix website test` — generates derived docs pages, builds the static Next.js / Fumadocs export, and runs `website/scripts/site.test.mjs`.
+
+## 3. Regenerate contracts and docs
+
+When you edit Go route declarations, wire structs, or shared Markdown guides, regenerate the derived artifacts:
+
+```sh
+# Regenerate api/openapi.json, runners/pi/src/generated.ts,
+# sdks/typescript/src/generated.ts, and sdks/python/brain/types.py
+go run ./cmd/generate
+
+# Regenerate website/content/docs/** generated pages and website/public/openapi.json
+npm --prefix website run generate
+```
+
+## 4. Preview the documentation site
+
+Start the local Next.js development server:
 
 ```sh
 npm --prefix website run dev
@@ -39,11 +75,16 @@ npm --prefix website start
 
 ## Where to edit what
 
-| Area | Source of truth |
-| --- | --- |
-| HTTP routes, summaries, and wire types | `internal/api/contract.go` & `internal/core/types.go` (then run `go run ./cmd/generate`) |
-| Harness & storage Go interfaces | `internal/harness/harness.go` & `internal/persistence/` |
-| Model catalog | Pinned `@earendil-works/pi-coding-agent` in `runners/pi/package.json` |
-| Persistence guide | `docs/running-persistence.md` |
-| Local tools walkthrough | `examples/tools/README.md` |
-| Docs pages & guides | `website/content/docs/**/*.mdx` |
+Do not hand-edit generated files (`api/openapi.json`, `runners/pi/src/generated.ts`, `sdks/typescript/src/generated.ts`, `sdks/python/brain/types.py`, `website/public/openapi.json`, or generated MDX pages). Edit the source of truth and run the corresponding generator:
+
+| Area | Source of truth | Regenerate with |
+| --- | --- | --- |
+| HTTP routes, summaries, and wire types | `internal/api/contract.go` & `internal/core/types.go` | `go run ./cmd/generate` then `npm --prefix website run generate` |
+| Harness & storage Go interfaces | `internal/harness/harness.go`, `internal/harness/process.go`, `internal/persistence/*.go` | `npm --prefix website run generate` |
+| Model catalog | Pinned `@earendil-works/pi-coding-agent` in `runners/pi/package.json` (`runners/pi/scripts/model-catalog.mjs`) | `npm --prefix website run generate` |
+| Persistence guide | `docs/running-persistence.md` | `npm --prefix website run generate` |
+| Local tools walkthrough | `examples/tools/README.md` | `npm --prefix website run generate` |
+| Sandbox service guide | `services/sandbox/README.md` | `npm --prefix website run generate` |
+| Resource service guide | `services/resources/README.md` | `npm --prefix website run generate` |
+| Platform examples guide | `examples/platforms/README.md` | `npm --prefix website run generate` |
+| Docs pages & guides | `website/content/docs/**/*.mdx` | `npm --prefix website run build` |

@@ -3,37 +3,86 @@ title: Harness adapters
 description: Implement a harness runner over Brain's Go interface or stdio JSON protocol.
 ---
 
-## Go lifecycle
+A **harness adapter** runs the model loop, manages conversation context and compaction, and writes native session state inside the session's `native/` directory while Brain coordinates admission, tool dispatch, event logs, and checkpoints.
 
-`Factory.Open` receives the session directory, frozen session config, enabled tool schemas, provider credentials, and callbacks for emitting events and dispatching tool calls. It returns a `Runner` with five methods: `Prompt`, `Steer`, `Interrupt`, `Checkpoint`, and `Close` (see [Go interfaces](/docs/adapters/interfaces)).
+## Go lifecycle (`harness.Factory` and `harness.Runner`)
 
-Key rules for any `Runner`:
-- **Passive open:** Opening an existing session directory must load saved state without calling the model, re-running tools, or starting background cache-warming timers.
-- **Settled return:** `Prompt` blocks until the turn (including any tool calls and follow-up generations) finishes or is interrupted.
-- **Clean checkpoints:** `Checkpoint` returns the list of relative file paths and byte sizes in the session directory needed to restore the conversation, excluding any credentials.
+`Factory.Open(ctx, opts)` receives a `harness.Options` struct containing the session ID, the `native/` working directory (`Dir`), the immutable session `Config`, enabled `Tools` schemas, resolved `Provider` credentials (`APIKey`, `BaseURL`, `API`), and two callbacks: `Event` (for emitting `assistant.delta` and `assistant.message`) and `Call` (for executing bound tools).
 
-## Child process stdio protocol
+`Open` returns a `harness.Runner` with five methods (see [Go interfaces](/docs/adapters/interfaces)):
 
-`harness.ProcessFactory` runs an external command (such as `node runners/pi/dist/main.js`) and communicates over newline-delimited JSON on `stdin` and `stdout` (max 4 MiB per frame). `stdout` is reserved strictly for protocol frames; write any debug logs to `stderr`.
+| Method | Purpose |
+| --- | --- |
+| `Prompt(ctx, text)` | Runs one user turn to completion (including any model-initiated tool calls and follow-up generations) and returns when the turn settles. |
+| `Steer(ctx, text)` | Steers an active turn if `Factory.SupportsSteering()` is enabled. |
+| `Interrupt(ctx)` | Aborts the active turn cleanly when the caller sends `user.interrupt` or closes the session. |
+| `Checkpoint(ctx)` | Returns the list of `core.NativeFile` entries (`path`, `size`, `append_only`) relative to `Dir` required to restore the conversation. |
+| `Close()` | Terminates the runner and releases its resources. |
 
-Request frame from Brain to runner:
+### Core runner invariants
+
+- **Passive open:** Opening an existing session directory must load saved native state without calling the model, re-running tools, or starting background cache-warming timers.
+- **Settled return:** `Prompt` blocks until the turn finishes or is interrupted.
+- **Clean checkpoints:** `Checkpoint` is called only after `Prompt` settles and must return regular, append-only relative file paths and exact byte sizes in `Dir`, excluding any provider credentials.
+
+## Child process stdio protocol (`harness.ProcessFactory`)
+
+You do not need to write Go code to add a harness runner. Every entry in the `"harnesses"` configuration block uses `harness.ProcessFactory` (`internal/harness/process.go`) to spawn a child process (such as `node runners/pi/dist/main.js`) and communicate over newline-delimited JSON frames (`RunnerFrame`) on `stdin` and `stdout`.
+
+- **Frame limit:** Each line is capped at `4 MiB` (`MaxFrame = 4 << 20`) with strict JSON decoding (`DisallowUnknownFields`).
+- **Standard streams:** `stdout` is reserved strictly for `RunnerFrame` JSON lines. Write diagnostics to `stderr`. Brain logs each `stderr` line verbatim at debug level, so never write credentials there.
+- **Startup timeout:** The initial `open` request during `Factory.Open` has a 30-second timeout.
+
+### Brain → Runner requests (`stdin`)
+
+Brain sends RPC requests with `id`, `method`, and `params`:
 
 ```json
+{"id":"REQUEST_ID","method":"open","params":{"session_id":"SESSION_ID","dir":"/path/to/native","config":{"model":"openai/gpt-4.1-mini","tools":["echo"]},"tools":[{"name":"echo","description":"Echo text","input_schema":{"type":"object"}}],"provider":{"api_key":"sk-..."}}}
 {"id":"REQUEST_ID","method":"prompt","params":{"text":"Hello"}}
+{"id":"REQUEST_ID","method":"checkpoint","params":null}
 ```
 
-- **Requests (`open`, `prompt`, `steer`, `interrupt`, `checkpoint`):** The runner replies with a frame matching `id` and either `result` or `error`.
-- **Events:** The runner emits `{"event": "...", "data": {...}}` for assistant deltas, completed messages, and usage.
-- **Tool calls:** The runner sends a reverse request with `method: "tool.call"`. Brain dispatches the HTTP/SSE call to the external tool service and writes the correlated response frame back to the runner's `stdin`.
+The runner replies on `stdout` with a matching `id` and either `result` or `error` (`code: "provider_error"` or `"brain_error"`):
 
-Wire types for this protocol are generated in `internal/harness` and `runners/pi/src/generated.ts`.
+```json
+{"id":"REQUEST_ID","result":{}}
+{"id":"REQUEST_ID","error":{"code":"provider_error","message":"upstream rate limit exceeded"}}
+```
 
-## Isolation and testing
+| Method | `params` | `result` |
+| --- | --- | --- |
+| `open` | `harness.Options` (`session_id`, `dir`, `config`, `tools`, `provider`) | `{}` (or diagnostic metadata such as `{"tools": [...]}`) |
+| `prompt` | `{"text": "..."}` (`core.Text`) | `{}` (or `{"interrupted": true}`) |
+| `steer` | `{"text": "..."}` (`core.Text`) | `{}` |
+| `interrupt` | `null` | `{}` |
+| `checkpoint` | `null` | `[{"path": "session/file.jsonl", "size": 1024, "append_only": true}]` (`[]core.NativeFile`) |
 
-A harness adapter must disable all built-in local tools (such as local bash or file editors), ambient plugins, and background cache warmers so the model can only invoke tools explicitly bound in `config.tools`. Child processes receive only minimal OS environment variables plus the provider credentials supplied in `open`.
+### Runner → Brain events and tool calls (`stdout`)
+
+While `prompt` is running, the runner can emit streaming events and reverse `tool.call` requests (up to 32 concurrent tool calls per runner):
+
+```json
+{"event":"assistant.delta","data":{"text":"Hello"}}
+{"id":"CALL_FRAME_ID","method":"tool.call","params":{"id":"TOOL_CALL_ID","name":"echo","arguments":{"value":"hi"}}}
+{"event":"assistant.message","data":{"text":"Hello!","usage":{"input":12,"output":4},"stop_reason":"stop"}}
+```
+
+For each `tool.call`, Brain validates that the tool is bound to the session, appends a `tool.call` event, dispatches the call to the external tool service, appends a `tool.result` event, and writes the correlated response frame back to the runner's `stdin`:
+
+```json
+{"id":"CALL_FRAME_ID","result":{"content":[{"type":"text","text":"hi"}],"is_error":false}}
+```
+
+Wire types for this protocol are generated in `internal/harness` and `runners/pi/src/generated.ts` via `go run ./cmd/generate`.
+
+## Isolation and verification
+
+A harness adapter must disable all built-in local tools (such as local shell execution or file editors), ambient plugins, and background cache warmers so the model can only invoke tools explicitly bound in `config.tools`. `harness.ProcessFactory` passes only minimal OS environment variables (`PATH`, `SystemRoot`, `WINDIR`, `COMSPEC`, `PATHEXT`, `TMP`, `TEMP`, `TMPDIR`, `LANG`, `LC_ALL`, and `NO_COLOR=1`) and supplies provider credentials exclusively through the `open` frame.
 
 When testing a new harness adapter, verify:
-1. Reopening a saved directory makes zero model or tool calls until the next `Prompt`.
-2. Restoring a checkpoint into a fresh directory produces the exact same prompt context on the next turn.
-3. Tool errors return to the model as tool results, while broken stdio framing or disk failures abort the turn.
-4. Interrupting a turn while a tool call is waiting stops execution cleanly.
+
+1. **Passive open:** Reopening a saved directory makes zero model or tool calls until the next `Prompt`.
+2. **Checkpoint fidelity:** Restoring a checkpoint into a fresh directory produces the exact same prompt context on the next turn.
+3. **Failure separation:** Tool errors (`is_error: true`) return to the model as tool results, whereas broken stdio framing, unexpected exits, or disk failures abort the turn with `brain_error`.
+4. **Clean interruption:** Interrupting a turn while a tool call is waiting stops execution cleanly and leaves prior checkpoint files intact.

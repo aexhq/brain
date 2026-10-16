@@ -1,19 +1,43 @@
 ---
 title: Distributed tools
-description: Expose tools over HTTP or SSE in any language.
+description: Give sessions tools that run in your own services, over HTTP, server-sent events, or MCP.
 ---
+
+import { Box, Braces, Globe, Plug, Radio, ShieldCheck } from 'lucide-react';
+
+Tools let the agent act outside the conversation: run code in a sandbox, read and write storage, search the web, or ask a person for approval. In Brain, every tool runs outside the server, in a service you deploy and write in any language. You declare each tool in the host config, enable tools for a session by name, and Brain calls the tool over HTTP when the model asks for it.
+
+The Pi harness has no built-in tools. The model sees only the tools you enable for its session.
+
+## Ways to provide tools
+
+<Cards>
+  <Card icon={<Braces />} title="HTTP JSON" href="#return-a-json-result">Answer each call with one JSON result.</Card>
+  <Card icon={<Radio />} title="Streaming SSE" href="#stream-progress-with-sse">Send progress events, then the result, over server-sent events.</Card>
+  <Card icon={<Plug />} title="MCP tools" href="/docs/tools/mcp">Connect tools from a remote MCP server over Streamable HTTP.</Card>
+  <Card icon={<ShieldCheck />} title="Local tools & approvals" href="/docs/tools/local-tools">Run the example tool server with echo, session inspection, and operator approval.</Card>
+  <Card icon={<Box />} title="Sandboxes" href="/docs/tools/sandboxes">Run commands in Modal, E2B, or Daytona sandboxes.</Card>
+  <Card icon={<Globe />} title="Storage & web" href="/docs/tools/resources">Use S3 or R2 storage, Brave or Tavily search, and public web fetch.</Card>
+</Cards>
+
+| If your tool needs to… | Use |
+| --- | --- |
+| Return a result within a few seconds | [HTTP JSON](#return-a-json-result) |
+| Report progress, or wait for a person | [Streaming SSE](#stream-progress-with-sse) |
+| Reuse tools from an existing MCP server | [MCP tools](/docs/tools/mcp) |
+| Run work that can outlast `timeout_seconds` | A tool that starts a job and returns its ID, plus status and cancel tools |
 
 ## Configure a tool
 
-Tools are registered in the host config's `tools` array:
+Add a binding to the `tools` array of the host config. This binding declares the `echo` tool from the example tool server in `examples/tools`, with the default timeout and output limit written out:
 
 ```json
 {
   "name": "echo",
-  "description": "Return the supplied text.",
+  "description": "Echo text through an external tool service.",
   "input_schema": {
     "type": "object",
-    "properties": { "text": { "type": "string" } },
+    "properties": { "text": { "type": "string", "maxLength": 4096 } },
     "required": ["text"],
     "additionalProperties": false
   },
@@ -25,56 +49,153 @@ Tools are registered in the host config's `tools` array:
 }
 ```
 
-- `name` must start with a letter and contain up to 64 letters, digits, or underscores.
-- `description`, `input_schema` (without external `$ref`s), `url`, and `tenants` are required.
-- Optional `output_schema` validates the returned result envelope.
-- `timeout_seconds` defaults to `300` (range `1`–`86400`).
-- `max_output_bytes` defaults to `1048576` (1 MiB, max 2 MiB).
+| Field | Required | Description |
+| --- | --- | --- |
+| `name` | Yes | The name the model sees. It starts with a letter and has up to 64 letters, digits, or underscores. Names are unique within the host config. |
+| `description` | Yes | What the tool does. The model reads it to decide when to call the tool. |
+| `input_schema` | Yes | A JSON Schema for the arguments. Brain validates every call against it, including `format` keywords, before sending the request. External `$ref` references aren't loaded. |
+| `output_schema` | No | A JSON Schema that the whole result object must match. |
+| `url` | Yes | The `http` or `https` endpoint that Brain posts calls to. It can't contain credentials or a fragment. |
+| `tenants` | Yes | The tenants allowed to use the tool. |
+| `token_env` | No | An environment variable whose value Brain sends as a bearer token. The variable must be set when Brain starts. |
+| `timeout_seconds` | No | The time limit for the whole call, from 1 to 86400. Defaults to 300. |
+| `max_output_bytes` | No | The largest response Brain accepts, up to 2 MiB. Defaults to 1 MiB. |
+| `inspect_session` | No | Send a read-only token for the session with each call. See [Authentication & tenants](/docs/guides/authentication). |
+| `mcp_tool` | No | The remote tool name, for tools served by an MCP server. See [MCP tools](/docs/tools/mcp). |
 
-`GET /catalog` returns the tool names, descriptions, and schemas allowed for the caller's tenant (without exposing `url` or `token_env`). Pass the tool names you want to enable in `config.tools` when creating a session.
+Brain checks every binding when it starts and doesn't start if one is invalid. Run `go run ./cmd/brain -config brain.json -check` to validate a config without starting the server.
 
-## Request payload
+## Enable tools for a session
 
-When the model invokes a tool, Brain sends an HTTP `POST` to the configured `url`: Bearer authentication when `token_env` is set:
+`GET /catalog` lists the tools available to your tenant, with their names, descriptions, and schemas. It never returns a tool's `url` or `token_env`. To give a session tools, pass their names in `config.tools` when you create it. A session's tools can't change after creation.
+
+```sh tab="cURL"
+curl http://127.0.0.1:8080/catalog \
+  -H "Authorization: Bearer $BRAIN_API_KEY"
+```
+
+```ts tab="TypeScript"
+const { tools } = await brain.catalog();
+const session = await brain.create({ harness: "pi", config: { model: "openai/gpt-4.1-mini", tools: ["echo"] } });
+```
+
+```python tab="Python"
+tools = brain.catalog()["tools"]
+session = brain.create({"harness": "pi", "config": {"model": "openai/gpt-4.1-mini", "tools": ["echo"]}})
+```
+
+To try tools without writing a service, follow [Local tools & approvals](/docs/tools/local-tools). It generates a host config for the example tool server and runs `examples/session.mjs` with `BRAIN_TOOLS` set to the tools to enable.
+
+## Handle a tool call
+
+When the model calls a tool, Brain assigns a call ID, records a `tool.call` event, validates the arguments, and sends a `POST` request to the tool's `url` with these headers:
+
+- `Content-Type: application/json`
+- `Accept: application/json, text/event-stream`
+- `Authorization: Bearer TOKEN`, when the binding sets `token_env`
+- `traceparent`, when the request belongs to a trace
+
+The body carries the session's identity next to the model's arguments:
 
 ```json
 {
   "tenant_id": "local",
   "session_id": "SESSION_ID",
-  "call_id": "HARNESS_CALL_ID",
+  "call_id": "CALL_ID",
   "arguments": { "text": "hello" }
 }
 ```
 
-Verify the `Authorization` header before trusting the request, and always scope operations using the top-level `tenant_id` and `session_id` rather than model-provided `arguments`. See [Local tools & approvals](/docs/tools/local-tools) for a working example.
+`tenant_id` and `session_id` come from the authenticated session, not from the model. With `inspect_session: true`, the body also has an `inspection_token` and a `brain_url`.
 
-## Response formats
+Here is a minimal tool service in Node.js:
 
-### Synchronous JSON (`Content-Type: application/json`)
+```ts
+import http from "node:http";
 
-```json
-{"content":[{"type":"text","text":"hello"}]}
+const token = process.env.BRAIN_TOOLS_KEY;
+
+http.createServer(async (req, res) => {
+  if (req.headers.authorization !== `Bearer ${token}`) {
+    res.writeHead(401).end();
+    return;
+  }
+  let body = "";
+  for await (const chunk of req) body += chunk;
+  const { tenant_id, session_id, call_id, arguments: args } = JSON.parse(body);
+  // Authorize with tenant_id and session_id. Log call_id to match Brain's tool.call event.
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ content: [{ type: "text", text: args.text }] }));
+}).listen(8081, "127.0.0.1");
 ```
 
-Content blocks can be text (`{"type":"text","text":"..."}`) or base64-encoded images (`{"type":"image","data":"...","mime_type":"image/png"}`).
+### Return a JSON result
 
-### Streaming SSE (`Content-Type: text/event-stream`)
+Respond with status `200`, `Content-Type: application/json`, and a result object:
 
-Long-running tools can stream zero or more `progress` events followed by a single `result` event:
+```json
+{ "content": [{ "type": "text", "text": "hello" }] }
+```
+
+| Field | Description |
+| --- | --- |
+| `content` | One or more content blocks. A text block is `{"type":"text","text":"..."}`. An image block is `{"type":"image","data":"BASE64","mime_type":"image/png"}`. |
+| `is_error` | Set to `true` when the call failed or was denied. The model sees the content as an error and decides what to do next. |
+
+Brain rejects a result with no content, an unknown content type, or unknown fields.
+
+### Stream progress with SSE
+
+Respond with `Content-Type: text/event-stream` to send progress while the tool works. Send zero or more `progress` events, then exactly one `result` event whose data is a result object:
 
 ```text
 event: progress
-data: {"message":"Waiting for operator approval"}
+data: {"status":"waiting_for_operator"}
 
 event: result
-data: {"content":[{"type":"text","text":"Approved"}]}
+data: {"content":[{"type":"text","text":"Operator answered yes."}]}
 
 ```
 
-`progress` events are forwarded to SSE observers as `tool.progress`, while the final `result` event completes the tool call and returns control to the harness.
+Each `progress` payload must be JSON. Brain forwards it to connected clients as a live-only `tool.progress` event with the call's `call_id`. Brain ignores comment lines that start with `:`. Any other event name, or a stream that ends without a `result`, fails the call.
 
-## Errors, timeouts, and long jobs
+## Handle errors, timeouts, and long jobs
 
-- **Tool errors:** Return `{"content":[{"type":"text","text":"reason"}],"is_error":true}` (or an HTTP error status) when a tool call fails or is denied. Brain records a `tool.result` with `is_error: true` so the model can see the error and decide what to do next.
-- **Ambiguous network failures:** If the connection drops or times out after the request was sent, Brain sets `unknown_outcome: true` on the `tool.result` and never retries the call automatically.
-- **Long-running work:** Either stream SSE within `timeout_seconds`, or return a job ID immediately and expose separate status/cancel tools.
+Every tool call ends with a `tool.result` event. When a call fails, the result has `is_error: true`, and Brain adds `unknown_outcome: true` when the tool may have done the work anyway:
+
+| What happened | `is_error` | `unknown_outcome` |
+| --- | --- | --- |
+| The tool returned a result with `is_error: true` | Yes | No |
+| Brain refused the call before sending it: the tool isn't allowed for the tenant, the arguments fail validation, or the credential is missing | Yes | No |
+| The connection failed, timed out, or dropped | Yes | Yes |
+| The tool returned a non-2xx status | Yes | Yes |
+| The response had the wrong content type, an invalid result, too much output, or no `result` event | Yes | Yes |
+
+Brain never retries a tool call. The model sees the error, and with an unknown outcome it can check what happened, for example by calling a status tool.
+
+<Callout type="warn" title="Return failures as results">
+Report failures your tool handles with status `200` and `is_error: true`. Brain ignores the body of a non-2xx response and records the call as an unknown outcome.
+</Callout>
+
+Brain enforces two time limits on every call:
+
+- **Response headers within 30 seconds.** For longer work, send the response headers right away: start an SSE response and send `progress` events until the result is ready.
+- **The whole call within `timeout_seconds`.** For work that can run longer, return a job ID right away and provide separate tools to check status and cancel the job.
+
+Interrupting or closing a session cancels its in-flight tool requests. Work that already started in your service keeps running unless your service stops it, so your service owns cleanup.
+
+## Secure your tool service
+
+- **Check the token:** Set `token_env` on every binding and reject requests without the matching bearer token.
+- **Authorize with the session's identity:** Use the top-level `tenant_id` and `session_id` to decide what the call may access. Never trust IDs that the model put in `arguments`.
+- **Protect inspection tokens:** An `inspection_token` can read the session's events until the call returns. Don't log or store it.
+- **Enforce approvals where the action happens:** An approval tool records a person's answer; the service that performs the action must still check its own authorization.
+- **Expect no redirects:** Brain doesn't follow redirects from tools. It sends tool requests through the proxy in the standard `HTTPS_PROXY` and `HTTP_PROXY` variables when they're set.
+
+## Next steps
+
+<Cards>
+  <Card icon={<ShieldCheck />} title="Local tools & approvals" href="/docs/tools/local-tools">Run the example tool server and approve a call by hand.</Card>
+  <Card icon={<Plug />} title="MCP tools" href="/docs/tools/mcp">Discover and connect tools from a remote MCP server.</Card>
+  <Card icon={<Box />} title="Sandboxes" href="/docs/tools/sandboxes">Give the agent a sandbox to run code in.</Card>
+</Cards>
