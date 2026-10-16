@@ -32,6 +32,33 @@ jobs:
           CI_RUN: ${{ inputs.ci_run }}
         run: node scripts/validate-sdk-release.mjs
 
+  github:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: sdk-packages
+          path: dist/sdk
+          run-id: ${{ inputs.ci_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish downloadable tested SDKs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(node -p 'require("./dist/sdk/release.json").version')
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/published"
+            for file in dist/sdk/*; do cmp "$file" "$RUNNER_TEMP/published/$(basename "$file")"; done
+          else
+            printf 'Tested SDK archives for server commit %s. Registry publication results are recorded separately in this workflow; release.json identifies the source.\n' "$GITHUB_SHA" > "$RUNNER_TEMP/notes.txt"
+            gh release create "$GITHUB_REF_NAME" dist/sdk/* --repo "$GITHUB_REPOSITORY" --verify-tag --title "Brain SDKs $version" --notes-file "$RUNNER_TEMP/notes.txt" --latest
+          fi
+
   npm:
     needs: validate
     runs-on: ubuntu-latest

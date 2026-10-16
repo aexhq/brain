@@ -2,14 +2,14 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { appendFile, copyFile, mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { missingArtifacts } from './registry-artifacts.mjs';
+import { missingArtifacts, waitForArtifacts } from './registry-artifacts.mjs';
 
 const [registry, operation] = process.argv.slice(2);
 assert.ok(['publish', 'prepare', 'verify'].includes(operation), 'unknown release operation');
 const directory = path.resolve('dist/sdk');
 const release = JSON.parse(await readFile(path.join(directory, 'release.json'), 'utf8'));
 assert.equal(release.commit, process.env.RELEASE_COMMIT, 'artifact does not belong to the verified commit');
-let missing = await missingArtifacts(registry, release, directory);
+const missing = await missingArtifacts(registry, release, directory);
 if (operation === 'prepare') {
   assert.equal(registry, 'pypi');
   const upload = path.resolve('dist/pypi-upload');
@@ -22,9 +22,8 @@ if (operation === 'prepare') {
     const result = spawnSync('npm', ['publish', path.join(directory, release.npm), '--access', 'public', '--provenance', '--ignore-scripts'], { stdio: 'inherit' });
     if (result.error) throw result.error;
     assert.equal(result.status, 0, 'npm publication failed');
-    missing = await missingArtifacts(registry, release, directory);
   }
-  assert.deepEqual(missing, [], 'public registry is missing tested distributions');
+  if (missing.length) await waitForArtifacts(registry, release, directory);
 }
 const summary = `${registry}: SDK ${release.version}, server ghcr.io/aexhq/brain:sha-${release.commit}, ${operation} complete.\n`;
 console.log(summary);

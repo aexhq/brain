@@ -3,6 +3,15 @@
 JavaScript/TypeScript applications install `@aexhq/brain`; Python applications
 install `aex-brain` and import `brain`. Both are dependency-free at runtime.
 
+The first Python distribution is available as a tested GitHub release wheel.
+PyPI rejected the first upload with `invalid-publisher`; account-side setup below
+is still required before the PyPI install command works. Install the released
+wheel without building anything locally:
+
+```sh
+python -m pip install https://github.com/aexhq/brain/releases/download/release/sha-67afdc3d6403d101af22d3bce3dd8c6c79cb4557/aex_brain-1.0.0-py3-none-any.whl
+```
+
 ```sh
 npm install --save-exact @aexhq/brain@1.0.0
 python -m pip install aex-brain==1.0.0
@@ -34,6 +43,9 @@ the SDK and the server image commit recorded in the publishing workflow summary.
    installs from each registry. It never rebuilds for publication. An existing
    version must contain identical bytes; a mismatch fails and requires a bump.
    Partial Python uploads can resume by publishing only missing files.
+   Read-only verification polls for delayed registry visibility after an accepted
+   upload; it never repeats a publish. The same archives are also attached to a
+   GitHub release at the verified commit tag for direct downloads.
 
 The same CI run publishes tested container images and deploys the docs site.
 The SDK workflow has independent npm and PyPI jobs: one registry outage does not
