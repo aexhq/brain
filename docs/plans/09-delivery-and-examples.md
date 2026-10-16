@@ -43,7 +43,7 @@ For a GitHub repository site, configure `/brain` at build time and verify every 
 
 The deployment runs `node scripts/docs-smoke.mjs SITE_URL/` against the published site. This fails the release if Pages serves missing routes or broken reference exports despite accepting the deployment artifact.
 
-Publish docs from the same verified source commit as the described artifacts. Add real source/edit links and a truthful support matrix. Keep experimental integrations identifiable at their own setup pages rather than burying caveats on a separate roadmap.
+Publish docs from the same verified source commit as the described artifacts. Add real source/edit links and a truthful support matrix. Record how each integration was verified in the [roadmap's integration status](../roadmap.md#integration-status), and link it from each integration's setup page, following the [writing guide](../writing.md).
 
 ## README refinements
 

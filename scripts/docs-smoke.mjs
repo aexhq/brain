@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 const base = new URL(process.argv[2]);
 assert.ok(base.pathname.endsWith('/'), 'provide the site URL with a trailing slash');
 const checks = [
-  ...['docs/', 'docs/api/', 'docs/tools/sandboxes/', 'docs/tools/resources/', 'docs/guides/platforms/'].map(route =>
+  ...['docs/', 'docs/api/', 'docs/roadmap/', 'docs/tools/sandboxes/', 'docs/tools/resources/', 'docs/guides/platforms/'].map(route =>
     [route, body => { assert.match(body, /<html\b/i); assert.ok(body.includes('Brain')); }]),
   ['openapi.json', body => assert.ok(JSON.parse(body).paths['/sessions'])],
   ['api/search', body => assert.ok(Object.keys(JSON.parse(body).docs.docs).length > 0)],

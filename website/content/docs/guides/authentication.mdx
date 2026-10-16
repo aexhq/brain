@@ -5,7 +5,7 @@ description: Authenticate requests with bearer tokens, keep each tenant's sessio
 
 import { MessagesSquare, Settings, Wrench } from 'lucide-react';
 
-Brain authenticates every session and catalog request with a bearer token. Each token in the host config maps to a grant: the tenant the token acts for and the operations it may perform. Brain doesn't authenticate end users; your backend does, then calls Brain with the token for the user's tenant. Health endpoints are public.
+Brain authenticates every session and catalog request with a bearer token. Each token in the host config maps to a grant: the tenant the token acts for and the operations it may perform. Your backend authenticates end users, then calls Brain with the token for the user's tenant. Health endpoints are public.
 
 ## Send a token
 
@@ -43,7 +43,7 @@ Declare tokens in the `tokens` list of the host config. Each entry names the env
 | `tenant` | Yes | The tenant the token acts for, up to 128 characters. |
 | `manage` | No | Allows creating, resuming, closing, flushing, and restoring sessions. |
 | `read_only` | No | Allows `GET` requests only. |
-| `session` | No | Limits the token to one session ID. The token can't create sessions and sees only that session. |
+| `session` | No | Limits the token to one session ID. A session-scoped token sees only its session and can't create sessions. |
 
 Brain reads token values once, at startup, and fails to start if a variable is missing, a value is shorter than 24 bytes, or two entries share a value. It keeps only SHA-256 hashes of the values in memory. To rotate a token, change the environment variable and restart Brain.
 
@@ -93,7 +93,7 @@ See [Distributed tools](/docs/tools) for the full request and response format.
 ## Secure the network
 
 - **Use TLS:** Brain serves plain HTTP. Outside your own machine, put it behind a load balancer or reverse proxy that terminates TLS.
-- **Call Brain from servers:** Brain doesn't support CORS or cookie authentication. Call it from your backend or a CLI, not from browser JavaScript.
+- **Call Brain from your backend:** Brain authenticates with API tokens. Keep tokens on your servers and in CLIs, and give browsers access through your own backend.
 - **Limit exposure:** The default listen address, `127.0.0.1:8080`, accepts only local connections. Listen on `0.0.0.0` only inside a container or a private network.
 
 ## Next steps

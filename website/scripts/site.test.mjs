@@ -85,3 +85,12 @@ test('static search and agent-readable exports cover the published guides and AP
   assert.ok(full.includes('not live-provider qualification'));
   assert.ok(full.includes('type Factory interface'));
 });
+
+test('overview pages leave temporary gaps to the roadmap', async () => {
+  const gap = /\b(?:fixed (?:at|on|upon|when)(?: you)? creat\w*|frozen|not supported|(?:isn|aren)['’]t supported|(?:doesn|don)['’]t support|not yet|(?:isn|aren)['’]t yet|for now|currently)\b/gi;
+  const failures = [];
+  for (const file of ['../README.md', 'content/docs/index.mdx', 'content/docs/architecture.mdx']) {
+    for (const [phrase] of (await readFile(path.join(site, file), 'utf8')).matchAll(gap)) failures.push(`${file}: "${phrase}"`);
+  }
+  assert.deepEqual(failures, [], 'Describe what Brain does here; planned work belongs in docs/roadmap.md (see docs/writing.md)');
+});

@@ -37,6 +37,7 @@ for (const [from, to, title, description] of [
   ['services/sandbox/README.md', 'tools/sandboxes.mdx', 'Sandboxes', 'Create, execute, inspect, and terminate remote Modal, E2B, and Daytona sandboxes over the HTTP tool protocol.'],
   ['services/resources/README.md', 'tools/resources.mdx', 'Storage & web', 'Run tenant-scoped S3/R2 text storage, public web fetch, and Brave/Tavily web search tools.'],
   ['examples/platforms/README.md', 'guides/platforms.mdx', 'Platform examples', 'Single-owner deployment examples for Docker Compose, Fly.io, AWS ECS/Fargate, and Cloudflare R2 tool Workers.'],
+  ['docs/roadmap.md', 'roadmap.mdx', 'Roadmap', 'What comes next for Brain, and how mature each part is today.'],
 ]) {
   const text = (await readFile(path.join(root, from), 'utf8')).replace(/^# .*\r?\n/, '');
   await page(to, title, description, text);
@@ -44,7 +45,7 @@ for (const [from, to, title, description] of [
 
 const models = JSON.parse(execFileSync(process.execPath, ['runners/pi/scripts/model-catalog.mjs'], { cwd: root, encoding: 'utf8' }));
 const runner = JSON.parse(await readFile(path.join(root, 'runners/pi/package.json'), 'utf8'));
-let inventory = `Extracted from the pinned Pi \`${runner.dependencies['@earendil-works/pi-coding-agent']}\` model registry (\`runners/pi/scripts/model-catalog.mjs\`).\n\n> **Note:** This list is an offline catalog inventory, **not live-provider qualification**. Brain passes explicit API keys configured in \`providers\`; providers that require interactive OAuth or ambient host credentials are not supported out of the box. See [Models & providers](/docs/reference/models) for provider configuration, reasoning effort, and custom endpoints.\n\n`;
+let inventory = `Extracted from the pinned Pi \`${runner.dependencies['@earendil-works/pi-coding-agent']}\` model registry (\`runners/pi/scripts/model-catalog.mjs\`).\n\n> **Note:** This list is an offline catalog inventory, **not live-provider qualification**. Brain authenticates each provider with the API key configured in \`providers\`. See [Models & providers](/docs/reference/models) for provider configuration, reasoning effort, and custom endpoints.\n\n`;
 for (const provider of [...new Set(models.map(m => m.provider))]) {
   inventory += `## ${provider}\n\n| Model ID | Transport | Context window |\n| --- | --- | ---: |\n`;
   for (const m of models.filter(m => m.provider === provider)) inventory += `| \`${m.provider}/${m.id}\` | \`${m.api}\` | ${m.contextWindow} |\n`;

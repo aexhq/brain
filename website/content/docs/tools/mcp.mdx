@@ -5,16 +5,14 @@ description: Connect tools from a remote MCP server, with the same tenant checks
 
 import { Braces, ShieldCheck, Wrench } from 'lucide-react';
 
-The Model Context Protocol (MCP) is an open protocol for serving tools to AI applications. Brain connects to remote MCP servers over Streamable HTTP with the official MCP Go SDK, so you can give sessions tools from an MCP server you already run. MCP tools go through the same tenant allowlist, input validation, timeout, and output limits as [HTTP tools](/docs/tools).
+The Model Context Protocol (MCP) is an open protocol for serving tools to AI applications. Brain connects to remote MCP servers over Streamable HTTP with the official MCP Go SDK (pinned in `go.mod`), so you can give sessions tools from an MCP server you already run. MCP tools go through the same tenant allowlist, input validation, timeout, and output limits as [HTTP tools](/docs/tools).
 
-## What's supported
+## What Brain supports
 
-| Supported | Not supported |
-| --- | --- |
-| Remote servers over Streamable HTTP | Local servers started as a command |
-| API keys sent as bearer tokens | OAuth |
-| Tool calls that return text, images, or structured content | Sampling, resource catalogs, and MCP input requests |
-| Progress notifications during a call | Background subscriptions and automatic retries |
+- **Transport:** Remote MCP servers over Streamable HTTP.
+- **Authentication:** API keys sent as bearer tokens from the environment variable named in `token_env`.
+- **Results:** Tool calls that return text, images, or structured content.
+- **Progress:** Progress notifications streamed during a call as `tool.progress` events.
 
 ## Discover tools
 
@@ -60,7 +58,7 @@ An MCP binding is a regular tool binding with one extra field, `mcp_tool`:
 - **`url`** is the server's MCP endpoint.
 - **`token_env`** names the environment variable with the server's API key. Brain sends it as a bearer token on every request to the server.
 
-`tenants`, `timeout_seconds`, `max_output_bytes`, and `output_schema` work as they do for [HTTP tools](/docs/tools). MCP bindings can't use `inspect_session`; Brain doesn't start if one does.
+`tenants`, `timeout_seconds`, `max_output_bytes`, and `output_schema` work as they do for [HTTP tools](/docs/tools). `inspect_session` applies to HTTP and SSE tools; Brain rejects a host config that sets it on an MCP binding.
 
 ## How Brain calls an MCP tool
 
@@ -95,11 +93,7 @@ When a call fails, the `tool.result` has `is_error: true`:
 | The server asked for user input | Yes. Handle approval inside the tool instead. |
 | The result had an unsupported content type, exceeded `max_output_bytes`, or didn't match `output_schema` | Yes |
 
-Brain never retries an MCP call. With an unknown outcome, the model can use another tool to check the resource. Interrupting the session or reaching the timeout cancels the request; whether the work stops on the server depends on the server.
-
-## Testing status
-
-Brain pins the MCP Go SDK in `go.mod`. Local tests run the SDK's client against an SDK test server to cover discovery, streamed progress, errors, structured content, tenant isolation, output limits, and cancellation, and to check that calls are never replayed. No third-party MCP service has been tested live; see the [integration evidence](https://github.com/aexhq/brain/blob/main/docs/research/qualification.md).
+Brain sends each MCP call at most once. With an unknown outcome, the model can use another tool to check the resource. Interrupting the session or reaching the timeout cancels the request; whether the work stops on the server depends on the server.
 
 ## Next steps
 

@@ -1,19 +1,19 @@
 ---
 title: Introduction
-description: Brain is an open-source server that runs AI agent sessions behind an authenticated HTTP API.
+description: A minimal and extensible agent server for building agent applications.
 ---
 
 import { BookOpen, MessagesSquare, Rocket, Wrench } from 'lucide-react';
 
-Brain is an open-source server that runs AI agent sessions behind an authenticated HTTP API. It stores each session on local disk, streams its events to your application, and calls your tools over HTTP.
+Brain is an open-source agent server with session-oriented primitives for building agent applications. Your application starts sessions, streams what the agent does, and connects tools from its own services. Brain runs the agent loop and keeps every session durable and recoverable.
 
 | Approach | What it is | Best for |
 | --- | --- | --- |
 | **Model API** | Direct requests to a model provider. You write the agent loop, tool dispatch, and conversation storage. | Single completions, or full control over every model call. |
 | **Agent library** | An agent loop that runs inside your application process. | Agents that one process can run from start to finish. |
-| **Brain** | A server that runs agent sessions for your application: the harness process, the event log, tool calls, and recovery. | Long-running, multi-tenant sessions whose tools live in other services. |
+| **Brain** | An agent server that runs sessions for your application: the agent loop, the event history, tool calls, and recovery. | Long-running sessions for many customers, with tools in your own services. |
 
-Your backend creates a session, sends messages, and reads events. Brain runs the harness (the agent loop that calls the model and decides when a turn is done) in a separate process, records every event, and sends tool calls to services you run. Session history outlives client connections and server restarts, so you can reconnect to a session, interrupt it, and resume it.
+Your backend creates a session, sends messages, and streams events. Brain runs the harness (the agent loop that calls the model and manages context), records every event, and sends tool calls to services you run. Sessions outlive client connections and server restarts, so you can reconnect to a session, interrupt it, and resume it later.
 
 <Cards>
   <Card icon={<Rocket />} title="Quickstart" href="/docs/quickstart">Start Brain on your machine and run your first session.</Card>
@@ -26,14 +26,14 @@ Your backend creates a session, sends messages, and reads events. Brain runs the
 
 | Concept | Description |
 | --- | --- |
-| **Session** | One agent conversation owned by one tenant. Its harness, model, instructions, reasoning effort, and enabled tools are fixed when you create it. |
-| **Turn** | The work Brain runs for one `user.message`: model calls and tool calls until the harness finishes. A session runs one turn at a time and queues further messages in order. |
-| **Event** | A typed record in a session's stream, such as `assistant.message`, `tool.call`, or `session.status`. Retained events carry a `cursor` you can resume from; live-only `assistant.delta` and `tool.progress` events don't. |
-| **Harness** | The agent loop that builds prompts, calls the model, compacts context, and decides when a turn is done. Brain ships the Pi harness, which runs as a child process (the Pi runner). |
-| **Tool** | An HTTP or SSE endpoint you run in any language, or a remote MCP tool, that Brain calls when the model asks. You declare tools in the host config and enable them per session by name. |
-| **Tenant** | The isolation boundary. Each API token is bound to one tenant and never sees another tenant's data. |
-| **Host config** | The JSON file you pass to Brain with `-config`. It declares tokens, harnesses, model providers, tools, limits, and persistence. |
-| **Checkpoint** | A snapshot of a session's event log and native harness state. Brain records one after each completed turn and can upload it to external storage for recovery and handoff. |
+| **Session** | A durable agent conversation. You choose its harness, model, instructions, and tools, then exchange messages and events with it over time. |
+| **Turn** | The work Brain does for one user message: model calls and tool calls until the harness finishes. A session runs one turn at a time and queues further messages in order. |
+| **Event** | A typed record in a session's stream, such as a message, a tool call, or a status change. Follow events live, or replay the history from where you left off. |
+| **Harness** | The agent loop that calls the model, manages context, and decides when a turn is done. Brain includes the Pi harness, and you can [add your own](/docs/adapters/harness). |
+| **Tool** | A capability served by your own service or a remote MCP server. Brain calls it when the model asks, and each session uses exactly the tools you enable for it. |
+| **Tenant** | The isolation boundary for sessions, tokens, and tools. |
+| **Host config** | The JSON file that configures a Brain server: its API tokens, harnesses, model providers, tools, limits, and storage. |
+| **Checkpoint** | Saved session state that Brain records after each completed turn, for recovering a session or moving it to another server. |
 
 ## How it works
 
@@ -41,55 +41,57 @@ Your backend creates a session, sends messages, and reads events. Brain runs the
 <Step>
 ### Configure and start Brain
 
-Declare API tokens, the Pi harness, model providers, and tools in a host config, then start the server with `-config`.
+Declare your API tokens, harnesses, model providers, and tools in a host config, then start the server.
 </Step>
 
 <Step>
 ### Create a session
 
-Choose a harness, a model such as `openai/gpt-4.1-mini`, optional instructions, and the tools to enable. Brain stores the session and returns its ID.
+Choose a harness, a model, instructions, and the tools the agent can use. Brain saves the session and returns its ID.
 </Step>
 
 <Step>
 ### Send a message
 
-Brain saves the `user.message` event, queues it, and starts a turn. The harness calls the model. When the model calls a tool, Brain sends the call to your tool service with the authenticated tenant and session IDs, then returns the result to the harness.
+Brain records the message, queues it, and starts a turn. The harness calls the model. When the model calls a tool, Brain sends the call to your tool service together with the session's identity, then returns the result to the harness.
 </Step>
 
 <Step>
 ### Stream events
 
-Read the session's events as JSON pages or as a live server-sent events (SSE) stream. Disconnecting doesn't stop the turn; reconnect from the last cursor you processed.
+Follow the session's events live, or page through its history. The turn keeps running when a client disconnects, and the client can reconnect from the last event it processed.
 </Step>
 
 <Step>
 ### Interrupt, resume, or close
 
-Stop a running turn, roll an interrupted session back to its last completed turn, or close the session. With external storage configured, Brain uploads checkpoints in the background so another instance can restore the session.
+Stop a running turn, resume an interrupted session from its last completed turn, or close the session. With external storage configured, another server can restore the session from its checkpoints.
 </Step>
 </Steps>
 
 ## When to use Brain
 
-- **Long-running conversations:** Session history lives on disk. Clients disconnect and reconnect from the last event cursor, and sessions remain available after a restart.
-- **Multi-tenant products:** Every API token is bound to one tenant. Tools receive the authenticated tenant and session IDs outside the model's arguments.
-- **Tools in other systems:** Sandboxes, browsers, storage, and human approvals run as separate services, in any language. Brain enforces a timeout and an output limit on every call.
-- **State on your infrastructure:** You run the MIT-licensed server. Sessions stay on your disk and, if you configure it, your object storage.
+- **Long-running conversations:** Sessions outlive client connections and server restarts. Clients reconnect and continue from the last event they processed.
+- **Multi-tenant products:** Each tenant's sessions, tokens, and tools stay separate. Tools receive the session's identity from Brain rather than from the model, so they can authorize every call.
+- **Tools in other systems:** Sandboxes, storage, and human approvals run as services that you deploy and scale on their own, in any language.
+- **State on your infrastructure:** You run the open-source server. Sessions stay on your disks and, if you configure it, in your own object storage.
 
-If one process can run the whole agent, an agent library is simpler. Choose Brain when the agent needs its own API, its own process, and tools that run elsewhere.
+### Brain or an embedded agent library?
+
+**Use an agent library** when one process can run the whole agent: your application owns the loop, the tools, and the conversation state, and nothing else needs to reach the session.
+
+**Use Brain** when the agent runs as its own service: several clients or customers reach its sessions over an API, tools live in other systems, and sessions outlast client connections and server restarts.
+
+With Brain, your application stays in charge of what each agent is. You choose every session's instructions, model, and tools, and you coordinate any work that spans several agents.
 
 ## What's included
 
-- **Pi harness:** The Pi runner (`runners/pi`) runs the Pi agent loop in a child process. It has no built-in tools; the model sees only the tools you enable for the session.
-- **Tool transports:** Synchronous HTTP JSON, streaming server-sent events, and remote MCP over Streamable HTTP.
-- **Tool services:** A sandbox service for Modal, E2B, and Daytona; a resource service for S3 or R2 storage, Brave or Tavily search, and public web fetch; and an example tool server with an operator approval flow.
-- **Persistence:** SQLite and append-only files on local disk, with optional background checkpoints to a local directory, Amazon S3, Cloudflare R2, or Google Cloud Storage, and an optional PostgreSQL session index.
-- **Clients:** JavaScript/TypeScript SDK on npm, Python SDK on PyPI, and an [OpenAPI document](/openapi.json).
-- **Operations:** Health endpoints, structured JSON logs, OpenTelemetry traces and metrics, and a container image published to `ghcr.io/aexhq/brain`.
-
-<Callout type="info" title="Project status">
-Pi is the supported harness. The [integration evidence](https://github.com/aexhq/brain/blob/main/docs/research/qualification.md) separates integrations tested against live services from those covered only by local tests.
-</Callout>
+- **Pi harness:** Brain includes the Pi harness, an agent loop that works with models from the providers you configure. Every tool is a service you control, and the model sees exactly the tools you enable for its session, so you decide everything the agent can do.
+- **[Tool connections](/docs/tools):** Answer tool calls over HTTP, stream progress with server-sent events, or connect tools from a remote [MCP server](/docs/tools/mcp).
+- **Tool services:** A [sandbox service](/docs/tools/sandboxes) for Modal, E2B, and Daytona; a [storage and web service](/docs/tools/resources) for S3 or R2 storage, Brave or Tavily search, and public web fetch; and an [example tool server](/docs/tools/local-tools) with an operator approval flow.
+- **[Durable storage](/docs/guides/persistence):** Sessions live on local disk and can sync checkpoints to a directory, Amazon S3, Cloudflare R2, or Google Cloud Storage. An optional PostgreSQL index lets servers find each other's sessions.
+- **Clients:** A [TypeScript SDK](/docs/sdks/typescript) on npm, a [Python SDK](/docs/sdks/python) on PyPI, and an [OpenAPI document](/openapi.json).
+- **[Operations](/docs/guides/operations):** Health checks, structured logs, OpenTelemetry traces and metrics, and a published container image.
 
 ## Choose your path
 
@@ -106,6 +108,7 @@ Pi is the supported harness. The [integration evidence](https://github.com/aexhq
 | Back up sessions and move them between servers | [Persistence & recovery](/docs/guides/persistence) |
 | Deploy and monitor Brain | [Operations & observability](/docs/guides/operations) |
 | Write a harness or storage adapter | [Adapter overview](/docs/adapters) and [Go interfaces](/docs/adapters/interfaces) |
+| See what's coming next | [Roadmap](/docs/roadmap) |
 
 ## Docs for coding agents
 

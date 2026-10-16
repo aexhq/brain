@@ -40,10 +40,8 @@ Copy the printed JSON descriptors into the `tools` array of your Brain configura
 ## Security, scoping, and limits
 
 - **Tenant isolation:** Object keys are validated relative paths. Storage is shared across sessions belonging to the same tenant (`tenant_id`), whereas sandbox handles and session-inspection tools use narrower per-session scope. The tool service trusts `tenant_id` only from the authenticated Brain request envelope, never from model-supplied arguments—the model cannot choose a bucket, credential, or another tenant's prefix.
-- **Concurrency and timeouts:** The service admits at most **32** concurrent operations, and each request expires after **25 seconds**.
+- **Concurrency and timeouts:** The service runs at most **32** concurrent operations, and each request expires after **25 seconds**.
 - **Failure semantics:** The service never retries model actions. An ambiguous `storage_write` or `storage_delete` transport failure returns a tool error (`is_error: true`) with `unknown_outcome: true`; ordinary search, fetch, or read failures return tool errors without implying a remote mutation.
-
-> **Note:** Local tests verify the real AWS SDK transport, HTTP tool registry, search-provider fixtures, and private-network boundary checks. Live search and R2 tool accounts have not been qualified.
 
 Sources: [Brave API](https://api-dashboard.search.brave.com/app/documentation/web-search/get-started), [Tavily API](https://docs.tavily.com/documentation/api-reference/endpoint/search), [R2 S3 compatibility](https://developers.cloudflare.com/r2/api/s3/api/).
 
@@ -53,3 +51,4 @@ Sources: [Brave API](https://api-dashboard.search.brave.com/app/documentation/we
 - [Sandboxes tool service](https://aexhq.github.io/brain/docs/tools/sandboxes)
 - [Local tools & approvals](https://aexhq.github.io/brain/docs/tools/local-tools)
 - [Host configuration reference](https://aexhq.github.io/brain/docs/reference/configuration)
+- [Integration status](https://aexhq.github.io/brain/docs/roadmap#integration-status)

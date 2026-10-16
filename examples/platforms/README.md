@@ -2,7 +2,7 @@
 
 `examples/platforms` provides starting deployment configurations for running a single-owner Brain server and its companion tool services across Docker Compose, Fly.io, AWS ECS/Fargate, and Cloudflare.
 
-> **Note:** These templates are validated locally by `tests/platforms.test.mjs`; they are not evidence of a live deployment on every platform. Keep API keys in environment variables or your platform's secret store, and pin deployed container images by digest from a passing CI run.
+> **Note:** Keep API keys in environment variables or your platform's secret store, and pin deployed container images by digest from a passing CI run.
 
 ## Summary of platform templates
 
@@ -35,8 +35,8 @@ fly scale count 1
 ```
 
 - **Single-owner settings:** The configuration uses an ephemeral local cache plus external S3/R2 checkpoints, disables idle auto-stop (`auto_stop_machines = "off"`), allows a 30-second `kill_timeout`, and uses `strategy = "immediate"` so deployments replace the single owner instead of overlapping two writers.
-- **Planned replacement:** Before replacing the Machine, stop admission, let active turns settle (or interrupt them), call `POST /sessions/{id}/flush`, stop the old owner, then `POST /sessions/{id}/restore` and `POST /sessions/{id}/resume` on the new owner.
-- **Volumes and routing:** A Fly volume is optional and local to one Machine, not cross-host replication. Running multiple Machines requires an application placement layer; `fly-replay` can route HTTP requests to a chosen Machine but does not fence concurrent ownership.
+- **Planned replacement:** Before replacing the Machine, stop accepting new work, let active turns settle (or interrupt them), call `POST /sessions/{id}/flush`, stop the old owner, then `POST /sessions/{id}/restore` and `POST /sessions/{id}/resume` on the new owner.
+- **Volumes and routing:** A Fly volume is optional and local to one Machine, not cross-host replication. Running multiple Machines requires an application placement layer; `fly-replay` can route HTTP requests to a chosen Machine, while your placement layer must prevent two servers from writing the same session.
 
 ## AWS ECS/Fargate
 
@@ -54,7 +54,7 @@ fly scale count 1
 1. Edit the R2 bucket binding in `examples/platforms/cloudflare/wrangler.json`, set `TOOL_API_KEY` with `wrangler secret put TOOL_API_KEY`, and deploy with Wrangler. Leave `ALLOW_WRITE` set to `"false"` for read-only access.
 2. Bind HTTP tools in Brain's `tools` config pointing to the Worker's `/read` (`{ "key": "..." }`) and `/write` (`{ "key": "...", "text": "..." }`) URLs. Never point model-accessible tools at Brain's checkpoint bucket.
 
-> **Note:** The Brain Go binary and Pi Node.js child process require a container or VM; a standard Cloudflare Worker cannot host them. Cloudflare Containers can run container images alongside Durable Objects for routing, but that runtime recipe remains experimental until container lifecycle and handoff tests pass.
+> **Note:** Brain runs in a container or VM because the Go binary starts the Pi harness as a Node.js child process. The Cloudflare Worker hosts stateless HTTP tool services.
 
 ## Application backends
 
@@ -62,9 +62,8 @@ Keep Brain management credentials on your backend server:
 
 - A Next.js route handler, Python backend, or API gateway should authenticate its own end user, verify which session IDs that user owns, and proxy only permitted operations to Brain.
 - Use the TypeScript or Python SDKs (`examples/session.mjs` and `examples/session.py`) on your backend for `create`, `send`, `observe`, `interrupt`, `flush`, and `resume`; never expose a `manage: true` token directly to browser clients.
-- **Cloud Run note:** Cloud Run request-based CPU throttling is unsuitable for session turns that continue executing after `POST /sessions/{id}/events` returns `202 Accepted`. Instance-based CPU billing avoids mid-turn throttling, but termination windows, request timeouts, and single-owner routing still require qualification before Cloud Run is supported as a runtime target.
 
-Sources: [Fly configuration](https://docs.fly.io/reference/configuration), [Fly volumes](https://docs.fly.io/volumes/overview), [ECS task parameters](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html), [Cloudflare Containers](https://developers.cloudflare.com/containers/).
+Sources: [Fly configuration](https://docs.fly.io/reference/configuration), [Fly volumes](https://docs.fly.io/volumes/overview), [ECS task parameters](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html).
 
 ## Next steps
 
@@ -72,3 +71,4 @@ Sources: [Fly configuration](https://docs.fly.io/reference/configuration), [Fly 
 - [Persistence & recovery](https://aexhq.github.io/brain/docs/guides/persistence)
 - [Authentication & tenants](https://aexhq.github.io/brain/docs/guides/authentication)
 - [Host configuration reference](https://aexhq.github.io/brain/docs/reference/configuration)
+- [Integration status](https://aexhq.github.io/brain/docs/roadmap#integration-status)

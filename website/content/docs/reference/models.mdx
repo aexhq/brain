@@ -3,7 +3,7 @@ title: Models & providers
 description: Select models, configure provider API keys, set reasoning effort, route through custom endpoints, and preserve prompt caches.
 ---
 
-Brain delegates model inference to the harness runner while keeping provider credentials and transport configuration under host control. When you create a session, you fix its model and optional reasoning effort in `config`.
+Brain delegates model inference to the harness runner while keeping provider credentials and transport configuration under host control. When you create a session, you set its model and optional reasoning effort in `config`.
 
 ## Model ID format and validation
 
@@ -26,7 +26,7 @@ Model validation happens in two steps:
 2. **Turn execution (Pi runner startup):** When the first `user.message` starts the Pi runner, the runner looks up `provider` and `model` in its pinned offline [Model catalog](/docs/reference/model-catalog) (`allowModelNetwork: false`, `refreshOnCreate: false`). If the model ID is not in the catalog or the harness falls back to a different model, the turn fails with a `session.error` (`brain_error`) event.
 
 <Callout type="info" title="Explicit credentials only">
-Brain passes the resolved API key to the runner over stdio in an in-memory credential store (`InMemoryCredentialStore`) and strips ambient host environment variables when spawning child processes. Providers that rely on interactive OAuth flows or ambient cloud CLI credentials are not supported out of the box.
+Brain authenticates providers with API keys. It passes the resolved key to the runner over stdio in an in-memory credential store (`InMemoryCredentialStore`) and strips ambient host environment variables when spawning child processes.
 </Callout>
 
 ## Configure providers
@@ -80,7 +80,7 @@ Each entry in `providers` accepts optional `base_url` and `api` fields to route 
 
 Brain and the Pi runner are structured to keep provider prompt prefixes stable across turns, evictions, and checkpoint restores:
 
-- **Frozen session configuration:** `model`, `instructions`, `reasoning_effort`, and `tools` are fixed at session creation so the system prompt and tool definitions never shift mid-session.
+- **Stable prompt prefixes:** The system prompt (`config.instructions`) and tool definitions (`config.tools`) stay constant while a turn runs so provider prompt prefixes remain cacheable across model calls.
 - **Clean system prompts:** The Pi runner overrides `before_agent_start` so Pi uses your exact `config.instructions` (defaulting to `"You are a helpful assistant. Use the available tools when needed."`) without appending the runner's private local working directory path, which would invalidate prompt caches when a session moves to another server.
 - **Native state restoration:** Reloading an evicted session or restoring an external checkpoint opens Pi's native `.jsonl` session file (`SessionManager.open`) instead of rebuilding prompts from flattened event text.
 - **No background cache warming:** Upstream background cache-warming timers are disabled (`cacheWarming: "off"`) so idle sessions never make background LLM calls or incur unexpected token charges.

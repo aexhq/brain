@@ -36,7 +36,7 @@ curl -sS http://127.0.0.1:8080/sessions \
 
 | Operation | Method & path | Auth scope | Status | Description |
 | --- | --- | --- | --- | --- |
-| [Create a session](/docs/api/generated/create) | `POST /sessions` | `manage: true` (tenant-wide) | `201` | Creates a session with a fixed harness, model, instructions, reasoning effort, and tool list. |
+| [Create a session](/docs/api/generated/create) | `POST /sessions` | `manage: true` (tenant-wide) | `201` | Creates a session with the specified harness, model, instructions, reasoning effort, and tool list. |
 | [List sessions](/docs/api/generated/list) | `GET /sessions` | Any valid token | `200` | Lists sessions belonging to the caller's tenant in ascending ID order. |
 | [Get a session](/docs/api/generated/get) | `GET /sessions/{id}` | Any valid token | `200` | Returns session metadata and current status (`idle`, `running`, `interrupted`, `failed`, or `closed`). Loads from external storage on a local cache miss. |
 | [Send input](/docs/api/generated/send) | `POST /sessions/{id}/events` | Write token (`read_only: false`) | `202` | Queues a `user.message` (returning the recorded `Event`) or requests an interruption with `user.interrupt` (returning `{"status": "interrupt_requested"}`). |

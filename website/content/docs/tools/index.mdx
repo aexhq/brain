@@ -7,7 +7,7 @@ import { Box, Braces, Globe, Plug, Radio, ShieldCheck } from 'lucide-react';
 
 Tools let the agent act outside the conversation: run code in a sandbox, read and write storage, search the web, or ask a person for approval. In Brain, every tool runs outside the server, in a service you deploy and write in any language. You declare each tool in the host config, enable tools for a session by name, and Brain calls the tool over HTTP when the model asks for it.
 
-The Pi harness has no built-in tools. The model sees only the tools you enable for its session.
+The model sees exactly the tools you enable for its session, so you decide everything the agent can do.
 
 ## Ways to provide tools
 
@@ -19,6 +19,8 @@ The Pi harness has no built-in tools. The model sees only the tools you enable f
   <Card icon={<Box />} title="Sandboxes" href="/docs/tools/sandboxes">Run commands in Modal, E2B, or Daytona sandboxes.</Card>
   <Card icon={<Globe />} title="Storage & web" href="/docs/tools/resources">Use S3 or R2 storage, Brave or Tavily search, and public web fetch.</Card>
 </Cards>
+
+The local tools, sandbox, and storage services ship with this repository. Run each one as its own service alongside Brain, with its provider keys in its own configuration.
 
 | If your tool needs to… | Use |
 | --- | --- |
@@ -67,7 +69,7 @@ Brain checks every binding when it starts and doesn't start if one is invalid. R
 
 ## Enable tools for a session
 
-`GET /catalog` lists the tools available to your tenant, with their names, descriptions, and schemas. It never returns a tool's `url` or `token_env`. To give a session tools, pass their names in `config.tools` when you create it. A session's tools can't change after creation.
+`GET /catalog` lists the tools available to your tenant, with their names, descriptions, and schemas. It never returns a tool's `url` or `token_env`. To give a session tools, pass their names in `config.tools` when you create it.
 
 ```sh tab="cURL"
 curl http://127.0.0.1:8080/catalog \
@@ -171,7 +173,7 @@ Every tool call ends with a `tool.result` event. When a call fails, the result h
 | The tool returned a non-2xx status | Yes | Yes |
 | The response had the wrong content type, an invalid result, too much output, or no `result` event | Yes | Yes |
 
-Brain never retries a tool call. The model sees the error, and with an unknown outcome it can check what happened, for example by calling a status tool.
+Brain sends each tool call at most once; your tool service owns retries and cleanup. The model sees the error, and with an unknown outcome it can check what happened, for example by calling a status tool.
 
 <Callout type="warn" title="Return failures as results">
 Report failures your tool handles with status `200` and `is_error: true`. Brain ignores the body of a non-2xx response and records the call as an unknown outcome.
