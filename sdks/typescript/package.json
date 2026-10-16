@@ -13,5 +13,5 @@
   "types": "./dist/index.d.ts",
   "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
   "scripts": { "build": "tsc", "check": "tsc --noEmit", "test": "node --test test/*.test.mjs" },
-  "devDependencies": { "typescript": "5.9.3" }
+  "devDependencies": { "typescript": "7.0.2" }
 }
