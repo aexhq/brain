@@ -5,7 +5,7 @@
   ▀▀  ▀▀     |______/___|__|___|___|_______|__|____|
 </pre>
 
-<p align="center"><strong>Run agent sessions behind one HTTP API. Keep their tools in your own services.</strong></p>
+<p align="center"><strong>A minimal and extensible agent server for building agent applications</strong></p>
 
 <p align="center">
 <a href="https://aexhq.github.io/brain/docs/quickstart/">Quickstart</a> ·
