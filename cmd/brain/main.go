@@ -71,7 +71,7 @@ func run() error {
 		return err
 	}
 	defer db.Close()
-	var archive *persistence.Archive
+	var archive session.Checkpoints
 	var syncQueue int
 	var syncInterval time.Duration
 	if cfg.Persistence != nil {
@@ -82,14 +82,15 @@ func run() error {
 		if closer, ok := objects.(io.Closer); ok {
 			defer closer.Close()
 		}
-		archive = &persistence.Archive{Objects: objects, MaxSessionBytes: cfg.Limits.SessionBytes}
+		checkpoints := &persistence.Archive{Objects: objects, MaxSessionBytes: cfg.Limits.SessionBytes}
+		archive = checkpoints
 		if cfg.Persistence.PostgresEnv != "" {
 			metadata, err := persistence.NewPostgres(os.Getenv(cfg.Persistence.PostgresEnv))
 			if err != nil {
 				return err
 			}
 			defer metadata.Close()
-			archive.Metadata = metadata
+			checkpoints.Metadata = metadata
 		}
 		syncQueue = cfg.Persistence.Queue
 		syncInterval = time.Duration(cfg.Persistence.IntervalSeconds) * time.Second

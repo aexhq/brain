@@ -17,11 +17,11 @@ This guide walks you through running Brain on your machine and sending your firs
 ## Prerequisites
 
 - **Go 1.26 or newer** to run the server.
-- **Node.js 24 or newer** to build the Pi runner and the TypeScript SDK.
+- **Node.js 24 or newer** to run the Pi runner and JavaScript/TypeScript client.
 - **Python 3.11 or newer**, only if you use the Python SDK or run the full test suite.
 - An **OpenAI API key**. To use another provider, see [Models & providers](/docs/reference/models).
 
-Brain and its SDKs aren't published to npm or PyPI. You build the Pi runner and the SDKs from the repository.
+The SDKs install from npm and PyPI. This guide builds the server and Pi runner locally; [platform examples](/docs/guides/platforms) use the published container image.
 
 <Steps>
 <Step>
@@ -67,27 +67,26 @@ Copy `examples/local.json` to `brain.json` to change settings without editing tr
 <Step>
 ### Open a second terminal
 
-Leave the server running. Open a second terminal in the repository root and set the same `BRAIN_API_KEY`. The Python SDK also needs `PYTHONPATH` to point at `sdks/python`.
+Leave the server running. Open a second terminal in the repository root and set the same `BRAIN_API_KEY`. Install the Python package if you use the Python example.
 
 ```sh tab="macOS / Linux"
 export BRAIN_API_KEY="replace-with-a-random-token-of-at-least-24-bytes"
-export PYTHONPATH=sdks/python
+python -m pip install aex-brain==1.0.0
 ```
 
 ```powershell tab="Windows"
 $env:BRAIN_API_KEY = "replace-with-a-random-token-of-at-least-24-bytes"
-$env:PYTHONPATH = "sdks/python"
+python -m pip install aex-brain==1.0.0
 ```
 </Step>
 
 <Step>
 ### Run a session
 
-Run the example script for your language. The TypeScript SDK needs a one-time build. If your system has no `python` command, use `python3`.
+Run the example script for your language. Install the published SDK for your language. If your system has no `python` command, use `python3`.
 
 ```sh tab="TypeScript"
-npm --prefix sdks/typescript ci --ignore-scripts
-npm --prefix sdks/typescript run build
+npm install --no-save --package-lock=false @aexhq/brain@1.0.0
 node examples/session.mjs "Explain what makes a good agent tool."
 ```
 
@@ -109,7 +108,7 @@ A good agent tool does one clearly named job, ...
 Both scripts create a session, send one message, and read events until the turn for that message ends. Here are the same steps with comments:
 
 ```ts tab="TypeScript"
-import { Brain } from "../sdks/typescript/dist/index.js";
+import { Brain } from ".@aexhq/brain";
 
 const token = process.env.BRAIN_API_KEY;
 if (!token) throw new Error("Set BRAIN_API_KEY before running this example");
@@ -138,7 +137,7 @@ for await (const event of brain.observe(session.id)) {
 import os
 import uuid
 
-from brain import Brain  # found through PYTHONPATH=sdks/python
+from brain import Brain
 
 # Connect with the token that the host config grants to the "local" tenant.
 brain = Brain("http://127.0.0.1:8080", os.environ["BRAIN_API_KEY"])

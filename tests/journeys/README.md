@@ -1,6 +1,6 @@
 # End-to-end journey tests
 
-The journey suite (`tests/journeys/journeys.test.mjs`) verifies the compiled Brain server, the Pi runner, the example HTTP/SSE tool server, and both the TypeScript and Python SDKs against a local recording model provider. It runs offline with no external API keys, cloud accounts, or Docker required.
+The journey suite (`tests/journeys/journeys.test.mjs`) verifies the compiled Brain server, the Pi runner, the example HTTP/SSE tool server, and both the TypeScript and Python SDKs against a local recording model provider. The journeys run without external API keys, cloud accounts, or Docker; initial SDK packaging installs pinned build tools from package registries.
 
 ## Run the suite
 
@@ -10,7 +10,7 @@ To run all repository checks including journeys:
 node scripts/check.mjs
 ```
 
-To run only the journey suite (after building `runners/pi` and `sdks/typescript`):
+To run only the journey suite (after building `runners/pi` and `sdks/typescript` and running `node scripts/package-sdks.mjs` to install the clients):
 
 ```powershell
 node --test tests/journeys/journeys.test.mjs

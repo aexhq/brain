@@ -17,10 +17,8 @@ import (
 
 	"github.com/aexhq/brain/internal/core"
 	"github.com/aexhq/brain/internal/harness"
-	"github.com/aexhq/brain/internal/persistence"
 	"github.com/aexhq/brain/internal/store"
 	"github.com/aexhq/brain/internal/telemetry"
-	"github.com/aexhq/brain/internal/tools"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -28,8 +26,8 @@ import (
 )
 
 type Options struct {
-	Store         *store.Store
-	Tools         *tools.Registry
+	Store         Repository
+	Tools         ToolExecutor
 	Factories     map[string]harness.Factory
 	Provider      func(string) (harness.Provider, error)
 	MaxActive     int
@@ -40,7 +38,7 @@ type Options struct {
 	Logger        *slog.Logger
 	Metrics       *telemetry.Metrics
 	Inspection    func(core.Session) (string, string, func())
-	Archive       *persistence.Archive
+	Archive       Checkpoints
 	SyncQueue     int
 	SyncInterval  time.Duration
 }
@@ -292,10 +290,10 @@ func (e *Engine) List(ctx context.Context, g core.Grant, after string, limit int
 		return []core.Session{s}, nil
 	}
 	local, err := e.opts.Store.List(ctx, g.Tenant, after, limit)
-	if err != nil || e.opts.Archive == nil || e.opts.Archive.Metadata == nil {
+	if err != nil || e.opts.Archive == nil {
 		return local, err
 	}
-	remote, err := e.opts.Archive.Metadata.List(ctx, g.Tenant, after, limit)
+	remote, err := e.opts.Archive.List(ctx, g.Tenant, after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -667,7 +665,7 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 				if _, err := e.emit(a, "tool.call", inputID, call); err != nil {
 					return core.Result{}, err
 				}
-				scope := tools.Scope{Tenant: a.meta.Tenant, Session: a.meta.ID, Call: call.ID}
+				scope := core.ToolScope{Tenant: a.meta.Tenant, Session: a.meta.ID, Call: call.ID}
 				revoke := func() {}
 				if e.opts.Inspection != nil && e.opts.Tools.NeedsInspection(call.Name) {
 					scope.InspectionToken, scope.BrainURL, revoke = e.opts.Inspection(a.meta)
@@ -903,7 +901,10 @@ func (e *Engine) Resume(ctx context.Context, g core.Grant, id string) (core.Sess
 	if a.meta.Status == "idle" {
 		return clone(a.meta), nil
 	}
-	dir, _ := e.opts.Store.Dir(id)
+	dir, err := e.opts.Store.Dir(id)
+	if err != nil {
+		return core.Session{}, err
+	}
 	if err := restoreNative(filepath.Join(dir, "native"), a.meta.Checkpoint); err != nil {
 		return core.Session{}, err
 	}

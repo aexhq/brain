@@ -54,7 +54,7 @@ Add a binding to the `tools` array of the host config. This binding declares the
 | `name` | Yes | The name the model sees. It starts with a letter and has up to 64 letters, digits, or underscores. Names are unique within the host config. |
 | `description` | Yes | What the tool does. The model reads it to decide when to call the tool. |
 | `input_schema` | Yes | A JSON Schema for the arguments. Brain validates every call against it, including `format` keywords, before sending the request. External `$ref` references aren't loaded. |
-| `output_schema` | No | A JSON Schema that the whole result object must match. |
+| `output_schema` | No | A JSON Schema that successful result objects must match. Tool errors retain their outcome classification; all results still obey content and size limits. |
 | `url` | Yes | The `http` or `https` endpoint that Brain posts calls to. It can't contain credentials or a fragment. |
 | `tenants` | Yes | The tenants allowed to use the tool. |
 | `token_env` | No | An environment variable whose value Brain sends as a bearer token. The variable must be set when Brain starts. |

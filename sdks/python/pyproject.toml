@@ -1,0 +1,25 @@
+[build-system]
+requires = ["flit_core==3.12.0"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "aex-brain"
+version = "1.0.0"
+description = "Typed Python client for Brain sessions, tools, checkpoints, and event streams"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "AEX"}]
+classifiers = ["Programming Language :: Python :: 3", "Typing :: Typed", "Operating System :: OS Independent"]
+
+[project.urls]
+Documentation = "https://aexhq.github.io/brain/docs/sdks/python/"
+Source = "https://github.com/aexhq/brain"
+Issues = "https://github.com/aexhq/brain/issues"
+
+[tool.flit.module]
+name = "brain"
+
+[tool.flit.sdist]
+include = ["test_client.py"]

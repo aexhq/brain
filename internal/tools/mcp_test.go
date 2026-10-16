@@ -62,8 +62,8 @@ func TestMCPDiscoveryCallIsolationAndCancellation(t *testing.T) {
 	}
 	defer registry.Close()
 	call := core.Call{Name: "echo", Arguments: json.RawMessage(`{"text":"hello"}`)}
-	scope := Scope{Tenant: "a", Session: "session", Call: "call"}
-	if got := registry.Call(context.Background(), Scope{Tenant: "b"}, call, nil); !got.IsError || calls.Load() != 0 {
+	scope := core.ToolScope{Tenant: "a", Session: "session", Call: "call"}
+	if got := registry.Call(context.Background(), core.ToolScope{Tenant: "b"}, call, nil); !got.IsError || calls.Load() != 0 {
 		t.Fatal("cross tenant dispatch")
 	}
 	call.Arguments = json.RawMessage(`{"text":1}`)

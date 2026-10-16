@@ -352,3 +352,12 @@ func (a *Archive) downloadFile(ctx context.Context, id string, f Artifact, w io.
 	}
 	return nil
 }
+
+// List returns the optional eventual discovery index. An archive without an
+// index contributes no remote rows; local discovery remains authoritative.
+func (a *Archive) List(ctx context.Context, tenant, after string, limit int) ([]core.Session, error) {
+	if a.Metadata == nil {
+		return []core.Session{}, nil
+	}
+	return a.Metadata.List(ctx, tenant, after, limit)
+}

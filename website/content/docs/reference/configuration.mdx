@@ -92,6 +92,7 @@ Each element in `tools` registers one tool that sessions belonging to authorized
 | `url` | `string` | Yes | — | Target `http` or `https` endpoint URL (no credentials or URL fragments). |
 | `tenants` | `string[]` | Yes | — | Non-empty list of tenant IDs permitted to see and enable this tool. |
 | `token_env` | `string` | No | `""` | Optional environment variable holding the bearer token Brain sends in `Authorization: Bearer <token>`. Must be non-empty at startup when specified. |
+| `transport` | `string` | No | `"http"`, or `"mcp"` when `mcp_tool` is set | Transport registered at startup. Unknown names fail config validation. Built-ins are `http` (JSON/SSE) and `mcp`. |
 | `mcp_tool` | `string` | No | `""` | Remote MCP tool name. When set, Brain calls `url` using the MCP Streamable HTTP transport instead of the native HTTP/SSE tool protocol. |
 | `timeout_seconds` | `integer` | No | `300` | Per-call deadline in seconds. Allowed range: `1`–`86400` (24 hours). |
 | `max_output_bytes` | `integer` | No | `1048576` | Maximum response body size in bytes. Allowed range: `1`–`2097152` (2 MiB). |

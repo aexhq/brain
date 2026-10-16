@@ -1,4 +1,4 @@
-"""Run with PYTHONPATH=sdks/python and BRAIN_API_KEY set."""
+"""Install aex-brain and set BRAIN_API_KEY before running."""
 import os
 import sys
 import uuid

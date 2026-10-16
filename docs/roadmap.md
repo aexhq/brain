@@ -1,5 +1,7 @@
 # Brain roadmap
 
+Current modernization: [published clients and subsystem boundaries](plans/10-modernization.md).
+
 Next: [integration expansion](plans/08-integration-expansion.md) and [delivery, docs, and platform examples](plans/09-delivery-and-examples.md), informed by [current research](research/integration-options.md).
 
 - **Status:** Draft

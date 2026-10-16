@@ -28,15 +28,15 @@ func TestValidationScopeAndNoRetry(t *testing.T) {
 	defer s.Close()
 	r := registry(t, s.URL, 1024)
 	call := core.Call{ID: "call", Name: "echo", Arguments: json.RawMessage(`{"text":"hello"}`)}
-	if got := r.Call(context.Background(), Scope{Tenant: "b"}, call, nil); !got.IsError || count.Load() != 0 {
+	if got := r.Call(context.Background(), core.ToolScope{Tenant: "b"}, call, nil); !got.IsError || count.Load() != 0 {
 		t.Fatal("cross-tenant call executed")
 	}
 	bad := call
 	bad.Arguments = json.RawMessage(`{"text":4}`)
-	if got := r.Call(context.Background(), Scope{Tenant: "a"}, bad, nil); !got.IsError || count.Load() != 0 {
+	if got := r.Call(context.Background(), core.ToolScope{Tenant: "a"}, bad, nil); !got.IsError || count.Load() != 0 {
 		t.Fatal("invalid input executed")
 	}
-	got := r.Call(context.Background(), Scope{Tenant: "a"}, call, nil)
+	got := r.Call(context.Background(), core.ToolScope{Tenant: "a"}, call, nil)
 	if !got.IsError || !got.UnknownOutcome || count.Load() != 1 {
 		t.Fatalf("unexpected retries/result: %d %+v", count.Load(), got)
 	}
@@ -51,12 +51,12 @@ func TestSSEAndOutputBounds(t *testing.T) {
 	r := registry(t, s.URL, 1024)
 	n := 0
 	call := core.Call{Name: "echo", Arguments: json.RawMessage(`{"text":"hello"}`)}
-	got := r.Call(context.Background(), Scope{Tenant: "a"}, call, func(json.RawMessage) { n++ })
+	got := r.Call(context.Background(), core.ToolScope{Tenant: "a"}, call, func(json.RawMessage) { n++ })
 	if got.IsError || n != 1 || got.Content[0].Text != "done" {
 		t.Fatalf("result: %+v progress=%d", got, n)
 	}
 	r = registry(t, s.URL, 32)
-	got = r.Call(context.Background(), Scope{Tenant: "a"}, call, nil)
+	got = r.Call(context.Background(), core.ToolScope{Tenant: "a"}, call, nil)
 	if !got.IsError {
 		t.Fatal("output limit ignored")
 	}
@@ -69,7 +69,7 @@ func TestRedirectDoesNotForwardCredentials(t *testing.T) {
 	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, dst.URL, 307) }))
 	defer src.Close()
 	r := registry(t, src.URL, 1024)
-	got := r.Call(context.Background(), Scope{Tenant: "a"}, core.Call{Name: "echo", Arguments: json.RawMessage(`{"text":"hello"}`)}, nil)
+	got := r.Call(context.Background(), core.ToolScope{Tenant: "a"}, core.Call{Name: "echo", Arguments: json.RawMessage(`{"text":"hello"}`)}, nil)
 	if !got.IsError || count.Load() != 0 {
 		t.Fatal("redirect executed")
 	}

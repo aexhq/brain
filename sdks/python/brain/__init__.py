@@ -8,7 +8,9 @@ from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from .types import CreateSession, Event, Input, Session, SyncStatus
+from .types import CreateSession, Event, EventList, Input, Session, SessionList, SyncStatus, ToolCatalog
+
+__all__ = ["Brain", "BrainError"]
 
 
 class BrainError(Exception):
@@ -54,7 +56,7 @@ class Brain:
     def get(self, session_id: str) -> Session:
         return self._request("GET", f"/sessions/{quote(session_id, safe='')}")
 
-    def list(self, after: str = "", limit: int = 100) -> dict[str, Any]:
+    def list(self, after: str = "", limit: int = 100) -> SessionList:
         return self._request("GET", "/sessions?" + urlencode({"after": after, "limit": limit}))
 
     def send(self, session_id: str, event: Input) -> Event:
@@ -78,10 +80,10 @@ class Brain:
     def restore(self, session_id: str, checkpoint: str) -> Session:
         return self._request("POST", f"/sessions/{quote(session_id, safe='')}/restore", {"checkpoint": checkpoint})
 
-    def catalog(self) -> dict[str, Any]:
+    def catalog(self) -> ToolCatalog:
         return self._request("GET", "/catalog")
 
-    def history(self, session_id: str, after: str = "", limit: int = 100) -> dict[str, Any]:
+    def history(self, session_id: str, after: str = "", limit: int = 100) -> EventList:
         return self._request("GET", f"/sessions/{quote(session_id, safe='')}/events?" + urlencode({"after": after, "limit": limit}))
 
     def observe(self, session_id: str, after: str = "") -> Iterator[Event]:

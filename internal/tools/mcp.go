@@ -16,9 +16,16 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 )
 
+// MCPTransport implements isolated Streamable HTTP sessions.
+type MCPTransport struct{ client *http.Client }
+
+func NewMCPTransport() *MCPTransport { return &MCPTransport{client: newHTTPClient()} }
+
+func (t *MCPTransport) Close() { t.client.CloseIdleConnections() }
+
 // Each invocation has its own MCP session: server-side session state and
 // progress cannot cross tenant/call boundaries. The HTTP connection pool is shared.
-func (r *Registry) connectMCP(ctx context.Context, b Binding, progress func(json.RawMessage)) (*mcp.ClientSession, error) {
+func (t *MCPTransport) connect(ctx context.Context, b Binding, progress func(json.RawMessage)) (*mcp.ClientSession, error) {
 	client := mcp.NewClient(&mcp.Implementation{Name: "brain", Version: "dev"}, &mcp.ClientOptions{
 		Capabilities:   &mcp.ClientCapabilities{},
 		MultiRoundTrip: &mcp.MultiRoundTripOptions{Disabled: true},
@@ -33,7 +40,7 @@ func (r *Registry) connectMCP(ctx context.Context, b Binding, progress func(json
 	})
 	transport := &mcp.StreamableClientTransport{Endpoint: b.URL, MaxRetries: -1, DisableStandaloneSSE: true,
 		MaxEventSize: int(b.MaxOutputBytes + 65536),
-		HTTPClient:   &http.Client{Transport: mcpHTTP{base: r.client.Transport, binding: b}, CheckRedirect: r.client.CheckRedirect},
+		HTTPClient:   &http.Client{Transport: mcpHTTP{base: t.client.Transport, binding: b}, CheckRedirect: t.client.CheckRedirect},
 	}
 	return client.Connect(ctx, transport, nil)
 }
@@ -78,13 +85,14 @@ func (b *boundedMCPBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (r *Registry) callMCP(ctx context.Context, scope Scope, t compiled, call core.Call, progress func(json.RawMessage)) core.Result {
-	session, err := r.connectMCP(ctx, t.binding, progress)
+func (t *MCPTransport) Call(ctx context.Context, binding Binding, request Request, progress func(json.RawMessage)) core.Result {
+	scope := request.ToolScope
+	session, err := t.connect(ctx, binding, progress)
 	if err != nil {
 		return core.ToolError("MCP connection failed before tool dispatch", false)
 	}
 	defer session.Close()
-	params := &mcp.CallToolParams{Name: t.binding.MCPTool, Arguments: call.Arguments,
+	params := &mcp.CallToolParams{Name: binding.MCPTool, Arguments: request.Arguments,
 		Meta: mcp.Meta{"brain.dev/scope": map[string]string{"tenant_id": scope.Tenant, "session_id": scope.Session, "call_id": scope.Call}},
 	}
 	params.SetProgressToken(scope.Call)
@@ -113,13 +121,6 @@ func (r *Registry) callMCP(ctx context.Context, scope Scope, t compiled, call co
 		}
 		result.Content = append(result.Content, core.Content{Type: "text", Text: string(data)})
 	}
-	data, err := json.Marshal(result)
-	if err != nil || int64(len(data)) > t.binding.MaxOutputBytes {
-		return core.ToolError("MCP output limit exceeded", true)
-	}
-	if err := decodeResult(data, &result, t.output); err != nil {
-		return core.ToolError("invalid MCP tool result", true)
-	}
 	return result
 }
 
@@ -129,6 +130,8 @@ func DiscoverMCP(ctx context.Context, binding Binding, names []string) ([]Bindin
 	if len(names) == 0 || len(names) > 128 {
 		return nil, errors.New("select 1 to 128 MCP tools")
 	}
+	binding.MCPTool = "discovery"
+	binding.Transport = "mcp"
 	binding.Tool = core.Tool{Name: "discovery", Description: "MCP discovery", InputSchema: json.RawMessage(`{"type":"object"}`)}
 	registry, err := New([]Binding{binding})
 	if err != nil {
@@ -136,7 +139,8 @@ func DiscoverMCP(ctx context.Context, binding Binding, names []string) ([]Bindin
 	}
 	defer registry.Close()
 	binding = registry.tools["discovery"].binding
-	session, err := registry.connectMCP(ctx, binding, nil)
+	transport := registry.transports["mcp"].(*MCPTransport)
+	session, err := transport.connect(ctx, binding, nil)
 	if err != nil {
 		return nil, err
 	}

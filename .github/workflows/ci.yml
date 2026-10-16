@@ -86,6 +86,13 @@ jobs:
       - run: npm --prefix website ci --ignore-scripts
       - run: npm --prefix services/sandbox ci --ignore-scripts
       - run: node scripts/check.mjs
+      - if: runner.os == 'Linux'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: sdk-packages
+          path: dist/sdk/
+          if-no-files-found: error
+          retention-days: 30
       - run: go build -o bin/ ./cmd/brain ./cmd/resource-tools ./cmd/mcp-tools
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -224,3 +231,27 @@ jobs:
           DOCS_URL: ${{ steps.deployment.outputs.page_url }}
         run: node scripts/docs-smoke.mjs "$DOCS_URL"
 
+
+  release-sdks:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [publish, deploy-docs]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Dispatch SDK publication at the verified commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="release/sha-$GITHUB_SHA"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            git fetch --depth=1 origin "refs/tags/$tag"
+            test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$GITHUB_SHA"
+          else
+            git tag "$tag" "$GITHUB_SHA"
+            git push origin "refs/tags/$tag"
+          fi
+          gh workflow run npm-publish.yml --ref "$tag" -f ci_run="$GITHUB_RUN_ID"

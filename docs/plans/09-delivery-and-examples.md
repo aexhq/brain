@@ -29,7 +29,7 @@ The repository-owned CodeQL matrix scans Go, JavaScript/TypeScript, Python, and 
 7. Publish build provenance using GitHub's supported actions and job-scoped permissions. Test artifact extraction and startup; include the selected runner and its production dependencies, not only the Go binary.
 8. Keep platform deployment separate from core verification. A failed cloud deploy cannot be presented as a successful release. Verify health/readiness, a session journey, and the externally served docs after deployment.
 
-No semantic API versions, migration compatibility, or old runner negotiation are introduced. Commit IDs and OCI digests identify build artifacts. npm/PyPI publication needs registry version identifiers, so leave SDK registry publication out of this cut unless that policy is explicitly changed; source and matching downloadable artifacts remain usable.
+No semantic API versions, migration compatibility, or old runner negotiation are introduced. Commit IDs and OCI digests identify build artifacts. npm/PyPI publication was deferred in this cut. The 2026-10-16 modernization request explicitly authorizes SDK releases; [ADR 0002](../adr/0002-subsystem-contracts-and-sdk-delivery.md) and [plan 10](10-modernization.md) define their package versions and verified publication.
 
 Linux amd64 is the first published container target because it already has a container journey. Add arm64 and macOS artifacts only with native runtime checks for their harness dependencies. A successful cross-compile alone is insufficient.
 
