@@ -51,7 +51,7 @@ Brain runs the Pi harness in a child process on its own host. `echo` runs in a t
 
 ## Get started
 
-The JavaScript/TypeScript SDK installs from npm (`@aexhq/brain`); the Python SDK is available as a prebuilt [release wheel](https://github.com/aexhq/brain/releases/tag/release/sha-67afdc3d6403d101af22d3bce3dd8c6c79cb4557). PyPI publication awaits account setup. Client applications do not need a checkout or Go. To build the server yourself, you need Go 1.26+, Node.js 24+, and a model provider key. You can also run the published [container image](https://github.com/aexhq/brain/pkgs/container/brain).
+The JavaScript/TypeScript SDK installs from npm (`@aexhq/brain`); the Python SDK installs from PyPI (`aex-brain`). Client applications do not need a checkout or Go. To build the server yourself, you need Go 1.26+, Node.js 24+, and a model provider key. You can also run the published [container image](https://github.com/aexhq/brain/pkgs/container/brain).
 
 Build the Pi runner and start Brain:
 

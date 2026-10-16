@@ -21,7 +21,7 @@ This guide walks you through running Brain on your machine and sending your firs
 - **Python 3.11 or newer**, only if you use the Python SDK or run the full test suite.
 - An **OpenAI API key**. To use another provider, see [Models & providers](/docs/reference/models).
 
-The JavaScript/TypeScript SDK installs from npm. The Python SDK installs from a tested release wheel while the first PyPI publication awaits account setup. This guide builds the server and Pi runner locally; [platform examples](/docs/guides/platforms) use the published container image.
+The SDKs install from npm and PyPI. This guide builds the server and Pi runner locally; [platform examples](/docs/guides/platforms) use the published container image.
 
 <Steps>
 <Step>
@@ -71,12 +71,12 @@ Leave the server running. Open a second terminal in the repository root and set 
 
 ```sh tab="macOS / Linux"
 export BRAIN_API_KEY="replace-with-a-random-token-of-at-least-24-bytes"
-python -m pip install https://github.com/aexhq/brain/releases/download/release/sha-67afdc3d6403d101af22d3bce3dd8c6c79cb4557/aex_brain-1.0.0-py3-none-any.whl
+python -m pip install aex-brain==1.0.0
 ```
 
 ```powershell tab="Windows"
 $env:BRAIN_API_KEY = "replace-with-a-random-token-of-at-least-24-bytes"
-python -m pip install https://github.com/aexhq/brain/releases/download/release/sha-67afdc3d6403d101af22d3bce3dd8c6c79cb4557/aex_brain-1.0.0-py3-none-any.whl
+python -m pip install aex-brain==1.0.0
 ```
 </Step>
 

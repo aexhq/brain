@@ -7,18 +7,14 @@ description: Create sessions, send messages, and stream events with the zero-dep
 
 ## Install
 
-The tested wheel is published on GitHub Releases. The first PyPI upload is pending
-account-side trusted-publisher configuration, so use this wheel URL today:
-
 ```sh
-python -m pip install https://github.com/aexhq/brain/releases/download/release/sha-67afdc3d6403d101af22d3bce3dd8c6c79cb4557/aex_brain-1.0.0-py3-none-any.whl
+python -m pip install aex-brain==1.0.0
 ```
 
 The distribution is named `aex-brain`; the import package is `brain`. Wheels and
-source distributions include generated types and the PEP 561 `py.typed` marker.
-No checkout or `PYTHONPATH` setting is needed. After PyPI setup is complete,
-`python -m pip install aex-brain==1.0.0` installs the same distribution. Pin the client and matching server
-commit from the release workflow.
+source distributions are published on PyPI and include generated types and the
+PEP 561 `py.typed` marker. No checkout or `PYTHONPATH` setting is needed. Pin the
+client and matching server commit from the release workflow.
 
 ## Create a client
 
