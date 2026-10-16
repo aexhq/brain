@@ -14,6 +14,13 @@ Brain is in active development. This page lists what you can use today, what's c
 
 ## Next up
 
+### Application SDK and session-bound integrations
+
+Build a Brain application in code by installing harness adapters and tool providers, then let clients select and configure authorized integrations for each session.
+
+- **Status:** Planned; design proposed. [ADR 0003](https://github.com/aexhq/brain/blob/main/docs/adr/0003-application-sdk-and-session-bindings.md) selects a Go application SDK and server-default credentials with optional session overrides. Callback execution, credential custody, and shared versus harness-native tool dispatch remain under discussion.
+- **Today:** Configure harness commands and a tenant-scoped tool catalog in the host configuration, and select configured tools by name when creating a session. Custom tools run in HTTP/SSE or remote MCP services; the published SDKs are HTTP clients, not application hosts.
+
 ### Dynamic session configuration
 
 Change a session's model, instructions, reasoning effort, and tools between turns.
@@ -112,6 +119,7 @@ These documents are for contributors. They record how Brain is designed and how 
 
 - [ADR 0001: Local-first ephemeral session server](https://github.com/aexhq/brain/blob/main/docs/adr/0001-local-first-session-server.md) records the architecture, ownership boundaries, and design decisions.
 - [ADR 0002: Subsystem contracts and published SDKs](https://github.com/aexhq/brain/blob/main/docs/adr/0002-subsystem-contracts-and-sdk-delivery.md) extends it with subsystem contracts and SDK delivery.
+- [ADR 0003: Application SDK, session bindings, and harness integration](https://github.com/aexhq/brain/blob/main/docs/adr/0003-application-sdk-and-session-bindings.md) proposes application composition and session-bound integrations, with the consequential alternatives still open.
 - The [implementation plan](https://github.com/aexhq/brain/blob/main/docs/implementation-plan.md) breaks the work down across runtime, persistence, harnesses, tools, API, and operations.
 - Research: [integration options](https://github.com/aexhq/brain/blob/main/docs/research/integration-options.md), [harness feasibility probes](https://github.com/aexhq/brain/blob/main/docs/research/harness-probes.md), and [integration evidence](https://github.com/aexhq/brain/blob/main/docs/research/qualification.md).
 
