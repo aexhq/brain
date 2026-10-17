@@ -162,7 +162,9 @@ func New(ctx context.Context, o Options) (_ *Server, err error) {
 func (s *Server) Handler() http.Handler { return s.http.Handler }
 
 func (s *Server) ReadSession(ctx context.Context, tenant, id string) (Session, error) {
-	return s.engine.Get(ctx, core.Grant{Tenant: tenant, ReadOnly: true}, id)
+	value, err := s.engine.Get(ctx, core.Grant{Tenant: tenant, ReadOnly: true}, id)
+	value.Credentials = nil
+	return value, err
 }
 func (s *Server) ReadEvents(ctx context.Context, tenant, id, after string, limit int) ([]Event, error) {
 	log, release, err := s.engine.Log(ctx, core.Grant{Tenant: tenant, ReadOnly: true}, id)

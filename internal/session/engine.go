@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -270,14 +271,40 @@ func (e *Engine) Get(ctx context.Context, g core.Grant, id string) (core.Session
 }
 
 func clone(s core.Session) core.Session {
-	s.Config.Tools = append([]string{}, s.Config.Tools...)
+	s.Config = cloneConfig(s.Config)
+	s.Descriptors = cloneTools(s.Descriptors)
+	s.CredentialBindings = slices.Clone(s.CredentialBindings)
+	s.Credentials = slices.Clone(s.Credentials)
+	for i := range s.Credentials {
+		s.Credentials[i].Ciphertext = slices.Clone(s.Credentials[i].Ciphertext)
+	}
 	if s.Checkpoint != nil {
 		cp := *s.Checkpoint
 		cp.Files = append([]core.NativeFile{}, cp.Files...)
-		cp.Config.Tools = append([]string{}, cp.Config.Tools...)
+		cp.Config = cloneConfig(cp.Config)
 		s.Checkpoint = &cp
 	}
 	return s
+}
+
+func cloneTools(tools []core.Tool) []core.Tool {
+	result := slices.Clone(tools)
+	for i := range result {
+		result[i].InputSchema = slices.Clone(result[i].InputSchema)
+		result[i].OutputSchema = slices.Clone(result[i].OutputSchema)
+	}
+	return result
+}
+func cloneConfig(cfg core.Config) core.Config {
+	cfg.Tools = append([]string{}, cfg.Tools...)
+	cfg.Bindings = slices.Clone(cfg.Bindings)
+	for i := range cfg.Bindings {
+		b := &cfg.Bindings[i]
+		b.Operations = slices.Clone(b.Operations)
+		b.Parameters = slices.Clone(b.Parameters)
+		b.Runtime = cloneTools(b.Runtime)
+	}
+	return cfg
 }
 
 func (e *Engine) List(ctx context.Context, g core.Grant, after string, limit int) ([]core.Session, error) {
@@ -616,6 +643,7 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 	needsRestore := a.restore
 	checkpoint := a.meta.Checkpoint
 	cfg := a.meta.Config
+	metadata := clone(a.meta)
 	a.mu.Unlock()
 	if needsRestore {
 		a.nativeMu.Lock()
@@ -632,7 +660,7 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 	if err != nil {
 		return err
 	}
-	selected, err := e.opts.Tools.Describe(ctx, a.meta)
+	selected, err := e.opts.Tools.Describe(ctx, metadata)
 	if err != nil {
 		return err
 	}
@@ -696,7 +724,7 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 				scope := core.ToolScope{Tenant: a.meta.Tenant, Session: a.meta.ID, Call: call.ID}
 				revoke := func() {}
 				if e.opts.Inspection != nil && e.opts.Tools.NeedsInspection(call.Name) {
-					scope.InspectionToken, scope.BrainURL, revoke = e.opts.Inspection(a.meta)
+					scope.InspectionToken, scope.BrainURL, revoke = e.opts.Inspection(metadata)
 				}
 				defer revoke()
 				started := time.Now()
