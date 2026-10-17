@@ -119,7 +119,7 @@ The native fixtures invoked only `echo`. Their advertised tool lists exposed sep
 
 - **Pi:** the outgoing request advertised exactly `echo`.
 - **Codex 0.163.0:** with execution/delegation features and web search disabled, the performance fixture still advertised `request_user_input` alongside `echo`. A [separate follow-up](harness-probes.md#codex-catalog-exclusion-follow-up-2026-10-16) verified that `tools.experimental_request_user_input.enabled = false` removes it. That closes the specific catalog-control gap, not the remaining adapter qualification.
-- **OpenCode 2.0.30:** removing registered native tools and setting the custom tool's `codemode: false` still advertised a generated `execute` tool alongside `echo`. The published core's code-mode tool accepts JavaScript and exposes HTTP `fetch`; ordinary tool-registry filtering alone is not proof of the external-only execution boundary. No `execute` call was made in the spike. A supported exclusion control or qualified adapter change is still required.
+- **OpenCode 2.0.30:** the performance fixture still advertised generated `execute` alongside `echo` after registry filtering. A [separate clean-catalog probe](harness-probes.md#opencode-clean-catalogs-2026-10-17) verified session permission rules that remove Code Mode, preserve directly exposed custom tools, and reject unbound calls. Empty and echo-only sessions kept separate catalogs during concurrent turns in one host/location. No generated code ran; the original performance results are unchanged.
 
 OpenCode's recorded startup auto-resume and incremental SQLite checkpoint issues also remain. Fresh empty hosts making no model calls do not prove passive recovery of suspended sessions.
 

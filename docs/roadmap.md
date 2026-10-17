@@ -39,7 +39,7 @@ Change a session's model, instructions, reasoning effort, and tools between turn
 
 Choose OpenCode or Codex for each session through the same API you use for Pi. Each adapter ships once it passes the same tests as Pi: recovery without model or tool calls, an exact tool set, recovery after context compaction, and storage that grows only with new data.
 
-- **Status:** Planned. The [harness probes](https://github.com/aexhq/brain/blob/main/docs/research/harness-probes.md) list the changes each adapter needs, and [plan 03](https://github.com/aexhq/brain/blob/main/docs/plans/03-harness-adapters.md) tracks the work.
+- **Status:** Planned. Targeted local probes verified exclusion of the previously observed extra native tools; complete adapters still require recovery, persistence, and isolation qualification. The [harness probes](https://github.com/aexhq/brain/blob/main/docs/research/harness-probes.md) record that evidence and the remaining changes, and [plan 03](https://github.com/aexhq/brain/blob/main/docs/plans/03-harness-adapters.md) tracks the work.
 - **Today:** Use the Pi harness, or run your own agent loop through the [harness process contract](https://aexhq.github.io/brain/docs/adapters/harness/).
 
 ### Tool catalog: browser and Fly Machines tools

@@ -153,6 +153,8 @@ Session admission authenticates the caller, resolves managed providers and runti
 
 The session's tool list is an explicit selection, not the union of every server registration and client request. Application defaults apply only when omission is explicitly defined; an explicit empty list means no tools. A request that exceeds application policy is rejected rather than silently widened or narrowed. Two bindings of the same provider, such as two S3 buckets, require distinct aliases.
 
+A clean tool catalog contains exactly the authorized session selection, including an empty catalog for an explicit empty selection. Harness-generated execution, question, discovery, or other native tools are not implicit additions. Test fixtures such as `echo` are not product defaults. Control over the selected tools does not grant arbitrary native configuration or bypass the application's execution and resource policy.
+
 Resolve model-visible names deterministically from the binding alias and operation. Keep the reverse mapping to the original provider/MCP name. Validate uniqueness and harness naming constraints before accepting the binding; do not rely on lossy name sanitization or an MCP server's self-reported name for uniqueness.
 
 Persist the selected descriptors, their order, logical execution-binding identity, and non-secret credential-selection metadata. Restoring or redeploying must not silently reinterpret a tool name against a changed catalog. Managed tools require the matching deployed implementation and descriptor identity. Runtime tools require an authorized client to rebind the saved registration and matching descriptor; Brain cannot verify an unknown client's implementation merely from its schema. Unavailable execution bindings fail explicitly instead of being removed or replaced.
@@ -325,11 +327,11 @@ Require a baseline: harness-owned inference and context; exact Brain-bound tool 
 | --- | --- | --- |
 | Pi | [Embedded SDK][pi-sdk], custom tool callbacks, native `SessionManager` | Existing reference runner. Native session state, not reconstructed event text, owns the next prompt. |
 | Codex | [App Server][codex-app-server], dynamic tools and callbacks | The original 0.163.0 probes exposed `request_user_input`. A later controlled probe removed it with `tools.experimental_request_user_input.enabled = false`, leaving exactly `echo`. The adapter must enforce the control and still qualify restore, compaction, and shared-session isolation. |
-| OpenCode | [Embedded SDK][opencode-sdk] and [tool transforms][opencode-plugins] | The recorded 2.0.30 host resumed suspended sessions at startup; mutable SQLite state needs a coherent incremental checkpoint adapter. The later spike still advertised generated code-mode `execute` after filtering registered tools. Tool transforms alone do not prove exact tool exclusion. |
+| OpenCode | [Embedded SDK][opencode-sdk] and [tool transforms][opencode-plugins] | The 2.0.30 follow-up verified per-session permission rules that exclude generated `execute`, permit empty/selected catalogs, and reject unbound calls. Startup auto-resume, coherent incremental SQLite recovery, and full shared-session isolation still need qualification. |
 
-These probe findings are version-specific evidence from 2026-10-15 and 2026-10-16, not claims that every later release has the same behavior. Reading newer documentation does not replace rerunning qualification against a selected, pinned release.
+These probe findings are version-specific evidence from 2026-10-15 through 2026-10-17, not claims that every later release has the same behavior. Reading newer documentation does not replace rerunning qualification against a selected, pinned release.
 
-Distinguish advertisement from invocation. The performance spikes did not invoke either extra tool. OpenCode's generated `execute` has a JavaScript Code Mode implementation with HTTP `fetch`; it is not established to be an inert descriptor. Codex's question handler is a different capability, with mode-dependent invocation guards and a separately verified registration switch. A native tool that returns an error when called can still violate the exact model-facing catalog contract. See the [follow-up evidence](../research/harness-probes.md#codex-catalog-exclusion-follow-up-2026-10-16).
+Both observed native extras now have verified exclusion controls in the pinned releases. Codex has a separate question-tool registration switch. OpenCode's [clean-catalog probe](../research/harness-probes.md#opencode-clean-catalogs-2026-10-17) uses a default-deny session permission list, explicit selected-tool allows, and a final `execute` deny, with custom tools exposed directly through `codemode: false`. The adapter owns these controls; users cannot re-enable native execution through raw configuration. A tool that merely rejects calls while remaining advertised would still violate the exact catalog contract.
 
 Wrapping Codex as a tool inside Pi is a valid nested-agent feature, but it does not implement a Codex session harness. It introduces a second agent loop and separate context. The [Agents SDK's Codex tool][agents-tools] illustrates this distinction.
 
@@ -520,7 +522,7 @@ Before implementation is considered complete, demonstrate:
 2. The same provider binds independently to two tenants and to two resources in one session, with no credential, schema, name, or mutable-state crossover; invalid requests create no partial session.
 3. Managed functions, client-runtime functions, and HTTP/SSE/RPC/MCP adapters pass the same authorization, input/output, cancellation, progress, and unknown-outcome cases. Provider SDKs and bridge reconnection do not replay actions.
 4. MCP catalog changes, unavailable selected tools, name collisions, credential revocation, disallowed endpoints, and stdio process loss have explicit outcomes without silent tool-set changes.
-5. Every advertised harness exposes the exact bound tools and preserves the next model request after compaction and cold restore, without startup model/tool calls or whole-history checkpoint rewrites.
+5. Every advertised harness exposes an empty catalog for an explicit empty selection and exactly the bound tools otherwise; unadvertised native tools cannot execute. It preserves the next model request after compaction and cold restore, without startup model/tool calls or whole-history checkpoint rewrites.
 6. Plaintext credentials are excluded from SQL/WAL, archives, public sessions, events, logs, and model input. Direct managed-tool overrides survive browser disconnection, normal server restart, and authorized cold restore using encrypted private records and independently available keys. Missing keys, tampering, revocation, rotation, and retained older backups have explicit outcomes. Overrides cannot mutate server defaults, cross bindings, or fall back to a default after authorization failure. Runtime callback registration transfers no function source or captured credentials.
 7. An ordinary session-creation tool declaration executes in the client without a user-written server; failed registration, bridge loss before/after dispatch, cancellation, duplicate/stale results, and rebinding after restore have the declared outcomes. An event observer cannot execute callbacks or submit results.
 8. Local host limits, idle eviction, Brain/native identity, private state, generation checks, abrupt parent/child death, and process-tree cleanup pass on supported PCs/VMs. A restart never resumes inference or executes queued actions automatically, and native execution tools cannot bypass the external-only boundary.
@@ -531,7 +533,7 @@ These are future acceptance gates, not test results from this design work. Accep
 
 ## Research sources
 
-Primary documentation reviewed on 2026-10-16; moving upstream documentation establishes an integration surface, not qualification of an unpinned release.
+Primary documentation reviewed on 2026-10-16, with pinned-package follow-up on 2026-10-17. Moving upstream documentation establishes an integration surface, not qualification of an unpinned release.
 
 | Source | Design evidence |
 | --- | --- |

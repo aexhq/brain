@@ -28,7 +28,7 @@ Sources: [SDK](https://opencode.ai/v2/docs/build/sdk/), [session design](https:/
 
 The performance fixture still advertised Codex's `request_user_input` after disabling web search and the recorded execution/delegation features. It did not invoke that tool. The separate catalog follow-up below changed the configuration, not the recorded performance results.
 
-The OpenCode fixture removed registered tools through `ctx.tool.transform()` and added only `echo` with `options.codemode: false`. Its model request nevertheless advertised a generated `execute` tool. The [published 2.0.30 implementation](https://unpkg.com/@opencode/core@2.0.30/dist/chunks/instance-j09zfasm.js) passes `{ code }` to a Code Mode runtime and installs an HTTP `fetch` extension. It describes a confined runtime without imports, direct filesystem access, or timers, not an unrestricted shell. It is still a local generated-code path, not an established inert descriptor. The tested per-tool setting neither removed the descriptor nor established that its executor was disabled. No code-mode invocation was performed; exclusion remains a qualification gate alongside passive startup and native SQLite recovery.
+The OpenCode fixture removed registered tools through `ctx.tool.transform()` and added only `echo` with `options.codemode: false`. Its model request nevertheless advertised a generated `execute` tool. The [published 2.0.30 implementation](https://unpkg.com/@opencode/core@2.0.30/dist/chunks/instance-j09zfasm.js) passes `{ code }` to a Code Mode runtime and installs an HTTP `fetch` extension. It describes a confined runtime without imports, direct filesystem access, or timers, not an unrestricted shell. The tested per-tool setting neither removed the descriptor nor established that its executor was disabled. No code-mode invocation was performed in the performance spike. The [clean-catalog follow-up](#opencode-clean-catalogs-2026-10-17) verifies the separate permission control.
 
 ## Codex catalog exclusion follow-up, 2026-10-16
 
@@ -37,6 +37,38 @@ The pinned source separates tool registration from call-time availability. [Tool
 Ran a separate two-case probe against the same installed Codex 0.163.0 binary and loopback provider fixture. The default configuration advertised `echo` and `request_user_input`. Setting `tools.experimental_request_user_input.enabled = false` in the `thread/start` configuration override advertised exactly `echo`. Each case completed two provider requests and one external `echo` call; startup made no provider requests. Neither case invoked the question tool, used a live model, or modified native code.
 
 This verifies a control for the specific catalog gap, not a complete Codex adapter. Enforce it on all adapter-created/restored sessions and retain the passive-recovery, compaction, persistence, and shared-session isolation gates. The experiment source and result are retained as `codex-tool-exclusion.py` and `codex-tool-exclusion-results.json` with the other local spike artifacts.
+
+## OpenCode clean catalogs, 2026-10-17
+
+OpenCode SDK 2.0.30 accepts per-session `permissions` through `sessions.create()`. A rule with `action: "execute"`, `resource: "*"`, and `effect: "deny"` disables generated Code Mode. In the [pinned tool snapshot implementation](https://unpkg.com/@opencode/core@2.0.30/dist/chunks/instance-bvg8t9y0.js), a wholly denied `execute` action causes neither its definition/catalog nor its executor to be constructed. This is stronger than hiding its name in an outgoing request.
+
+Remove unselected native registrations, expose Brain-bound custom tools with `options.codemode: false`, and generate a session allowlist from the authorized tool names:
+
+```javascript
+const permissions = [
+  { action: "*", resource: "*", effect: "deny" },
+  ...selectedToolNames.map(action => ({ action, resource: "*", effect: "allow" })),
+  { action: "execute", resource: "*", effect: "deny" },
+];
+```
+
+The trusted adapter owns this policy; clients do not receive arbitrary native permission overrides. The last matching action rule determines whether the tool is wholly disabled, so retain the final `execute` deny after any broader rules. `codemode: false` makes selected tools directly callable rather than exposing them only through the disabled Code Mode tool. The native name `execute` is reserved in this release; reject unsupported tool names instead of silently dropping a binding.
+
+The local probe used one shared native host and one location/registry, with four sessions carrying different policies:
+
+| Case | Observed result |
+| --- | --- |
+| Original control: registered `echo`, no permission restriction | Model catalog contained `echo` and `execute` |
+| Explicit `execute` deny | Catalog contained only `echo`; the callback completed |
+| Default deny, no selected tools | Model catalog was empty |
+| Default deny, only `echo` selected | Catalog contained only `echo`; the callback completed |
+| Forced `execute` calls in the empty and echo-only sessions | Native dispatcher returned `No tool named "execute" is currently available`; no code ran |
+| Forced `echo` call in the empty session | Native dispatcher returned tool-unavailable; no callback ran |
+| Three concurrent empty/echo-only turn pairs | Each session kept its own catalog and callback association |
+
+The completed probe covered 13 turns, 21 local provider requests, and five external `echo` callbacks on Node 24.17.0. Creating the host and sessions made no provider requests. Negative `execute` calls supplied `{}` with no code payload; the observed rejection was tool-unavailable, not a Code Mode input-validation error. No vendor code was patched, no model-request tool lists were rewritten, and no live inference or generated code execution was used.
+
+This closes the observed native `execute` catalog/executor exclusion gap. It does not qualify a complete Brain adapter, error/event normalization, startup recovery, compaction, incremental session-scoped SQLite exports, or full cross-tenant state/credential isolation. The original performance figures are unchanged. Evidence is retained in the authoring session as `opencode-clean-host.mjs`, `opencode-clean-catalog.py`, `opencode-clean-catalog-results.json`, and their manifest.
 
 ## Current supported subset
 
