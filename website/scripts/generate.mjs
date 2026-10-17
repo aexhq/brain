@@ -53,7 +53,7 @@ for (const provider of [...new Set(models.map(m => m.provider))]) {
 }
 await page('reference/model-catalog.mdx', 'Model catalog', 'Offline model IDs, transports, and context windows bundled in the pinned Pi runtime registry.', inventory);
 
-let interfaces = 'Extracted directly from the Go source (`internal/session`, `internal/tools`, `internal/store`, `internal/harness`, and `internal/persistence`) during the documentation build. Because these packages live under `internal/`, adding a compiled Go harness or persistence adapter requires modifying the Brain codebase directly (child-process harnesses and HTTP/SSE/MCP tool services run out of process without Go changes).\n\n';
+let interfaces = 'Extracted directly from Go source during the documentation build. Application code imports public aliases from `github.com/aexhq/brain` for harnesses, providers, handlers, and session contracts. The public `Server` owns stock persistence and transport implementations. Repository and checkpoint adapter seams remain internal. See the [Go application SDK](/docs/sdks/application).\n\n';
 for (const [pkg, symbols] of [
   ['harness', ['Factory', 'Runner', 'Options', 'RunnerFrame']],
   ['persistence', ['Objects', 'Metadata']],

@@ -1,11 +1,11 @@
 # ADR 0003: Application SDK, session bindings, and harness integration
 
-- **Status:** Proposed. Go application SDK, managed and client-runtime tools, direct HTTP/reverse SSE plus HTTP/RPC bindings, bounded shared local harness hosts, and external-only arbitrary code execution selected. Hosts may contain different tenants, subject to session-isolation qualification. Server-default credentials and authorized session overrides must survive normal server restarts; encrypted credential storage in the session SQL database is selected, with external vault integration available through application providers. See [Decisions to finalize](#decisions-to-finalize).
+- **Status:** Accepted for implementation on 2026-10-17. Go application SDK, managed and client-runtime tools, direct HTTP/reverse SSE plus HTTP/RPC bindings, bounded shared local harness hosts, and external-only arbitrary code execution selected. Hosts may contain different tenants, subject to session-isolation qualification. Server-default credentials and authorized session overrides must survive normal server restarts; encrypted credential storage in the session SQL database is selected, with external vault integration available through application providers. See [Decisions to finalize](#decisions-to-finalize).
 - **Date:** 2026-10-16
-- **Extends, if accepted:** [ADR 0001](0001-local-first-session-server.md) and [ADR 0002](0002-subsystem-contracts-and-sdk-delivery.md).
+- **Extends:** [ADR 0001](0001-local-first-session-server.md) and [ADR 0002](0002-subsystem-contracts-and-sdk-delivery.md).
 - **Scope:** Architecture and SDK semantics, not implementation, package names, or a final wire schema.
 
-## Proposal
+## Decision
 
 Make Brain an application developers compose through an application SDK. The application installs harness adapters, managed tools, and shared tool-transport building blocks. Clients create sessions by selecting managed tools and declaring runtime tools. Managed implementations belong to the Brain application; runtime functions remain in the client process, behind an SDK-owned communication bridge. Brain receives the runtime tool's descriptor and execution binding at session creation, not its implementation.
 
@@ -512,7 +512,7 @@ The [OpenAI Agents SDK][agents-tools] is useful prior art for familiar local fun
 
 ## Consequences and acceptance criteria
 
-If accepted, this ADR amends ADR 0001's external-service-only tool rule and ADR 0002's repository-internal-only extension seams. It extends the tool policy path to managed/runtime session bindings, adds encrypted credential persistence and recovery, SDK-owned callback transport, and local host supervision, and changes successful output-schema semantics. It does not authorize automatic inference, automatic action retries, host execution of supplied code, closure uploads, cross-harness state conversion, or a distributed platform scheduler.
+This ADR amends ADR 0001's external-service-only tool rule and ADR 0002's repository-internal-only extension seams. It extends the tool policy path to managed/runtime session bindings, adds encrypted credential persistence and recovery, SDK-owned callback transport, and local host supervision, and changes successful output-schema semantics. It does not authorize automatic inference, automatic action retries, host execution of supplied code, closure uploads, cross-harness state conversion, or a distributed platform scheduler.
 
 The application SDK adds a supported composition surface and lifecycle responsibility. Session bindings add persisted descriptors and credential/resource authorization. Co-packaged handlers reduce separate deployment work but share more of the application's failure domain. Shared native hosts reduce process overhead but require logical session isolation and enlarge the host failure radius. Runtime tools add a client availability dependency, not a requirement for users to implement a service. All provider catalogs remain optional dependencies; importing the client or using one provider must not install every harness and cloud SDK.
 
@@ -529,7 +529,7 @@ Before implementation is considered complete, demonstrate:
 9. Concurrent opens/restores obey `maxShared` and active-turn caps. Sessions sharing one host, both within and across tenants, have no context, credential, cache, event, callback, cancellation, or checkpoint crossover. Exercise stale/misattributed identities, session eviction/restore while peers exist, and a host crash with several active sessions; peers never continue or replay actions automatically.
 10. An optional read-only sessions provider uses an explicit binding and authorized target scope, not an expanded ordinary tool token or native host access. Same-tenant permitted reads succeed; unbound, forbidden-target, and cross-tenant reads fail, including targets on the same host. Reading performs no inference, tool action, or session mutation, and exposes no private credentials or native checkpoint files.
 
-These are future acceptance gates, not test results from this design work. Acceptance of the ADR is separate from implementing or advertising its SDKs and integrations.
+Implementation and evidence are tracked in [plan 11](../plans/11-application-sdk.md). Adapter-specific gaps remain on the [roadmap](../roadmap.md); accepting this decision does not qualify an upstream harness.
 
 ## Research sources
 

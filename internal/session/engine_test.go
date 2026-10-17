@@ -84,7 +84,7 @@ func create(t *testing.T, e *Engine, g core.Grant) core.Session {
 }
 func waitStatus(t *testing.T, e *Engine, g core.Grant, id, status string) {
 	t.Helper()
-	deadline := time.NewTimer(5 * time.Second)
+	deadline := time.NewTimer(35 * time.Second) // Includes the 30-second native startup budget.
 	defer deadline.Stop()
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()

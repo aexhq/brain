@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-15
+- **Amended by:** [ADR 0003](0003-application-sdk-and-session-bindings.md), which adds application composition, managed and runtime tool bindings, encrypted private credentials, and shared native hosts.
 
 ## Context
 

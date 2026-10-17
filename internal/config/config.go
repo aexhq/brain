@@ -2,6 +2,8 @@
 package config
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,8 +30,35 @@ type Provider struct {
 	API       string `json:"api,omitempty"`
 }
 type Runner struct {
-	Command []string `json:"command"`
+	Command        []string `json:"command"`
+	MaxShared      int      `json:"max_shared,omitempty"`
+	MaxActiveTurns int      `json:"max_active_turns,omitempty"`
+	MaxHosts       int      `json:"max_hosts,omitempty"`
+	MaxStarting    int      `json:"max_starting,omitempty"`
 }
+
+// KeyConfig names deployment environment variables, never encryption key values.
+type KeyConfig struct {
+	ActiveID     string            `json:"active"`
+	Environments map[string]string `json:"keys"`
+}
+
+func (k *KeyConfig) Active(ctx context.Context) (string, []byte, error) {
+	key, err := k.Get(ctx, k.ActiveID)
+	return k.ActiveID, key, err
+}
+func (k *KeyConfig) Get(_ context.Context, id string) ([]byte, error) {
+	env := k.Environments[id]
+	if env == "" {
+		return nil, errors.New("credential key is not configured")
+	}
+	key, err := base64.StdEncoding.DecodeString(os.Getenv(env))
+	if err != nil || len(key) != 32 {
+		return nil, errors.New("credential key must be base64-encoded 32 bytes")
+	}
+	return key, nil
+}
+
 type Limits struct {
 	Active           int   `json:"active"`
 	Loaded           int   `json:"loaded"`
@@ -41,19 +70,24 @@ type Limits struct {
 	SubscriberBytes  int64 `json:"subscriber_bytes"`
 }
 type Config struct {
-	Listen      string                `json:"listen"`
-	PublicURL   string                `json:"public_url"`
-	DataDir     string                `json:"data_dir"`
-	Tokens      []Token               `json:"tokens"`
-	Harnesses   map[string]Runner     `json:"harnesses"`
-	Providers   map[string]Provider   `json:"providers"`
-	Tools       []tools.Binding       `json:"tools"`
-	Limits      Limits                `json:"limits"`
-	Persistence *persistence.Settings `json:"persistence,omitempty"`
+	CredentialKeys *KeyConfig            `json:"credential_keys,omitempty"`
+	Listen         string                `json:"listen"`
+	PublicURL      string                `json:"public_url"`
+	DataDir        string                `json:"data_dir"`
+	Tokens         []Token               `json:"tokens"`
+	Harnesses      map[string]Runner     `json:"harnesses"`
+	Providers      map[string]Provider   `json:"providers"`
+	Tools          []tools.Binding       `json:"tools"`
+	Limits         Limits                `json:"limits"`
+	Persistence    *persistence.Settings `json:"persistence,omitempty"`
+}
+
+func Default() Config {
+	return Config{Listen: "127.0.0.1:8080", PublicURL: "http://127.0.0.1:8080", DataDir: ".brain", Limits: Limits{Active: 16, Loaded: 1024, Queue: 16, InputBytes: 64 << 10, SessionBytes: 1 << 30, Subscribers: 128, SubscriberEvents: 128, SubscriberBytes: 2 << 20}}
 }
 
 func Load(file string) (Config, error) {
-	c := Config{Listen: "127.0.0.1:8080", PublicURL: "http://127.0.0.1:8080", DataDir: ".brain", Limits: Limits{Active: 16, Loaded: 1024, Queue: 16, InputBytes: 64 << 10, SessionBytes: 1 << 30, Subscribers: 128, SubscriberEvents: 128, SubscriberBytes: 2 << 20}}
+	c := Default()
 	f, err := os.Open(file)
 	if err != nil {
 		return c, err
@@ -80,7 +114,19 @@ func Load(file string) (Config, error) {
 	return c, nil
 }
 
-func (c *Config) Validate() error {
+func (c *Config) Validate() error { return c.ValidateFactories(nil) }
+
+func (c *Config) ValidateFactories(factories map[string]harness.Factory) error {
+	if c.CredentialKeys != nil {
+		if _, _, err := c.CredentialKeys.Active(context.Background()); err != nil {
+			return err
+		}
+		for id := range c.CredentialKeys.Environments {
+			if _, err := c.CredentialKeys.Get(context.Background(), id); err != nil {
+				return err
+			}
+		}
+	}
 	if c.Persistence != nil {
 		if err := c.Persistence.Validate(); err != nil {
 			return err
@@ -119,10 +165,26 @@ func (c *Config) Validate() error {
 		return errors.New("at least one harness is required")
 	}
 	for name, r := range c.Harnesses {
+		if r.MaxShared == 0 {
+			r.MaxShared = 8
+		}
+		if r.MaxActiveTurns == 0 {
+			r.MaxActiveTurns = r.MaxShared
+		}
+		if r.MaxHosts == 0 {
+			r.MaxHosts = 16
+		}
+		if r.MaxStarting == 0 {
+			r.MaxStarting = 4
+		}
+		if r.MaxShared < 1 || r.MaxShared > 1024 || r.MaxActiveTurns < 1 || r.MaxActiveTurns > r.MaxShared || r.MaxHosts < 1 || r.MaxStarting < 1 {
+			return fmt.Errorf("invalid host limits for %s", name)
+		}
+		c.Harnesses[name] = r
 		if name == "" || len(name) > 64 {
 			return fmt.Errorf("invalid harness name %q", name)
 		}
-		if len(r.Command) == 0 || r.Command[0] == "" {
+		if factories[name] == nil && (len(r.Command) == 0 || r.Command[0] == "") {
 			return fmt.Errorf("harness %s has no command", name)
 		}
 	}

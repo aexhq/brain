@@ -3,12 +3,26 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aexhq/brain/internal/core"
 )
+
+func TestHTTPUnavailableBeforeDispatchHasKnownOutcome(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("unexpected dispatch") }))
+	endpoint := server.URL
+	server.Close()
+	transport := NewHTTPTransport()
+	defer transport.Close()
+	result := transport.Call(context.Background(), Binding{URL: endpoint}, Request{Arguments: json.RawMessage(`{}`)}, nil)
+	if !result.IsError || result.UnknownOutcome {
+		t.Fatalf("unavailable endpoint: %+v", result)
+	}
+}
 
 type recordingTransport struct {
 	calls, closed int

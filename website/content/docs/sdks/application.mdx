@@ -1,0 +1,73 @@
+---
+title: Go application SDK
+description: Compose Brain with installed tools, resource authorization, credential keys, and harness factories.
+---
+
+Build your application with `github.com/aexhq/brain`. The stock `cmd/brain` executable uses this package too. Pin the module to the commit recorded in your [release](https://github.com/aexhq/brain/releases):
+
+```sh
+go get github.com/aexhq/brain@COMMIT
+```
+
+## Run an application
+
+Start with the [complete greeting application](https://github.com/aexhq/brain/blob/main/examples/application/main.go). It loads `brain.json`, installs a `greetings` provider, authorizes the `local` tenant, and owns shutdown through `Server.Run`.
+
+```sh
+go run ./examples/application
+```
+
+Create a session that selects the installed operation and its resource parameters:
+
+```json
+{
+  "harness": "pi",
+  "config": {
+    "model": "openai/gpt-4.1-mini",
+    "tools": [],
+    "bindings": [{
+      "alias": "welcome",
+      "provider": "greetings",
+      "operations": ["hello"],
+      "parameters": {"prefix": "Hello, "}
+    }]
+  }
+}
+```
+
+The model sees `welcome_hello`. Bind the provider again with another alias to use different parameters in the same session. Keep action execution inside `Handler`; `Authorize` and `Bind` resolve permitted resources and descriptors without performing an action. Handlers receive trusted tenant, session, and call identity separately from model arguments. Honor the supplied context for cancellation and deadlines.
+
+Return text or image blocks in `Result.Content`, and the successful JSON value in `Result.StructuredContent`. An `output_schema` validates that value. Return `brain.ToolError(message, unknownOutcome)` for failures; mark the outcome unknown when the action may already have happened.
+
+## Connect managed services
+
+Import `github.com/aexhq/brain/integrations` for `HTTP`, `MCP`, and `Sessions` constructors. Supply a parameter schema, an authorization function, and a resolver that returns only application-approved endpoints. Select MCP names explicitly. MCP stdio commands and environment values are installed by application code; clients select bindings, never commands.
+
+Each MCP discovery or invocation owns its connection. Stdio uses a private directory and an owned process tree that closes after the operation. HTTP connections are pooled; MCP sessions are separate per operation. Changed discovered descriptors reject a saved session before an action runs.
+
+Use `integrations.Sessions` with a `SessionReader` and an explicit target authorization function to expose public session metadata and bounded event pages. The authenticated binding supplies the tenant. Authorize each target independently; the operation returns neither private credentials nor native files.
+
+## Persist private overrides
+
+Provide `Options.Keys` or configure [`credential_keys`](/docs/reference/configuration#private-credential-keys) before accepting direct credentials. Keep keys independently of the SQL database and checkpoint archive.
+
+```json
+{
+  "harness": "pi",
+  "config": {
+    "model": "openai/gpt-4.1-mini", "tools": [],
+    "bindings": [{"alias":"records","provider":"installed_data","operations":["read"],"parameters":{"resource":"permitted-resource"}}]
+  },
+  "credentials": [{"binding":"records","value":{"token":"SESSION_RESOURCE_TOKEN"}}]
+}
+```
+
+The installed provider authorizes and interprets the private value through `BindingContext.Credential`. Use deployment defaults only when the value is absent. SQL stores authenticated encrypted records, and checkpoints carry encrypted recovery records. Public session data exposes only the aliases that require overrides. A missing key, missing record, or failed authentication stops execution; it never switches credentials.
+
+Call `Server.RotateCredentials` to re-encrypt a session with the active key, or `Server.RevokeCredential` to retain a revocation tombstone. Both mark checkpoint state as changed. Retain old keys until their retained checkpoints expire. Existing local private records win over older restored records. Restoring an old backup into an empty deployment restores that backup's credential state, so apply your revocation inventory before resuming it.
+
+## Own the server lifecycle
+
+Use `brain.Validate` for startup validation before opening storage. `brain.New` returns an owned server. `Run` opens the configured listener; `Serve` accepts a listener you supply. Both drain on context cancellation. When embedding `Handler` in your own HTTP server, always call `Shutdown`.
+
+Install custom `HarnessFactory` implementations through `Options.Harnesses`, or use configured process commands. Follow the [harness contract](/docs/adapters/harness) for passive recovery and exact tool catalogs. [Runtime functions](/docs/sdks/typescript#declare-runtime-tools) execute in the client that declares them.

@@ -57,26 +57,55 @@ func ValidID(s string) bool {
 }
 
 type Config struct {
-	Model           string   `json:"model"`
-	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
-	Instructions    string   `json:"instructions,omitempty"`
-	Tools           []string `json:"tools"`
+	Model           string        `json:"model"`
+	ReasoningEffort string        `json:"reasoning_effort,omitempty"`
+	Instructions    string        `json:"instructions,omitempty"`
+	Tools           []string      `json:"tools"`
+	Bindings        []ToolBinding `json:"bindings,omitempty"`
+}
+
+// ToolBinding contains routing and resource selection, never executable code.
+type ToolBinding struct {
+	Alias      string          `json:"alias"`
+	Provider   string          `json:"provider,omitempty"`
+	Operations []string        `json:"operations,omitempty"`
+	Parameters json.RawMessage `json:"parameters,omitempty"`
+	Executor   string          `json:"executor,omitempty"`
+	Runtime    []Tool          `json:"runtime,omitempty"`
+}
+
+// CredentialInput is accepted only at admission and is never session configuration.
+type CredentialInput struct {
+	Binding string          `json:"binding"`
+	Value   json.RawMessage `json:"value"`
+}
+
+// CredentialRecord is private recovery material, not part of the public contract.
+type CredentialRecord struct {
+	Binding    string `json:"binding"`
+	Key        string `json:"key"`
+	Ciphertext []byte `json:"ciphertext"`
+	Revoked    bool   `json:"revoked,omitempty"`
 }
 
 type CreateSession struct {
-	Harness string `json:"harness"`
-	Config  Config `json:"config"`
+	Harness     string            `json:"harness"`
+	Config      Config            `json:"config"`
+	Credentials []CredentialInput `json:"credentials,omitempty"`
 }
 
 type Session struct {
-	ID         string      `json:"id"`
-	Tenant     string      `json:"-"`
-	Harness    string      `json:"harness"`
-	Config     Config      `json:"config"`
-	Status     string      `json:"status"`
-	CreatedAt  time.Time   `json:"created_at"`
-	UpdatedAt  time.Time   `json:"updated_at"`
-	Checkpoint *Checkpoint `json:"checkpoint,omitempty"`
+	ID                 string             `json:"id"`
+	Tenant             string             `json:"-"`
+	Harness            string             `json:"harness"`
+	Config             Config             `json:"config"`
+	Status             string             `json:"status"`
+	CreatedAt          time.Time          `json:"created_at"`
+	UpdatedAt          time.Time          `json:"updated_at"`
+	Checkpoint         *Checkpoint        `json:"checkpoint,omitempty"`
+	Descriptors        []Tool             `json:"descriptors"`
+	CredentialBindings []string           `json:"credential_bindings,omitempty"`
+	Credentials        []CredentialRecord `json:"-"`
 }
 
 type Event struct {
@@ -131,9 +160,10 @@ type Content struct {
 }
 
 type Result struct {
-	Content        []Content `json:"content"`
-	IsError        bool      `json:"is_error,omitempty"`
-	UnknownOutcome bool      `json:"unknown_outcome,omitempty"`
+	Content           []Content       `json:"content"`
+	IsError           bool            `json:"is_error,omitempty"`
+	UnknownOutcome    bool            `json:"unknown_outcome,omitempty"`
+	StructuredContent json.RawMessage `json:"structured_content,omitempty"`
 }
 
 func ToolError(message string, unknown bool) Result {
@@ -173,6 +203,7 @@ type SyncStatus struct {
 }
 
 type Grant struct {
+	Executor string `json:"-"`
 	Tenant   string `json:"tenant"`
 	Session  string `json:"session,omitempty"`
 	Manage   bool   `json:"manage"`

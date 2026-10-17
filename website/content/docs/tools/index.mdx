@@ -56,7 +56,7 @@ Add a binding to the `tools` array of the host config. This binding declares the
 | `name` | Yes | The name the model sees. It starts with a letter and has up to 64 letters, digits, or underscores. Names are unique within the host config. |
 | `description` | Yes | What the tool does. The model reads it to decide when to call the tool. |
 | `input_schema` | Yes | A JSON Schema for the arguments. Brain validates every call against it, including `format` keywords, before sending the request. External `$ref` references aren't loaded. |
-| `output_schema` | No | A JSON Schema that successful result objects must match. Tool errors retain their outcome classification; all results still obey content and size limits. |
+| `output_schema` | No | JSON Schema for successful `structured_content`. Tool errors retain their outcome classification; all results still obey content and size limits. |
 | `url` | Yes | The `http` or `https` endpoint that Brain posts calls to. It can't contain credentials or a fragment. |
 | `tenants` | Yes | The tenants allowed to use the tool. |
 | `token_env` | No | An environment variable whose value Brain sends as a bearer token. The variable must be set when Brain starts. |
@@ -143,8 +143,10 @@ Respond with status `200`, `Content-Type: application/json`, and a result object
 | --- | --- |
 | `content` | One or more content blocks. A text block is `{"type":"text","text":"..."}`. An image block is `{"type":"image","data":"BASE64","mime_type":"image/png"}`. |
 | `is_error` | Set to `true` when the call failed or was denied. The model sees the content as an error and decides what to do next. |
+| `structured_content` | JSON value returned by a successful call. When configured, `output_schema` validates this value. A structured-only result is rendered as a text block for the harness. |
+| `unknown_outcome` | Set when an action may have happened but its completion is unknown. |
 
-Brain rejects a result with no content, an unknown content type, or unknown fields.
+Brain rejects a result with neither content nor structured content, an unknown content type, or unknown fields. Error results bypass the success schema while retaining content and size checks.
 
 ### Stream progress with SSE
 

@@ -115,4 +115,4 @@ Nothing publishes unless every job passes. After that, each push to `main`:
 2. Deploys the tested docs site to GitHub Pages, then smoke-tests the published site.
 3. Starts the SDK release, which publishes the SDK archives tested on Linux to npm and PyPI through registry trusted publishing, without rebuilding them, and attaches the same archives to a GitHub release.
 
-SDK 1.0.0 is the client for the current server and replaces the predecessor's 0.x API. The server's routes and local state have no versioning or compatibility layer, so pin production images by digest and use the SDK version that matches your server commit. [SDK delivery](https://github.com/aexhq/brain/blob/main/docs/sdk-releases.md) covers versioning, the release workflow, and registry setup.
+SDK 2.0.0 is the client for the current server and replaces the predecessor's 0.x API. The server's routes and local state have no versioning or compatibility layer, so pin production images by digest and use the SDK version that matches your server commit. [SDK delivery](https://github.com/aexhq/brain/blob/main/docs/sdk-releases.md) covers versioning, the release workflow, and registry setup.

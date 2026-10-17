@@ -48,6 +48,7 @@ Configuration files are limited to 4 MiB. Unknown JSON fields and trailing JSON 
 | `tools` | `Binding[]` | `[]` | Array of external HTTP, SSE, or MCP tool bindings (see [`tools`](#external-tools-tools)). |
 | `limits` | `Limits` | See below | In-memory, disk, queue, and SSE subscriber bounds (see [`limits`](#resource-limits-limits)). |
 | `persistence` | `Settings` | `null` | Optional background checkpoint storage and session index settings (see [`persistence`](#external-persistence-persistence)). |
+| `credential_keys` | `object` | `null` | Independent encryption key configuration for private session overrides. |
 
 ## Authentication tokens (`tokens`)
 
@@ -68,6 +69,22 @@ Each key in `harnesses` is the harness name clients pass in `POST /sessions` (fo
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `command` | `string[]` | Yes | Non-empty command and arguments used to spawn the harness child process (for example, `["node", "runners/pi/dist/main.js"]`). `command[0]` must be non-empty. |
+| `max_shared` | `integer` | No | Session attachments per host; default `8`, range `1`–`1024`. |
+| `max_active_turns` | `integer` | No | Simultaneous turns per host; defaults to `max_shared`, range `1`–`max_shared`. |
+| `max_hosts` | `integer` | No | Maximum live hosts for this harness; default `16`, minimum `1`. |
+| `max_starting` | `integer` | No | Concurrent session opens; default `4`, minimum `1`. |
+
+Hosts use private working and home directories. Linux process guardians and Windows Job Objects own descendant lifetimes. Idle session eviction detaches only that session; the last detach closes the host. Global `limits.active` also bounds resident native session attachments.
+
+## Private credential keys
+
+```json
+{"credential_keys":{"active":"key-2026","keys":{"key-2026":"BRAIN_CREDENTIAL_KEY"}}}
+```
+
+`active` selects a key ID from `keys`. Each value names an environment variable containing a base64-encoded 32-byte AES key. Every configured key must be available at startup. Keep retired keys available while retained checkpoints still reference them. Application code may instead supply `Options.Keys` implementing `CredentialKeys`.
+
+Private overrides are authenticated encrypted SQL records, bound to tenant, session, and alias. Creation rejects overrides without configured keys. Public JSON never contains ciphertext or plaintext values. [Credential administration](/docs/sdks/application#persist-private-overrides) covers rotation, revocation, and checkpoint retention.
 
 ## Model providers (`providers`)
 
@@ -88,7 +105,7 @@ Each element in `tools` registers one tool that sessions belonging to authorized
 | `name` | `string` | Yes | — | Unique tool name matching `^[a-zA-Z][a-zA-Z0-9_]{0,63}$`. |
 | `description` | `string` | Yes | — | Non-empty description shown to the model. |
 | `input_schema` | `object` | Yes | — | JSON Schema for tool arguments. External `$ref` URLs are rejected. |
-| `output_schema` | `object` | No | `null` | Optional JSON Schema used to validate the tool's `Result` envelope. |
+| `output_schema` | `object` | No | `null` | JSON Schema for successful `structured_content`. Error results bypass the success schema, while content and size limits still apply. |
 | `url` | `string` | Yes | — | Target `http` or `https` endpoint URL (no credentials or URL fragments). |
 | `tenants` | `string[]` | Yes | — | Non-empty list of tenant IDs permitted to see and enable this tool. |
 | `token_env` | `string` | No | `""` | Optional environment variable holding the bearer token Brain sends in `Authorization: Bearer <token>`. Must be non-empty at startup when specified. |
@@ -104,7 +121,7 @@ Every field is optional. Fields you omit keep the defaults below, so you can ove
 
 | Field | Type | Default | Allowed range | Description |
 | --- | --- | ---: | --- | --- |
-| `active` | `integer` | `16` | `>= 1` | Maximum concurrent running turns (and resident harness processes) across the server. |
+| `active` | `integer` | `16` | `>= 1` | Maximum concurrent running turns and resident native session attachments across the server. Hosts may share several attachments. |
 | `loaded` | `integer` | `1024` | `>= active` | Maximum sessions held in memory at once. Idle unreferenced sessions are evicted when full. |
 | `queue` | `integer` | `16` | `1`–`1024` | Maximum queued `user.message` inputs per session. |
 | `input_bytes` | `integer` | `65536` | `1`–`1048576` (1 MiB) | Maximum byte length of `user.message` `text` or session `instructions`. |

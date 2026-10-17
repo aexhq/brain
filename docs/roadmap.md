@@ -16,17 +16,13 @@ Brain is in active development. This page lists what you can use today, what's c
 
 ### Application SDK and session-bound integrations
 
-Build a Brain application in code with managed tools, and let clients select those tools or declare runtime functions for a session. The SDK will bridge calls to client-side functions through the same transport building blocks available to managed tools.
-
-- **Status:** Planned; design proposed. [ADR 0003](https://github.com/aexhq/brain/blob/main/docs/adr/0003-application-sdk-and-session-bindings.md) selects a Go application SDK, managed and client-runtime tools, direct HTTP/reverse SSE plus HTTP/RPC bindings, and external sandbox services for arbitrary code execution. Managed-tool credentials will survive normal server restarts through encrypted SQL storage or application-managed vault references. Optional read-only session tools will use application-authorized reads within the same tenant; hosting platforms own fleet-wide lookup. Browser/backend callback lifetimes remain distinct from deployed services, and tool-host outages remain model-visible failures rather than automatic action retries.
-- **Today:** Configure harness commands and a tenant-scoped tool catalog in the host configuration, and select configured tools by name when creating a session. Custom tools run in HTTP/SSE or remote MCP services; the published SDKs are HTTP clients, not application hosts.
+- **Status:** Available for Go application composition, authorized provider bindings, encrypted session credentials, TypeScript/Python runtime functions, direct HTTP/SSE, reverse SSE/HTTP, WebSocket RPC, MCP HTTP/stdio, and optional authorized session reads. [Plan 11](https://github.com/aexhq/brain/blob/main/docs/plans/11-application-sdk.md) records implementation evidence and remaining adapter gates.
+- **Today:** Use the [Go application SDK](https://aexhq.github.io/brain/docs/sdks/application/) to install providers; declare runtime functions in a backend client and keep its callback connection alive. Browser authentication and automatic reconnection remain separate work.
 
 ### Local harness-host supervision
 
-Have Brain track and control a bounded fleet of shared Pi, OpenCode, or Codex processes on its PC or VM, with per-host session limits, private session state, idle eviction, and recovery without automatic inference. Sharing may cross tenant boundaries without granting access between sessions; optional session reads remain tenant-scoped tool operations. Model-directed code execution will use authorized external sandbox services, not native execution tools on the Brain host.
-
-- **Status:** Partly available. The Pi runner has lazy startup, bounded residency, cancellation, and passive restore. [ADR 0003](https://github.com/aexhq/brain/blob/main/docs/adr/0003-application-sdk-and-session-bindings.md#brain-supervises-a-local-fleet-of-harness-hosts) selects bounded shared hosts with separate session/turn limits and requires cross-tenant isolation, session-scoped recovery, and process-tree lifecycle qualification. [Local architecture spikes](https://github.com/aexhq/brain/blob/main/docs/research/application-sdk-spikes.md) measure host and transport costs; they do not qualify these boundaries or new adapters. Cross-machine provisioning and placement are outside this design.
-- **Today:** Use the Pi runner and the host resource limits. Other harnesses require adapters that pass the isolation and recovery gates; each session still needs a single owning Brain instance.
+- **Status:** Available for Pi on Linux and Windows. Hosts have separate session occupancy and active-turn caps, private homes, session-local cancellation and eviction, and owned process trees. Tests cover eight concurrent native sessions with exact catalogs and separate context, bounded concurrent admission, detachment while peers continue, shared host crashes, and abrupt parent death. These are local correctness tests, not fleet capacity measurements.
+- **Today:** Configure `max_shared`, `max_active_turns`, `max_hosts`, and `max_starting` alongside global limits. Other harnesses must pass the same recovery and isolation gates; each session still has one owning Brain instance.
 
 ### Dynamic session configuration
 
@@ -84,13 +80,6 @@ Connect MCP servers and model providers that require OAuth.
 - **Status:** Planned. No design document yet.
 - **Today:** Use API keys and tokens from environment variables. See [Models & providers](https://aexhq.github.io/brain/docs/reference/models/) and [MCP tools](https://aexhq.github.io/brain/docs/tools/mcp/).
 
-### Local (stdio) MCP servers
-
-Run MCP servers as local processes.
-
-- **Status:** Planned. No design document yet.
-- **Today:** Expose the server over Streamable HTTP, and connect it as a [remote MCP server](https://aexhq.github.io/brain/docs/tools/mcp/).
-
 ## Integration status
 
 Local tests and live runs are separate evidence. **Verified against live services** means the integration passed against a real provider account; **verified with local tests** means it passed with the provider's official SDK or local fixtures, without a live account. The [integration evidence](https://github.com/aexhq/brain/blob/main/docs/research/qualification.md) records exactly what each run covered.
@@ -101,7 +90,7 @@ Local tests and live runs are separate evidence. **Verified against live service
 | Cloudflare R2 archive | Verified with local tests | The real AWS SDK transport passes the archive fixtures with R2 settings. Not yet run against a live R2 account. |
 | Google Cloud Storage archive | Verified with local tests | The official SDK passes multipart, precondition, read, and shared archive contract tests. Not yet run against a live GCS account. |
 | PostgreSQL session index | Verified with local tests | CI runs the index tests against a PostgreSQL 18 server. Hosted services such as Neon, Supabase, and RDS haven't been qualified separately. |
-| MCP tools | Verified with local tests | Official SDK client and server fixtures cover discovery, streamed progress, errors, structured content, tenant isolation, limits, cancellation, and no replay of actions. No third-party MCP server has been tested live. |
+| MCP tools | Verified with local tests | Official SDK HTTP and owned-stdio fixtures cover explicit discovery, process loss, progress, structured output, tenant isolation, limits, cancellation, and no replay. No third-party MCP server has been tested live. |
 | Modal, E2B, and Daytona sandboxes | Verified with local tests | Pinned SDK type checks, an HTTP tool journey, signed sandbox handles that stay valid across service restarts, and cancellation and cleanup fixtures. A live script, `npm --prefix services/sandbox run live -- PROVIDER`, needs your provider credentials. |
 | Storage and web tools | Verified with local tests | An AWS SDK and HTTP registry journey covers authentication, tenant prefixes, read-only policy, and deletes, alongside Brave and Tavily request fixtures and public-network and HTML extraction tests. Live search and R2 tool accounts are unqualified. |
 | Platform templates | Verified with local tests | `tests/platforms.test.mjs` validates the Docker Compose, Fly.io, AWS ECS/Fargate, and Cloudflare Worker templates. They aren't evidence of a live deployment on each platform. |

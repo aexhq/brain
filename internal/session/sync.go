@@ -73,6 +73,9 @@ func (s *syncer) status(id string) (bool, string) {
 // Disk is the pending-data buffer. This queue holds only bounded references;
 // startup and subsequent scans rediscover changes that could not be queued.
 func (s *syncer) scan(ctx context.Context) error {
+	// Directory replacement must wait for scan file handles on Windows.
+	s.engine.hydrateMu.Lock()
+	defer s.engine.hydrateMu.Unlock()
 	s.mu.Lock()
 	s.overflow = false
 	s.mu.Unlock()

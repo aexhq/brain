@@ -4,18 +4,15 @@ JavaScript/TypeScript applications install `@aexhq/brain`; Python applications
 install `aex-brain` and import `brain`. Both are dependency-free at runtime.
 
 ```sh
-npm install --save-exact @aexhq/brain@1.0.0
-python -m pip install aex-brain==1.0.0
+npm install --save-exact @aexhq/brain@2.0.0
+python -m pip install aex-brain==2.0.0
 ```
 
-Both registries publish the tested 1.0.0 artifacts. The same npm archive, Python
-wheel, and source distribution are also available as [GitHub release downloads](https://github.com/aexhq/brain/releases/tag/release/sha-d93ddf4e0e3d4e79bcd097cb56c629fe2388eddb).
+Release artifacts include the npm archive, Python wheel, and source distribution in [GitHub Releases](https://github.com/aexhq/brain/releases). The release workflow publishes those exact tested bytes to npm and PyPI.
 
-Version 1.0.0 is the client for the current Go session server. The predecessor's
-npm 0.x releases expose a different API and cannot be used with it. There is no
-automatic migration: update applications to create/send/observe sessions using
-the current SDK guides. Server routes and local state remain unversioned; pin
-the SDK and the server image commit recorded in the publishing workflow summary.
+SDK 2.0.0 adds client-owned runtime functions and the session binding contract. Successful output schemas validate `structured_content`. Update server, runner, and clients together; routes and local state have no compatibility layer or migration. Pin the SDK and the server image commit recorded in the publishing workflow summary.
+
+Go applications import `github.com/aexhq/brain` and optionally `github.com/aexhq/brain/integrations`. Pin the module to the source commit recorded in the matching release with `go get github.com/aexhq/brain@COMMIT`.
 
 ## Maintainer workflow
 

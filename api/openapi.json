@@ -40,6 +40,32 @@
         ],
         "type": "object"
       },
+      "Command": {
+        "additionalProperties": false,
+        "properties": {
+          "arguments": {},
+          "call_id": {
+            "type": "string"
+          },
+          "connection": {
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ToolScope"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "connection"
+        ],
+        "type": "object"
+      },
       "Content": {
         "additionalProperties": false,
         "properties": {
@@ -67,6 +93,12 @@
           "config": {
             "$ref": "#/components/schemas/SessionConfig"
           },
+          "credentials": {
+            "items": {
+              "$ref": "#/components/schemas/CredentialInput"
+            },
+            "type": "array"
+          },
           "harness": {
             "type": "string"
           }
@@ -74,6 +106,20 @@
         "required": [
           "harness",
           "config"
+        ],
+        "type": "object"
+      },
+      "CredentialInput": {
+        "additionalProperties": false,
+        "properties": {
+          "binding": {
+            "type": "string"
+          },
+          "value": {}
+        },
+        "required": [
+          "binding",
+          "value"
         ],
         "type": "object"
       },
@@ -157,6 +203,44 @@
         ],
         "type": "object"
       },
+      "ExecutorCredential": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "token"
+        ],
+        "type": "object"
+      },
+      "ExecutorRegistration": {
+        "additionalProperties": false,
+        "properties": {
+          "binding": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/Tool"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "binding",
+          "tools"
+        ],
+        "type": "object"
+      },
       "Input": {
         "additionalProperties": false,
         "properties": {
@@ -175,6 +259,26 @@
         },
         "required": [
           "type"
+        ],
+        "type": "object"
+      },
+      "Reply": {
+        "additionalProperties": false,
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "connection": {
+            "type": "string"
+          },
+          "progress": {},
+          "result": {
+            "$ref": "#/components/schemas/Result"
+          }
+        },
+        "required": [
+          "connection",
+          "call_id"
         ],
         "type": "object"
       },
@@ -202,6 +306,7 @@
           "is_error": {
             "type": "boolean"
           },
+          "structured_content": {},
           "unknown_outcome": {
             "type": "boolean"
           }
@@ -224,6 +329,18 @@
             "format": "date-time",
             "type": "string"
           },
+          "credential_bindings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "descriptors": {
+            "items": {
+              "$ref": "#/components/schemas/Tool"
+            },
+            "type": "array"
+          },
           "harness": {
             "type": "string"
           },
@@ -244,13 +361,20 @@
           "config",
           "status",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "descriptors"
         ],
         "type": "object"
       },
       "SessionConfig": {
         "additionalProperties": false,
         "properties": {
+          "bindings": {
+            "items": {
+              "$ref": "#/components/schemas/ToolBinding"
+            },
+            "type": "array"
+          },
           "instructions": {
             "type": "string"
           },
@@ -352,6 +476,37 @@
         ],
         "type": "object"
       },
+      "ToolBinding": {
+        "additionalProperties": false,
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "executor": {
+            "type": "string"
+          },
+          "operations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "parameters": {},
+          "provider": {
+            "type": "string"
+          },
+          "runtime": {
+            "items": {
+              "$ref": "#/components/schemas/Tool"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "alias"
+        ],
+        "type": "object"
+      },
       "ToolCatalog": {
         "additionalProperties": false,
         "properties": {
@@ -380,6 +535,32 @@
         "required": [
           "call_id",
           "result"
+        ],
+        "type": "object"
+      },
+      "ToolScope": {
+        "additionalProperties": false,
+        "properties": {
+          "brain_url": {
+            "type": "string"
+          },
+          "call_id": {
+            "type": "string"
+          },
+          "inspection_token": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "session_id",
+          "call_id"
         ],
         "type": "object"
       }
@@ -430,6 +611,239 @@
           }
         ],
         "summary": "List available tools"
+      }
+    },
+    "/executors": {
+      "post": {
+        "description": "Requires management authority. Connect the returned executor before creating the session. Rebinding supplies the saved session and matching descriptors; functions remain in the client.",
+        "operationId": "registerExecutor",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecutorRegistration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorCredential"
+                }
+              }
+            },
+            "description": "Register runtime tools"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error. 400 invalid_request; 401 missing/invalid Bearer token; 403 forbidden; 404 not_found; 409 conflict or cursor_unavailable; 413 body limit; 422 unsupported; 429 overloaded (Retry-After: 1); 500 brain_error. X-Request-ID is present on every response."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Register runtime tools"
+      }
+    },
+    "/executors/{id}/close": {
+      "post": {
+        "description": "Requires its executor credential. Pending dispatched calls receive unknown outcomes; future calls are unavailable.",
+        "operationId": "unregisterExecutor",
+        "parameters": [
+          {
+            "description": "Opaque executor ID.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-fA-F0-9]{32}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            },
+            "description": "Close a runtime executor"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error. 400 invalid_request; 401 missing/invalid Bearer token; 403 forbidden; 404 not_found; 409 conflict or cursor_unavailable; 413 body limit; 422 unsupported; 429 overloaded (Retry-After: 1); 500 brain_error. X-Request-ID is present on every response."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Close a runtime executor"
+      }
+    },
+    "/executors/{id}/commands": {
+      "get": {
+        "description": "Requires the executor credential. Returns non-replayable SSE commands and a ready connection identity. A dropped connection never replays calls.",
+        "operationId": "executorCommands",
+        "parameters": [
+          {
+            "description": "Opaque executor ID.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-fA-F0-9]{32}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "example": "data: {\"type\":\"ready\",\"connection\":\"CONNECTION_ID\"}\n\n",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Connect a runtime executor"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error. 400 invalid_request; 401 missing/invalid Bearer token; 403 forbidden; 404 not_found; 409 conflict or cursor_unavailable; 413 body limit; 422 unsupported; 429 overloaded (Retry-After: 1); 500 brain_error. X-Request-ID is present on every response."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Connect a runtime executor"
+      }
+    },
+    "/executors/{id}/responses": {
+      "post": {
+        "description": "Requires the executor credential and current connection/call identity. Stale, duplicate and unsolicited results fail.",
+        "operationId": "executorReply",
+        "parameters": [
+          {
+            "description": "Opaque executor ID.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-fA-F0-9]{32}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Reply"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            },
+            "description": "Submit runtime progress or result"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error. 400 invalid_request; 401 missing/invalid Bearer token; 403 forbidden; 404 not_found; 409 conflict or cursor_unavailable; 413 body limit; 422 unsupported; 429 overloaded (Retry-After: 1); 500 brain_error. X-Request-ID is present on every response."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Submit runtime progress or result"
+      }
+    },
+    "/executors/{id}/rpc": {
+      "get": {
+        "description": "WebSocket upgrade using brain-rpc and brain-auth.TOKEN subprotocols. Commands and replies use the same contract as SSE/HTTP. Browser origins are rejected.",
+        "operationId": "executorRPC",
+        "parameters": [
+          {
+            "description": "Opaque executor ID.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-fA-F0-9]{32}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "content": {},
+            "description": "Connect bidirectional runtime RPC"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error. 400 invalid_request; 401 missing/invalid Bearer token; 403 forbidden; 404 not_found; 409 conflict or cursor_unavailable; 413 body limit; 422 unsupported; 429 overloaded (Retry-After: 1); 500 brain_error. X-Request-ID is present on every response."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Connect bidirectional runtime RPC"
       }
     },
     "/sessions": {

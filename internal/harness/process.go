@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -20,42 +21,54 @@ import (
 const MaxFrame = 4 << 20
 
 type ProcessFactory struct {
-	Command  []string
-	Steering bool
-	Logger   *slog.Logger
+	Command        []string
+	Steering       bool
+	Logger         *slog.Logger
+	MaxShared      int
+	MaxActiveTurns int
+	MaxHosts       int
+	MaxStarting    int
+	mu             sync.Mutex
+	pool           []*process
+	starting       chan struct{}
 }
 
 func (f *ProcessFactory) SupportsSteering() bool { return f.Steering }
 
 type RunnerFrame struct {
-	ID     string          `json:"id,omitempty"`
-	Method string          `json:"method,omitempty"`
-	Params json.RawMessage `json:"params,omitempty"`
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  *core.Error     `json:"error,omitempty"`
-	Event  string          `json:"event,omitempty"`
-	Data   json.RawMessage `json:"data,omitempty"`
+	Attachment string          `json:"attachment"`
+	Turn       string          `json:"turn,omitempty"`
+	ID         string          `json:"id,omitempty"`
+	Method     string          `json:"method,omitempty"`
+	Params     json.RawMessage `json:"params,omitempty"`
+	Result     json.RawMessage `json:"result,omitempty"`
+	Error      *core.Error     `json:"error,omitempty"`
+	Event      string          `json:"event,omitempty"`
+	Data       json.RawMessage `json:"data,omitempty"`
 }
 
 type process struct {
-	cmd      *exec.Cmd
-	in       io.WriteCloser
-	writeMu  sync.Mutex
-	mu       sync.Mutex
-	pending  map[string]chan RunnerFrame
-	ctx      context.Context
-	cancel   context.CancelFunc
-	done     chan struct{}
-	waited   chan struct{}
-	readDone chan struct{}
-	callWG   sync.WaitGroup
-	err      error
-	once     sync.Once
-	opts     Options
-	tools    chan struct{}
+	cmd         *exec.Cmd
+	in          io.WriteCloser
+	writeMu     sync.Mutex
+	mu          sync.Mutex
+	pending     map[string]chan RunnerFrame
+	ctx         context.Context
+	cancel      context.CancelFunc
+	done        chan struct{}
+	waited      chan struct{}
+	readDone    chan struct{}
+	callWG      sync.WaitGroup
+	err         error
+	once        sync.Once
+	attachments map[string]*attachment
+	active      chan struct{}
+	directory   string
+	killTree    func() error
+	tools       chan struct{}
 }
 
-func (f *ProcessFactory) Open(ctx context.Context, opts Options) (Runner, error) {
+func (f *ProcessFactory) start(ctx context.Context, opts Options) (*process, error) {
 	if len(f.Command) == 0 {
 		return nil, core.E(core.Unsupported, "harness command is not configured")
 	}
@@ -64,14 +77,36 @@ func (f *ProcessFactory) Open(ctx context.Context, opts Options) (Runner, error)
 		owner = ctx
 	}
 	procCtx, cancel := context.WithCancel(owner)
-	cmd := exec.CommandContext(procCtx, f.Command[0], f.Command[1:]...)
+	command := append([]string{}, f.Command...)
+	for i := 1; i < len(command); i++ {
+		if info, err := os.Stat(command[i]); err == nil && info.Mode().IsRegular() {
+			command[i], err = filepath.Abs(command[i])
+			if err != nil {
+				cancel()
+				return nil, err
+			}
+		}
+	}
+	directory, err := os.MkdirTemp("", "brain-host-")
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	started := false
+	defer func() {
+		if !started {
+			_ = os.RemoveAll(directory)
+		}
+	}()
+	cmd := exec.CommandContext(procCtx, command[0], command[1:]...)
+	cmd.Dir = directory
 	// Inherit process necessities, not ambient credentials or harness settings.
 	for _, key := range []string{"PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "TMP", "TEMP", "TMPDIR", "LANG", "LC_ALL"} {
 		if value, ok := os.LookupEnv(key); ok {
 			cmd.Env = append(cmd.Env, key+"="+value)
 		}
 	}
-	cmd.Env = append(cmd.Env, "NO_COLOR=1")
+	cmd.Env = append(cmd.Env, "NO_COLOR=1", "HOME="+directory, "USERPROFILE="+directory)
 	cmd.WaitDelay = 3 * time.Second
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -88,17 +123,20 @@ func (f *ProcessFactory) Open(ctx context.Context, opts Options) (Runner, error)
 		cancel()
 		return nil, err
 	}
-	p := &process{cmd: cmd, in: in, pending: make(map[string]chan RunnerFrame), ctx: procCtx, cancel: cancel, done: make(chan struct{}), waited: make(chan struct{}), readDone: make(chan struct{}), opts: opts, tools: make(chan struct{}, 32)}
-	if err := cmd.Start(); err != nil {
+	p := &process{cmd: cmd, in: in, pending: make(map[string]chan RunnerFrame), ctx: procCtx, cancel: cancel, done: make(chan struct{}), waited: make(chan struct{}), readDone: make(chan struct{}), attachments: map[string]*attachment{}, active: make(chan struct{}, f.MaxActiveTurns), directory: directory, tools: make(chan struct{}, 32)}
+	killTree, err := startOwned(cmd)
+	if err != nil {
 		cancel()
 		return nil, err
 	}
+	p.killTree = killTree
+	started = true
 	go func() {
 		s := bufio.NewScanner(stderr)
 		s.Buffer(make([]byte, 4096), 64<<10)
 		for s.Scan() {
 			if f.Logger != nil {
-				f.Logger.Debug("harness diagnostic", "session", opts.SessionID, "message", s.Text())
+				f.Logger.Debug("harness diagnostic", "session", opts.SessionID, "message", "runner diagnostic omitted")
 			}
 		}
 	}()
@@ -111,17 +149,20 @@ func (f *ProcessFactory) Open(ctx context.Context, opts Options) (Runner, error)
 		p.fail(err)
 		close(p.waited)
 	}()
-	initCtx, stop := context.WithTimeout(ctx, 30*time.Second)
-	defer stop()
-	if _, err := p.request(initCtx, "open", opts); err != nil {
-		p.Close()
-		return nil, err
-	}
 	return p, nil
 }
 
 func (p *process) fail(err error) {
-	p.once.Do(func() { p.mu.Lock(); p.err = err; p.mu.Unlock(); close(p.done); p.cancel() })
+	p.once.Do(func() {
+		p.mu.Lock()
+		p.err = err
+		p.mu.Unlock()
+		close(p.done)
+		p.cancel()
+		if p.killTree != nil {
+			_ = p.killTree()
+		}
+	})
 }
 
 func (p *process) read(r io.Reader) {
@@ -136,13 +177,28 @@ func (p *process) read(r io.Reader) {
 			p.fail(errors.New("invalid harness protocol RunnerFrame"))
 			return
 		}
+
+		p.mu.Lock()
+		a := p.attachments[f.Attachment]
+		p.mu.Unlock()
+		if a == nil {
+			p.fail(errors.New("unknown harness session attachment"))
+			return
+		}
+		a.mu.Lock()
+		turn := a.turn
+		a.mu.Unlock()
+		if (f.Event != "" || f.Method == "tool.call") && (turn == "" || f.Turn != turn) {
+			p.fail(errors.New("stale harness turn"))
+			return
+		}
 		switch {
 		case f.Event != "":
 			if f.ID != "" || len(f.Data) == 0 {
 				p.fail(errors.New("invalid harness event"))
 				return
 			}
-			if err := p.opts.Event(f.Event, f.Data); err != nil {
+			if err := a.opts.Event(f.Event, f.Data); err != nil {
 				p.fail(err)
 				return
 			}
@@ -159,12 +215,16 @@ func (p *process) read(r io.Reader) {
 				return
 			}
 			p.callWG.Add(1)
+			a.calls.Add(1)
 			go func(f RunnerFrame, call core.Call) {
 				defer p.callWG.Done()
+				defer a.calls.Done()
 				defer func() { <-p.tools }()
-				result, err := p.opts.Call(p.ctx, call)
+				result, err := a.opts.Call(p.ctx, call)
 				if err != nil {
-					p.fail(err)
+					if err := p.write(RunnerFrame{Attachment: f.Attachment, Turn: f.Turn, ID: f.ID, Error: &core.Error{Code: core.Internal, Message: "tool dispatch failed"}}); err != nil {
+						p.fail(err)
+					}
 					return
 				}
 				b, err := json.Marshal(result)
@@ -172,7 +232,7 @@ func (p *process) read(r io.Reader) {
 					p.fail(err)
 					return
 				}
-				if err := p.write(RunnerFrame{ID: f.ID, Result: b}); err != nil {
+				if err := p.write(RunnerFrame{Attachment: f.Attachment, Turn: f.Turn, ID: f.ID, Result: b}); err != nil {
 					p.fail(err)
 				}
 			}(f, call)
@@ -212,9 +272,14 @@ func (p *process) write(f RunnerFrame) error {
 	return err
 }
 
-func (p *process) request(ctx context.Context, method string, params any) (json.RawMessage, error) {
-	stop := context.AfterFunc(ctx, func() { p.fail(ctx.Err()) })
-	defer stop()
+func (a *attachment) request(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	p := a.host
+	a.mu.Lock()
+	turn := a.turn
+	a.mu.Unlock()
+	if method == "open" || method == "checkpoint" || method == "detach" {
+		turn = ""
+	}
 	b, err := json.Marshal(params)
 	if err != nil {
 		return nil, err
@@ -229,19 +294,33 @@ func (p *process) request(ctx context.Context, method string, params any) (json.
 	}
 	p.pending[id] = ch
 	p.mu.Unlock()
-	if err := p.write(RunnerFrame{ID: id, Method: method, Params: b}); err != nil {
+	if err := p.write(RunnerFrame{Attachment: a.id, Turn: turn, ID: id, Method: method, Params: b}); err != nil {
 		p.fail(err)
 		return nil, err
 	}
 	select {
 	case f := <-ch:
+		if f.Attachment != a.id || f.Turn != turn {
+			p.fail(errors.New("misattributed harness response"))
+			return nil, errors.New("misattributed harness response")
+		}
 		if f.Error != nil {
 			return nil, f.Error
 		}
 		return f.Result, nil
 	case <-ctx.Done():
-		// A cancelled request may already have changed native state. Kill this
-		// runner rather than accepting an uncorrelated late response.
+		if method == "prompt" {
+			stopCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+			defer stop()
+			if _, err := a.request(stopCtx, "interrupt", nil); err == nil {
+				select {
+				case <-ch:
+					return nil, ctx.Err()
+				case <-stopCtx.Done():
+				case <-p.done:
+				}
+			}
+		}
 		p.fail(ctx.Err())
 		return nil, ctx.Err()
 	case <-p.done:
@@ -252,28 +331,153 @@ func (p *process) request(ctx context.Context, method string, params any) (json.
 	}
 }
 
-func (p *process) Prompt(ctx context.Context, text string) error {
-	_, err := p.request(ctx, "prompt", core.Text{Text: text})
+type attachment struct {
+	id       string
+	host     *process
+	factory  *ProcessFactory
+	opts     Options
+	mu       sync.Mutex
+	turn     string
+	calls    sync.WaitGroup
+	once     sync.Once
+	closeErr error
+}
+
+func (f *ProcessFactory) Open(ctx context.Context, opts Options) (Runner, error) {
+	f.mu.Lock()
+	if f.starting == nil {
+		if f.MaxShared == 0 {
+			f.MaxShared = 1
+		}
+		if f.MaxActiveTurns == 0 {
+			f.MaxActiveTurns = f.MaxShared
+		}
+		if f.MaxHosts == 0 {
+			f.MaxHosts = 64
+		}
+		if f.MaxStarting == 0 {
+			f.MaxStarting = 4
+		}
+		if f.MaxShared < 1 || f.MaxShared > 1024 || f.MaxActiveTurns < 1 || f.MaxActiveTurns > f.MaxShared || f.MaxHosts < 1 || f.MaxStarting < 1 {
+			f.mu.Unlock()
+			return nil, errors.New("invalid harness host limits")
+		}
+		f.starting = make(chan struct{}, f.MaxStarting)
+	}
+	f.mu.Unlock()
+	select {
+	case f.starting <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	defer func() { <-f.starting }()
+	f.mu.Lock()
+	var host *process
+	alive := f.pool[:0]
+	for _, p := range f.pool {
+		select {
+		case <-p.done:
+			continue
+		default:
+		}
+		alive = append(alive, p)
+		p.mu.Lock()
+		available := len(p.attachments) < f.MaxShared
+		p.mu.Unlock()
+		if host == nil && available {
+			host = p
+		}
+	}
+	f.pool = alive
+	if host == nil {
+		if len(f.pool) >= f.MaxHosts {
+			f.mu.Unlock()
+			return nil, core.E(core.Overloaded, "harness host capacity reached")
+		}
+		var err error
+		host, err = f.start(ctx, opts)
+		if err != nil {
+			f.mu.Unlock()
+			return nil, err
+		}
+		f.pool = append(f.pool, host)
+	}
+	a := &attachment{id: core.ID(), host: host, factory: f, opts: opts}
+	host.mu.Lock()
+	host.attachments[a.id] = a
+	host.mu.Unlock()
+	f.mu.Unlock()
+	initCtx, stop := context.WithTimeout(ctx, 30*time.Second)
+	defer stop()
+	if _, err := a.request(initCtx, "open", opts); err != nil {
+		host.fail(err)
+		a.Close()
+		return nil, err
+	}
+	return a, nil
+}
+func (a *attachment) Prompt(ctx context.Context, text string) error {
+	select {
+	case a.host.active <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-a.host.done:
+		return errors.New("harness host stopped")
+	}
+	defer func() { <-a.host.active }()
+	a.mu.Lock()
+	if a.turn != "" {
+		a.mu.Unlock()
+		return errors.New("session is already active")
+	}
+	a.turn = core.ID()
+	a.mu.Unlock()
+	defer func() { a.mu.Lock(); a.turn = ""; a.mu.Unlock() }()
+	_, err := a.request(ctx, "prompt", core.Text{Text: text})
 	return err
 }
-func (p *process) Steer(ctx context.Context, text string) error {
-	_, err := p.request(ctx, "steer", core.Text{Text: text})
+func (a *attachment) Steer(ctx context.Context, text string) error {
+	_, err := a.request(ctx, "steer", core.Text{Text: text})
 	return err
 }
-func (p *process) Interrupt(ctx context.Context) error {
-	_, err := p.request(ctx, "interrupt", nil)
+func (a *attachment) Interrupt(ctx context.Context) error {
+	_, err := a.request(ctx, "interrupt", nil)
 	return err
 }
-func (p *process) Checkpoint(ctx context.Context) ([]core.NativeFile, error) {
-	b, err := p.request(ctx, "checkpoint", nil)
+func (a *attachment) Checkpoint(ctx context.Context) ([]core.NativeFile, error) {
+	b, err := a.request(ctx, "checkpoint", nil)
 	if err != nil {
 		return nil, err
 	}
 	var files []core.NativeFile
-	if err := json.Unmarshal(b, &files); err != nil {
-		return nil, err
-	}
-	return files, nil
+	err = json.Unmarshal(b, &files)
+	return files, err
+}
+func (a *attachment) Close() error {
+	a.once.Do(func() {
+		a.calls.Wait()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		select {
+		case <-a.host.done:
+		default:
+			_, a.closeErr = a.request(ctx, "detach", nil)
+		}
+		f := a.factory
+		f.mu.Lock()
+		a.host.mu.Lock()
+		delete(a.host.attachments, a.id)
+		empty := len(a.host.attachments) == 0
+		a.host.mu.Unlock()
+		if empty {
+			a.host.fail(errors.New("harness host empty"))
+		}
+		f.mu.Unlock()
+		if empty {
+			a.host.Close()
+		}
+	})
+	return a.closeErr
 }
 func (p *process) Close() error {
 	p.fail(errors.New("harness closed"))
@@ -281,5 +485,5 @@ func (p *process) Close() error {
 	<-p.waited
 	<-p.readDone
 	p.callWG.Wait()
-	return nil
+	return os.RemoveAll(p.directory)
 }

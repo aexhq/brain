@@ -1,6 +1,6 @@
 # Brain JavaScript and TypeScript SDK
 
-Install with `npm install --save-exact @aexhq/brain@1.0.0`. Requires Node.js 24+;
+Install with `npm install --save-exact @aexhq/brain@2.0.0`. Requires Node.js 24+;
 there are no runtime dependencies. JavaScript and TypeScript use the same package.
 
 ```js
@@ -24,9 +24,13 @@ Tokens belong in a trusted backend. Requests are never automatically retried.
 closes the stream; call `interrupt(id)` to interrupt execution. Reconnect with
 `observe(id, { after: cursor, signal })` using the last retained event cursor.
 
-Version 1 replaces the predecessor's 0.x SDK and requires the current Go session
-server. It does not implement the old environment/worker APIs. Pin the SDK version
-and the matching server image commit recorded by the release workflow.
+Pass `runtime_tools` to `create()` to run ordinary functions in your client. The
+SDK owns SSE/HTTP or WebSocket callback connections; function source and captured
+credentials stay local. Keep the process alive and call `dispose()` on shutdown.
+After recovery, `rebind()` attaches matching functions without replaying actions.
+
+Version 2 uses session bindings and structured result schemas. Update the server,
+runner, and client together, and pin the matching release commit.
 
 [SDK reference](https://aexhq.github.io/brain/docs/sdks/typescript/) ·
 [Server setup](https://aexhq.github.io/brain/docs/quickstart/)

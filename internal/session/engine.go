@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/aexhq/brain/internal/core"
+	"github.com/aexhq/brain/internal/credentials"
 	"github.com/aexhq/brain/internal/harness"
 	"github.com/aexhq/brain/internal/store"
 	"github.com/aexhq/brain/internal/telemetry"
@@ -27,6 +28,7 @@ import (
 
 type Options struct {
 	Store         Repository
+	Keys          credentials.Keys
 	Tools         ToolExecutor
 	Factories     map[string]harness.Factory
 	Provider      func(string) (harness.Provider, error)
@@ -317,7 +319,7 @@ func (e *Engine) Create(ctx context.Context, g core.Grant, input core.CreateSess
 	if _, ok := e.opts.Factories[input.Harness]; !ok {
 		return core.Session{}, core.E(core.Unsupported, "harness is not configured")
 	}
-	if !strings.Contains(input.Config.Model, "/") || len(input.Config.Model) > 256 || len(input.Config.Instructions) > e.opts.MaxInputBytes || len(input.Config.Tools) > 128 {
+	if !strings.Contains(input.Config.Model, "/") || len(input.Config.Model) > 256 || len(input.Config.Instructions) > e.opts.MaxInputBytes || len(input.Config.Tools)+len(input.Config.Bindings) > 128 {
 		return core.Session{}, core.E(core.Invalid, "invalid session configuration")
 	}
 	switch input.Config.ReasoningEffort {
@@ -326,9 +328,6 @@ func (e *Engine) Create(ctx context.Context, g core.Grant, input core.CreateSess
 		return core.Session{}, core.E(core.Invalid, "invalid reasoning effort")
 	}
 	if _, err := e.opts.Provider(input.Config.Model); err != nil {
-		return core.Session{}, err
-	}
-	if _, err := e.opts.Tools.Select(g.Tenant, input.Config.Tools); err != nil {
 		return core.Session{}, err
 	}
 	e.mu.Lock()
@@ -342,13 +341,33 @@ func (e *Engine) Create(ctx context.Context, g core.Grant, input core.CreateSess
 	}
 	now := time.Now().UTC()
 	s := core.Session{ID: core.ID(), Tenant: g.Tenant, Harness: input.Harness, Config: input.Config, Status: "idle", CreatedAt: now, UpdatedAt: now}
+	admitted := false
+	defer func() {
+		if !admitted {
+			if closer, ok := e.opts.Tools.(interface{ CloseSession(string) }); ok {
+				closer.CloseSession(s.ID)
+			}
+		}
+	}()
 	if s.Config.Tools == nil {
 		s.Config.Tools = []string{}
+	}
+	var err error
+	s.Credentials, err = credentials.Seal(ctx, e.opts.Keys, s, input.Credentials)
+	if err != nil {
+		return core.Session{}, err
+	}
+	for _, record := range s.Credentials {
+		s.CredentialBindings = append(s.CredentialBindings, record.Binding)
+	}
+	if err := e.opts.Tools.Bind(ctx, &s); err != nil {
+		return core.Session{}, err
 	}
 	s.Checkpoint = &core.Checkpoint{ID: core.ID(), Config: s.Config, Time: now, Files: []core.NativeFile{}}
 	if err := e.opts.Store.Create(ctx, s); err != nil {
 		return core.Session{}, err
 	}
+	admitted = true
 	e.dirty(s.ID)
 	return s, nil
 }
@@ -385,6 +404,11 @@ func (e *Engine) status(a *entry, status, input string) error {
 		return err
 	}
 	a.meta.Status = status
+	if status == "closed" {
+		if closer, ok := e.opts.Tools.(interface{ CloseSession(string) }); ok {
+			closer.CloseSession(a.meta.ID)
+		}
+	}
 	a.meta.UpdatedAt = time.Now().UTC()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -608,7 +632,7 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 	if err != nil {
 		return err
 	}
-	selected, err := e.opts.Tools.Select(a.meta.Tenant, cfg.Tools)
+	selected, err := e.opts.Tools.Describe(ctx, a.meta)
 	if err != nil {
 		return err
 	}
@@ -651,11 +675,15 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 			Call: func(callCtx context.Context, call core.Call) (core.Result, error) {
 				a.mu.Lock()
 				inputID := a.current
+				hostCtx := callCtx
 				callCtx = a.runCtx
 				a.mu.Unlock()
 				if inputID == "" || callCtx == nil {
 					return core.Result{}, errors.New("harness invoked a tool without active input")
 				}
+				callCtx, cancel := context.WithCancel(callCtx)
+				stop := context.AfterFunc(hostCtx, cancel)
+				defer func() { stop(); cancel() }()
 				callCtx, span := otel.Tracer("github.com/aexhq/brain").Start(callCtx, "tool.call", trace.WithAttributes(attribute.String("tool.name", call.Name)))
 				defer span.End()
 				if !selectedNames[call.Name] {
@@ -672,9 +700,16 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 				}
 				defer revoke()
 				started := time.Now()
-				result := e.opts.Tools.Call(callCtx, scope, call, func(data json.RawMessage) {
+				current, err := e.opts.Store.Get(callCtx, a.meta.ID)
+				if err != nil {
+					return core.Result{}, err
+				}
+				result, err := e.opts.Tools.Invoke(callCtx, current, scope, call, func(data json.RawMessage) {
 					_, _ = e.emit(a, "tool.progress", inputID, map[string]any{"call_id": call.ID, "data": data})
 				})
+				if err != nil {
+					return core.Result{}, err
+				}
 				if e.opts.Metrics != nil {
 					outcome := "success"
 					if result.IsError {
