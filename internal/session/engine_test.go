@@ -82,9 +82,37 @@ func create(t *testing.T, e *Engine, g core.Grant) core.Session {
 	}
 	return s
 }
+
+func TestEditingReadSessionDoesNotChangeSavedBindings(t *testing.T) {
+	e, _, g := setup(t)
+	e.opts.Tools.(*tools.Registry).Providers = map[string]tools.Provider{"data": {
+		Parameters: json.RawMessage(`{"type":"object"}`), Authorize: func(context.Context, tools.BindingContext) error { return nil }, Bind: func(context.Context, tools.BindingContext) ([]tools.Binding, error) {
+			return []tools.Binding{{Tool: core.Tool{Name: "read", Description: "Read", InputSchema: json.RawMessage(`{"type":"object"}`)}, Handler: func(context.Context, tools.Request, func(json.RawMessage)) core.Result { return core.Result{} }}}, nil
+		},
+	}}
+	ctx := context.Background()
+	s, err := e.Create(ctx, g, core.CreateSession{Harness: "pi", Config: core.Config{Model: "test/model", Bindings: []core.ToolBinding{{Alias: "a", Provider: "data", Operations: []string{"read"}, Parameters: json.RawMessage(`{"resource":"one"}`)}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := e.Get(ctx, g, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read.Config.Bindings[0].Operations[0] = "changed"
+	read.Config.Bindings[0].Parameters[0] = 'x'
+	read.Descriptors[0].InputSchema[0] = 'x'
+	again, err := e.Get(ctx, g, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Config.Bindings[0].Operations[0] != "read" || !json.Valid(again.Config.Bindings[0].Parameters) || !json.Valid(again.Descriptors[0].InputSchema) {
+		t.Fatal("read result mutated retained binding")
+	}
+}
 func waitStatus(t *testing.T, e *Engine, g core.Grant, id, status string) {
 	t.Helper()
-	deadline := time.NewTimer(5 * time.Second)
+	deadline := time.NewTimer(35 * time.Second) // Includes the 30-second native startup budget.
 	defer deadline.Stop()
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()

@@ -16,6 +16,14 @@ const retained = events => events.filter(event => event.cursor);
 const ids = events => events.map(event => event.id);
 const toolResults = events => events.filter(event => event.type === "tool.result");
 
+test("installed Python SDK owns its runtime function connection", budget, async t => {
+  const f = await fixture(t, binaries);
+  await f.start();
+  const result = await f.python(path.join(root, "tests/journeys/python_runtime.py"));
+  assert.equal(result.calls, 1);
+  assert.equal(f.model.requests.length, 2);
+});
+
 test("a developer validates host configuration before creating local state or starting inference", budget, async t => {
   const f = await fixture(t, binaries, { persistence: {} });
   const valid = await f.check();
@@ -692,4 +700,37 @@ test("operators receive correlated traces and metrics; exporter failures do not 
   assert.equal(f.model.requests.length, 5);
   assert.equal(scopes.length, 2);
   assert.ok(!(await history(api, s.id)).some(event => event.type === "session.error"));
+});
+
+for (const transport of ["sse", "rpc"]) test(`runtime SDK callbacks over ${transport}: scope, progress, restart, rebind, and no observer execution`, budget, async t => {
+  const f = await fixture(t, binaries, { persistence: {} });
+  await f.start();
+  let calls = 0;
+  const tools = [{ name: "lookup", description: "Look up a client value", input_schema: { type: "object" }, output_schema: { type: "object", required: ["count"] },
+    async run(args, context) { calls++; assert.equal(context.scope.tenant_id, "a"); assert.notEqual(context.scope.session_id, args.session_id); await context.progress({ ready: true }); return { count: calls }; },
+  }];
+  const s = await f.api.create({ ...config(), runtime_tools: tools, runtime_transport: transport });
+  assert.deepEqual(s.descriptors.map(t => t.name), ["runtime_lookup"]);
+  assert.ok(!JSON.stringify(s).includes("async run"));
+  const stream = await f.observe(s.id);
+  const input = await f.api.send(s.id, message(call("runtime_lookup", { session_id: "spoofed" })));
+  await stream.wait(e => completed(input, e));
+  assert.equal(calls, 1);
+  assert.ok(stream.events.some(e => e.type === "tool.progress"));
+  assert.deepEqual((await history(f.api, s.id)).find(e => e.type === "tool.result").data.result.structured_content, { count: 1 });
+  await stream.stop();
+  await history(f.api, s.id);
+  assert.equal(calls, 1, "observer replay executed a callback");
+  await f.api.dispose();
+  await f.api.send(s.id, message(call("runtime_lookup")));
+  await state(f.api, s.id);
+  const unavailable = (await history(f.api, s.id)).filter(e => e.type === "tool.result").at(-1).data.result;
+  assert.equal(unavailable.is_error, true); assert.ok(!unavailable.unknown_outcome);
+  await f.api.flush(s.id);
+  await f.crash(); await f.start();
+  await f.api.rebind(s.id, tools, transport);
+  await f.api.send(s.id, message(call("runtime_lookup")));
+  await state(f.api, s.id);
+  assert.equal(calls, 2);
+  await f.api.close(s.id);
 });

@@ -12,6 +12,15 @@ export interface Checkpoint {
   time: string;
 }
 
+export interface Command {
+  type: string;
+  connection: string;
+  call_id?: string;
+  tool?: string;
+  arguments?: unknown;
+  scope?: ToolScope;
+}
+
 export interface Content {
   type: string;
   text?: string;
@@ -22,6 +31,12 @@ export interface Content {
 export interface CreateSession {
   harness: string;
   config: SessionConfig;
+  credentials?: CredentialInput[];
+}
+
+export interface CredentialInput {
+  binding: string;
+  value: unknown;
 }
 
 export interface ErrorDetail {
@@ -48,11 +63,29 @@ export interface EventList {
   next_cursor: string;
 }
 
+export interface ExecutorCredential {
+  id: string;
+  token: string;
+}
+
+export interface ExecutorRegistration {
+  session?: string;
+  binding: string;
+  tools: Tool[];
+}
+
 export interface Input {
   type: string;
   text?: string;
   delivery?: string;
   key?: string;
+}
+
+export interface Reply {
+  connection: string;
+  call_id: string;
+  result?: Result;
+  progress?: unknown;
 }
 
 export interface Restore {
@@ -63,6 +96,7 @@ export interface Result {
   content: Content[];
   is_error?: boolean;
   unknown_outcome?: boolean;
+  structured_content?: unknown;
 }
 
 export interface Session {
@@ -73,6 +107,8 @@ export interface Session {
   created_at: string;
   updated_at: string;
   checkpoint?: Checkpoint;
+  descriptors: Tool[];
+  credential_bindings?: string[];
 }
 
 export interface SessionConfig {
@@ -80,6 +116,7 @@ export interface SessionConfig {
   reasoning_effort?: string;
   instructions?: string;
   tools: string[];
+  bindings?: ToolBinding[];
 }
 
 export interface SessionList {
@@ -107,6 +144,15 @@ export interface Tool {
   output_schema?: unknown;
 }
 
+export interface ToolBinding {
+  alias: string;
+  provider?: string;
+  operations?: string[];
+  parameters?: unknown;
+  executor?: string;
+  runtime?: Tool[];
+}
+
 export interface ToolCatalog {
   tools: Tool[];
 }
@@ -114,6 +160,14 @@ export interface ToolCatalog {
 export interface ToolResult {
   call_id: string;
   result: Result;
+}
+
+export interface ToolScope {
+  tenant_id: string;
+  session_id: string;
+  call_id: string;
+  inspection_token?: string;
+  brain_url?: string;
 }
 
 export const routes = {
@@ -133,6 +187,18 @@ export const routes = {
     "method": "GET",
     "path": "/sessions/{id}/events"
   },
+  "executorCommands": {
+    "method": "GET",
+    "path": "/executors/{id}/commands"
+  },
+  "executorRPC": {
+    "method": "GET",
+    "path": "/executors/{id}/rpc"
+  },
+  "executorReply": {
+    "method": "POST",
+    "path": "/executors/{id}/responses"
+  },
   "flush": {
     "method": "POST",
     "path": "/sessions/{id}/flush"
@@ -144,6 +210,10 @@ export const routes = {
   "list": {
     "method": "GET",
     "path": "/sessions"
+  },
+  "registerExecutor": {
+    "method": "POST",
+    "path": "/executors"
   },
   "restore": {
     "method": "POST",
@@ -160,5 +230,9 @@ export const routes = {
   "sync": {
     "method": "GET",
     "path": "/sessions/{id}/sync"
+  },
+  "unregisterExecutor": {
+    "method": "POST",
+    "path": "/executors/{id}/close"
   }
 } as const;

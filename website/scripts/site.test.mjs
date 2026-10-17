@@ -62,7 +62,14 @@ test('every operation publishes concrete responses, readable HTML, and complete 
     const exported = JSON.parse(match[1]);
     const published = exported.paths[operation.route][operation.method];
     assert.deepEqual(published, contract.paths[operation.route][operation.method]);
-    assert.ok(Object.entries(published.responses).some(([code, response]) => /^2\d\d$/.test(code) && response.content['application/json'].schema));
+    if (operation.operationId === 'executorRPC') {
+      assert.ok(published.responses['101'], 'WebSocket upgrade must be documented');
+      assert.ok(published.description.includes('brain-rpc'));
+    } else if (operation.operationId === 'executorCommands') {
+      assert.ok(published.responses['200'].content['text/event-stream'].schema);
+    } else {
+      assert.ok(Object.entries(published.responses).some(([code, response]) => /^2\d\d$/.test(code) && response.content['application/json']?.schema));
+    }
     for (const [, name] of match[1].matchAll(/#\/components\/schemas\/([^"\s]+)/g)) {
       assert.ok(exported.components.schemas[name], `Unresolved schema ${name}`);
     }

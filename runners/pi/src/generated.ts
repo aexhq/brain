@@ -12,6 +12,15 @@ export interface Checkpoint {
   time: string;
 }
 
+export interface Command {
+  type: string;
+  connection: string;
+  call_id?: string;
+  tool?: string;
+  arguments?: unknown;
+  scope?: ToolScope;
+}
+
 export interface Content {
   type: string;
   text?: string;
@@ -22,6 +31,12 @@ export interface Content {
 export interface CreateSession {
   harness: string;
   config: SessionConfig;
+  credentials?: CredentialInput[];
+}
+
+export interface CredentialInput {
+  binding: string;
+  value: unknown;
 }
 
 export interface ErrorDetail {
@@ -46,6 +61,17 @@ export interface Event {
 export interface EventList {
   events: Event[];
   next_cursor: string;
+}
+
+export interface ExecutorCredential {
+  id: string;
+  token: string;
+}
+
+export interface ExecutorRegistration {
+  session?: string;
+  binding: string;
+  tools: Tool[];
 }
 
 export interface Input {
@@ -75,6 +101,13 @@ export interface Provider {
   api?: string;
 }
 
+export interface Reply {
+  connection: string;
+  call_id: string;
+  result?: Result;
+  progress?: unknown;
+}
+
 export interface Restore {
   checkpoint: string;
 }
@@ -83,9 +116,12 @@ export interface Result {
   content: Content[];
   is_error?: boolean;
   unknown_outcome?: boolean;
+  structured_content?: unknown;
 }
 
 export interface RunnerFrame {
+  attachment: string;
+  turn?: string;
   id?: string;
   method?: string;
   params?: unknown;
@@ -103,6 +139,8 @@ export interface Session {
   created_at: string;
   updated_at: string;
   checkpoint?: Checkpoint;
+  descriptors: Tool[];
+  credential_bindings?: string[];
 }
 
 export interface SessionConfig {
@@ -110,6 +148,7 @@ export interface SessionConfig {
   reasoning_effort?: string;
   instructions?: string;
   tools: string[];
+  bindings?: ToolBinding[];
 }
 
 export interface SessionList {
@@ -137,6 +176,15 @@ export interface Tool {
   output_schema?: unknown;
 }
 
+export interface ToolBinding {
+  alias: string;
+  provider?: string;
+  operations?: string[];
+  parameters?: unknown;
+  executor?: string;
+  runtime?: Tool[];
+}
+
 export interface ToolCatalog {
   tools: Tool[];
 }
@@ -144,5 +192,13 @@ export interface ToolCatalog {
 export interface ToolResult {
   call_id: string;
   result: Result;
+}
+
+export interface ToolScope {
+  tenant_id: string;
+  session_id: string;
+  call_id: string;
+  inspection_token?: string;
+  brain_url?: string;
 }
 

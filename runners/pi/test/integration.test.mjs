@@ -14,14 +14,16 @@ function client(t, toolResult) {
   let diagnostic = "";
   child.stderr.on("data", b => { diagnostic = (diagnostic + b).slice(-8192); });
   const waiting = new Map();
-  let sequence = 0;
+  let sequence = 0; const activeTurns = new Map();
   const events = [];
   const lines = readline.createInterface({ input: child.stdout });
   lines.on("line", async line => {
     const frame = JSON.parse(line);
     if (frame.event) { events.push(frame); return; }
     if (frame.method === "tool.call") {
-      child.stdin.write(JSON.stringify({ id: frame.id, result: await toolResult(frame.params) }) + "\n");
+      const result = await toolResult(frame.params, frame.attachment);
+      const response = result instanceof Error ? { error: { code: "brain_error", message: "tool dispatch failed" } } : { result };
+      child.stdin.write(JSON.stringify({ attachment: frame.attachment, turn: frame.turn, id: frame.id, ...response }) + "\n");
       return;
     }
     const pending = waiting.get(frame.id);
@@ -38,12 +40,13 @@ function client(t, toolResult) {
   t.after(close);
   return {
     events, close,
-    request(method, params) {
+    request(method, params, attachment = "test") {
       return new Promise((resolve, reject) => {
         const id = String(++sequence);
         const timer = setTimeout(() => { reject(new Error(`timeout: ${method}; ${diagnostic}`)); child.kill(); }, 20000);
         waiting.set(id, { resolve, reject, timer });
-        child.stdin.write(JSON.stringify({ id, method, params }) + "\n");
+        if (method === "prompt") activeTurns.set(attachment, id);
+        child.stdin.write(JSON.stringify({ attachment, turn: ["prompt", "interrupt", "steer"].includes(method) ? activeTurns.get(attachment) : "", id, method, params }) + "\n");
       });
     },
   };
@@ -132,6 +135,70 @@ test("real Pi: a pending tool waits silently and can be interrupted", { timeout:
   answer.resolve(result());
   await delay(100);
   assert.equal(api.requests.length, 1, "interruption replayed inference");
+  await runner.close();
+});
+
+test("real Pi: eight shared sessions isolate catalogs, context, callbacks, cancellation and recovery", { timeout: 60000 }, async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "brain-pi-shared-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const api = await provider(t);
+  const called = Promise.withResolvers(), answer = Promise.withResolvers();
+  const runner = client(t, async (_, attachment) => {
+    assert.equal(attachment, "s0"); called.resolve(); return answer.promise;
+  });
+  const settings = i => {
+    const value = options(path.join(root, `s${i}`), api.url);
+    value.session_id = `tenant-${i % 2}/s${i}`;
+    value.config.instructions = `private-context-${i}`;
+    if (i % 2) { value.tools = []; value.config.tools = []; }
+    return value;
+  };
+  await Promise.all(Array.from({ length: 8 }, (_, i) => runner.request("open", settings(i), `s${i}`)));
+  assert.equal(api.requests.length, 0);
+  await Promise.all(Array.from({ length: 8 }, (_, i) => runner.request("prompt", { text: `tenant-message-${i}` }, `s${i}`)));
+  for (let i = 0; i < 8; i++) {
+    const req = api.requests.find(r => JSON.stringify(r.messages.at(-1).content).includes(`tenant-message-${i}`));
+    assert.equal(req.messages[0].content, `private-context-${i}`);
+    assert.deepEqual((req.tools ?? []).map(t => t.function.name), i % 2 ? [] : ["echo"]);
+    for (let j = 0; j < 8; j++) if (j !== i) assert.ok(!JSON.stringify(req.messages).includes(`tenant-message-${j}`));
+    assert.ok(runner.events.some(e => e.attachment === `s${i}` && e.event === "assistant.message"));
+  }
+  const pending = runner.request("prompt", { text: "call tool" }, "s0");
+  await called.promise;
+  await runner.request("prompt", { text: "peer stays active" }, "s1");
+  await runner.request("interrupt", undefined, "s0");
+  assert.deepEqual(await pending, { interrupted: true });
+  answer.resolve(result());
+  await delay(50);
+  const before = api.requests.length;
+  const files = await runner.request("checkpoint", undefined, "s1");
+  assert.equal(files.length, 1); assert.equal(files[0].append_only, true);
+  await runner.request("detach", undefined, "s1");
+  await cp(path.join(root, "s1"), path.join(root, "relocated"), { recursive: true });
+  await runner.request("open", { ...settings(1), dir: path.join(root, "relocated") }, "restored");
+  assert.equal(api.requests.length, before);
+  await runner.request("prompt", { text: "after relocation" }, "restored");
+  const messages = api.requests.at(-1).messages;
+  assert.ok(JSON.stringify(messages).includes("tenant-message-1"));
+  assert.ok(JSON.stringify(messages).includes("peer stays active"));
+  assert.ok(!JSON.stringify(messages).includes("tenant-message-0"));
+  await runner.request("prompt", { text: "original peer continues" }, "s2");
+  assert.equal(api.requests.at(-1).messages[0].content, "private-context-2");
+  await runner.close();
+});
+
+test("real Pi: a Brain callback failure stops only its session without model continuation", { timeout: 30000 }, async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "brain-pi-dispatch-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const api = await provider(t);
+  const runner = client(t, () => new Error("storage failure"));
+  await runner.request("open", options(path.join(dir, "failed"), api.url), "failed");
+  await runner.request("open", options(path.join(dir, "peer"), api.url), "peer");
+  await assert.rejects(runner.request("prompt", { text: "call tool" }, "failed"), /brain_error.*tool dispatch failed/);
+  assert.equal(api.requests.length, 1, "Brain failure caused model continuation");
+  await runner.request("detach", undefined, "failed");
+  await runner.request("prompt", { text: "peer continues" }, "peer");
+  assert.equal(api.requests.length, 2);
   await runner.close();
 });
 

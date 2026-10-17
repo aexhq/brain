@@ -17,12 +17,12 @@
 
 Brain is a single application you deploy as a service to run the agents behind your products. It's an open-source alternative to Claude Managed Agents and the OpenAI Agents SDK, running on your own infrastructure with the models you choose.
 
-Brain gives you session-oriented primitives for building agents. Your application starts sessions, streams what the agent does, and connects tools from its own services. Brain runs the agent loop and records each session's history, so you can replay a session or recover it after a failure.
+Brain gives you session-oriented primitives for building agents. Your application starts sessions, streams what the agent does, and connects tools from application code and services. Brain runs the agent loop and records each session's history, so you can replay a session or recover it after a failure.
 
 - **[Sessions](https://aexhq.github.io/brain/docs/guides/sessions/)**: agent conversations that outlive connections and restarts.
 - **[Events](https://aexhq.github.io/brain/docs/reference/events/)**: an ordered record of what the agent does, streamed live or replayed.
 - **[Harnesses](https://aexhq.github.io/brain/docs/adapters/harness/)**: pluggable agent loops that drive the model and manage context.
-- **[Tools](https://aexhq.github.io/brain/docs/tools/)**: capabilities served from your own services, in any language.
+- **[Tools](https://aexhq.github.io/brain/docs/tools/)**: capabilities implemented in your application, clients, or services.
 - **[Checkpoints](https://aexhq.github.io/brain/docs/guides/persistence/)**: portable session state for recovering and moving sessions.
 
 ```ts
@@ -45,7 +45,7 @@ The `echo` tool comes from the [example tool server](examples/tools/README.md), 
 
 ## Why Brain
 
-- **Keep tools in your own services.** Write them in any language, and scale them separately from the agent.
+- **Choose where tools run.** Compose functions into your application, attach client functions, or connect services in any language.
 - **Decide what the agent can do.** The model sees exactly the tools you enable for each session.
 - **Reconnect at any time.** Sessions keep running when clients disconnect and survive server restarts, so any client can reconnect and continue from the last event it read.
 - **Move sessions between servers.** Checkpoints let another server recover a session after a failure or take it over in a planned handoff.
@@ -76,7 +76,7 @@ You need Go 1.26+, Node.js 24+, and an API key from a model provider such as Ope
 
    ```sh
    export BRAIN_API_KEY="replace-with-a-random-token-of-at-least-24-bytes"
-   npm install --no-save --package-lock=false @aexhq/brain@1.0.0
+   npm install --no-save --package-lock=false @aexhq/brain@2.0.0
    node examples/session.mjs "Explain what makes a good agent tool."
    ```
 

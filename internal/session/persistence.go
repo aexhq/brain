@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aexhq/brain/internal/core"
+	"github.com/aexhq/brain/internal/credentials"
 	"github.com/aexhq/brain/internal/persistence"
 )
 
@@ -41,6 +42,11 @@ func (e *Engine) flush(ctx context.Context, id string) (core.SyncStatus, error) 
 	a.mu.Lock()
 	snapshot := persistence.Snapshot{Session: clone(a.meta), HistoryBytes: a.log.Size()}
 	a.mu.Unlock()
+	fresh, err := e.opts.Store.Get(ctx, id)
+	if err != nil {
+		return core.SyncStatus{}, err
+	}
+	snapshot.Session.Credentials = fresh.Credentials
 	snapshot.Directory, err = e.opts.Store.Dir(id)
 	if err != nil {
 		return core.SyncStatus{}, err
@@ -79,6 +85,8 @@ func (e *Engine) SyncStatus(ctx context.Context, g core.Grant, id string) (core.
 	if err != nil {
 		return core.SyncStatus{}, err
 	}
+	e.hydrateMu.Lock()
+	defer e.hydrateMu.Unlock()
 	dir, err := e.opts.Store.Dir(id)
 	if err != nil {
 		return core.SyncStatus{}, err
@@ -181,6 +189,9 @@ func (e *Engine) hydrate(ctx context.Context, g core.Grant, id, reference string
 		return core.Session{}, err
 	}
 	defer os.RemoveAll(staging)
+	if err := credentials.Validate(ctx, e.opts.Keys, m.Session); err != nil {
+		return core.Session{}, err
+	}
 	if _, ok := e.opts.Factories[m.Session.Harness]; !ok {
 		return core.Session{}, core.E(core.Unsupported, "saved harness is not configured")
 	}
@@ -218,5 +229,5 @@ func (e *Engine) hydrate(ctx context.Context, g core.Grant, id, reference string
 		return core.Session{}, errors.Join(err, rollback)
 	}
 	// Retain replaced local data for operator recovery; never hide unsynced loss.
-	return m.Session, nil
+	return e.opts.Store.Get(ctx, id)
 }

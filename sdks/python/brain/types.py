@@ -12,6 +12,14 @@ class Checkpoint(TypedDict):
     offset: int
     time: str
 
+class Command(TypedDict):
+    type: str
+    connection: str
+    call_id: NotRequired[str]
+    tool: NotRequired[str]
+    arguments: NotRequired[Any]
+    scope: NotRequired[ToolScope]
+
 class Content(TypedDict):
     type: str
     text: NotRequired[str]
@@ -21,6 +29,11 @@ class Content(TypedDict):
 class CreateSession(TypedDict):
     harness: str
     config: SessionConfig
+    credentials: NotRequired[list[CredentialInput]]
+
+class CredentialInput(TypedDict):
+    binding: str
+    value: Any
 
 class ErrorDetail(TypedDict):
     code: str
@@ -42,11 +55,26 @@ class EventList(TypedDict):
     events: list[Event]
     next_cursor: str
 
+class ExecutorCredential(TypedDict):
+    id: str
+    token: str
+
+class ExecutorRegistration(TypedDict):
+    session: NotRequired[str]
+    binding: str
+    tools: list[Tool]
+
 class Input(TypedDict):
     type: str
     text: NotRequired[str]
     delivery: NotRequired[str]
     key: NotRequired[str]
+
+class Reply(TypedDict):
+    connection: str
+    call_id: str
+    result: NotRequired[Result]
+    progress: NotRequired[Any]
 
 class Restore(TypedDict):
     checkpoint: str
@@ -55,6 +83,7 @@ class Result(TypedDict):
     content: list[Content]
     is_error: NotRequired[bool]
     unknown_outcome: NotRequired[bool]
+    structured_content: NotRequired[Any]
 
 class Session(TypedDict):
     id: str
@@ -64,12 +93,15 @@ class Session(TypedDict):
     created_at: str
     updated_at: str
     checkpoint: NotRequired[Checkpoint]
+    descriptors: list[Tool]
+    credential_bindings: NotRequired[list[str]]
 
 class SessionConfig(TypedDict):
     model: str
     reasoning_effort: NotRequired[str]
     instructions: NotRequired[str]
     tools: list[str]
+    bindings: NotRequired[list[ToolBinding]]
 
 class SessionList(TypedDict):
     sessions: list[Session]
@@ -92,10 +124,25 @@ class Tool(TypedDict):
     input_schema: Any
     output_schema: NotRequired[Any]
 
+class ToolBinding(TypedDict):
+    alias: str
+    provider: NotRequired[str]
+    operations: NotRequired[list[str]]
+    parameters: NotRequired[Any]
+    executor: NotRequired[str]
+    runtime: NotRequired[list[Tool]]
+
 class ToolCatalog(TypedDict):
     tools: list[Tool]
 
 class ToolResult(TypedDict):
     call_id: str
     result: Result
+
+class ToolScope(TypedDict):
+    tenant_id: str
+    session_id: str
+    call_id: str
+    inspection_token: NotRequired[str]
+    brain_url: NotRequired[str]
 

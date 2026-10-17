@@ -9,7 +9,7 @@ The Model Context Protocol (MCP) is an open protocol for serving tools to AI app
 
 ## What Brain supports
 
-- **Transport:** Remote MCP servers over Streamable HTTP.
+- **Transport:** Remote MCP servers over Streamable HTTP, or installed stdio commands through the [Go application SDK](/docs/sdks/application#connect-managed-services).
 - **Authentication:** API keys sent as bearer tokens from the environment variable named in `token_env`.
 - **Results:** Tool calls that return text, images, or structured content.
 - **Progress:** Progress notifications streamed during a call as `tool.progress` events.
@@ -80,7 +80,7 @@ Brain converts MCP results into Brain content blocks:
 | --- | --- |
 | Text content | A text block. |
 | Image content | An image block with base64 `data` and `mime_type`. |
-| Structured content | An extra text block that contains the JSON. |
+| Structured content | `structured_content` plus a text block containing the JSON. Successful output schemas validate the structured value. |
 | `isError: true` | `is_error: true`. The model sees the error as a tool result. |
 | Any other content type | The call fails. |
 

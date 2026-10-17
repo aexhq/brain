@@ -136,6 +136,12 @@ func main() {
 		if route.Name == "events" {
 			content["text/event-stream"] = map[string]any{"schema": map[string]any{"type": "string"}, "example": "id: OPAQUE_CURSOR\nevent: assistant.message\ndata: {\"id\":\"EVENT_ID\",\"type\":\"assistant.message\",\"time\":\"2026-10-15T12:00:00Z\",\"input_id\":\"INPUT_ID\",\"data\":{\"text\":\"Hello\"},\"cursor\":\"OPAQUE_CURSOR\"}\n\n"}
 		}
+		if route.Name == "executorCommands" {
+			content = map[string]any{"text/event-stream": map[string]any{"schema": map[string]any{"type": "string"}, "example": "data: {\"type\":\"ready\",\"connection\":\"CONNECTION_ID\"}\n\n"}}
+		}
+		if route.Name == "executorRPC" {
+			content = map[string]any{}
+		}
 		_, _, errorSchema := visit(reflect.TypeFor[api.ErrorResponse]())
 		responses := map[string]any{
 			strconv.Itoa(route.Status): map[string]any{"description": route.Summary, "content": content},
@@ -144,7 +150,11 @@ func main() {
 		op := map[string]any{"operationId": route.Name, "summary": route.Summary, "description": route.Description, "security": []any{map[string]any{"bearer": []string{}}}, "responses": responses}
 		parameters := []any{}
 		if strings.Contains(route.Path, "{id}") {
-			parameters = append(parameters, map[string]any{"name": "id", "in": "path", "description": "Opaque session ID.", "required": true, "schema": map[string]string{"type": "string", "pattern": "^[a-fA-F0-9]{32}$"}})
+			description := "Opaque session ID."
+			if strings.HasPrefix(route.Path, "/executors/") {
+				description = "Opaque executor ID."
+			}
+			parameters = append(parameters, map[string]any{"name": "id", "in": "path", "description": description, "required": true, "schema": map[string]string{"type": "string", "pattern": "^[a-fA-F0-9]{32}$"}})
 		}
 		if route.Name == "list" || route.Name == "events" {
 			afterDescription := "Last session ID from the previous page."

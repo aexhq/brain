@@ -26,9 +26,10 @@ type Repository interface {
 // ToolExecutor applies authorization and dispatch policy outside scheduling.
 // Calls honor cancellation, do not retry, and return model-visible failures.
 type ToolExecutor interface {
-	Select(string, []string) ([]core.Tool, error)
+	Bind(context.Context, *core.Session) error
+	Describe(context.Context, core.Session) ([]core.Tool, error)
 	NeedsInspection(string) bool
-	Call(context.Context, core.ToolScope, core.Call, func(json.RawMessage)) core.Result
+	Invoke(context.Context, core.Session, core.ToolScope, core.Call, func(json.RawMessage)) (core.Result, error)
 }
 
 // Checkpoints publishes and restores immutable snapshots without inference.

@@ -24,7 +24,8 @@ func OpenSQLite(file string) (*SQLite, error) {
 	db.SetMaxOpenConns(1)
 	_, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, tenant TEXT NOT NULL, created TEXT NOT NULL, data BLOB NOT NULL);
-CREATE INDEX IF NOT EXISTS sessions_tenant ON sessions(tenant, id);`)
+CREATE INDEX IF NOT EXISTS sessions_tenant ON sessions(tenant, id);
+CREATE TABLE IF NOT EXISTS credentials (session TEXT NOT NULL, binding TEXT NOT NULL, tenant TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY(session,binding));`)
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -39,8 +40,18 @@ func (s *SQLite) Create(ctx context.Context, session core.Session) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO sessions(id,tenant,created,data) VALUES(?,?,?,?)`, session.ID, session.Tenant, session.CreatedAt.Format(time.RFC3339Nano), data)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,tenant,created,data) VALUES(?,?,?,?)`, session.ID, session.Tenant, session.CreatedAt.Format(time.RFC3339Nano), data); err != nil {
+		return err
+	}
+	if err := insertCredentials(ctx, tx, session); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *SQLite) Get(ctx context.Context, id string) (core.Session, error) {
@@ -56,7 +67,8 @@ func (s *SQLite) Get(ctx context.Context, id string) (core.Session, error) {
 	if err := json.Unmarshal(data, &session); err != nil {
 		return session, fmt.Errorf("unreadable session metadata: %w", err)
 	}
-	return session, nil
+	session.Credentials, err = s.credentials(ctx, session)
+	return session, err
 }
 
 func (s *SQLite) Save(ctx context.Context, session core.Session) error {
@@ -130,7 +142,12 @@ func (s *SQLite) Import(ctx context.Context, session core.Session) error {
 	if err != nil {
 		return err
 	}
-	r, err := s.db.ExecContext(ctx, `INSERT INTO sessions(id,tenant,created,data) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data WHERE sessions.tenant=excluded.tenant`, session.ID, session.Tenant, session.CreatedAt.Format(time.RFC3339Nano), data)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	r, err := tx.ExecContext(ctx, `INSERT INTO sessions(id,tenant,created,data) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data WHERE sessions.tenant=excluded.tenant`, session.ID, session.Tenant, session.CreatedAt.Format(time.RFC3339Nano), data)
 	if err != nil {
 		return err
 	}
@@ -138,5 +155,101 @@ func (s *SQLite) Import(ctx context.Context, session core.Session) error {
 	if err == nil && n != 1 {
 		return core.E(core.Forbidden, "session belongs to another tenant")
 	}
+	if err != nil {
+		return err
+	}
+	if err := insertCredentials(ctx, tx, session); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// Existing private state wins during restore, including a revocation tombstone.
+func insertCredentials(ctx context.Context, tx *sql.Tx, session core.Session) error {
+	for _, record := range session.Credentials {
+		data, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO credentials(session,binding,tenant,data) VALUES(?,?,?,?) ON CONFLICT(session,binding) DO NOTHING`, session.ID, record.Binding, session.Tenant, data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func (s *SQLite) credentials(ctx context.Context, session core.Session) ([]core.CredentialRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT data FROM credentials WHERE session=? AND tenant=? ORDER BY binding`, session.ID, session.Tenant)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []core.CredentialRecord{}
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		var record core.CredentialRecord
+		if err := json.Unmarshal(data, &record); err != nil {
+			return nil, err
+		}
+		result = append(result, record)
+	}
+	return result, rows.Err()
+}
+
+// RevokeCredential retains a tombstone so old checkpoints cannot resurrect it.
+func (s *SQLite) RevokeCredential(ctx context.Context, tenant, session, binding string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE credentials SET data=json_set(data,'$.revoked',json('true'),'$.ciphertext','') WHERE session=? AND binding=? AND tenant=?`, session, binding, tenant)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err == nil && n != 1 {
+		return core.E(core.NotFound, "credential not found")
+	}
+	if err != nil {
+		return err
+	}
+	if err := touchCredentials(ctx, tx, tenant, session); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func touchCredentials(ctx context.Context, tx *sql.Tx, tenant, id string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE sessions SET data=json_set(data,'$.updated_at',?) WHERE id=? AND tenant=?`, time.Now().UTC().Format(time.RFC3339Nano), id, tenant)
 	return err
+}
+
+// RotateCredentials re-encrypts a session's records atomically; callers supply
+// only ciphertext produced with the independent key provider.
+func (s *SQLite) RotateCredentials(ctx context.Context, session core.Session) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, record := range session.Credentials {
+		if record.Revoked {
+			continue
+		}
+		data, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE credentials SET data=? WHERE session=? AND binding=? AND tenant=? AND json_extract(data,'$.revoked') IS NOT 1`, data, session.ID, record.Binding, session.Tenant)
+		if err != nil {
+			return err
+		}
+	}
+	if err := touchCredentials(ctx, tx, session.Tenant, session.ID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

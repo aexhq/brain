@@ -8,8 +8,45 @@ description: Create sessions, send messages, and stream events with the zero-dep
 ## Install
 
 ```sh
-python -m pip install aex-brain==1.0.0
+python -m pip install aex-brain==2.0.0
 ```
+
+## Declare runtime tools
+
+Keep your Python process alive while the session uses its functions. The SDK owns a reverse SSE connection and sends results over HTTP.
+
+```python
+import os
+from brain import Brain, RuntimeTool
+
+client = Brain("http://127.0.0.1:8080", os.environ["BRAIN_API_KEY"])
+
+def lookup(arguments, context):
+    if context.cancelled.is_set():
+        raise RuntimeError("cancelled")
+    context.progress({"stage": "reading"})
+    return {"value": "application data for " + context.scope["tenant_id"]}
+
+tools = [RuntimeTool("lookup", "Read application data", {"type": "object"}, lookup)]
+session = client.create({"harness": "pi", "config": {
+    "model": "openai/gpt-4.1-mini", "tools": []
+}}, runtime_tools=tools)
+client.send(session["id"], {"type": "user.message", "text": "Use runtime_lookup."})
+stream = client.observe(session["id"])
+try:
+    for event in stream:
+        print(event)
+        if event["type"] == "session.status" and event["data"]["status"] == "idle":
+            break
+finally:
+    stream.close()
+    client.close(session["id"])
+    client.dispose()
+```
+
+Return a JSON value to populate `structured_content`; raise an exception for a tool error. Functions run on bounded callback threads and must cooperate with `context.cancelled`. `context.scope` is authenticated host identity, separate from arguments. Function source and captured credentials are never registered with Brain.
+
+`client.dispose()` closes callback connections without closing sessions. Reattach matching descriptors after restart with `client.rebind(session_id, tools)`, then explicitly resume and send a new input. A disconnected callback returns an unavailable or unknown-outcome tool error according to whether dispatch occurred; the SDK never resends an action.
 
 The distribution is named `aex-brain`; the import package is `brain`. Wheels and
 source distributions are published on PyPI and include generated types and the

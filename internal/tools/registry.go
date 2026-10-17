@@ -14,10 +14,16 @@ import (
 	"time"
 
 	"github.com/aexhq/brain/internal/core"
+	"github.com/aexhq/brain/internal/credentials"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
+type Handler func(context.Context, Request, func(json.RawMessage)) core.Result
+
 type Binding struct {
+	Handler    Handler      `json:"-"`
+	Credential string       `json:"-"`
+	Stdio      *StdioConfig `json:"-"`
 	core.Tool
 	Transport      string   `json:"transport,omitempty"`
 	URL            string   `json:"url"`
@@ -37,6 +43,9 @@ type compiled struct {
 type Registry struct {
 	tools      map[string]compiled
 	transports map[string]Transport
+	Providers  map[string]Provider
+	Keys       credentials.Keys
+	Runtime    RuntimeProvider
 }
 type Request struct {
 	core.ToolScope
@@ -107,6 +116,9 @@ func NewWithTransports(bindings []Binding, transports map[string]Transport) (*Re
 			}
 		}
 		transport := r.transports[b.Transport]
+		if b.Handler != nil {
+			transport = handlerTransport{b.Handler}
+		}
 		if transport == nil {
 			return nil, fmt.Errorf("unknown tool transport %q", b.Transport)
 		}
@@ -114,7 +126,10 @@ func NewWithTransports(bindings []Binding, transports map[string]Transport) (*Re
 			return nil, fmt.Errorf("mcp_tool is required only for MCP transport")
 		}
 		u, err := url.Parse(b.URL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Fragment != "" {
+		if b.Stdio != nil && (b.Transport != "mcp" || b.URL != "" || len(b.Stdio.Command) == 0) {
+			return nil, errors.New("stdio requires an installed MCP command and no URL")
+		}
+		if b.Handler == nil && b.Stdio == nil && (err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Fragment != "") {
 			return nil, fmt.Errorf("invalid tool URL for %s", b.Name)
 		}
 		if b.TokenEnv != "" && os.Getenv(b.TokenEnv) == "" {
@@ -204,6 +219,9 @@ func (r *Registry) Call(ctx context.Context, scope core.ToolScope, call core.Cal
 		scope.BrainURL = ""
 	}
 	result := t.transport.Call(ctx, t.binding, Request{scope, call.Arguments}, progress)
+	if len(result.Content) == 0 && len(result.StructuredContent) > 0 {
+		result.Content = []core.Content{{Type: "text", Text: string(result.StructuredContent)}}
+	}
 	data, err := json.Marshal(result)
 	if err != nil || int64(len(data)) > t.binding.MaxOutputBytes {
 		return core.ToolError("tool output limit exceeded", true)
@@ -229,7 +247,7 @@ func decodeResult(data []byte, result *core.Result, schema *jsonschema.Schema) e
 	if d.Decode(new(any)) != io.EOF {
 		return errors.New("trailing result data")
 	}
-	if len(result.Content) == 0 {
+	if len(result.Content) == 0 && len(result.StructuredContent) == 0 {
 		return errors.New("tool result requires content")
 	}
 	for _, c := range result.Content {
@@ -242,7 +260,7 @@ func decodeResult(data []byte, result *core.Result, schema *jsonschema.Schema) e
 	}
 	if schema != nil {
 		var value any
-		if err := json.Unmarshal(data, &value); err != nil {
+		if err := json.Unmarshal(result.StructuredContent, &value); err != nil {
 			return err
 		}
 		return schema.Validate(value)

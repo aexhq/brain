@@ -14,6 +14,16 @@ Brain is in active development. This page lists what you can use today, what's c
 
 ## Next up
 
+### Application SDK and session-bound integrations
+
+- **Status:** Available for Go application composition, authorized provider bindings, encrypted session credentials, TypeScript/Python runtime functions, direct HTTP/SSE, reverse SSE/HTTP, WebSocket RPC, MCP HTTP/stdio, and optional authorized session reads. [Plan 11](https://github.com/aexhq/brain/blob/main/docs/plans/11-application-sdk.md) records implementation evidence and remaining adapter gates.
+- **Today:** Use the [Go application SDK](https://aexhq.github.io/brain/docs/sdks/application/) to install providers; declare runtime functions in a backend client and keep its callback connection alive. Browser authentication and automatic reconnection remain separate work.
+
+### Local harness-host supervision
+
+- **Status:** Available for Pi on Linux and Windows. Hosts have separate session occupancy and active-turn caps, private homes, session-local cancellation and eviction, and owned process trees. Tests cover eight concurrent native sessions with exact catalogs and separate context, bounded concurrent admission, detachment while peers continue, shared host crashes, and abrupt parent death. These are local correctness tests, not fleet capacity measurements.
+- **Today:** Configure `max_shared`, `max_active_turns`, `max_hosts`, and `max_starting` alongside global limits. Other harnesses must pass the same recovery and isolation gates; each session still has one owning Brain instance.
+
 ### Dynamic session configuration
 
 Change a session's model, instructions, reasoning effort, and tools between turns.
@@ -25,7 +35,7 @@ Change a session's model, instructions, reasoning effort, and tools between turn
 
 Choose OpenCode or Codex for each session through the same API you use for Pi. Each adapter ships once it passes the same tests as Pi: recovery without model or tool calls, an exact tool set, recovery after context compaction, and storage that grows only with new data.
 
-- **Status:** Planned. The [harness probes](https://github.com/aexhq/brain/blob/main/docs/research/harness-probes.md) list the changes each adapter needs, and [plan 03](https://github.com/aexhq/brain/blob/main/docs/plans/03-harness-adapters.md) tracks the work.
+- **Status:** Planned. Targeted local probes verified exclusion of the previously observed extra native tools; complete adapters still require recovery, persistence, and isolation qualification. The [harness probes](https://github.com/aexhq/brain/blob/main/docs/research/harness-probes.md) record that evidence and the remaining changes, and [plan 03](https://github.com/aexhq/brain/blob/main/docs/plans/03-harness-adapters.md) tracks the work.
 - **Today:** Use the Pi harness, or run your own agent loop through the [harness process contract](https://aexhq.github.io/brain/docs/adapters/harness/).
 
 ### Tool catalog: browser and Fly Machines tools
@@ -70,13 +80,6 @@ Connect MCP servers and model providers that require OAuth.
 - **Status:** Planned. No design document yet.
 - **Today:** Use API keys and tokens from environment variables. See [Models & providers](https://aexhq.github.io/brain/docs/reference/models/) and [MCP tools](https://aexhq.github.io/brain/docs/tools/mcp/).
 
-### Local (stdio) MCP servers
-
-Run MCP servers as local processes.
-
-- **Status:** Planned. No design document yet.
-- **Today:** Expose the server over Streamable HTTP, and connect it as a [remote MCP server](https://aexhq.github.io/brain/docs/tools/mcp/).
-
 ## Integration status
 
 Local tests and live runs are separate evidence. **Verified against live services** means the integration passed against a real provider account; **verified with local tests** means it passed with the provider's official SDK or local fixtures, without a live account. The [integration evidence](https://github.com/aexhq/brain/blob/main/docs/research/qualification.md) records exactly what each run covered.
@@ -87,7 +90,7 @@ Local tests and live runs are separate evidence. **Verified against live service
 | Cloudflare R2 archive | Verified with local tests | The real AWS SDK transport passes the archive fixtures with R2 settings. Not yet run against a live R2 account. |
 | Google Cloud Storage archive | Verified with local tests | The official SDK passes multipart, precondition, read, and shared archive contract tests. Not yet run against a live GCS account. |
 | PostgreSQL session index | Verified with local tests | CI runs the index tests against a PostgreSQL 18 server. Hosted services such as Neon, Supabase, and RDS haven't been qualified separately. |
-| MCP tools | Verified with local tests | Official SDK client and server fixtures cover discovery, streamed progress, errors, structured content, tenant isolation, limits, cancellation, and no replay of actions. No third-party MCP server has been tested live. |
+| MCP tools | Verified with local tests | Official SDK HTTP and owned-stdio fixtures cover explicit discovery, process loss, progress, structured output, tenant isolation, limits, cancellation, and no replay. No third-party MCP server has been tested live. |
 | Modal, E2B, and Daytona sandboxes | Verified with local tests | Pinned SDK type checks, an HTTP tool journey, signed sandbox handles that stay valid across service restarts, and cancellation and cleanup fixtures. A live script, `npm --prefix services/sandbox run live -- PROVIDER`, needs your provider credentials. |
 | Storage and web tools | Verified with local tests | An AWS SDK and HTTP registry journey covers authentication, tenant prefixes, read-only policy, and deletes, alongside Brave and Tavily request fixtures and public-network and HTML extraction tests. Live search and R2 tool accounts are unqualified. |
 | Platform templates | Verified with local tests | `tests/platforms.test.mjs` validates the Docker Compose, Fly.io, AWS ECS/Fargate, and Cloudflare Worker templates. They aren't evidence of a live deployment on each platform. |
@@ -112,8 +115,9 @@ These documents are for contributors. They record how Brain is designed and how 
 
 - [ADR 0001: Local-first ephemeral session server](https://github.com/aexhq/brain/blob/main/docs/adr/0001-local-first-session-server.md) records the architecture, ownership boundaries, and design decisions.
 - [ADR 0002: Subsystem contracts and published SDKs](https://github.com/aexhq/brain/blob/main/docs/adr/0002-subsystem-contracts-and-sdk-delivery.md) extends it with subsystem contracts and SDK delivery.
+- [ADR 0003: Application SDK, session bindings, and harness integration](https://github.com/aexhq/brain/blob/main/docs/adr/0003-application-sdk-and-session-bindings.md) proposes application composition and session-bound integrations, with the consequential alternatives still open.
 - The [implementation plan](https://github.com/aexhq/brain/blob/main/docs/implementation-plan.md) breaks the work down across runtime, persistence, harnesses, tools, API, and operations.
-- Research: [integration options](https://github.com/aexhq/brain/blob/main/docs/research/integration-options.md), [harness feasibility probes](https://github.com/aexhq/brain/blob/main/docs/research/harness-probes.md), and [integration evidence](https://github.com/aexhq/brain/blob/main/docs/research/qualification.md).
+- Research: [integration options](https://github.com/aexhq/brain/blob/main/docs/research/integration-options.md), [harness feasibility probes](https://github.com/aexhq/brain/blob/main/docs/research/harness-probes.md), [application SDK architecture spikes](https://github.com/aexhq/brain/blob/main/docs/research/application-sdk-spikes.md), and [integration evidence](https://github.com/aexhq/brain/blob/main/docs/research/qualification.md).
 
 [Plan 10: Published clients and subsystem boundaries](https://github.com/aexhq/brain/blob/main/docs/plans/10-modernization.md) is implemented and deployed. [Plan 08: Integration expansion](https://github.com/aexhq/brain/blob/main/docs/plans/08-integration-expansion.md) and [plan 09: Delivery, documentation, and platform examples](https://github.com/aexhq/brain/blob/main/docs/plans/09-delivery-and-examples.md) have landed their first cuts. Their remaining work, including dynamic configuration, browser and Fly Machines tools, and fleet benchmarks, is listed under [Next up](#next-up).
 

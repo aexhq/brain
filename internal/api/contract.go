@@ -5,6 +5,7 @@ import (
 	"reflect"
 
 	"github.com/aexhq/brain/internal/core"
+	"github.com/aexhq/brain/internal/tools"
 )
 
 // Route binds documentation and routing to the same operation declaration.
@@ -37,6 +38,12 @@ type ErrorResponse struct {
 
 func (s *Server) routes() []Route {
 	return []Route{
+		{Name: "registerExecutor", Method: http.MethodPost, Path: "/executors", Input: reflect.TypeFor[tools.ExecutorRegistration](), Output: reflect.TypeFor[tools.ExecutorCredential](), Status: 201, Summary: "Register runtime tools", Description: "Requires management authority. Connect the returned executor before creating the session. Rebinding supplies the saved session and matching descriptors; functions remain in the client.", handler: s.registerExecutor},
+		{Name: "executorCommands", Method: http.MethodGet, Path: "/executors/{id}/commands", Output: reflect.TypeFor[tools.Command](), Status: 200, Summary: "Connect a runtime executor", Description: "Requires the executor credential. Returns non-replayable SSE commands and a ready connection identity. A dropped connection never replays calls.", handler: s.executorCommands},
+		{Name: "executorReply", Method: http.MethodPost, Path: "/executors/{id}/responses", Input: reflect.TypeFor[tools.Reply](), Output: reflect.TypeFor[core.Status](), Status: 200, Summary: "Submit runtime progress or result", Description: "Requires the executor credential and current connection/call identity. Stale, duplicate and unsolicited results fail.", handler: s.executorReply},
+		{Name: "executorRPC", Method: http.MethodGet, Path: "/executors/{id}/rpc", Output: reflect.TypeFor[tools.Command](), Status: 101, Summary: "Connect bidirectional runtime RPC", Description: "WebSocket upgrade using brain-rpc and brain-auth.TOKEN subprotocols. Commands and replies use the same contract as SSE/HTTP. Browser origins are rejected.", handler: s.executorRPC},
+		{Name: "unregisterExecutor", Method: http.MethodPost, Path: "/executors/{id}/close", Output: reflect.TypeFor[core.Status](), Status: 200, Summary: "Close a runtime executor", Description: "Requires its executor credential. Pending dispatched calls receive unknown outcomes; future calls are unavailable.", handler: s.unregisterExecutor},
+
 		{Name: "create", Method: http.MethodPost, Path: "/sessions", Input: reflect.TypeFor[core.CreateSession](), Output: reflect.TypeFor[core.Session](), Status: 201, Summary: "Create a session", Description: "Creates a session for the caller's tenant with the given harness, model, instructions, reasoning effort, and tools. Requires a management token. Creating a session records its metadata locally; the harness process starts when the first message is sent.", handler: s.create},
 		{Name: "list", Method: http.MethodGet, Path: "/sessions", Output: reflect.TypeFor[SessionList](), Status: 200, Summary: "List sessions", Description: "Lists sessions belonging to the caller's tenant in ascending ID order. Pass the last session ID as after to fetch the next page.", handler: s.list},
 		{Name: "get", Method: http.MethodGet, Path: "/sessions/{id}", Output: reflect.TypeFor[core.Session](), Status: 200, Summary: "Get a session", Description: "Returns metadata and current status for a session. If the session is not on local disk and external storage is configured, Brain loads the latest published checkpoint.", handler: s.get},

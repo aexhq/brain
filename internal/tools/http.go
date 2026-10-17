@@ -10,8 +10,10 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/http/httptrace"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/aexhq/brain/internal/core"
@@ -30,6 +32,8 @@ func newHTTPClient() *http.Client {
 
 func (t *HTTPTransport) Close() { t.client.CloseIdleConnections() }
 func (t *HTTPTransport) Call(ctx context.Context, binding Binding, request Request, progress func(json.RawMessage)) core.Result {
+	var connected atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { connected.Store(true) }})
 	body, err := json.Marshal(request)
 	if err != nil {
 		return core.ToolError("invalid tool request", false)
@@ -41,7 +45,9 @@ func (t *HTTPTransport) Call(ctx context.Context, binding Binding, request Reque
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
-	if binding.TokenEnv != "" {
+	if binding.Credential != "" {
+		req.Header.Set("Authorization", "Bearer "+binding.Credential)
+	} else if binding.TokenEnv != "" {
 		token := os.Getenv(binding.TokenEnv)
 		if token == "" {
 			return core.ToolError("tool credential is unavailable", false)
@@ -50,6 +56,9 @@ func (t *HTTPTransport) Call(ctx context.Context, binding Binding, request Reque
 	}
 	res, err := t.client.Do(req)
 	if err != nil {
+		if !connected.Load() {
+			return core.ToolError("tool connection failed before dispatch", false)
+		}
 		return core.ToolError("tool transport failed; remote outcome may be unknown", true)
 	}
 	defer res.Body.Close()

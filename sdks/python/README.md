@@ -1,6 +1,6 @@
 # Brain Python SDK
 
-Install with `python -m pip install aex-brain==1.0.0`. Requires Python 3.11+;
+Install with `python -m pip install aex-brain==2.0.0`. Requires Python 3.11+;
 there are no runtime dependencies. Import the client from `brain` and generated
 `TypedDict` definitions from `brain.types`. The wheel includes PEP 561 type data.
 
@@ -30,6 +30,11 @@ This is a synchronous client. `timeout=30` configures the socket timeout, includ
 stream reads. Requests are never automatically retried. `BrainError` preserves the
 HTTP status, server error code, and request ID. Closing the observer does not stop
 execution; call `interrupt(session_id)` for that.
+
+Pass `runtime_tools=[RuntimeTool(...)]` to `create()` to run Python functions in
+your client over an SDK-owned SSE/HTTP connection. Keep the process alive, honor
+`context.cancelled`, and call `dispose()` on shutdown. Use `rebind()` after recovery;
+callbacks are never automatically replayed.
 
 Pin the package and matching server image commit recorded by the release workflow.
 [SDK reference](https://aexhq.github.io/brain/docs/sdks/python/) ·

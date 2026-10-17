@@ -28,12 +28,13 @@ type Artifact struct {
 }
 
 type Manifest struct {
-	ID           string       `json:"id"`
-	Tenant       string       `json:"tenant"`
-	Session      core.Session `json:"session"`
-	HistoryBytes int64        `json:"history_bytes"`
-	Files        []Artifact   `json:"files"`
-	Time         time.Time    `json:"time"`
+	Credentials  []core.CredentialRecord `json:"credentials,omitempty"`
+	ID           string                  `json:"id"`
+	Tenant       string                  `json:"tenant"`
+	Session      core.Session            `json:"session"`
+	HistoryBytes int64                   `json:"history_bytes"`
+	Files        []Artifact              `json:"files"`
+	Time         time.Time               `json:"time"`
 }
 
 type Snapshot struct {
@@ -119,7 +120,7 @@ func (a *Archive) Publish(ctx context.Context, s Snapshot) (Manifest, error) {
 		f.Path = "native/" + f.Path
 		files = append(files, f)
 	}
-	m := Manifest{ID: core.ID(), Tenant: s.Session.Tenant, Session: s.Session, HistoryBytes: s.HistoryBytes, Time: time.Now().UTC()}
+	m := Manifest{Credentials: s.Session.Credentials, ID: core.ID(), Tenant: s.Session.Tenant, Session: s.Session, HistoryBytes: s.HistoryBytes, Time: time.Now().UTC()}
 	if len(files) > 128 {
 		return zero, errors.New("too many native files")
 	}
@@ -237,6 +238,7 @@ func (a *Archive) Restore(ctx context.Context, tenant, id, reference, parent str
 		return Manifest{}, "", core.E(core.NotFound, "session not found")
 	}
 	m.Session.Tenant = tenant
+	m.Session.Credentials = m.Credentials
 	if err := a.validate(m, id, reference); err != nil {
 		return m, "", err
 	}

@@ -25,7 +25,7 @@ func (t *MCPTransport) Close() { t.client.CloseIdleConnections() }
 
 // Each invocation has its own MCP session: server-side session state and
 // progress cannot cross tenant/call boundaries. The HTTP connection pool is shared.
-func (t *MCPTransport) connect(ctx context.Context, b Binding, progress func(json.RawMessage)) (*mcp.ClientSession, error) {
+func (t *MCPTransport) connect(ctx context.Context, b Binding, progress func(json.RawMessage)) (*mcp.ClientSession, func(), error) {
 	client := mcp.NewClient(&mcp.Implementation{Name: "brain", Version: "dev"}, &mcp.ClientOptions{
 		Capabilities:   &mcp.ClientCapabilities{},
 		MultiRoundTrip: &mcp.MultiRoundTripOptions{Disabled: true},
@@ -38,11 +38,18 @@ func (t *MCPTransport) connect(ctx context.Context, b Binding, progress func(jso
 			}
 		},
 	})
+	if b.Stdio != nil {
+		return connectStdio(ctx, client, b)
+	}
 	transport := &mcp.StreamableClientTransport{Endpoint: b.URL, MaxRetries: -1, DisableStandaloneSSE: true,
 		MaxEventSize: int(b.MaxOutputBytes + 65536),
 		HTTPClient:   &http.Client{Transport: mcpHTTP{base: t.client.Transport, binding: b}, CheckRedirect: t.client.CheckRedirect},
 	}
-	return client.Connect(ctx, transport, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	return session, func() { _ = session.Close() }, nil
 }
 
 type mcpHTTP struct {
@@ -52,7 +59,9 @@ type mcpHTTP struct {
 
 func (t mcpHTTP) RoundTrip(req *http.Request) (*http.Response, error) {
 	req = req.Clone(req.Context())
-	if t.binding.TokenEnv != "" {
+	if t.binding.Credential != "" {
+		req.Header.Set("Authorization", "Bearer "+t.binding.Credential)
+	} else if t.binding.TokenEnv != "" {
 		key := os.Getenv(t.binding.TokenEnv)
 		if key == "" {
 			return nil, errors.New("MCP credential is unavailable")
@@ -87,11 +96,11 @@ func (b *boundedMCPBody) Read(p []byte) (int, error) {
 
 func (t *MCPTransport) Call(ctx context.Context, binding Binding, request Request, progress func(json.RawMessage)) core.Result {
 	scope := request.ToolScope
-	session, err := t.connect(ctx, binding, progress)
+	session, close, err := t.connect(ctx, binding, progress)
 	if err != nil {
 		return core.ToolError("MCP connection failed before tool dispatch", false)
 	}
-	defer session.Close()
+	defer close()
 	params := &mcp.CallToolParams{Name: binding.MCPTool, Arguments: request.Arguments,
 		Meta: mcp.Meta{"brain.dev/scope": map[string]string{"tenant_id": scope.Tenant, "session_id": scope.Session, "call_id": scope.Call}},
 	}
@@ -119,6 +128,7 @@ func (t *MCPTransport) Call(ctx context.Context, binding Binding, request Reques
 		if err != nil {
 			return core.ToolError("invalid MCP structured content", true)
 		}
+		result.StructuredContent = data
 		result.Content = append(result.Content, core.Content{Type: "text", Text: string(data)})
 	}
 	return result
@@ -140,11 +150,11 @@ func DiscoverMCP(ctx context.Context, binding Binding, names []string) ([]Bindin
 	defer registry.Close()
 	binding = registry.tools["discovery"].binding
 	transport := registry.transports["mcp"].(*MCPTransport)
-	session, err := transport.connect(ctx, binding, nil)
+	session, close, err := transport.connect(ctx, binding, nil)
 	if err != nil {
-		return nil, err
+		return nil, &Unavailable{Message: "MCP discovery connection is unavailable"}
 	}
-	defer session.Close()
+	defer close()
 	selected := make(map[string]bool)
 	for _, name := range names {
 		if selected[name] {
@@ -156,7 +166,7 @@ func DiscoverMCP(ctx context.Context, binding Binding, names []string) ([]Bindin
 	count := 0
 	for tool, err := range session.Tools(ctx, nil) {
 		if err != nil {
-			return nil, err
+			return nil, &Unavailable{Message: "MCP catalog is unavailable"}
 		}
 		count++
 		if count > 4096 {
@@ -171,6 +181,12 @@ func DiscoverMCP(ctx context.Context, binding Binding, names []string) ([]Bindin
 		}
 		b := binding
 		b.Tool = core.Tool{Name: tool.Name, Description: tool.Description, InputSchema: schema}
+		if tool.OutputSchema != nil {
+			b.OutputSchema, err = json.Marshal(tool.OutputSchema)
+			if err != nil {
+				return nil, err
+			}
+		}
 		b.MCPTool = tool.Name
 		result = append(result, b)
 		delete(selected, tool.Name)

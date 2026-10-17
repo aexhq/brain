@@ -5,7 +5,7 @@ description: How Brain runs a session, stores and recovers it, and divides the w
 
 import { Database, MessagesSquare, Puzzle } from 'lucide-react';
 
-Brain sits between your application and the systems that do the work. Your application talks to Brain, Brain runs a harness for each active session, and the harness's tool calls go to services you run. This page follows one message through Brain, then explains how Brain stores and recovers sessions and which component owns what.
+Brain sits between your application and the systems that do the work. Your application talks to Brain, Brain runs a harness for each active session, and the harness's tool calls go to implementations you authorize. This page follows one message through Brain, then explains how Brain stores and recovers sessions and which component owns what.
 
 ## How a message flows
 
@@ -25,7 +25,7 @@ Brain starts the session's harness, or reuses the one already running. The harne
 <Step>
 ### Brain calls your tools
 
-When the model calls a tool, the harness hands the call to Brain. Brain checks that the tool is enabled for the session, records the call, validates the arguments, and sends the call to your tool service together with the session's identity. Brain records the result and returns it to the harness.
+When the model calls a tool, the harness hands the call to Brain. Brain checks that the tool is enabled for the session, records the call, validates the arguments, and dispatches it to your implementation together with the session's identity. Brain records the result and returns it to the harness.
 </Step>
 
 <Step>
@@ -72,7 +72,7 @@ Brain separates three kinds of errors, so a failure in one layer doesn't look li
 
 ## Design principles
 
-- **Keep the core small:** Harnesses own inference and context; external services own tools and approvals.
+- **Keep the core small:** Harnesses own inference and context; applications install tools and own approvals.
 - **Fail explicitly:** Tool errors become tool results, and Brain errors stop the affected turn. Missing or damaged state returns an error instead of silently starting a fresh session.
 - **Bound every queue:** Message queues, event streams, and storage retries all have limits. At capacity, Brain turns away new work instead of slowing down running turns, and health checks and stream keepalives never call the model.
 

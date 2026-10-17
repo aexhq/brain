@@ -10,7 +10,9 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .types import CreateSession, Event, EventList, Input, Session, SessionList, SyncStatus, ToolCatalog
 
-__all__ = ["Brain", "BrainError"]
+from .runtime import RuntimeContext, RuntimeExecutor, RuntimeTool
+
+__all__ = ["Brain", "BrainError", "RuntimeTool", "RuntimeContext"]
 
 
 class BrainError(Exception):
@@ -28,6 +30,7 @@ class Brain:
     def __init__(self, url: str, token: str, timeout: float = 30):
         self.url, self.token, self.timeout = url.rstrip("/"), token, timeout
         self._opener = build_opener(_NoRedirect())
+        self._executors: dict[str, RuntimeExecutor] = {}
 
     def _open(self, method: str, path: str, body: Any = None, stream: bool = False):
         headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
@@ -50,8 +53,37 @@ class Brain:
         with self._open(method, path, body) as response:
             return json.load(response)
 
-    def create(self, config: CreateSession) -> Session:
-        return self._request("POST", "/sessions", config)
+    def create(self, config: CreateSession, *, runtime_tools: list[RuntimeTool] | None = None) -> Session:
+        executor = None
+        try:
+            if runtime_tools:
+                executor = RuntimeExecutor(self, runtime_tools)
+                config = {**config, "config": {**config["config"], "bindings": [*config["config"].get("bindings", []), {"alias": "runtime", "executor": executor.id, "runtime": [t.descriptor() for t in runtime_tools]}]}}
+            session = self._request("POST", "/sessions", config)
+            if executor:
+                self._executors[session["id"]] = executor
+            return session
+        except Exception:
+            if executor:
+                executor.close()
+            raise
+
+    def rebind(self, session_id: str, tools: list[RuntimeTool]) -> None:
+        previous = self._executors.pop(session_id, None)
+        if previous:
+            previous.close()
+        self._executors[session_id] = RuntimeExecutor(self, tools, session_id)
+
+    def dispose(self) -> None:
+        executors, self._executors = self._executors, {}
+        errors = []
+        for executor in executors.values():
+            try:
+                executor.close()
+            except Exception as error:
+                errors.append(error)
+        if errors:
+            raise ExceptionGroup("executor shutdown failed", errors)
 
     def get(self, session_id: str) -> Session:
         return self._request("GET", f"/sessions/{quote(session_id, safe='')}")
@@ -70,6 +102,9 @@ class Brain:
 
     def close(self, session_id: str) -> None:
         self._request("POST", f"/sessions/{quote(session_id, safe='')}/close")
+        executor = self._executors.pop(session_id, None)
+        if executor:
+            executor.close()
 
     def flush(self, session_id: str) -> SyncStatus:
         return self._request("POST", f"/sessions/{quote(session_id, safe='')}/flush")

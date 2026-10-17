@@ -16,6 +16,7 @@ import (
 	"github.com/aexhq/brain/internal/core"
 	"github.com/aexhq/brain/internal/session"
 	"github.com/aexhq/brain/internal/telemetry"
+	"github.com/aexhq/brain/internal/tools"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -26,6 +27,7 @@ import (
 type Catalog interface{ Catalog(string) []core.Tool }
 
 type Server struct {
+	Bridge  *tools.Bridge
 	Engine  *session.Engine
 	Tools   Catalog
 	Auth    *Auth
@@ -82,6 +84,17 @@ type scoped func(http.ResponseWriter, *http.Request, core.Grant)
 func (s *Server) authorize(next scoped) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		g, ok := s.Auth.Authenticate(r)
+		if !ok && s.Bridge != nil {
+			id, tenant, valid := s.Bridge.Authenticate(executorToken(r))
+			if valid {
+				g = core.Grant{Tenant: tenant, Executor: id}
+				ok = true
+			}
+		}
+		if g.Executor != "" && (!strings.HasPrefix(r.URL.Path, "/executors/") || r.PathValue("id") != g.Executor) {
+			s.fail(w, r, core.E(core.Forbidden, "executor credential cannot access sessions"))
+			return
+		}
 		if !ok {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			write(w, 401, ErrorResponse{Error: core.Error{Code: core.Forbidden, Message: "authentication required"}, RequestID: w.Header().Get("X-Request-ID")})

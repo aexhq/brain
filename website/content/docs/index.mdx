@@ -31,7 +31,7 @@ Brain gives you session-oriented primitives for building agents. Your backend cr
 | **Turn** | The work Brain does for one user message: model calls and tool calls until the harness finishes. A session runs one turn at a time and queues further messages in order. |
 | **Event** | A typed record in a session's stream, such as a message, a tool call, or a status change. Follow events live, or replay the history from the last event you read. |
 | **Harness** | The agent loop that calls the model, manages context, and decides when a turn is done. Brain includes the Pi harness, and you can [add your own](/docs/adapters/harness). |
-| **Tool** | A capability served by your own service or a remote MCP server. Brain calls it when the model asks, and each session uses exactly the tools you enable for it. |
+| **Tool** | A capability implemented in application code, a client function, or a service. Brain calls it when the model asks, and each session uses exactly the tools you enable for it. |
 | **Tenant** | The isolation boundary for sessions, tokens, and tools. |
 | **Host config** | The JSON file that configures a Brain server: its API tokens, harnesses, model providers, tools, limits, and storage. |
 | **Checkpoint** | Saved session state that Brain records after each completed turn, for recovering a session or moving it to another server. |
@@ -87,11 +87,11 @@ With Brain, your application stays in charge of what each agent is. You choose e
 
 ## What's included
 
-- **Pi harness:** Brain includes the Pi harness, an agent loop that works with models from the providers you configure. Every tool is a service you control, and the model sees exactly the tools you enable for its session, so you decide everything the agent can do.
+- **Pi harness:** Brain includes the Pi harness, an agent loop that works with models from the providers you configure. Every tool is an implementation you control, and the model sees exactly the tools you enable for its session, so you decide everything the agent can do.
 - **[Tool connections](/docs/tools):** Answer tool calls over HTTP, stream progress with server-sent events, or connect tools from a remote [MCP server](/docs/tools/mcp).
 - **Tool services:** A [sandbox service](/docs/tools/sandboxes) for Modal, E2B, and Daytona; a [storage and web service](/docs/tools/resources) for S3 or R2 storage, Brave or Tavily search, and public web fetch; and an [example tool server](/docs/tools/local-tools) with an operator approval flow.
 - **[Session storage](/docs/guides/persistence):** Sessions live on local disk and can sync checkpoints to a directory, Amazon S3, Cloudflare R2, or Google Cloud Storage. An optional PostgreSQL index lets servers find each other's sessions.
-- **Clients:** A [TypeScript SDK](/docs/sdks/typescript) on npm, a [Python SDK](/docs/sdks/python) on PyPI, and an [OpenAPI document](/openapi.json).
+- **SDKs:** Compose your service with the [Go application SDK](/docs/sdks/application), or connect with [TypeScript](/docs/sdks/typescript), [Python](/docs/sdks/python), and the [HTTP API](/docs/api).
 - **[Operations](/docs/guides/operations):** Health checks, structured logs, OpenTelemetry traces and metrics, and a published container image.
 
 ## Choose your path
