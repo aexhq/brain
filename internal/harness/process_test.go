@@ -27,6 +27,19 @@ func TestSharedHostHelper(t *testing.T) {
 		}
 		switch frame.Method {
 		case "open", "detach":
+			if frame.Method == "open" {
+				var options Options
+				if json.Unmarshal(frame.Params, &options) != nil {
+					os.Exit(4)
+				}
+				if options.Config.Model == "invalid" {
+					frame.Method = ""
+					frame.Params = nil
+					frame.Error = &core.Error{Code: core.Invalid, Message: "invalid model"}
+					send(frame)
+					continue
+				}
+			}
 			frame.Method = ""
 			frame.Params = nil
 			frame.Result = json.RawMessage(`{}`)
@@ -124,6 +137,16 @@ func TestSharedHostAdmissionActiveCapsCancellationAndCrash(t *testing.T) {
 	}
 	if err := runners[0].Close(); err != nil {
 		t.Fatal(err)
+	}
+	bad := options("bad")
+	bad.Config.Model = "invalid"
+	if _, err := f.Open(ctx, bad); core.ErrorCode(err) != core.Invalid {
+		t.Fatalf("bad attachment: %v", err)
+	}
+	select {
+	case err := <-finished:
+		t.Fatalf("failed open stopped a peer: %v", err)
+	default:
 	}
 	replacement, err := f.Open(ctx, options("replacement"))
 	if err != nil {

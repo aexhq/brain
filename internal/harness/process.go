@@ -410,7 +410,6 @@ func (f *ProcessFactory) Open(ctx context.Context, opts Options) (Runner, error)
 	initCtx, stop := context.WithTimeout(ctx, 30*time.Second)
 	defer stop()
 	if _, err := a.request(initCtx, "open", opts); err != nil {
-		host.fail(err)
 		a.Close()
 		return nil, err
 	}
