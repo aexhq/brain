@@ -39,6 +39,7 @@ export class RuntimeExecutor {
   private constructor(readonly url: string, readonly credential: ExecutorCredential, readonly tools: RuntimeTool[], private fetcher: typeof fetch) {}
 
   static async open(url: string, token: string, tools: RuntimeTool[], transport: RuntimeTransport, fetcher: typeof fetch, session?: string): Promise<RuntimeExecutor> {
+    if (transport !== "sse" && transport !== "rpc") throw new Error("unsupported runtime transport");
     const input: ExecutorRegistration = { binding: "runtime", tools: tools.map(({ run: _, ...descriptor }) => descriptor), ...(session ? { session } : {}) };
     const response = await fetcher(new URL("/executors", url), { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(input), redirect: "error", signal: AbortSignal.timeout(30000) });
     if (!response.ok) throw new Error(`executor registration failed (${response.status})`);

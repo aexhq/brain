@@ -2,6 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Brain, BrainError } from "../dist/index.js";
 
+test("an unsupported callback transport fails before registration", async () => {
+  const brain = new Brain("http://brain.test", "token", async () => { assert.fail("invalid transport made a request"); });
+  await assert.rejects(brain.create({
+    harness: "pi", config: { model: "test/model", tools: [] }, runtime_transport: "invalid",
+    runtime_tools: [{ name: "read", description: "Read", input_schema: { type: "object" }, run: () => null }],
+  }), /unsupported runtime transport/);
+});
+
 test("unsafe requests are never retried and errors preserve identity", async () => {
   let count = 0;
   const client = new Brain("http://brain.test", "token", async () => {
