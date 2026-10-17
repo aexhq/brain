@@ -6,7 +6,7 @@ COPY runners/pi/tsconfig.json ./
 COPY runners/pi/src ./src
 RUN npm run build && npm prune --omit=dev --ignore-scripts
 
-FROM golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS server
+FROM golang:1.27-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61 AS server
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
