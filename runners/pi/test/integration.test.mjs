@@ -21,7 +21,9 @@ function client(t, toolResult) {
     const frame = JSON.parse(line);
     if (frame.event) { events.push(frame); return; }
     if (frame.method === "tool.call") {
-      child.stdin.write(JSON.stringify({ attachment: frame.attachment, turn: frame.turn, id: frame.id, result: await toolResult(frame.params, frame.attachment) }) + "\n");
+      const result = await toolResult(frame.params, frame.attachment);
+      const response = result instanceof Error ? { error: { code: "brain_error", message: "tool dispatch failed" } } : { result };
+      child.stdin.write(JSON.stringify({ attachment: frame.attachment, turn: frame.turn, id: frame.id, ...response }) + "\n");
       return;
     }
     const pending = waiting.get(frame.id);
@@ -182,6 +184,21 @@ test("real Pi: eight shared sessions isolate catalogs, context, callbacks, cance
   assert.ok(!JSON.stringify(messages).includes("tenant-message-0"));
   await runner.request("prompt", { text: "original peer continues" }, "s2");
   assert.equal(api.requests.at(-1).messages[0].content, "private-context-2");
+  await runner.close();
+});
+
+test("real Pi: a Brain callback failure stops only its session without model continuation", { timeout: 30000 }, async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "brain-pi-dispatch-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const api = await provider(t);
+  const runner = client(t, () => new Error("storage failure"));
+  await runner.request("open", options(path.join(dir, "failed"), api.url), "failed");
+  await runner.request("open", options(path.join(dir, "peer"), api.url), "peer");
+  await assert.rejects(runner.request("prompt", { text: "call tool" }, "failed"), /brain_error.*tool dispatch failed/);
+  assert.equal(api.requests.length, 1, "Brain failure caused model continuation");
+  await runner.request("detach", undefined, "failed");
+  await runner.request("prompt", { text: "peer continues" }, "peer");
+  assert.equal(api.requests.length, 2);
   await runner.close();
 });
 
