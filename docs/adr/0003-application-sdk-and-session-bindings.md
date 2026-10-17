@@ -1,6 +1,6 @@
 # ADR 0003: Application SDK, session bindings, and harness integration
 
-- **Status:** Accepted for implementation on 2026-10-17. Go application SDK, managed and client-runtime tools, direct HTTP/reverse SSE plus HTTP/RPC bindings, bounded shared local harness hosts, and external-only arbitrary code execution selected. Hosts may contain different tenants, subject to session-isolation qualification. Server-default credentials and authorized session overrides must survive normal server restarts; encrypted credential storage in the session SQL database is selected, with external vault integration available through application providers. See [Decisions to finalize](#decisions-to-finalize).
+- **Status:** Accepted for implementation on 2026-10-17. Go application SDK, managed and client-runtime tools, direct HTTP/reverse SSE plus HTTP/RPC bindings, bounded shared local harness hosts, and external-only arbitrary code execution selected. Hosts may contain different tenants, subject to session-isolation qualification. Server-default credentials and authorized session overrides must survive normal server restarts; encrypted credential storage in the session SQL database is selected, with external vault integration available through application providers. See [Selected decisions](#selected-decisions).
 - **Date:** 2026-10-16
 - **Extends:** [ADR 0001](0001-local-first-session-server.md) and [ADR 0002](0002-subsystem-contracts-and-sdk-delivery.md).
 - **Scope:** Architecture and SDK semantics, not implementation, package names, or a final wire schema.
@@ -317,7 +317,7 @@ model -> harness's shell/file/MCP implementation -> harness
 
 The first path is selected. The second is not permitted for native execution or ambient tools. Observing a native event is not the same as authorizing and dispatching an action. Supabase and external sandbox services remain available through registered tools, while inference and context remain inside the harness.
 
-### Proposed baseline and qualification
+### Required baseline and qualification
 
 Install adapters at application startup and select one for each session. Separate installation settings, such as executable paths and credentials, from validated session settings, such as model and reasoning effort. An arbitrary native configuration dictionary must not override isolation, MCP ownership, process commands, or recovery policy.
 
@@ -460,9 +460,9 @@ Per-session URLs are also authority, not harmless configuration. Allow them only
 
 For Supabase in particular, a secret/service-role key bypasses row-level security. Tenant metadata does not restore RLS. Prefer user-scoped authorization where appropriate, or enforce resource policy in the tool implementation. See [Supabase API keys][supabase-keys] and [MCP authorization][mcp-auth].
 
-## Decisions to finalize
+## Selected decisions
 
-The discussion selected the application/runtime split, encrypted credential custody, external-only execution, bounded shared hosts including cross-tenant placement, and the three transport bindings below. The optional read-only sessions provider belongs to application integrations rather than the core loop. RPC framing/carrier, numeric host-limit defaults, and key-provider details remain design work; adapter isolation and recovery require qualification. The overall ADR remains Proposed.
+The discussion selected the application/runtime split, encrypted credential custody, external-only execution, bounded shared hosts including cross-tenant placement, and the three transport bindings below. The optional read-only sessions provider belongs to application integrations rather than the core loop. [Plan 11](../plans/11-application-sdk.md) records the implementation choices: JSON messages over WebSocket for RPC, explicit host limits, and independently supplied AES-GCM keys. Each advertised adapter must qualify isolation and recovery against this decision.
 
 ### D1: Application SDK runtime and language
 
@@ -499,7 +499,7 @@ The bridge is selected, not an optional separately operated worker product. Its 
 
 ### D6: Tool execution transports
 
-**Selected: direct HTTP, reverse SSE plus HTTP, and bidirectional RPC.** All use the same tool contract and authorization. The SDK owns attached callback plumbing; reachable services need no reverse channel. The RPC carrier/framing is not selected by the WebSocket prototype, and no transport fallback may replay an action.
+**Selected: direct HTTP, reverse SSE plus HTTP, and bidirectional RPC.** All use the same tool contract and authorization. The SDK owns attached callback plumbing; reachable services need no reverse channel. The implementation uses JSON messages over WebSocket for RPC; the earlier transport prototype alone did not establish that choice. No transport fallback may replay an action.
 
 ## Other alternatives considered
 

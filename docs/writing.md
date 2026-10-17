@@ -19,7 +19,7 @@ Brain's documentation speaks at six levels, from a one-line pitch to design reco
 2. **Link down; never repeat down.** Higher levels point to the page that owns the detail.
 3. **Describe what exists.** Positive statements set scope on their own: "Brain connects to remote MCP servers over Streamable HTTP" needs no list of what it doesn't connect to.
 4. **Planned work lives on the roadmap.** When a gap is on the roadmap, other pages say nothing about it. The roadmap names it and says what to do today.
-5. **State design choices as features.** Write "Every tool is a service you control", not "Brain has no built-in tools".
+5. **State design choices as features.** Write "Your application chooses the tools each session can use", not "Brain has no built-in tools".
 6. **Keep guarantees explicit.** Isolation and security properties are promises, not limitations: "A session-scoped token sees only its session."
 7. **Don't overclaim.** L0 and L1 never imply that planned work exists.
 8. **Reword facts for each level.** The same fact appears at several levels with different wording. Never paste a sentence from one level into another.
@@ -100,7 +100,7 @@ Use these words, defined once and used the same way everywhere:
 - **Turn:** the work Brain runs for one user message, until the harness finishes.
 - **Event:** a typed record in a session's stream.
 - **Harness:** the agent loop that calls the model and manages context. Brain includes the Pi harness.
-- **Tool:** an endpoint in your own service that Brain calls when the model asks. The process that serves it is a **tool service**.
+- **Tool:** an operation Brain calls when the model asks, backed by an application handler, a service endpoint, or a client runtime function. A process serving tool endpoints is a **tool service**.
 - **Tenant:** the isolation boundary for tokens, sessions, and tools.
 - **Host config:** the JSON file that configures a Brain server.
 - **Checkpoint:** saved session state for recovering or moving a session.
