@@ -1,6 +1,7 @@
 import { RuntimeExecutor, type RuntimeTool, type RuntimeTransport } from "./runtime.js";
 import { lower, type SessionOptions } from "./authoring.js";
 export { ApiKey, CredentialReference, Model, Tool, ManagedTool } from "./authoring.js";
+export { connectTab } from "./browser.js";
 export type { SessionOptions, ManagedSelection } from "./authoring.js";
 export type { RuntimeTool, RuntimeContext, RuntimeTransport } from "./runtime.js";
 import { routes, type CreateSession, type Session, type Input, type Event, type Tool as ToolDescriptor, type SyncStatus } from "./generated.js";
@@ -14,7 +15,7 @@ export type SessionInput = (CreateSession & { runtime_tools?: RuntimeTool[]; run
 
 export class Brain {
   private executors = new Map<string, RuntimeExecutor>();
-  constructor(readonly url: string, private readonly token: string, private readonly requestFetch: typeof fetch = fetch) {}
+  constructor(readonly url: string, private readonly token: string, private readonly requestFetch: typeof fetch = (...args) => globalThis.fetch(...args)) {}
   private async request(operation: keyof typeof routes, id?: string, body?: unknown, query?: URLSearchParams, signal?: AbortSignal): Promise<Response> {
     const route = routes[operation];
     const target = new URL(route.path.replace("{id}", encodeURIComponent(id ?? "")), this.url);

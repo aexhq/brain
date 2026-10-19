@@ -1,0 +1,48 @@
+---
+title: Browser tools
+description: Attach your application's tab or run an isolated browser in an external tool service.
+---
+
+## Attach an application tab
+
+Serve your page and the [same-origin gateway example](https://github.com/aexhq/brain/tree/main/examples/browser) from your application's origin. Authenticate the user in your backend, authorize a session composition and tool descriptors, then issue a short-lived page grant with `gateway.issue()`. Deliver that grant through your authenticated application route.
+
+Bundle `@aexhq/brain` into the page. Create a dedicated `Brain` client with your gateway URL and page grant. Call `connectTab` directly from the user's attach button:
+
+```typescript
+import { Brain, connectTab } from '@aexhq/brain';
+
+const brain = new Brain(location.origin, pageGrant.token);
+document.querySelector('#attach')!.addEventListener('click', async () => {
+  const attached = await connectTab(brain, {
+    create: {
+      ...approvedComposition,
+      runtime_tools: [{
+        ...approvedReadTool,
+        run() { return { text: document.querySelector('#app')!.textContent }; },
+      }],
+    },
+  });
+  await brain.send(attached.session.id, {
+    type: 'user.message', text: 'Read the page I attached',
+  });
+});
+```
+
+Keep management and provider keys in your backend. The gateway exchanges executor authority for opaque page capabilities and proxies commands, replies and session events through SSE/HTTP. A page function runs in that page with its browser permissions. Closing or navigating the page ends its callback connection; dispatched actions can finish with an unknown outcome. Use `attached.detach()` to disconnect explicitly.
+
+To attach again, have your platform authorize the existing session and issue a new grant for it. Call `connectTab(brain, { session: id, tools })` from another user gesture. Future calls use the new connection. See the [complete example](https://github.com/aexhq/brain/tree/main/examples/browser) for grant expiry, revocation and routing.
+
+## Run a remote browser
+
+Run the [external browser service](https://github.com/aexhq/brain/tree/main/services/browser) alongside your other tool services:
+
+```sh
+npm --prefix services/browser ci --ignore-scripts
+npm --prefix services/browser run install-browser
+npm --prefix services/browser start
+```
+
+Set `TOOL_API_KEY` to the shared Brain/service secret and `BROWSER_ORIGINS` to an exact JSON origin allowlist such as `["https://example.com"]`. Install Chromium's OS dependencies on Linux using the service README's setup command.
+
+Register the service's exported `descriptor` at its `/browser` HTTP endpoint with the allowed tenants. Select `ManagedTool('browser')` when creating a session. The model can navigate, read, click, fill, take a screenshot and close its remote context. Trusted tenant/session identity selects separate browser cookies and storage; the service checks outgoing origins, including redirects and subresources. See the [service configuration and action reference](https://github.com/aexhq/brain/tree/main/services/browser).

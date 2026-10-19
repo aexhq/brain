@@ -87,6 +87,10 @@ jobs:
       - run: npm --prefix sdks/typescript ci --ignore-scripts
       - run: npm --prefix website ci --ignore-scripts
       - run: npm --prefix services/sandbox ci --ignore-scripts
+      - run: npm --prefix services/browser ci --ignore-scripts
+      - run: npm --prefix services/browser run install-browser
+      - if: runner.os == 'Linux'
+        run: npm --prefix services/browser exec -- playwright install-deps chromium
       - run: node scripts/check.mjs
       - if: runner.os == 'Linux'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -113,7 +117,9 @@ jobs:
       - if: runner.os == 'Linux'
         run: node scripts/sandbox-container-smoke.mjs
       - if: runner.os == 'Linux'
-        run: docker save brain:local-dev brain-sandbox-tools:local-dev -o images.tar
+        run: docker build --file services/browser/Dockerfile --tag brain-browser-tools:local-dev .
+      - if: runner.os == 'Linux'
+        run: docker save brain:local-dev brain-sandbox-tools:local-dev brain-browser-tools:local-dev -o images.tar
       - if: runner.os == 'Linux'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -191,7 +197,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          for image in brain brain-sandbox-tools; do
+          for image in brain brain-sandbox-tools brain-browser-tools; do
             ref="ghcr.io/aexhq/$image"
             docker tag "$image:local-dev" "$ref:sha-$GITHUB_SHA"
             docker tag "$image:local-dev" "$ref:main"
@@ -209,6 +215,11 @@ jobs:
         with:
           subject-name: ghcr.io/aexhq/brain-sandbox-tools
           subject-digest: ${{ steps.images.outputs.brain-sandbox-tools }}
+          push-to-registry: true
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-name: ghcr.io/aexhq/brain-browser-tools
+          subject-digest: ${{ steps.images.outputs.brain-browser-tools }}
           push-to-registry: true
 
   deploy-docs:

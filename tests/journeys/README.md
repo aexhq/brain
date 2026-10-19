@@ -1,6 +1,6 @@
 # End-to-end journey tests
 
-The journey suite (`tests/journeys/journeys.test.mjs`) verifies the compiled Brain server, the Pi runner, the example HTTP/SSE tool server, and both the TypeScript and Python SDKs against a local recording model provider. The journeys run without external API keys, cloud accounts, or Docker; initial SDK packaging installs pinned build tools from package registries.
+The journey suites verify the compiled Brain server, real Pi/Codex/OpenCode runners, external HTTP/SSE tools and both installed SDKs against recording model providers. Browser journeys use real Chromium, the same-origin gateway and the remote browser service. These local tests need no external API keys, cloud accounts or Docker; setup installs pinned packages and Chromium.
 
 ## Run the suite
 
@@ -13,7 +13,7 @@ node scripts/check.mjs
 To run only the journey suite (after building `runners/pi` and `sdks/typescript` and running `node scripts/package-sdks.mjs` to install the clients):
 
 ```powershell
-node --test tests/journeys/journeys.test.mjs
+node --test tests/journeys/journeys.test.mjs tests/journeys/adapters.test.mjs tests/journeys/browser.test.mjs
 ```
 
 Each test compiles the Go binaries into an isolated temporary directory and starts separate processes with their own ports, tokens, and storage directories. Crash tests terminate the server and runner processes directly and verify cleanup and recovery on both Linux and Windows.
@@ -22,6 +22,10 @@ Each test compiles the Go binaries into an isolated temporary directory and star
 
 | Journey | What it verifies |
 | --- | --- |
+| Choose a native harness | Exact/empty catalogs, external callbacks, tenant context and keys, shared peers, cancellation, host failure, incremental checkpoints, automatic compaction and passive restart/cold restore on Codex and OpenCode. |
+| Retain usage evidence | Acknowledged pre-dispatch starts, physical attempts where observable, cache/reasoning semantics, retries, rejection, partial streams, unknown outcomes and deduplicated crash reconciliation. Codex exposes explicit native-turn gaps. |
+| Attach a browser | User gesture, same-origin SSE, scoped composition, duplicate and late replies, closed tabs, denied origins, expiry, revocation and explicit rebind without action replay. |
+| Operate a remote browser | Real navigation, fill/click, read, screenshot and close; authenticated tenant/session context isolation and denied egress. Service tests cover redirects/subresources, capacity, idle expiry and cancellation. |
 | Configure a local server | `-check` validates config without starting the server; invalid settings and external schema `$ref`s are rejected. |
 | Start and continue a conversation | Create, read, list, send, and close; Unicode streaming, pagination, idempotency keys, and multi-turn model context. |
 | Authenticate and delegate inspection | Tenant isolation across routes, tenant-filtered tool catalogs, read-only vs. management tokens, and revocable `inspect_session` tokens. |
