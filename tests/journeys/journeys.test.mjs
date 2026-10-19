@@ -16,6 +16,30 @@ const retained = events => events.filter(event => event.cursor);
 const ids = events => events.map(event => event.id);
 const toolResults = events => events.filter(event => event.type === "tool.result");
 
+test("common host pool defaults and aggregate limits apply across installed factories", budget, async t => {
+  for (const limited of [false, true]) await t.test(limited ? "configured ceiling" : "no aggregate restriction", async t => {
+    const f = await fixture(t, binaries);
+    f.settings.harnesses.peer = { ...f.settings.harnesses.pi };
+    if (limited) f.settings.host_pool = { hosts: 1 };
+    await f.start();
+    const first = await f.api.create(config());
+    await f.api.send(first.id, message("First factory"));
+    await state(f.api, first.id);
+    const second = await f.api.create({ ...config(), harness: "peer" });
+    await f.api.send(second.id, message("Second factory"));
+    await state(f.api, second.id, limited ? "failed" : "idle");
+    assert.equal(f.model.requests.length, limited ? 1 : 2);
+    if (limited) {
+      assert.ok((await history(f.api, second.id)).some(event => event.type === "session.error"));
+      await f.api.close(first.id);
+      await f.api.resume(second.id);
+      await f.api.send(second.id, message("Capacity released"));
+      await state(f.api, second.id);
+      assert.equal(f.model.requests.length, 2);
+    }
+  });
+});
+
 test("private model keys reach Pi independently and survive restart and cold restore", budget, async t => {
   const keys = ["customer-one-private-key", "customer-two-private-key"];
   const f = await fixture(t, binaries, { persistence: {}, modelKeys: keys });

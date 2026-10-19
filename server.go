@@ -25,6 +25,7 @@ import (
 type Options struct {
 	Config       Config
 	Models       map[string]ModelProvider
+	HostPool     *HostPool
 	Tools        []ManagedTool
 	Authenticate func(*http.Request) (Grant, bool)
 	Harnesses    map[string]HarnessFactory
@@ -46,6 +47,20 @@ type Server struct {
 }
 
 func validate(o *Options) error {
+	poolLimits := o.Config.HostPool
+	if o.HostPool != nil {
+		if poolLimits != (harness.PoolLimits{}) {
+			return errors.New("host pool is declared twice")
+		}
+		poolLimits = o.HostPool.Limits()
+	}
+	if poolLimits != (harness.PoolLimits{}) {
+		for _, factory := range o.Harnesses {
+			if _, ok := factory.(*harness.ProcessFactory); !ok {
+				return errors.New("aggregate host limits require a process factory")
+			}
+		}
+	}
 	providers := make(map[string]config.Provider, len(o.Config.Providers)+len(o.Models))
 	for name, provider := range o.Config.Providers {
 		providers[name] = provider
@@ -155,12 +170,25 @@ func New(ctx context.Context, o Options) (_ *Server, err error) {
 	}
 	auth := api.NewAuth(o.Config.Tokens)
 	auth.Application = o.Authenticate
+	pool := o.HostPool
+	if pool == nil {
+		pool, err = harness.NewHostPool(o.Config.HostPool)
+		if err != nil {
+			return nil, err
+		}
+	}
+	s.close = append(s.close, pool.Close)
 	factories := map[string]harness.Factory{}
 	for name, r := range o.Config.Harnesses {
 		if f := o.Harnesses[name]; f != nil {
+			if process, ok := f.(*harness.ProcessFactory); ok {
+				if err := process.UseHostPool(pool); err != nil {
+					return nil, err
+				}
+			}
 			factories[name] = f
 		} else {
-			factories[name] = &harness.ProcessFactory{Command: r.Command, Steering: name == "pi", Logger: logger, MaxShared: r.MaxShared, MaxActiveTurns: r.MaxActiveTurns, MaxHosts: r.MaxHosts, MaxStarting: r.MaxStarting}
+			factories[name] = &harness.ProcessFactory{Pool: pool, Command: r.Command, Steering: name == "pi", Logger: logger, MaxShared: r.MaxShared, MaxActiveTurns: r.MaxActiveTurns, MaxHosts: r.MaxHosts, MaxStarting: r.MaxStarting}
 		}
 	}
 	l := o.Config.Limits

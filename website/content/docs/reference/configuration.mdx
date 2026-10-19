@@ -76,6 +76,18 @@ Each key in `harnesses` is the harness name clients pass in `POST /sessions` (fo
 
 Hosts use private working and home directories. Linux process guardians and Windows Job Objects own descendant lifetimes. Idle session eviction detaches only that session; the last detach closes the host. Global `limits.active` also bounds resident native session attachments.
 
+## Aggregate host pool
+
+`host_pool` adds optional ceilings across installed process factories. Omitted or zero values impose no additional aggregate restriction. Adapter-specific host occupancy, active-turn, host-count, and startup settings still apply. Capacity exhaustion rejects acquisition or dispatch with `overloaded`; Brain does not switch harnesses or replay tools.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `hosts` | `integer` | No | `0` | Maximum live native hosts across factories. |
+| `starting` | `integer` | No | `0` | Maximum native hosts awaiting their first attachment's readiness. |
+| `active_turns` | `integer` | No | `0` | Maximum turns dispatched across native hosts. |
+
+Values must be non-negative. In Go applications, supply `Options.HostPool` from `brain.NewHostPool(brain.HostPoolLimits{...})` instead of declaring `host_pool` in configuration. Aggregate limits require process factories; an opaque custom factory owns its own host lifecycle. Pool shutdown refuses new acquisitions and reaps owned process trees after sessions drain.
+
 ## Private credential keys
 
 ```json

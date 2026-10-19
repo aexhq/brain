@@ -43,6 +43,10 @@ type HarnessOptions = harness.Options
 type HarnessProvider = harness.Provider
 type NativeFile = core.NativeFile
 type ProcessFactory = harness.ProcessFactory
+type HostPool = harness.HostPool
+type HostPoolLimits = harness.PoolLimits
+
+func NewHostPool(limits HostPoolLimits) (*HostPool, error) { return harness.NewHostPool(limits) }
 
 func DefaultConfig() Config                         { return config.Default() }
 func LoadConfig(file string) (Config, error)        { return config.Load(file) }
