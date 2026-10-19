@@ -2,7 +2,7 @@
 import json
 import os
 
-from brain import Brain, RuntimeTool
+from brain import Brain, Model, Tool
 
 client = Brain(os.environ["JOURNEY_URL"], os.environ["JOURNEY_A"])
 calls = []
@@ -15,9 +15,9 @@ def run(arguments, context):
     context.progress({"stage": "read"})
     return {"answer": "Python callback"}
 
-tool = RuntimeTool("lookup", "Read private application data", {"type": "object"}, run,
+tool = Tool("lookup", "Read private application data", {"type": "object"}, run,
                    {"type": "object", "required": ["answer"]})
-session = client.create({"harness": "pi", "config": {"model": "openai/gpt-4.1-mini", "tools": []}}, runtime_tools=[tool])
+session = client.create(harness="pi", model=Model("openai/gpt-4.1-mini"), tools=[tool])
 assert [t["name"] for t in session["descriptors"]] == ["runtime_lookup"]
 sent = client.send(session["id"], {"type": "user.message", "text": 'CALL runtime_lookup {"session_id":"spoof"}'})
 stream = client.observe(session["id"])

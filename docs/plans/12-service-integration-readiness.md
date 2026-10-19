@@ -1,6 +1,6 @@
 # 12 Service integration readiness
 
-Implements [ADR 0004](../adr/0004-service-integration-readiness.md), accepted on 2026-10-19. Start with slice 1, then follow the dependencies below. The initial browser path is a same-origin gateway with SSE/HTTP; usage may be explicitly unknown; aggregate pool controls and hard OS limits are off by default. Language-specific SDK signatures are implementation choices within the ADR's semantics. This plan records outstanding work, not implemented behavior.
+Implements [ADR 0004](../adr/0004-service-integration-readiness.md), accepted on 2026-10-19. Slice 1 is implemented; continue with slice 2, then follow the dependencies below. The initial browser path is a same-origin gateway with SSE/HTTP; usage may be explicitly unknown; aggregate pool controls and hard OS limits are off by default. Language-specific SDK signatures are implementation choices within the ADR's semantics. Code and tests own implemented behavior; the remaining slices below describe outstanding work.
 
 ## Session handoff
 
@@ -12,7 +12,7 @@ The dependent Aex checkout is `C:/Users/luowe/workspace/aex_workspace/aex`; its 
 
 | Slice | Changes | Completion evidence |
 | --- | --- | --- |
-| 1. Authoring and private admission | Implement model/tool constructors for server and client roles; private model credentials alongside existing tool overrides; application authenticator; generated contracts and TS/Python clients | Startup defaults and authorized client keys; rejected override never falls back; encrypted restart/cold restore; examples require no hand-written binding or executor plumbing. |
+| 1. Authoring and private admission — complete | Model/tool constructors for server and client roles; private model credentials alongside existing tool overrides; application authenticator; generated contracts and TS/Python clients | `models_test.go` covers startup defaults, client-only keys, authorization, tenant-scoped references, encrypted restart/cold restore, rotation and revocation. Installed SDK tests and Pi journeys cover authoring, overlapping independent keys, passive recovery and no plaintext in local/native/archive state. |
 | 2. Common host ownership | Reuse shared native servers and per-host caps; factor acquisition, attachment reservation, drain and cleanup across installed factories; optional aggregate ceilings with no new default limit | Mixed harness factories, concurrent opens, unchanged per-host caps, no aggregate restriction when omitted, configured cap rejection and owned-process cleanup. |
 | 3. Model-request evidence | Extend runner/core events and retained history with request identity, purpose, terminal state, usage availability and snapshot semantics | Recording-provider fixture covers each enabled call path, repeated notifications, unknown usage and crash/restart deduplication; generated clients include new events. |
 | 4. Pi coverage | Wire credentials and request observation into ordinary generations, compaction and native retry paths | Current Pi tests plus separate keys with peers, compaction/retry receipts and no double-counted reasoning/cache tokens. |
@@ -42,3 +42,5 @@ Retain public native request identifiers only when supplied. Treat cumulative sn
 ## Delivery
 
 Run the repository's complete required checks for changed runtime components and selected integrations; missing provider credentials leave their evidence blocked. Documentation-only changes use documentation validation. CI remains the release gate. Do not disable old tests as a shortcut: port supported behavior to the new contract and remove retired behavior only with the selected clean scope change.
+
+Slice 1 passed `node scripts/check.mjs` on Windows, including generated contracts, installed SDK packages, Go tests/vet, Pi and service tests, journeys, platform/release tests, and the documentation build/tests. The strengthened overlapping-key and plaintext-state checks also pass through the installed-client journey suite. This is recording-provider evidence; CI and live-provider qualification retain their separate gates. Pi's compaction/retry credential coverage remains slice 4.

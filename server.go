@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/aexhq/brain/internal/api"
+	"github.com/aexhq/brain/internal/config"
 	"github.com/aexhq/brain/internal/core"
 	"github.com/aexhq/brain/internal/credentials"
 	"github.com/aexhq/brain/internal/harness"
@@ -22,11 +23,14 @@ import (
 )
 
 type Options struct {
-	Config    Config
-	Harnesses map[string]HarnessFactory
-	Providers map[string]ToolProvider
-	Keys      CredentialKeys
-	Logger    *slog.Logger
+	Config       Config
+	Models       map[string]ModelProvider
+	Tools        []ManagedTool
+	Authenticate func(*http.Request) (Grant, bool)
+	Harnesses    map[string]HarnessFactory
+	Providers    map[string]ToolProvider
+	Keys         CredentialKeys
+	Logger       *slog.Logger
 }
 
 // Server owns opened resources. Call Shutdown even when serving through Handler.
@@ -42,6 +46,18 @@ type Server struct {
 }
 
 func validate(o *Options) error {
+	providers := make(map[string]config.Provider, len(o.Config.Providers)+len(o.Models))
+	for name, provider := range o.Config.Providers {
+		providers[name] = provider
+	}
+	for name, provider := range o.Models {
+		if _, exists := providers[name]; exists {
+			return errors.New("model provider is declared twice: " + name)
+		}
+		providers[name] = config.Provider{APIKey: provider.APIKey, BaseURL: provider.BaseURL, API: provider.API}
+	}
+	o.Config.Providers = providers
+	o.Config.Tools = append(append([]ManagedTool{}, o.Config.Tools...), o.Tools...)
 	if o.Config.Harnesses == nil {
 		o.Config.Harnesses = map[string]ProcessConfig{}
 	}
@@ -50,7 +66,7 @@ func validate(o *Options) error {
 			o.Config.Harnesses[name] = ProcessConfig{}
 		}
 	}
-	if err := o.Config.ValidateFactories(o.Harnesses); err != nil {
+	if err := o.Config.ValidateApplication(o.Harnesses, o.Authenticate != nil); err != nil {
 		return err
 	}
 	return tools.ValidateProviders(o.Providers)
@@ -138,6 +154,7 @@ func New(ctx context.Context, o Options) (_ *Server, err error) {
 		interval = time.Duration(p.IntervalSeconds) * time.Second
 	}
 	auth := api.NewAuth(o.Config.Tokens)
+	auth.Application = o.Authenticate
 	factories := map[string]harness.Factory{}
 	for name, r := range o.Config.Harnesses {
 		if f := o.Harnesses[name]; f != nil {
@@ -147,7 +164,7 @@ func New(ctx context.Context, o Options) (_ *Server, err error) {
 		}
 	}
 	l := o.Config.Limits
-	s.engine, err = session.New(session.Options{Store: db, Keys: o.Keys, Tools: registry, Factories: factories, Provider: o.Config.Provider, MaxActive: l.Active, MaxLoaded: l.Loaded, MaxQueue: l.Queue, MaxInputBytes: l.InputBytes, MaxLogBytes: l.SessionBytes, Logger: logger, Metrics: metrics, Archive: archive, SyncQueue: queue, SyncInterval: interval, Inspection: func(s core.Session) (string, string, func()) {
+	s.engine, err = session.New(session.Options{Store: db, Keys: o.Keys, Tools: registry, Factories: factories, Provider: o.resolveModel, MaxActive: l.Active, MaxLoaded: l.Loaded, MaxQueue: l.Queue, MaxInputBytes: l.InputBytes, MaxLogBytes: l.SessionBytes, Logger: logger, Metrics: metrics, Archive: archive, SyncQueue: queue, SyncInterval: interval, Inspection: func(s core.Session) (string, string, func()) {
 		token, revoke := auth.Delegate(s)
 		return token, o.Config.PublicURL, revoke
 	}})

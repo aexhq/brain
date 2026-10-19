@@ -18,8 +18,8 @@ Brain is in active development. This page lists what you can use today, what's c
 
 Integrate services against one contract with Pi, Codex and OpenCode, server defaults and client-supplied model credentials, ordinary tool declarations, attached-tab and remote-browser tools, and retained model-usage evidence. Shared native servers keep their per-host caps; a common pool adds optional aggregate utilization controls without imposing another default limit. Platforms own session-inspection tools.
 
-- **Status:** Accepted for implementation. [ADR 0004](https://github.com/aexhq/brain/blob/main/docs/adr/0004-service-integration-readiness.md) records the decisions, research and implementation defaults. [Plan 12](https://github.com/aexhq/brain/blob/main/docs/plans/12-service-integration-readiness.md) orders the work.
-- **Today:** Use the implemented Pi/backend surface below for experiments. Complete the new integration gates before dependent services cut over; the current client still exposes low-level binding fields and lacks private per-session model credentials.
+- **Status:** Partly available: model/tool authoring constructors, private per-session model credentials, and application authentication hooks. [ADR 0004](https://github.com/aexhq/brain/blob/main/docs/adr/0004-service-integration-readiness.md) records the decisions, research and implementation defaults. [Plan 12](https://github.com/aexhq/brain/blob/main/docs/plans/12-service-integration-readiness.md) orders the remaining work, including common host ownership, request evidence, full adapter coverage, browser integrations, and release qualification.
+- **Today:** Use the Pi/backend surface and private model admission for experiments. Keep runtime function clients connected. Complete the new integration gates before dependent services cut over; local recording-provider evidence does not establish live-provider accounting coverage.
 
 ### Application SDK and session-bound integrations
 

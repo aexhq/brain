@@ -101,6 +101,9 @@
           },
           "harness": {
             "type": "string"
+          },
+          "model_credential": {
+            "$ref": "#/components/schemas/ModelCredential"
           }
         },
         "required": [
@@ -260,6 +263,19 @@
         "required": [
           "type"
         ],
+        "type": "object"
+      },
+      "ModelCredential": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key": {
+            "type": "string"
+          },
+          "reference": {
+            "type": "string"
+          }
+        },
+        "required": [],
         "type": "object"
       },
       "Reply": {

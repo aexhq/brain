@@ -16,14 +16,13 @@ npm install --save-exact @aexhq/brain@2.0.0
 Pass ordinary functions when creating a session. The SDK registers descriptors and opens a callback connection before admitting the session. Functions and captured credentials stay in your Node process.
 
 ```typescript
-import { Brain } from "@aexhq/brain";
+import { Brain, Model, Tool } from "@aexhq/brain";
 
 const client = new Brain("http://127.0.0.1:8080", process.env.BRAIN_API_KEY!);
 const session = await client.create({
   harness: "pi",
-  config: { model: "openai/gpt-4.1-mini", tools: [] },
-  runtime_transport: "sse",
-  runtime_tools: [{
+  model: Model("openai/gpt-4.1-mini"),
+  tools: [Tool({
     name: "lookup", description: "Read application data",
     input_schema: { type: "object", additionalProperties: false },
     output_schema: { type: "object", required: ["value"] },
@@ -32,7 +31,7 @@ const session = await client.create({
       await progress({ stage: "reading" });
       return { value: `data authorized for ${scope.tenant_id}` };
     },
-  }],
+  })],
 });
 await client.send(session.id, { type: "user.message", text: "Use runtime_lookup." });
 for await (const event of client.observe(session.id)) {
@@ -43,9 +42,15 @@ await client.close(session.id);
 await client.dispose();
 ```
 
-The alias `runtime` prefixes each function name. Return a JSON value; the SDK places it in `structured_content` and renders it as text. Throw an error to return a tool failure. Honor `signal` to stop local work after cancellation. Use `runtime_transport: "rpc"` for the WebSocket carrier.
+The alias `runtime` prefixes each function name. Return a JSON value; the SDK places it in `structured_content` and renders it as text. Throw an error to return a tool failure. Honor `signal` to stop local work after cancellation. The low-level wire input accepts `runtime_transport: "rpc"` for the WebSocket carrier.
 
 Keep the client process alive while callbacks are needed. `dispose()` closes its executors without closing saved sessions. After restart or restore, call `client.rebind(sessionID, matchingTools, "sse")` and explicitly resume/send as required by the session status. Rebinding changes the connection, never replays an action. An unavailable executor fails before dispatch; a connection lost after dispatch reports an unknown outcome. Reading history or observing events cannot execute callbacks.
+
+## Select models and managed tools
+
+Use `Model("provider/model", ApiKey(customerKey))` to supply a private API key, or `CredentialReference(reference)` for an application-authorized reference. Omit the second argument to select the startup default. Configure independent encryption keys on the server before supplying overrides. Rejected or unavailable overrides fail without switching to the default.
+
+Use `ManagedTool("lookup")` for an installed ordinary tool. For a resource provider, pass its operations and settings: `ManagedTool("storage", { alias: "docs", operations: ["read"], parameters: { bucket: "authorized-bucket" }, credential: { token: resourceToken } })`. The SDK lowers these declarations to the [HTTP contract](/docs/api); model and resource credentials stay outside public session configuration. Provider operations have an alias prefix such as `docs_read`.
 
 JavaScript and TypeScript use the same ESM package, including generated type declarations.
 No checkout or compilation is needed. Version 1 replaces the predecessor's incompatible

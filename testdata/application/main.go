@@ -29,8 +29,10 @@ func main() {
 		panic(err)
 	}
 	cfg.Tokens = []brain.Token{{Env: "CONSUMER_TOKEN", Grant: brain.Grant{Tenant: "one", Manage: true}}}
-	cfg.Providers = map[string]brain.ModelProvider{"test": {APIKeyEnv: "CONSUMER_TOKEN"}}
-	options := brain.Options{Config: cfg, Harnesses: map[string]brain.HarnessFactory{"custom": factory{}}}
+	options := brain.Options{Config: cfg, Models: map[string]brain.ModelProvider{"test": {APIKey: "startup-model-key"}}, Harnesses: map[string]brain.HarnessFactory{"custom": factory{}}}
+	options.Tools = []brain.ManagedTool{brain.NewTool(brain.Tool{Name: "hello", Description: "Greet", InputSchema: json.RawMessage(`{"type":"object"}`)}, []string{"one"}, func(context.Context, brain.ToolRequest, func(json.RawMessage)) brain.Result {
+		return brain.Result{Content: []brain.Content{{Type: "text", Text: "hello"}}}
+	})}
 	if err := brain.Validate(options); err != nil {
 		panic(err)
 	}

@@ -1,10 +1,28 @@
 import io
+import json
 import unittest
 from urllib.error import HTTPError
-from brain import Brain, BrainError
+from brain import Brain, BrainError, Model, ApiKey, CredentialReference, ManagedTool
 
 
 class ClientTests(unittest.TestCase):
+    def test_model_and_tool_authoring(self):
+        client = Brain("http://brain.test", "token")
+        bodies = []
+        class Opener:
+            def open(self, request, **kwargs):
+                bodies.append(json.loads(request.data))
+                return io.BytesIO(b'{"id":"session"}')
+        client._opener = Opener()
+        client.create(harness="pi", model=Model("test/model", ApiKey("customer-key")), tools=[
+            ManagedTool("lookup"), ManagedTool("data", operations=["read"], alias="records", parameters={"bucket":"one"}, credential={"token":"tool-key"})])
+        self.assertEqual(bodies, [{"harness":"pi", "config":{"model":"test/model", "tools":["lookup"], "bindings":[
+            {"alias":"records", "provider":"data", "operations":["read"], "parameters":{"bucket":"one"}}]},
+            "model_credential":{"api_key":"customer-key"}, "credentials":[{"binding":"records", "value":{"token":"tool-key"}}]}])
+        self.assertEqual(CredentialReference("tenant-key"), {"reference":"tenant-key"})
+        with self.assertRaisesRegex(ValueError, "require operations"):
+            client.create(harness="pi", model=Model("test/model"), tools=[ManagedTool("lookup", credential="ignored")])
+
     def test_no_retry_and_error_identity(self):
         client = Brain("http://brain.test", "token")
         class Opener:

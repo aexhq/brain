@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { access, appendFile, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { access, appendFile, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
-  Brain, build, call, config, delay, fixture, history, jsonBody, message,
+  Brain, Model, ApiKey, Tool, ManagedTool, build, call, config, delay, fixture, history, jsonBody, message,
   modelReply, rejects, removeTemp, result, root, state, tokens, until,
 } from "./fixture.mjs";
 
@@ -15,6 +15,75 @@ const completed = (input, event) => event.type === "session.status" && event.inp
 const retained = events => events.filter(event => event.cursor);
 const ids = events => events.map(event => event.id);
 const toolResults = events => events.filter(event => event.type === "tool.result");
+
+test("private model keys reach Pi independently and survive restart and cold restore", budget, async t => {
+  const keys = ["customer-one-private-key", "customer-two-private-key"];
+  const f = await fixture(t, binaries, { persistence: {}, modelKeys: keys });
+  f.env.JOURNEY_ENCRYPTION = Buffer.alloc(32, 7).toString("base64");
+  f.settings.credential_keys = { active: "test", keys: { test: "JOURNEY_ENCRYPTION" } };
+  await f.start();
+  const sessions = await Promise.all(keys.map(key => f.api.create({ harness: "pi", model: Model("openai/gpt-4.1-mini", ApiKey(key)), tools: [] })));
+  const peers = [];
+  f.model.respond = async (_input, response) => {
+    peers.push(response);
+    if (peers.length === 2) {
+      f.model.respond = undefined;
+      for (const peer of peers) modelReply(peer, "independent customer keys");
+    }
+  };
+  const run = async () => {
+    for (const s of sessions) await f.api.send(s.id, message("Use the selected model."));
+    await Promise.all(sessions.map(s => state(f.api, s.id)));
+    assert.deepEqual(f.model.authorization.slice(-2).toSorted(), keys.map(key => `Bearer ${key}`).toSorted());
+  };
+  await run();
+  await Promise.all(sessions.map(s => f.api.flush(s.id)));
+  await f.crash();
+  await f.start();
+  await run();
+  await f.crash();
+  f.settings.data_dir = path.join(f.dir, "cold-cache");
+  await f.start();
+  const before = f.model.requests.length;
+  for (const s of sessions) { await f.api.get(s.id); await f.api.resume(s.id); }
+  assert.equal(f.model.requests.length, before, "recovery called the model");
+  await run();
+  for (const s of sessions) {
+    const publicData = JSON.stringify([await f.api.get(s.id), await history(f.api, s.id)]);
+    for (const key of keys) { assert.ok(!publicData.includes(key)); assert.ok(!f.logs.includes(key)); }
+  }
+  await f.crash();
+  const inspect = async directory => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) await inspect(file);
+      else {
+        const data = await readFile(file);
+        for (const key of keys) assert.ok(!data.includes(Buffer.from(key)), `plaintext provider key in ${file}`);
+      }
+    }
+  };
+  await inspect(f.dir);
+});
+
+test("authoring constructors compose a managed service and a connected client function", budget, async t => {
+  const f = await fixture(t, binaries);
+  await f.tool("lookup", async (_req, res) => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(result("managed"))); });
+  await f.start();
+  let calls = 0;
+  const s = await f.api.create({ harness: "pi", model: Model("openai/gpt-4.1-mini"), tools: [
+    ManagedTool("lookup"), Tool({ name: "local", description: "Read client data", input_schema: { type: "object" }, run() { calls++; return { value: "local" }; } }),
+  ] });
+  assert.deepEqual(s.descriptors.map(tool => tool.name), ["lookup", "runtime_local"]);
+  await f.api.send(s.id, message(call("runtime_local")));
+  await state(f.api, s.id);
+  assert.equal(calls, 1);
+  await f.api.send(s.id, message(call("lookup")));
+  await state(f.api, s.id);
+  assert.equal(toolResults(await history(f.api, s.id)).length, 2);
+  await f.api.close(s.id);
+  await f.api.dispose();
+});
 
 test("installed Python SDK owns its runtime function connection", budget, async t => {
   const f = await fixture(t, binaries);

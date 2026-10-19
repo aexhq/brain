@@ -14,7 +14,6 @@ import (
 type Config = config.Config
 type Limits = config.Limits
 type Token = config.Token
-type ModelProvider = config.Provider
 type ProcessConfig = config.Runner
 type Persistence = persistence.Settings
 type Grant = core.Grant
@@ -29,6 +28,7 @@ type Result = core.Result
 type Content = core.Content
 type CreateSession = core.CreateSession
 type CredentialInput = core.CredentialInput
+type ModelCredential = core.ModelCredential
 type CredentialKeys = credentials.Keys
 type KeyConfig = config.KeyConfig
 type ManagedTool = tools.Binding

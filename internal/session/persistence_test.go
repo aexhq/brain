@@ -27,7 +27,9 @@ func persistentEngine(t *testing.T, objects persistence.Objects) (*Engine, *test
 		t.Fatal(err)
 	}
 	f := &testFactory{started: make(chan string, 32)}
-	e, err := New(Options{Store: db, Tools: r, Factories: map[string]harness.Factory{"pi": f}, Provider: func(string) (harness.Provider, error) { return harness.Provider{}, nil }, MaxActive: 1, MaxLoaded: 2, MaxQueue: 2, MaxInputBytes: 4096, MaxLogBytes: 16 << 20, Archive: &persistence.Archive{Objects: objects, MaxSessionBytes: 16 << 20}, SyncQueue: 2, SyncInterval: 20 * time.Millisecond, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	e, err := New(Options{Store: db, Tools: r, Factories: map[string]harness.Factory{"pi": f}, Provider: func(context.Context, core.Session, *core.ModelCredential) (harness.Provider, error) {
+		return harness.Provider{}, nil
+	}, MaxActive: 1, MaxLoaded: 2, MaxQueue: 2, MaxInputBytes: 4096, MaxLogBytes: 16 << 20, Archive: &persistence.Archive{Objects: objects, MaxSessionBytes: 16 << 20}, SyncQueue: 2, SyncInterval: 20 * time.Millisecond, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -29,6 +29,7 @@ export interface Content {
 }
 
 export interface CreateSession {
+  model_credential?: ModelCredential;
   harness: string;
   config: SessionConfig;
   credentials?: CredentialInput[];
@@ -79,6 +80,11 @@ export interface Input {
   text?: string;
   delivery?: string;
   key?: string;
+}
+
+export interface ModelCredential {
+  api_key?: string;
+  reference?: string;
 }
 
 export interface Reply {

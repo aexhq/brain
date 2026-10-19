@@ -1,13 +1,16 @@
 import { RuntimeExecutor, type RuntimeTool, type RuntimeTransport } from "./runtime.js";
+import { lower, type SessionOptions } from "./authoring.js";
+export { ApiKey, CredentialReference, Model, Tool, ManagedTool } from "./authoring.js";
+export type { SessionOptions, ManagedSelection } from "./authoring.js";
 export type { RuntimeTool, RuntimeContext, RuntimeTransport } from "./runtime.js";
-import { routes, type CreateSession, type Session, type Input, type Event, type Tool, type SyncStatus } from "./generated.js";
+import { routes, type CreateSession, type Session, type Input, type Event, type Tool as ToolDescriptor, type SyncStatus } from "./generated.js";
 export type * from "./generated.js";
 
 export class BrainError extends Error {
   constructor(readonly status: number, readonly code: string, message: string, readonly requestId?: string) { super(message); }
 }
 
-export type SessionInput = CreateSession & { runtime_tools?: RuntimeTool[]; runtime_transport?: RuntimeTransport };
+export type SessionInput = (CreateSession & { runtime_tools?: RuntimeTool[]; runtime_transport?: RuntimeTransport }) | SessionOptions;
 
 export class Brain {
   private executors = new Map<string, RuntimeExecutor>();
@@ -28,7 +31,8 @@ export class Brain {
     throw new BrainError(response.status, body.error?.code ?? "http_error", body.error?.message ?? response.statusText, body.request_id);
   }
   async create(input: SessionInput, signal?: AbortSignal): Promise<Session> {
-    const { runtime_tools, runtime_transport, ...wire } = input;
+    const normalized: CreateSession & { runtime_tools?: RuntimeTool[]; runtime_transport?: RuntimeTransport } = "config" in input ? input : (() => { const { wire, runtime } = lower(input); return { ...wire, runtime_tools: runtime }; })();
+    const { runtime_tools, runtime_transport, ...wire } = normalized;
     let executor: RuntimeExecutor | undefined;
     try {
       if (runtime_tools?.length) {
@@ -59,7 +63,7 @@ export class Brain {
   async flush(id: string, signal = AbortSignal.timeout(60000)): Promise<SyncStatus> { return (await this.request("flush", id, undefined, undefined, signal)).json(); }
   async sync(id: string): Promise<SyncStatus> { return (await this.request("sync", id)).json(); }
   async restore(id: string, checkpoint: string, signal = AbortSignal.timeout(60000)): Promise<Session> { return (await this.request("restore", id, { checkpoint }, undefined, signal)).json(); }
-  async catalog(): Promise<{ tools: Tool[] }> { return (await this.request("catalog")).json(); }
+  async catalog(): Promise<{ tools: ToolDescriptor[] }> { return (await this.request("catalog")).json(); }
   async history(id: string, after = "", limit = 100): Promise<{ events: Event[]; next_cursor: string }> {
     return (await this.request("events", id, undefined, new URLSearchParams({ after, limit: String(limit) }))).json();
   }

@@ -32,7 +32,7 @@ type Options struct {
 	Keys          credentials.Keys
 	Tools         ToolExecutor
 	Factories     map[string]harness.Factory
-	Provider      func(string) (harness.Provider, error)
+	Provider      func(context.Context, core.Session, *core.ModelCredential) (harness.Provider, error)
 	MaxActive     int
 	MaxLoaded     int
 	MaxQueue      int
@@ -354,9 +354,6 @@ func (e *Engine) Create(ctx context.Context, g core.Grant, input core.CreateSess
 	default:
 		return core.Session{}, core.E(core.Invalid, "invalid reasoning effort")
 	}
-	if _, err := e.opts.Provider(input.Config.Model); err != nil {
-		return core.Session{}, err
-	}
 	e.mu.Lock()
 	closed := e.closed
 	e.mu.Unlock()
@@ -380,12 +377,27 @@ func (e *Engine) Create(ctx context.Context, g core.Grant, input core.CreateSess
 		s.Config.Tools = []string{}
 	}
 	var err error
+	if input.ModelCredential != nil {
+		s.CredentialBindings = append(s.CredentialBindings, credentials.ModelBinding)
+		value, _ := json.Marshal(input.ModelCredential)
+		// Copy before appending: admission must not mutate the caller's inputs.
+		input.Credentials = append(slices.Clone(input.Credentials), core.CredentialInput{Binding: credentials.ModelBinding, Value: value})
+	}
+	for _, credential := range input.Credentials {
+		if credential.Binding == credentials.ModelBinding && input.ModelCredential == nil {
+			return core.Session{}, core.E(core.Invalid, "model credentials require model_credential")
+		}
+	}
 	s.Credentials, err = credentials.Seal(ctx, e.opts.Keys, s, input.Credentials)
 	if err != nil {
 		return core.Session{}, err
 	}
+	s.CredentialBindings = nil
 	for _, record := range s.Credentials {
 		s.CredentialBindings = append(s.CredentialBindings, record.Binding)
+	}
+	if _, err := e.modelProvider(ctx, s); err != nil {
+		return core.Session{}, err
 	}
 	if err := e.opts.Tools.Bind(ctx, &s); err != nil {
 		return core.Session{}, err
@@ -656,7 +668,7 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 		a.restore = false
 		a.mu.Unlock()
 	}
-	provider, err := e.opts.Provider(cfg.Model)
+	provider, err := e.modelProvider(ctx, metadata)
 	if err != nil {
 		return err
 	}

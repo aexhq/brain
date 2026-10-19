@@ -10,9 +10,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { promisify } from "node:util";
 const requireSDK = createRequire(new URL("../../bin/sdk-consumer/package.json", import.meta.url));
-const { Brain, BrainError } = await import(pathToFileURL(requireSDK.resolve("@aexhq/brain")).href);
+const { Brain, BrainError, Model, ApiKey, CredentialReference, Tool, ManagedTool } = await import(pathToFileURL(requireSDK.resolve("@aexhq/brain")).href);
 
-export { Brain, BrainError, delay };
+export { Brain, BrainError, Model, ApiKey, CredentialReference, Tool, ManagedTool, delay };
 export const root = fileURLToPath(new URL("../../", import.meta.url));
 export const tokens = {
   a: "journey-tenant-a-0000000000000000", b: "journey-tenant-b-0000000000000000",
@@ -198,10 +198,11 @@ export async function fixture(t, binaries, options = {}) {
   const reserved = await localHTTP(() => {});
   const url = reserved.url;
   await reserved.close();
-  const model = { requests: [], respond: undefined };
+  const model = { requests: [], authorization: [], respond: undefined };
   const provider = await listen(async (req, res) => {
     assert.equal(req.url, "/v1/chat/completions");
-    assert.equal(req.headers.authorization, "Bearer local-recording-provider-key");
+    assert.ok((options.modelKeys ?? ["local-recording-provider-key"]).some(key => req.headers.authorization === `Bearer ${key}`), "unexpected provider credential");
+    model.authorization.push(req.headers.authorization);
     const input = await jsonBody(req);
     model.requests.push(input);
     if (model.respond) { await model.respond(input, res); return; }

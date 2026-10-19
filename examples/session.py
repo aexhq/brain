@@ -3,10 +3,10 @@ import os
 import sys
 import uuid
 
-from brain import Brain
+from brain import Brain, Model
 
 brain = Brain(os.environ.get("BRAIN_URL", "http://127.0.0.1:8080"), os.environ["BRAIN_API_KEY"])
-session = brain.create({"harness": "pi", "config": {"model": os.environ.get("BRAIN_MODEL", "openai/gpt-4.1-mini"), "tools": []}})
+session = brain.create(harness="pi", model=Model(os.environ.get("BRAIN_MODEL", "openai/gpt-4.1-mini")), tools=[])
 print("Session:", session["id"])
 message = brain.send(session["id"], {"type": "user.message", "text": " ".join(sys.argv[1:]) or "Say hello.", "key": str(uuid.uuid4())})
 stream = brain.observe(session["id"])

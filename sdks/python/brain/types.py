@@ -27,6 +27,7 @@ class Content(TypedDict):
     mime_type: NotRequired[str]
 
 class CreateSession(TypedDict):
+    model_credential: NotRequired[ModelCredential]
     harness: str
     config: SessionConfig
     credentials: NotRequired[list[CredentialInput]]
@@ -69,6 +70,10 @@ class Input(TypedDict):
     text: NotRequired[str]
     delivery: NotRequired[str]
     key: NotRequired[str]
+
+class ModelCredential(TypedDict):
+    api_key: NotRequired[str]
+    reference: NotRequired[str]
 
 class Reply(TypedDict):
     connection: str

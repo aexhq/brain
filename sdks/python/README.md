@@ -7,12 +7,10 @@ there are no runtime dependencies. Import the client from `brain` and generated
 ```python
 import os
 from contextlib import closing
-from brain import Brain
+from brain import Brain, Model
 
 brain = Brain('http://127.0.0.1:8080', os.environ['BRAIN_API_KEY'])
-session = brain.create({
-    'harness': 'pi', 'config': {'model': 'openai/gpt-4.1-mini', 'tools': []},
-})
+session = brain.create(harness='pi', model=Model('openai/gpt-4.1-mini'), tools=[])
 message = brain.send(session['id'], {'type': 'user.message', 'text': 'Hello!'})
 with closing(brain.observe(session['id'])) as events:
     for event in events:
@@ -31,8 +29,9 @@ stream reads. Requests are never automatically retried. `BrainError` preserves t
 HTTP status, server error code, and request ID. Closing the observer does not stop
 execution; call `interrupt(session_id)` for that.
 
-Pass `runtime_tools=[RuntimeTool(...)]` to `create()` to run Python functions in
-your client over an SDK-owned SSE/HTTP connection. Keep the process alive, honor
+Pass `tools=[Tool(...)]` to `create()` to run Python functions in your client. Select installed tools with `ManagedTool(name)`. Supply private model credentials with `Model(name, ApiKey(key))` or `CredentialReference(reference)`; the server needs independent encryption keys.
+
+The SDK owns the SSE/HTTP connection. Keep the process alive, honor
 `context.cancelled`, and call `dispose()` on shutdown. Use `rebind()` after recovery;
 callbacks are never automatically replayed.
 

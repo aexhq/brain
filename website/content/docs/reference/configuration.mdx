@@ -88,11 +88,11 @@ Private overrides are authenticated encrypted SQL records, bound to tenant, sess
 
 ## Model providers (`providers`)
 
-Each key in `providers` matches the `provider` prefix in `config.model` (`provider/model`). Every configured provider must have its `api_key_env` environment variable set and non-empty when Brain starts. See [Models & providers](/docs/reference/models).
+Each key in `providers` matches the `provider` prefix in `config.model` (`provider/model`). A configured `api_key_env` must name a non-empty environment variable at startup. Omit it to require a private session credential. See [Models & providers](/docs/reference/models).
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `api_key_env` | `string` | Yes | — | Environment variable containing the provider API key. Passed to the harness runner via stdio `open` options. |
+| `api_key_env` | `string` | No | `""` | Environment variable containing the startup default API key. Passed to the harness runner via stdio `open` options when no session override is supplied. |
 | `base_url` | `string` | No | `""` | Optional `http` or `https` base URL override for proxies or compatible endpoints (must not include user credentials). |
 | `api` | `string` | No | `""` | Optional transport override in the Pi model registry (for example, `"openai-completions"`). |
 

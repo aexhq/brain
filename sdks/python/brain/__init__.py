@@ -11,8 +11,9 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from .types import CreateSession, Event, EventList, Input, Session, SessionList, SyncStatus, ToolCatalog
 
 from .runtime import RuntimeContext, RuntimeExecutor, RuntimeTool
+from .authoring import ApiKey, CredentialReference, Model, Tool, ManagedTool, lower
 
-__all__ = ["Brain", "BrainError", "RuntimeTool", "RuntimeContext"]
+__all__ = ["Brain", "BrainError", "RuntimeTool", "RuntimeContext", "ApiKey", "CredentialReference", "Model", "Tool", "ManagedTool"]
 
 
 class BrainError(Exception):
@@ -53,7 +54,17 @@ class Brain:
         with self._open(method, path, body) as response:
             return json.load(response)
 
-    def create(self, config: CreateSession, *, runtime_tools: list[RuntimeTool] | None = None) -> Session:
+    def create(self, config: CreateSession | None = None, *, harness: str | None = None,
+               model: Model | None = None, tools: list[ManagedTool | RuntimeTool] | None = None,
+               instructions: str | None = None, reasoning_effort: str | None = None,
+               runtime_tools: list[RuntimeTool] | None = None) -> Session:
+        if config is None:
+            if harness is None or model is None:
+                raise ValueError("harness and model are required")
+            config, declared = lower(harness, model, tools or [], instructions, reasoning_effort)
+            runtime_tools = [*declared, *(runtime_tools or [])]
+        elif any(value is not None for value in (harness, model, tools, instructions, reasoning_effort)):
+            raise ValueError("choose wire input or model/tool declarations")
         executor = None
         try:
             if runtime_tools:

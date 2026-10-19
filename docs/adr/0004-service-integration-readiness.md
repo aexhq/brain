@@ -1,6 +1,6 @@
 # ADR 0004 Service integration readiness
 
-- **Status:** Accepted for implementation on 2026-10-19; implementation pending.
+- **Status:** Accepted for implementation on 2026-10-19; implementation in progress under [plan 12](../plans/12-service-integration-readiness.md).
 - **Extends:** [ADR 0003](0003-application-sdk-and-session-bindings.md).
 - **Baseline:** Brain `850f90b1`. Pi packages are pinned to `1.2.0`; existing feasibility probes cover Codex `0.163.0` and OpenCode `2.0.30`.
 

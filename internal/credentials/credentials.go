@@ -17,6 +17,9 @@ type Keys interface {
 	Get(context.Context, string) ([]byte, error)
 }
 
+// ModelBinding is a private storage namespace, outside the tool alias syntax.
+const ModelBinding = "$model"
+
 func aead(key []byte) (cipher.AEAD, error) {
 	if len(key) != 32 {
 		return nil, errors.New("credential key must contain 32 bytes")
@@ -52,6 +55,11 @@ func Seal(ctx context.Context, keys Keys, s core.Session, inputs []core.Credenti
 		return nil, err
 	}
 	allowed := map[string]bool{}
+	for _, binding := range s.CredentialBindings {
+		if binding == ModelBinding {
+			allowed[binding] = true
+		}
+	}
 	for _, b := range s.Config.Bindings {
 		if b.Provider != "" {
 			allowed[b.Alias] = true
