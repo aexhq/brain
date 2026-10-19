@@ -6,6 +6,7 @@ const python = path.resolve("bin/sdk-python", process.platform === "win32" ? "Sc
 const commands = [
   ["npm", ["--prefix", "runners/pi", "run", "build"]],
   ["npm", ["--prefix", "runners/codex", "run", "build"]],
+  ["npm", ["--prefix", "runners/opencode", "run", "build"]],
   ["npm", ["--prefix", "sdks/typescript", "run", "build"]],
   ["go", ["run", "./cmd/generate", "-check"]],
   ["node", ["scripts/package-sdks.mjs"]],

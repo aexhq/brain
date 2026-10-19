@@ -55,3 +55,20 @@ func Codex(command []string) *ProcessFactory {
 		return nil
 	}}
 }
+
+func OpenCode(command []string) *ProcessFactory {
+	return &ProcessFactory{Command: command, MaxShared: 8, MaxActiveTurns: 8, Validate: func(config core.Config, provider Provider) error {
+		if provider.API != "" && provider.API != "openai-responses" {
+			return core.E(core.Unsupported, "OpenCode requires the Responses transport")
+		}
+		if config.ReasoningEffort != "" && config.ReasoningEffort != "off" {
+			return core.E(core.Unsupported, "OpenCode reasoning effort is not configured")
+		}
+		for _, name := range config.Tools {
+			if name == "execute" {
+				return core.E(core.Unsupported, "OpenCode reserves the execute tool name")
+			}
+		}
+		return nil
+	}}
+}

@@ -83,6 +83,7 @@ jobs:
           python-version: '3.12'
       - run: npm --prefix runners/pi ci --ignore-scripts
       - run: npm --prefix runners/codex ci --ignore-scripts
+      - run: npm --prefix runners/opencode ci --ignore-scripts
       - run: npm --prefix sdks/typescript ci --ignore-scripts
       - run: npm --prefix website ci --ignore-scripts
       - run: npm --prefix services/sandbox ci --ignore-scripts
@@ -132,6 +133,7 @@ jobs:
           node-version: '24'
       - run: npm --prefix runners/pi ci --ignore-scripts
       - run: npm --prefix runners/codex ci --ignore-scripts
+      - run: npm --prefix runners/opencode ci --ignore-scripts
       - run: npm --prefix runners/pi run build
       - run: go test -race ./...
 

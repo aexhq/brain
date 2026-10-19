@@ -9,6 +9,10 @@ WORKDIR /build/runners/codex
 COPY runners/codex/package*.json ./
 RUN npm ci --ignore-scripts
 COPY runners/codex/src ./src
+WORKDIR /build/runners/opencode
+COPY runners/opencode/package*.json ./
+RUN npm ci --ignore-scripts
+COPY runners/opencode/src ./src
 COPY runners/common /build/runners/common
 
 FROM golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS server

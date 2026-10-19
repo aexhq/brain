@@ -13,7 +13,13 @@ import (
 	"github.com/aexhq/brain/internal/core"
 )
 
-func TestCodexOwnedHostFailureWithConcurrentNativeThreads(t *testing.T) {
+func TestNativeOwnedHostFailureWithConcurrentSessions(t *testing.T) {
+	for _, name := range []string{"codex", "opencode"} {
+		t.Run(name, func(t *testing.T) { testNativeOwnedHostFailure(t, name) })
+	}
+}
+
+func testNativeOwnedHostFailure(t *testing.T, name string) {
 	started := make(chan struct{}, 4)
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
@@ -21,7 +27,7 @@ func TestCodexOwnedHostFailureWithConcurrentNativeThreads(t *testing.T) {
 		<-r.Context().Done()
 	}))
 	defer provider.Close()
-	script, err := filepath.Abs("../../runners/codex/src/main.mjs")
+	script, err := filepath.Abs("../../runners/" + name + "/src/main.mjs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,6 +37,9 @@ func TestCodexOwnedHostFailureWithConcurrentNativeThreads(t *testing.T) {
 	}
 	defer pool.Close()
 	f := Codex([]string{"node", script})
+	if name == "opencode" {
+		f = OpenCode([]string{"node", script})
+	}
 	f.Pool = pool
 	f.MaxShared = 2
 	f.MaxActiveTurns = 2

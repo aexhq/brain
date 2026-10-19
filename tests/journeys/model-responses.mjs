@@ -2,6 +2,12 @@ import { randomUUID } from "node:crypto";
 
 // A complete Responses SSE lifecycle consumed by the actual pinned adapters.
 export function responsesReply(res, answer, usage, model = "gpt-4.1-mini") {
+  if (res.modelStreaming === false) {
+    const item = typeof answer === "string" ? { id: "msg_" + randomUUID(), type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: answer, annotations: [] }] } : { id: "fc_" + randomUUID(), type: "function_call", call_id: "call_" + randomUUID(), name: answer.name, arguments: JSON.stringify(answer.args), status: "completed" };
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ id: "resp_" + randomUUID(), object: "response", created_at: 1, status: "completed", model, output: [item], ...(usage ? { usage } : {}) }));
+    return;
+  }
   res.writeHead(200, { "Content-Type": "text/event-stream" });
   let sequence = 0;
   const send = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, sequence_number: sequence++, ...data })}\n\n`);

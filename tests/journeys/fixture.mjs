@@ -206,6 +206,7 @@ export async function fixture(t, binaries, options = {}) {
     assert.ok((options.modelKeys ?? ["local-recording-provider-key"]).some(key => req.headers.authorization === `Bearer ${key}`), "unexpected provider credential");
     model.authorization.push(req.headers.authorization);
     const input = await jsonBody(req);
+    res.modelStreaming = input.stream;
     model.requests.push(input);
     if (model.respond) { await model.respond(input, res, req); return; }
     const last = (input.messages ?? input.input).at(-1);
