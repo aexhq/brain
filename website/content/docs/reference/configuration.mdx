@@ -46,6 +46,7 @@ Configuration files are limited to 4 MiB. Unknown JSON fields and trailing JSON 
 | `harnesses` | `Record<string, Runner>` | Required | Map of harness name (`1`–`64` characters) to child process command (see [`harnesses`](#harnesses-harnesses)). At least one harness is required. |
 | `providers` | `Record<string, Provider>` | `{}` | Map of model provider prefix to credentials and optional transport overrides (see [`providers`](#model-providers-providers)). |
 | `tools` | `Binding[]` | `[]` | Array of external HTTP, SSE, or MCP tool bindings (see [`tools`](#external-tools-tools)). |
+| `host_pool` | `object` | `{}` | Optional aggregate host, startup and active-turn ceilings across installed process factories. |
 | `limits` | `Limits` | See below | In-memory, disk, queue, and SSE subscriber bounds (see [`limits`](#resource-limits-limits)). |
 | `persistence` | `Settings` | `null` | Optional background checkpoint storage and session index settings (see [`persistence`](#external-persistence-persistence)). |
 | `credential_keys` | `object` | `null` | Independent encryption key configuration for private session overrides. |

@@ -85,6 +85,8 @@ Go runners call `Options.Event("model.request", data)` synchronously and check i
 
 ## Codex App Server adapter
 
+Install the workspace dependencies with `node scripts/setup.mjs`. Start a three-harness server with `go run ./cmd/brain -config examples/harnesses.json` after setting `BRAIN_API_KEY` and `OPENAI_API_KEY`. Select `pi`, `codex` or `opencode` in the same session-creation request. Use the [integration status](https://github.com/aexhq/brain/blob/main/docs/roadmap.md#integration-status) to distinguish local and live-service evidence.
+
 Configure `harnesses.codex.command` as `["node", "runners/codex/src/main.mjs"]` and select a provider using the `openai-responses` transport. The installed package pins Codex `0.163.0`. `brain.Codex(command)` installs its Go process-factory policy. Unsupported transports and reasoning selections fail admission.
 
 One owned native App Server shares compatible threads. Hosts are partitioned by a private credential-context digest; the key is supplied in the child environment without mutating the Brain or runner process environment. Dynamic tools are the exact Brain catalog, environment access is disabled, and the pinned exclusion settings remove native local tools and question/approval capabilities.

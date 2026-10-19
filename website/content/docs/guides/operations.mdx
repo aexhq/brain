@@ -93,13 +93,19 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 
 To check a locally built image, run `node scripts/container-smoke.mjs`. It starts `brain:local-dev` with a recording model provider, so it needs no model credentials.
 
-CI publishes tested images for every commit to `main` as `ghcr.io/aexhq/brain` and `ghcr.io/aexhq/brain-sandbox-tools`, tagged `sha-<commit>` and `main`, with provenance attestations. Pin production images by digest, and use the SDK version that matches your server commit.
+CI publishes the tested Brain, sandbox-tools and browser-tools images under `ghcr.io/aexhq/`, tagged `sha-<commit>` and `main`, with provenance attestations. Pin production images by digest, and use the SDK package built from your server commit.
 
 ## Route sessions across instances
 
 Each session must have exactly one owning Brain instance at a time. Your routing layer sends every request for a session to its owner and handles failover.
 
 On `SIGINT` or `SIGTERM`, Brain stops accepting new work, interrupts running turns, ends open event streams, and exits within about 20 seconds. Sessions whose turns were interrupted need a resume before they accept new messages. To move sessions to another instance, upload their checkpoints first; see [Persistence & recovery](/docs/guides/persistence) for the handoff steps.
+
+## Coordinate retention and deletion
+
+Treat closing a session as ending execution. Your platform owns physical deletion and its acknowledgement. Stop routing new work, close execution and callbacks, revoke application/browser grants, and stop checkpoint publication before removing retained data. Apply the policy to local session files, metadata indexes, checkpoint archives and external tool-service copies together. Fence an old owner before restoring or deleting its session elsewhere.
+
+Use fresh state for a coordinated contract cutover. Keep any old backup under your platform's retention policy; the new runtime does not import old formats or continue their executions. Implement model-visible discovery and inspection in the platform using [authorized metadata/history reads](/docs/sdks/application#connect-managed-services).
 
 <Callout type="info" title="Size your deployment">
 Load-test with your own workload before you size a fleet.

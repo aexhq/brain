@@ -29,6 +29,7 @@ export class RunnerSession {
   constructor(attachment) { this.attachment = attachment; }
   event(event, data) { send({ attachment: this.attachment, turn: this.turn, event, data }); }
   request(method, params) {
+    if (this.failure) return Promise.reject(this.failure);
     const id = identity(), turn = this.turn;
     return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject, turn }); send({ attachment: this.attachment, turn, id, method, params }); });
   }
@@ -38,7 +39,7 @@ export class RunnerSession {
     const pending = this.pending.get(frame.id);
     if (!pending || frame.turn !== pending.turn) fatal();
     this.pending.delete(frame.id);
-    if (frame.error) pending.reject(new Error("Brain callback failed")); else pending.resolve(frame.result);
+    if (frame.error) { this.failure = new Error("Brain callback failed"); pending.reject(this.failure); } else pending.resolve(frame.result);
   }
 }
 
@@ -58,8 +59,8 @@ export function serve(create) {
       if (frame.method === "open") result = await session.open(frame.params);
       else if (frame.method === "prompt") {
         if (session.busy || !frame.turn) throw new Error("session already active");
-        session.busy = true; session.turn = frame.turn;
-        try { result = await session.prompt(frame.params.text); } finally { session.busy = false; }
+        session.busy = true; session.turn = frame.turn; session.failure = undefined;
+        try { result = await session.prompt(frame.params.text); if (session.failure) throw session.failure; } finally { session.busy = false; }
       } else if (frame.method === "interrupt") result = await session.interrupt();
       else if (frame.method === "checkpoint" || frame.method === "detach") {
         if (session.busy || session.pending.size) throw new Error("session is active");
@@ -68,6 +69,7 @@ export function serve(create) {
       } else throw new Error("unsupported native operation");
       send({ attachment: frame.attachment, turn: frame.turn, id: frame.id, result: result ?? {} });
     } catch (error) {
+      if (session.failure) error = session.failure;
       send({ attachment: frame.attachment, turn: frame.turn, id: frame.id, error: { code: ["provider_error", "unsupported", "invalid_request", "forbidden", "overloaded"].includes(error.code) ? error.code : "brain_error", message: error.safeMessage ?? `native ${frame.method} failed: ${error.name}/${error.code ?? ""}` } });
     } finally { if (frame.method === "prompt") session.turn = ""; }
   });

@@ -26,7 +26,7 @@ Model validation happens in two steps:
 2. **Turn execution (Pi runner startup):** When the first `user.message` starts the Pi runner, the runner looks up `provider` and `model` in its pinned offline [Model catalog](/docs/reference/model-catalog) (`allowModelNetwork: false`, `refreshOnCreate: false`). If the model ID is not in the catalog or the harness falls back to a different model, the turn fails with a `session.error` (`brain_error`) event.
 
 <Callout type="info" title="Explicit credentials only">
-Brain authenticates providers with API keys. It passes the resolved key to the runner over stdio in an in-memory credential store (`InMemoryCredentialStore`) and strips ambient host environment variables when spawning child processes.
+Brain authenticates providers with explicit API keys. It passes the resolved key privately to the selected runner and strips ambient authentication environment variables when spawning harness processes. Credential scope follows the selected [adapter](/docs/adapters/harness).
 </Callout>
 
 ## Configure providers
@@ -66,6 +66,8 @@ Set `config.reasoning_effort` when creating a session to control extended thinki
 | `"off"` | Default when `reasoning_effort` is omitted or `""`. Disables extended reasoning. |
 | `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"` | Requests the corresponding thinking level from the Pi harness. |
 
+Codex accepts `off`, `minimal`, `low`, `medium`, `high` and `xhigh`; `max` returns `422 unsupported` at admission. OpenCode accepts `off` and rejects other effort selections at admission. Empty values normalize to `off`.
+
 - Any value outside this set is rejected at session creation with `400 invalid_request`.
 - When the Pi runner opens the session, it checks `session.thinkingLevel === options.config.reasoning_effort`. If the selected model does not support the requested reasoning effort, the runner fails the turn explicitly with `session.error` (`"requested reasoning effort is unsupported by the model"`) rather than silently downgrading it.
 
@@ -88,6 +90,8 @@ Each entry in `providers` accepts optional `base_url` and `api` fields to route 
 - **`base_url`:** Must be a valid `http` or `https` URL with a host and no embedded user credentials.
 - **`api`:** Overrides the transport protocol used by the Pi runtime for that provider (for example, `"openai-completions"` or `"openai-responses"`).
 - **Catalog scope:** `base_url` and `api` override transport settings for models that already exist under that provider in the [Model catalog](/docs/reference/model-catalog); they do not register arbitrary new model IDs.
+
+The catalog lookup and transport override above describe Pi. Codex and OpenCode require `openai-responses` (or an omitted `api`, selecting Responses); another transport returns `422 unsupported` before admission. Their native provider uses the selected model suffix at the installed endpoint. The application authorizes provider/model selections. OpenCode's installed model definition uses a 200,000-token context and 32,000-token output limit.
 
 ## Prompt caching
 

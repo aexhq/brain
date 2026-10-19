@@ -51,11 +51,11 @@ Configured bearer tokens and delegated tool tokens are checked first; unmatched 
 
 ## Connect managed services
 
-Import `github.com/aexhq/brain/integrations` for `HTTP`, `MCP`, and `Sessions` constructors. Supply a parameter schema, an authorization function, and a resolver that returns only application-approved endpoints. Select MCP names explicitly. MCP stdio commands and environment values are installed by application code; clients select bindings, never commands.
+Import `github.com/aexhq/brain/integrations` for `HTTP` and `MCP` constructors. Supply a parameter schema, an authorization function, and a resolver that returns only application-approved endpoints. Select MCP names explicitly. MCP stdio commands and environment values are installed by application code; clients select bindings, never commands.
 
 Each MCP discovery or invocation owns its connection. Stdio uses a private directory and an owned process tree that closes after the operation. HTTP connections are pooled; MCP sessions are separate per operation. Changed discovered descriptors reject a saved session before an action runs.
 
-Use `integrations.Sessions` with a `SessionReader` and an explicit target authorization function to expose public session metadata and bounded event pages. The authenticated binding supplies the tenant. Authorize each target independently; the operation returns neither private credentials nor native files.
+Implement model-visible session inspection in your platform. The [platform example](https://github.com/aexhq/brain/tree/main/examples/platforms/sessiontools) uses Brain's authorized `ReadSession` and `ReadEvents` methods with explicit target authorization. Copy the policy into your application and choose its permitted targets and discovery rules there.
 
 ## Persist private overrides
 

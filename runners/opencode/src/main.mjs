@@ -13,6 +13,7 @@ const usage = value => {
   if (!value) return unknownUsage();
   const fields = { input_tokens: value.input_tokens, output_tokens: value.output_tokens, cache_read_tokens: value.input_tokens_details?.cached_tokens, reasoning_tokens: value.output_tokens_details?.reasoning_tokens };
   const quantities = Object.fromEntries(Object.entries(fields).filter(([, count]) => count !== undefined));
+  if (!Object.keys(quantities).length) return unknownUsage();
   return { availability: value.input_tokens !== undefined && value.output_tokens !== undefined ? "reported" : "partial", semantics: "snapshot", ...quantities, input_cache: "included", output_reasoning: "included" };
 };
 function launch() {

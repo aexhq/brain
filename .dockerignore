@@ -1,5 +1,6 @@
 .git
 .brain
+.brain-harnesses
 .brain-archive
 brain.json
 .env

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { before, after, test } from "node:test";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { Model, ApiKey, build, fixture, config, message, call, result, history, state, until, root, removeTemp, modelReply } from "./fixture.mjs";
 import { responsesReply } from "./model-responses.mjs";
@@ -69,6 +69,8 @@ for (const harness of adapters) {
   test(`${harness}: independent private keys reach concurrent native peers`, budget, async t => {
     const keys = ["adapter-customer-one-private", "adapter-customer-two-private"];
     const f = await setup(t, harness, { modelKeys: keys, persistence: {} });
+    // Keep the owned native homes inside the inspected fixture on both platforms.
+    for (const name of ["TMP", "TEMP", "TMPDIR"]) f.env[name] = f.dir;
     f.env.JOURNEY_KEYS = Buffer.alloc(32, 5).toString("base64");
     f.settings.credential_keys = { active: "test", keys: { test: "JOURNEY_KEYS" } };
     await f.start();
@@ -92,6 +94,18 @@ for (const harness of adapters) {
       const data = JSON.stringify([await client.get(s.id), await history(client, s.id)]);
       for (const key of keys) assert.ok(!data.includes(key) && !f.logs.includes(key));
     }
+    await f.crash();
+    const inspect = async directory => {
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        const file = path.join(directory, entry.name);
+        if (entry.isDirectory()) await inspect(file);
+        else if (entry.isFile()) {
+          const bytes = await readFile(file);
+          for (const key of keys) assert.ok(!bytes.includes(Buffer.from(key)), `plaintext provider key in ${file}`);
+        }
+      }
+    };
+    await inspect(f.dir);
   });
 
   test(`${harness}: native checkpoints append and cold restore preserves the next request`, budget, async t => {
@@ -192,6 +206,10 @@ test("opencode: raw cache and reasoning evidence stays separate from unknown par
   let receipts = (await history(f.api, s.id)).filter(event => event.type === "model.request" && event.data.attempt_id && event.data.state === "completed");
   assert.equal(receipts.length, 1);
   assert.deepEqual(receipts[0].data.usage, { availability: "reported", semantics: "snapshot", input_tokens: 20, output_tokens: 10, cache_read_tokens: 8, reasoning_tokens: 4, input_cache: "included", output_reasoning: "included" });
+  f.model.respond = async (_input, response) => responsesReply(response, "usage object without quantities", {});
+  await f.api.send(s.id, message("unmeasured request")); await state(f.api, s.id);
+  receipts = (await history(f.api, s.id)).filter(event => event.type === "model.request" && event.data.attempt_id && event.data.state === "completed");
+  assert.equal(receipts.at(-1).data.usage.availability, "unknown");
   let partial = false;
   const observer = await f.observe(s.id);
   t.after(() => observer.stop());
