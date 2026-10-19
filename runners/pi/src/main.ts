@@ -7,6 +7,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import type { OpenOptions, Result, RunnerFrame as Frame } from "./generated.js";
+import { observeRequests } from "./evidence.js";
 
 const maxFrame = 4 << 20;
 
@@ -34,6 +35,7 @@ class NativeSession {
   brainError: Error | undefined;
   readonly pending = new Map<string, { resolve: (r: Result) => void; reject: (e: Error) => void }>();
   readonly cancelled = new Set<string>();
+  readonly observations = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
 
   turn = "";
   constructor(readonly attachment: string) {}
@@ -140,6 +142,11 @@ class NativeSession {
       noTools: "builtin", tools: options.tools.map(t => t.name), customTools,
     });
     this.session = created.session;
+    observeRequests(this.session, request => new Promise<void>((resolve, reject) => {
+      const id = randomBytes(16).toString("hex");
+      this.observations.set(id, { resolve, reject });
+      this.send({ id, method: "model.request", params: request });
+    }));
     if (created.modelFallbackMessage || this.session.model?.provider !== provider || this.session.model?.id !== modelID) {
       throw new Error("harness did not select the requested model");
     }
@@ -203,6 +210,15 @@ class NativeSession {
   async receive(frame: Frame) {
     if (!frame.id) fatal(new Error("missing frame identity"));
     if (!frame.method) {
+      const observation = this.observations.get(frame.id);
+      if (observation) {
+        if (frame.turn !== this.turn) fatal(new Error("stale model observation response"));
+        this.observations.delete(frame.id);
+        if (frame.error) {
+          this.brainError = new Error("model observation failed"); observation.reject(this.brainError); void this.session?.abort();
+        } else observation.resolve();
+        return;
+      }
       if (this.cancelled.delete(frame.id)) return;
       if (frame.turn !== this.turn) fatal(new Error("stale tool response"));
       const callback = this.pending.get(frame.id);

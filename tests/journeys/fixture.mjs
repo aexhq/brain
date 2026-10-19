@@ -9,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { promisify } from "node:util";
+import { responsesReply } from "./model-responses.mjs";
 const requireSDK = createRequire(new URL("../../bin/sdk-consumer/package.json", import.meta.url));
 const { Brain, BrainError, Model, ApiKey, CredentialReference, Tool, ManagedTool } = await import(pathToFileURL(requireSDK.resolve("@aexhq/brain")).href);
 
@@ -157,11 +158,12 @@ export async function jsonBody(req) {
   return JSON.parse(body);
 }
 
-export function modelReply(res, answer) {
+export function modelReply(res, answer, usage) {
   res.writeHead(200, { "Content-Type": "text/event-stream" });
   const chunk = (delta, finish_reason = null) => res.write(`data: ${JSON.stringify({
     id: "journey", object: "chat.completion.chunk", created: 1, model: "gpt-4.1-mini",
     choices: [{ index: 0, delta, finish_reason }],
+    ...(finish_reason && usage ? { usage } : {}),
   })}\n\n`);
   chunk({ role: "assistant" });
   if (typeof answer === "string") chunk({ content: answer });
@@ -200,16 +202,17 @@ export async function fixture(t, binaries, options = {}) {
   await reserved.close();
   const model = { requests: [], authorization: [], respond: undefined };
   const provider = await listen(async (req, res) => {
-    assert.equal(req.url, "/v1/chat/completions");
+    assert.equal(req.url, options.api === "openai-responses" ? "/v1/responses" : "/v1/chat/completions");
     assert.ok((options.modelKeys ?? ["local-recording-provider-key"]).some(key => req.headers.authorization === `Bearer ${key}`), "unexpected provider credential");
     model.authorization.push(req.headers.authorization);
     const input = await jsonBody(req);
     model.requests.push(input);
-    if (model.respond) { await model.respond(input, res); return; }
-    const last = input.messages.at(-1);
-    const text = typeof last.content === "string" ? last.content : last.content.filter(p => p.type === "text").map(p => p.text).join("");
+    if (model.respond) { await model.respond(input, res, req); return; }
+    const last = (input.messages ?? input.input).at(-1);
+    const text = typeof last.content === "string" ? last.content : (last.content ?? []).filter(p => ["text", "input_text", "output_text"].includes(p.type)).map(p => p.text).join("");
     const match = last.role === "user" && /^CALL (\w+) (.+)$/s.exec(text);
-    modelReply(res, match ? { name: match[1], args: JSON.parse(match[2]) } : last.role === "tool" ? "tool handled" : `answer: ${text}`);
+    const answer = match ? { name: match[1], args: JSON.parse(match[2]) } : last.role === "tool" || last.type === "function_call_output" ? "tool handled" : `answer: ${text}`;
+    (options.api === "openai-responses" ? responsesReply : modelReply)(res, answer);
   });
   const settings = {
     listen: new URL(url).host, public_url: url, data_dir: path.join(dir, "cache"),
@@ -218,7 +221,7 @@ export async function fixture(t, binaries, options = {}) {
       { token_env: "JOURNEY_READER", tenant: "a", read_only: true }, { token_env: "JOURNEY_USER", tenant: "a" },
     ],
     harnesses: { pi: { command: [process.execPath, path.join(root, "runners/pi/dist/main.js")] } },
-    providers: { openai: { api_key_env: "JOURNEY_MODEL", base_url: provider.url + "/v1", api: "openai-completions" } },
+    providers: { openai: { api_key_env: "JOURNEY_MODEL", base_url: provider.url + "/v1", api: options.api ?? "openai-completions" } },
     limits: { active: 2, loaded: 16, queue: 2, input_bytes: 4096, session_bytes: 16 << 20, subscribers: 4, subscriber_events: 128, subscriber_bytes: 1 << 20, ...options.limits },
     tools: [],
     ...(options.persistence ? { persistence: { provider: "filesystem", directory: path.join(dir, "archive"), interval_seconds: 3600, queue: 32, ...options.persistence } } : {}),
