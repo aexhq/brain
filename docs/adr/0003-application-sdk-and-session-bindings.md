@@ -4,6 +4,7 @@
 - **Date:** 2026-10-16
 - **Extends:** [ADR 0001](0001-local-first-session-server.md) and [ADR 0002](0002-subsystem-contracts-and-sdk-delivery.md).
 - **Scope:** Architecture and SDK semantics, not implementation, package names, or a final wire schema.
+- **Amended by:** [ADR 0004](0004-service-integration-readiness.md) selects three-harness service integration, server/client model credentials and tool authoring, a common host pool without additional default utilization controls, browser integrations and usage evidence. Platforms own inspection tools; Brain retains authorized metadata/history reads.
 
 ## Decision
 
@@ -173,9 +174,9 @@ S3/R2 **agent tools** and S3/R2 **checkpoint stores** are different roles, with 
 
 `FlyMachine`, `ModalSandbox`, and other compute integrations are tool providers, not new Brain environment or job resources. Their operations need not be interchangeable. A provider package may wrap a vendor SDK or an existing MCP server; choose from the required operations, authorization model, and qualification evidence rather than requiring one integration method for every vendor.
 
-### Optional read-only sessions tool
+### Platform session inspection
 
-A `sessions` tool is an optional managed integration over Brain's authorized session reads, not an implicit harness capability or a new core session authority. Recommend an official provider package that a self-hosted Brain application or a hosted platform can install. The application chooses its exposure and read policy; a platform supplies fleet-wide discovery and routing when sessions live on several Brain instances. The core continues to own session authorization, bounded reads, and passive access to stored history.
+[ADR 0004](0004-service-integration-readiness.md) assigns model-visible session inspection and discovery to the platform. A platform can install its own managed tool over Brain's authorized public metadata/history reads, with its own discovery and fleet routing. Brain owns authorization, bounded reads and passive access to stored history; an inspection-provider package is not a required Brain primitive.
 
 "The same client" means the same authenticated tenant/account, not a browser connection, SDK instance, or shared native process. A source session receives cross-session read access only through an explicitly selected tool binding. The provider derives the tenant and source session from trusted invocation metadata and authorizes each target within that tenant and the binding's permitted scope. A model-supplied target session ID is a lookup argument, not authorization. Sessions in another tenant remain inaccessible even when they share the host.
 
@@ -462,7 +463,7 @@ For Supabase in particular, a secret/service-role key bypasses row-level securit
 
 ## Selected decisions
 
-The discussion selected the application/runtime split, encrypted credential custody, external-only execution, bounded shared hosts including cross-tenant placement, and the three transport bindings below. The optional read-only sessions provider belongs to application integrations rather than the core loop. [Plan 11](../plans/11-application-sdk.md) records the implementation choices: JSON messages over WebSocket for RPC, explicit host limits, and independently supplied AES-GCM keys. Each advertised adapter must qualify isolation and recovery against this decision.
+The discussion selected the application/runtime split, encrypted credential custody, external-only execution, bounded shared hosts including cross-tenant placement, and the three transport bindings below. Session-inspection tools belong to platforms under ADR 0004. [Plan 11](../plans/11-application-sdk.md) records the implementation choices: JSON messages over WebSocket for RPC, explicit host limits, and independently supplied AES-GCM keys. Each advertised adapter must qualify isolation and recovery against this decision.
 
 ### D1: Application SDK runtime and language
 
@@ -527,7 +528,7 @@ Before implementation is considered complete, demonstrate:
 7. An ordinary session-creation tool declaration executes in the client without a user-written server; failed registration, bridge loss before/after dispatch, cancellation, duplicate/stale results, and rebinding after restore have the declared outcomes. An event observer cannot execute callbacks or submit results.
 8. Local host limits, idle eviction, Brain/native identity, private state, generation checks, abrupt parent/child death, and process-tree cleanup pass on supported PCs/VMs. A restart never resumes inference or executes queued actions automatically, and native execution tools cannot bypass the external-only boundary.
 9. Concurrent opens/restores obey `maxShared` and active-turn caps. Sessions sharing one host, both within and across tenants, have no context, credential, cache, event, callback, cancellation, or checkpoint crossover. Exercise stale/misattributed identities, session eviction/restore while peers exist, and a host crash with several active sessions; peers never continue or replay actions automatically.
-10. An optional read-only sessions provider uses an explicit binding and authorized target scope, not an expanded ordinary tool token or native host access. Same-tenant permitted reads succeed; unbound, forbidden-target, and cross-tenant reads fail, including targets on the same host. Reading performs no inference, tool action, or session mutation, and exposes no private credentials or native checkpoint files.
+10. Authorized public session reads permit platforms to build inspection tools with explicit target scope. Same-tenant permitted reads succeed; forbidden-target and cross-tenant reads fail, including targets on the same host. Reading performs no inference, tool action, or session mutation, and exposes no private credentials or native checkpoint files.
 
 Implementation and evidence are tracked in [plan 11](../plans/11-application-sdk.md). Adapter-specific gaps remain on the [roadmap](../roadmap.md); accepting this decision does not qualify an upstream harness.
 

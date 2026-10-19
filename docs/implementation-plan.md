@@ -1,6 +1,6 @@
 # Implementation plan
 
-The current modernization is recorded in [10 Published clients and subsystem boundaries](plans/10-modernization.md). Earlier work is in [08 Integration expansion](plans/08-integration-expansion.md) and [09 Delivery, documentation, and examples](plans/09-delivery-and-examples.md).
+The service-integration work is recorded in [12 Service integration readiness](plans/12-service-integration-readiness.md), extending [11 Application SDK and session-bound execution](plans/11-application-sdk.md) and [10 Published clients and subsystem boundaries](plans/10-modernization.md). Earlier work is in [08 Integration expansion](plans/08-integration-expansion.md) and [09 Delivery, documentation, and examples](plans/09-delivery-and-examples.md).
 
 - **Status:** In progress (local runtime, SDKs, HTTP/SSE tools, and archive adapters implemented)
 - **Architecture:** [ADR 0001](adr/0001-local-first-session-server.md)
@@ -18,6 +18,8 @@ This index links the subsystem plans and tracks how they fit together.
 | [06 Observability and operations](plans/06-observability-and-operations.md) | Structured logs, OpenTelemetry traces/metrics, health checks, container packaging, handoff and load testing. |
 | [07 Verification and release](plans/07-verification-and-release.md) | Unit/contract suites, end-to-end journey tests, failure injection, and release criteria. |
 | [10 Modernization](plans/10-modernization.md) | Published SDK artifacts, consumer-owned runtime interfaces, tool transports, and local database adapters. |
+| [11 Application SDK](plans/11-application-sdk.md) | Application composition, managed/runtime tools, encrypted credentials and shared Pi hosts. |
+| [12 Service integration readiness](plans/12-service-integration-readiness.md) | Three harnesses, shared host-pool ownership, server/client model credentials and tool authoring, browser integrations and usage evidence. |
 
 ```mermaid
 flowchart LR

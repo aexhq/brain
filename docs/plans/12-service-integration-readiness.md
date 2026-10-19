@@ -1,0 +1,38 @@
+# 12 Service integration readiness
+
+Implements [ADR 0004](../adr/0004-service-integration-readiness.md). Requirements are selected; SDK syntax, the first browser transport, accounting precision and optional OS limits remain discussion items. This plan records outstanding work, not implemented behavior.
+
+## Work sequence
+
+| Slice | Changes | Completion evidence |
+| --- | --- | --- |
+| 1. Authoring and private admission | Agree model/tool constructors for server and client roles; private model credentials alongside existing tool overrides; application authenticator; generated contracts and TS/Python clients | Startup defaults and authorized client keys; rejected override never falls back; encrypted restart/cold restore; examples require no hand-written binding or executor plumbing. |
+| 2. Common host ownership | Reuse shared native servers and per-host caps; factor acquisition, attachment reservation, drain and cleanup across installed factories; optional aggregate ceilings with no new default limit | Mixed harness factories, concurrent opens, unchanged per-host caps, no aggregate restriction when omitted, configured cap rejection and owned-process cleanup. |
+| 3. Model-request evidence | Extend runner/core events and retained history with request identity, purpose, terminal state, usage availability and snapshot semantics | Recording-provider fixture covers each enabled call path, repeated notifications, unknown usage and crash/restart deduplication; generated clients include new events. |
+| 4. Pi coverage | Wire credentials and request observation into ordinary generations, compaction and native retry paths | Current Pi tests plus separate keys with peers, compaction/retry receipts and no double-counted reasoning/cache tokens. |
+| 5. Codex adapter | Owned App Server, dynamic tools, pinned exclusion settings, passive native restore, incremental checkpoints and request/usage mapping | Full conformance with two credential contexts, shared-host qualification where native scope allows it, no startup inference, compaction recovery and recorded accounting gaps/upstream changes. |
+| 6. OpenCode adapter | Owned embedded host, exact tools, suppressed startup continuation, session-scoped incremental state and model-request observation | Full conformance; no whole-database copy per turn, native retry/auxiliary/WebSocket coverage, independent keys and no auto-resume after abrupt death. |
+| 7. Browser integrations | Attached-tab tool and external remote-browser provider; scoped browser authentication hooks; recommended first gateway SSE/HTTP journey | Real browser plus remote service journeys, no management/model keys in the page, explicit closed-tab behavior, origin/expiry/revocation and no redispatch. |
+| 8. Integration release | Neutral deletion and single-owner requirements retained; update all artifacts/examples together; relocate the inspection-tool provider to platform integration | Fresh-state cutover, complete required CI/provider checks, installed-package service journey and matching published contracts. |
+
+Usage contract work precedes final adapter qualification so three implementations do not invent three incompatible receipt formats. Browser work can proceed independently after private admission and callback authority are specified. Hard OS limits are a separate launcher slice only if a deployment needs them; do not make them a prerequisite for the common pool.
+
+## Implementation entry points
+
+- Authoring: `sdks/typescript/src/index.ts`, `runtime.ts`, Python client equivalents, `server.go`, public provider types and `integrations/providers.go`.
+- Authority and credentials: `internal/api/auth.go`, `server.go`, `internal/core/types.go`, `internal/session/credentials.go`, `internal/credentials` and configured provider resolution.
+- Host ownership: `internal/harness/process.go`, `ownership_linux.go`, `ownership_windows.go`, `internal/session/engine.go`; preserve the existing protocol and native-state owner rather than introducing a second scheduler.
+- Request evidence: `internal/harness/harness.go`, `internal/core/types.go`, session event persistence and `runners/pi/src/main.ts`; new adapters use the same path.
+- Browser transport: API/gateway origin handling and callback scopes, `internal/api/executors.go` and client runtime transports. Remote browser service code remains an integration, outside the harness server.
+
+Choose the smallest change after exercising each native seam. Add no automatic prewarming, usage-based autoscaler, universal queue, public pool API or container library without a concrete consumer. Record the chosen failure and response before adding a limit or check.
+
+## Accounting qualification matrix
+
+Run each supported model/provider transport through normal success, multiple tool-driven generations, compaction, provider retry, request rejection, partial output then disconnect, cancellation, host crash and checkpoint recovery. Record which native calls and physical attempts were observable. A missing quantity stays unknown; never label a schema field or a local fixture as live-provider billing qualification.
+
+Retain public native request identifiers only when supplied. Treat cumulative snapshots and final message usage as alternative observations of one request, not additive charges. Verify each provider's cache/reasoning inclusion rules against the pinned adapter before exposing normalized totals.
+
+## Delivery
+
+Run the repository's complete required checks for changed runtime components and selected integrations; missing provider credentials leave their evidence blocked. Documentation-only changes use documentation validation. CI remains the release gate. Do not disable old tests as a shortcut: port supported behavior to the new contract and remove retired behavior only with the selected clean scope change.

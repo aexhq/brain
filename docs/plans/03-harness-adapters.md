@@ -2,6 +2,7 @@
 
 - **Releases:** Pi at R0; OpenCode and Codex at R2 ([Roadmap](../roadmap.md))
 - **Background:** [Harness integration notes](../harness-integration-notes.md)
+- **Integration requirement:** [ADR 0004](../adr/0004-service-integration-readiness.md) requires Pi, Codex and OpenCode before service adoption. [Plan 12](12-service-integration-readiness.md) adds private model credentials, common host ownership and model-request evidence to the conformance gates below.
 
 Wrap each agent harness behind `harness.Factory` and `harness.Runner` so Brain owns HTTP admission, storage, and tool dispatch while the harness owns prompt construction, model calls, and context compaction.
 
