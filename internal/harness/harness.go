@@ -37,3 +37,21 @@ type Factory interface {
 	Open(context.Context, Options) (Runner, error)
 	SupportsSteering() bool
 }
+
+type Validator interface {
+	ValidateSession(core.Config, Provider) error
+}
+
+func Codex(command []string) *ProcessFactory {
+	return &ProcessFactory{Command: command, CredentialHosts: true, MaxShared: 8, MaxActiveTurns: 8, Validate: func(config core.Config, provider Provider) error {
+		if provider.API != "" && provider.API != "openai-responses" {
+			return core.E(core.Unsupported, "Codex requires the Responses transport")
+		}
+		switch config.ReasoningEffort {
+		case "", "off", "minimal", "low", "medium", "high", "xhigh":
+		default:
+			return core.E(core.Unsupported, "unsupported Codex reasoning effort")
+		}
+		return nil
+	}}
+}

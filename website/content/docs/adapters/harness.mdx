@@ -77,6 +77,22 @@ For each `tool.call`, Brain validates that the tool is bound to the session, app
 
 Wire types for this protocol are generated in `internal/harness` and `runners/pi/src/generated.ts` via `go run ./cmd/generate`.
 
+### Acknowledge model observations
+
+Send a reverse request with `method: "model.request"` and `params` containing a [ModelRequest snapshot](/docs/reference/events#model-request-evidence). Await its matching result before dispatching the model request and before returning a terminal result from `Prompt`. Model observations use this acknowledged method, not fire-and-forget event frames. A rejected observation stops the affected execution.
+
+Go runners call `Options.Event("model.request", data)` synchronously and check its error before dispatch. Reuse a request/attempt identity for replacement snapshots, not for another inference call. Mark unobservable native paths and quantities explicitly; do not invent physical attempt identities.
+
+## Codex App Server adapter
+
+Configure `harnesses.codex.command` as `["node", "runners/codex/src/main.mjs"]` and select a provider using the `openai-responses` transport. The installed package pins Codex `0.163.0`. `brain.Codex(command)` installs its Go process-factory policy. Unsupported transports and reasoning selections fail admission.
+
+One owned native App Server shares compatible threads. Hosts are partitioned by a private credential-context digest; the key is supplied in the child environment without mutating the Brain or runner process environment. Dynamic tools are the exact Brain catalog, environment access is disabled, and the pinned exclusion settings remove native local tools and question/approval capabilities.
+
+The adapter selects the pinned server's complete JSONL history mode (`historyMode: "legacy"`). This is an upstream storage selection, not a Brain compatibility layer. Checkpoints append only the changed native rollout suffix and a small adapter-state record. Cold opens import the native checkpoint into the owned host and resume it without inference. Detachment archives the settled native thread and verifies `notLoaded` before releasing residency. Repeated interruption shares the same cancellation operation.
+
+App Server exposes native-turn and cumulative token observations rather than a complete per-request pre-dispatch hook. Receipts identify `boundary: "native_turn"`, mark generation/compaction/retry coverage as unmeasured, and retain observed positive token deltas as partial evidence. Unreported or ambiguous counters stay unknown. See the [qualification matrix](https://github.com/aexhq/brain/blob/main/docs/research/qualification.md).
+
 ## Isolation and verification
 
 A harness adapter must disable all built-in local tools (such as local shell execution or file editors), ambient plugins, and background cache warmers so the model can only invoke tools explicitly bound in `config.tools`. `harness.ProcessFactory` passes only minimal OS environment variables (`PATH`, `SystemRoot`, `WINDIR`, `COMSPEC`, `PATHEXT`, `TMP`, `TEMP`, `TMPDIR`, `LANG`, `LC_ALL`, and `NO_COLOR=1`) and supplies provider credentials exclusively through the `open` frame.

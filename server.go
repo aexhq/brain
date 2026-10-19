@@ -188,7 +188,14 @@ func New(ctx context.Context, o Options) (_ *Server, err error) {
 			}
 			factories[name] = f
 		} else {
-			factories[name] = &harness.ProcessFactory{Pool: pool, Command: r.Command, Steering: name == "pi", Logger: logger, MaxShared: r.MaxShared, MaxActiveTurns: r.MaxActiveTurns, MaxHosts: r.MaxHosts, MaxStarting: r.MaxStarting}
+			factory := &harness.ProcessFactory{}
+			if name == "codex" {
+				factory = harness.Codex(r.Command)
+			}
+			factory.Pool, factory.Command, factory.Steering, factory.Logger = pool, r.Command, name == "pi", logger
+			factory.CredentialHosts = factory.CredentialHosts || r.CredentialHosts
+			factory.MaxShared, factory.MaxActiveTurns, factory.MaxHosts, factory.MaxStarting = r.MaxShared, r.MaxActiveTurns, r.MaxHosts, r.MaxStarting
+			factories[name] = factory
 		}
 	}
 	l := o.Config.Limits

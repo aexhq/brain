@@ -22,17 +22,19 @@ import (
 const MaxFrame = 4 << 20
 
 type ProcessFactory struct {
-	Command        []string
-	Steering       bool
-	Logger         *slog.Logger
-	MaxShared      int
-	MaxActiveTurns int
-	MaxHosts       int
-	MaxStarting    int
-	Pool           *HostPool
-	init           sync.Once
-	initErr        error
-	group          *hostGroup
+	Command         []string
+	Steering        bool
+	Logger          *slog.Logger
+	MaxShared       int
+	MaxActiveTurns  int
+	MaxHosts        int
+	MaxStarting     int
+	Pool            *HostPool
+	init            sync.Once
+	initErr         error
+	group           *hostGroup
+	CredentialHosts bool
+	Validate        func(core.Config, Provider) error
 }
 
 func (f *ProcessFactory) SupportsSteering() bool { return f.Steering }
@@ -50,28 +52,29 @@ type RunnerFrame struct {
 }
 
 type process struct {
-	cmd         *exec.Cmd
-	in          io.WriteCloser
-	writeMu     sync.Mutex
-	mu          sync.Mutex
-	pending     map[string]chan RunnerFrame
-	ctx         context.Context
-	cancel      context.CancelFunc
-	done        chan struct{}
-	waited      chan struct{}
-	readDone    chan struct{}
-	callWG      sync.WaitGroup
-	err         error
-	once        sync.Once
-	attachments map[string]*attachment
-	active      chan struct{}
-	directory   string
-	killTree    func() error
-	tools       chan struct{}
-	closeOnce   sync.Once
-	closeErr    error
-	owner       *HostPool
-	group       *hostGroup
+	cmd               *exec.Cmd
+	in                io.WriteCloser
+	writeMu           sync.Mutex
+	mu                sync.Mutex
+	pending           map[string]chan RunnerFrame
+	ctx               context.Context
+	cancel            context.CancelFunc
+	done              chan struct{}
+	waited            chan struct{}
+	readDone          chan struct{}
+	callWG            sync.WaitGroup
+	err               error
+	once              sync.Once
+	attachments       map[string]*attachment
+	active            chan struct{}
+	directory         string
+	killTree          func() error
+	tools             chan struct{}
+	closeOnce         sync.Once
+	closeErr          error
+	owner             *HostPool
+	group             *hostGroup
+	credentialContext [32]byte
 }
 
 func (f *ProcessFactory) start(ctx context.Context, opts Options) (*process, error) {

@@ -1,0 +1,7 @@
+{
+  "name": "@aexhq/brain-codex",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "node --check src/main.mjs", "test": "node --test ../../tests/journeys/adapters.test.mjs" },
+  "dependencies": { "@openai/codex": "0.163.0" }
+}

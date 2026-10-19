@@ -49,6 +49,7 @@ type HostPool = harness.HostPool
 type HostPoolLimits = harness.PoolLimits
 
 func NewHostPool(limits HostPoolLimits) (*HostPool, error) { return harness.NewHostPool(limits) }
+func Codex(command []string) *ProcessFactory               { return harness.Codex(command) }
 
 func DefaultConfig() Config                         { return config.Default() }
 func LoadConfig(file string) (Config, error)        { return config.Load(file) }

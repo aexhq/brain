@@ -31,11 +31,12 @@ type Provider struct {
 	API       string `json:"api,omitempty"`
 }
 type Runner struct {
-	Command        []string `json:"command"`
-	MaxShared      int      `json:"max_shared,omitempty"`
-	MaxActiveTurns int      `json:"max_active_turns,omitempty"`
-	MaxHosts       int      `json:"max_hosts,omitempty"`
-	MaxStarting    int      `json:"max_starting,omitempty"`
+	CredentialHosts bool     `json:"credential_hosts,omitempty"`
+	Command         []string `json:"command"`
+	MaxShared       int      `json:"max_shared,omitempty"`
+	MaxActiveTurns  int      `json:"max_active_turns,omitempty"`
+	MaxHosts        int      `json:"max_hosts,omitempty"`
+	MaxStarting     int      `json:"max_starting,omitempty"`
 }
 
 // KeyConfig names deployment environment variables, never encryption key values.

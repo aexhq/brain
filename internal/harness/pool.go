@@ -2,6 +2,8 @@ package harness
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"sync"
 	"time"
@@ -85,6 +87,9 @@ func (f *ProcessFactory) initialize() {
 }
 
 func (f *ProcessFactory) Open(ctx context.Context, opts Options) (Runner, error) {
+	if err := f.ValidateSession(opts.Config, opts.Provider); err != nil {
+		return nil, err
+	}
 	f.init.Do(f.initialize)
 	if f.initErr != nil {
 		return nil, f.initErr
@@ -102,6 +107,11 @@ func (f *ProcessFactory) Open(ctx context.Context, opts Options) (Runner, error)
 		return nil, core.E(core.Overloaded, "harness pool is draining")
 	}
 	var host *process
+	var credentialContext [32]byte
+	if f.CredentialHosts {
+		data, _ := json.Marshal(opts.Provider)
+		credentialContext = sha256.Sum256(data)
+	}
 	total := 0
 	factoryTotal := 0
 	for factory, group := range p.groups {
@@ -117,7 +127,7 @@ func (f *ProcessFactory) Open(ctx context.Context, opts Options) (Runner, error)
 			}
 			if factory == f && host == nil {
 				candidate.mu.Lock()
-				available := len(candidate.attachments) < f.MaxShared
+				available := len(candidate.attachments) < f.MaxShared && candidate.credentialContext == credentialContext
 				candidate.mu.Unlock()
 				if available {
 					host = candidate
@@ -138,6 +148,7 @@ func (f *ProcessFactory) Open(ctx context.Context, opts Options) (Runner, error)
 			return nil, err
 		}
 		f.group.hosts = append(f.group.hosts, host)
+		host.credentialContext = credentialContext
 		p.starting++
 	}
 	a := &attachment{id: core.ID(), host: host, pool: p, opts: opts}
@@ -155,6 +166,13 @@ func (f *ProcessFactory) Open(ctx context.Context, opts Options) (Runner, error)
 		return nil, err
 	}
 	return a, nil
+}
+
+func (f *ProcessFactory) ValidateSession(config core.Config, provider Provider) error {
+	if f.Validate != nil {
+		return f.Validate(config, provider)
+	}
+	return nil
 }
 
 func (p *HostPool) beginTurn() error {

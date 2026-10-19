@@ -412,8 +412,14 @@ func (e *Engine) Create(ctx context.Context, g core.Grant, input core.CreateSess
 	for _, record := range s.Credentials {
 		s.CredentialBindings = append(s.CredentialBindings, record.Binding)
 	}
-	if _, err := e.modelProvider(ctx, s); err != nil {
+	provider, err := e.modelProvider(ctx, s)
+	if err != nil {
 		return core.Session{}, err
+	}
+	if factory, ok := e.opts.Factories[s.Harness].(harness.Validator); ok {
+		if err := factory.ValidateSession(s.Config, provider); err != nil {
+			return core.Session{}, err
+		}
 	}
 	if err := e.opts.Tools.Bind(ctx, &s); err != nil {
 		return core.Session{}, err

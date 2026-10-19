@@ -80,6 +80,8 @@ Hosts use private working and home directories. Linux process guardians and Wind
 
 `host_pool` adds optional ceilings across installed process factories. Omitted or zero values impose no additional aggregate restriction. Adapter-specific host occupancy, active-turn, host-count, and startup settings still apply. Capacity exhaustion rejects acquisition or dispatch with `overloaded`; Brain does not switch harnesses or replay tools.
 
+`harnesses.<name>.credential_hosts` partitions a process factory by a private digest of its provider credential context. It defaults to `false`; the installed `codex` policy enables it because native authentication is process-scoped. Keys are not pool labels. In application code, install process factories with the application's pool before first use; an already-opened factory cannot be transferred to another server.
+
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `hosts` | `integer` | No | `0` | Maximum live native hosts across factories. |

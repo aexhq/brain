@@ -5,6 +5,7 @@ const python = path.resolve("bin/sdk-python", process.platform === "win32" ? "Sc
 
 const commands = [
   ["npm", ["--prefix", "runners/pi", "run", "build"]],
+  ["npm", ["--prefix", "runners/codex", "run", "build"]],
   ["npm", ["--prefix", "sdks/typescript", "run", "build"]],
   ["go", ["run", "./cmd/generate", "-check"]],
   ["node", ["scripts/package-sdks.mjs"]],
@@ -14,7 +15,7 @@ const commands = [
   ["npm", ["--prefix", "sdks/typescript", "test"]],
   ["npm", ["--prefix", "services/sandbox", "test"]],
   [python, ["-I", "-m", "unittest", "discover", "-s", "bin/sdk-consumer/python", "-p", "test_*.py"]],
-  ["node", ["--test", "tests/journeys/journeys.test.mjs"]],
+  ["node", ["--test", "tests/journeys/journeys.test.mjs", "tests/journeys/adapters.test.mjs"]],
   ["node", ["--test", "tests/platforms.test.mjs"]],
   ["node", ["--test", "tests/registry-artifacts.test.mjs"]],
   ["npm", ["--prefix", "website", "run", "build"]],
