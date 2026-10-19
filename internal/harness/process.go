@@ -194,13 +194,27 @@ func (p *process) read(r io.Reader) {
 		a.mu.Lock()
 		turn := a.turn
 		a.mu.Unlock()
-		if (f.Event != "" || f.Method == "tool.call") && (turn == "" || f.Turn != turn) {
+		if (f.Event != "" || f.Method == "tool.call" || f.Method == "model.request") && (turn == "" || f.Turn != turn) {
 			p.fail(errors.New("stale harness turn"))
 			return
 		}
 		switch {
+		case f.Method == "model.request":
+			if f.ID == "" || len(f.Params) == 0 {
+				p.fail(errors.New("invalid model observation"))
+				return
+			}
+			response := RunnerFrame{Attachment: f.Attachment, Turn: f.Turn, ID: f.ID, Result: json.RawMessage(`{}`)}
+			if err := a.opts.Event("model.request", f.Params); err != nil {
+				response.Result = nil
+				response.Error = &core.Error{Code: core.Internal, Message: "model observation failed"}
+			}
+			if err := p.write(response); err != nil {
+				p.fail(err)
+				return
+			}
 		case f.Event != "":
-			if f.ID != "" || len(f.Data) == 0 {
+			if f.ID != "" || len(f.Data) == 0 || f.Event == "model.request" {
 				p.fail(errors.New("invalid harness event"))
 				return
 			}

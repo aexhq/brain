@@ -75,6 +75,31 @@ class ModelCredential(TypedDict):
     api_key: NotRequired[str]
     reference: NotRequired[str]
 
+class ModelRequest(TypedDict):
+    request_id: str
+    attempt_id: NotRequired[str]
+    purpose: str
+    boundary: str
+    unmeasured: NotRequired[list[str]]
+    state: str
+    harness: str
+    provider: str
+    model: str
+    provider_request_id: NotRequired[str]
+    attempts: str
+    usage: ModelUsage
+
+class ModelUsage(TypedDict):
+    availability: str
+    semantics: str
+    input_tokens: NotRequired[int]
+    output_tokens: NotRequired[int]
+    cache_read_tokens: NotRequired[int]
+    cache_write_tokens: NotRequired[int]
+    reasoning_tokens: NotRequired[int]
+    input_cache: str
+    output_reasoning: str
+
 class Reply(TypedDict):
     connection: str
     call_id: str

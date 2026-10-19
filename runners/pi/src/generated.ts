@@ -87,6 +87,33 @@ export interface ModelCredential {
   reference?: string;
 }
 
+export interface ModelRequest {
+  request_id: string;
+  attempt_id?: string;
+  purpose: string;
+  boundary: string;
+  unmeasured?: string[];
+  state: string;
+  harness: string;
+  provider: string;
+  model: string;
+  provider_request_id?: string;
+  attempts: string;
+  usage: ModelUsage;
+}
+
+export interface ModelUsage {
+  availability: string;
+  semantics: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  reasoning_tokens?: number;
+  input_cache: string;
+  output_reasoning: string;
+}
+
 export interface NativeFile {
   path: string;
   size: number;

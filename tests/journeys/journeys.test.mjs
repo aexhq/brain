@@ -16,6 +16,67 @@ const retained = events => events.filter(event => event.cursor);
 const ids = events => events.map(event => event.id);
 const toolResults = events => events.filter(event => event.type === "tool.result");
 
+test("request evidence replaces repeated snapshots and reconciles a crashed dispatch once", budget, async t => {
+  const f = await fixture(t, binaries, { persistence: {} });
+  f.settings.harnesses.evidence = { command: [process.execPath, path.join(root, "tests/journeys/evidence-runner.mjs")] };
+  await f.start();
+  const s = await f.api.create({ ...config(), harness: "evidence" });
+  f.model.respond = async (input, response) => {
+    const evidence = (await history(f.api, s.id)).filter(event => event.type === "model.request");
+    assert.ok(evidence.some(event => event.data.request_id === input.messages[0].content && event.data.state === "started"), "inference preceded persisted start");
+    response.setHeader("x-request-id", "provider-request");
+    modelReply(response, "observed");
+  };
+  await f.api.send(s.id, message("all paths"));
+  await state(f.api, s.id);
+  const snapshots = (await history(f.api, s.id)).filter(event => event.type === "model.request");
+  assert.equal(snapshots.length, 15, "identical native snapshots duplicated history");
+  assert.deepEqual([...new Set(snapshots.map(event => event.data.purpose))].toSorted(), ["compaction", "other", "primary"]);
+  const latest = new Map(snapshots.map(event => [`${event.data.request_id}/${event.data.attempt_id ?? ""}`, event.data]));
+  assert.equal(latest.size, 6);
+  assert.equal([...latest.values()].filter(value => value.usage.availability === "reported").length, 3);
+  for (const value of latest.values()) {
+    assert.equal(value.state, "completed"); assert.equal(value.harness, "evidence");
+    assert.equal(value.model, "openai/gpt-4.1-mini");
+    if (value.attempt_id) { assert.equal(value.usage.output_tokens, 4); assert.equal(value.usage.reasoning_tokens, 1); assert.equal(value.usage.output_reasoning, "included"); }
+  }
+  await f.api.send(s.id, message("unknown usage"));
+  await state(f.api, s.id);
+  const unknowns = (await history(f.api, s.id)).filter(event => event.type === "model.request" && event.data.state === "completed" && event.data.usage.availability === "unknown");
+  assert.ok(unknowns.length > 0);
+  assert.ok(unknowns.every(event => event.data.usage.input_tokens === undefined));
+  f.model.respond = async () => {}; // Kill after a real dispatch, with no observed outcome.
+  const before = f.model.requests.length;
+  await f.api.send(s.id, message("pending dispatch"));
+  await until(() => f.model.requests.length, count => count === before + 1);
+  await f.api.flush(s.id);
+  await f.crash();
+  f.settings.data_dir = path.join(f.dir, "evidence-cold-cache");
+  await f.start();
+  await f.api.get(s.id);
+  const recovered = await history(f.api, s.id);
+  const unsettled = recovered.filter(event => event.type === "model.request" && event.data.state === "unknown");
+  assert.equal(unsettled.length, 2);
+  assert.ok(unsettled.every(event => event.data.usage.availability === "unknown"));
+  await f.api.get(s.id);
+  assert.equal((await history(f.api, s.id)).length, recovered.length, "re-reading recovery duplicated request records");
+  assert.equal(f.model.requests.length, before + 1, "recovery redispatched inference");
+});
+
+test("a harness that omits terminal model evidence fails the affected turn", budget, async t => {
+  const f = await fixture(t, binaries);
+  f.settings.harnesses.evidence = { command: [process.execPath, path.join(root, "tests/journeys/evidence-runner.mjs")] };
+  await f.start();
+  const s = await f.api.create({ ...config(), harness: "evidence" });
+  await f.api.send(s.id, message("omit outcome"));
+  await state(f.api, s.id, "failed");
+  const events = await history(f.api, s.id);
+  assert.equal(events.filter(event => event.type === "model.request" && event.data.state === "unknown").length, 2);
+  const peer = await f.api.create(config());
+  await f.api.send(peer.id, message("Healthy peer"));
+  await state(f.api, peer.id);
+});
+
 test("common host pool defaults and aggregate limits apply across installed factories", budget, async t => {
   for (const limited of [false, true]) await t.test(limited ? "configured ceiling" : "no aggregate restriction", async t => {
     const f = await fixture(t, binaries);

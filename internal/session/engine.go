@@ -83,6 +83,7 @@ type entry struct {
 	log         *store.Log
 	queue       []queued
 	keys        map[string]accepted
+	requests    map[string]requestObservation
 	working     bool
 	closing     bool
 	interrupted bool
@@ -173,7 +174,7 @@ func (e *Engine) load(ctx context.Context, id string) (*entry, error) {
 			return nil, core.E(core.Overloaded, "loaded session limit reached")
 		}
 	}
-	a := &entry{ready: make(chan struct{}), keys: make(map[string]accepted), refs: 1, syncGate: make(chan struct{}, 1)}
+	a := &entry{ready: make(chan struct{}), keys: make(map[string]accepted), requests: make(map[string]requestObservation), refs: 1, syncGate: make(chan struct{}, 1)}
 	e.entries[id] = a
 	e.mu.Unlock()
 	if evicted != nil {
@@ -218,6 +219,18 @@ func (e *Engine) load(ctx context.Context, id string) (*entry, error) {
 			break
 		}
 		for _, ev := range batch {
+			if ev.Type == "model.request" {
+				var request core.ModelRequest
+				if err := json.Unmarshal(ev.Data, &request); err != nil {
+					a.err = err
+					return nil, err
+				}
+				if err := request.Validate(); err != nil {
+					a.err = err
+					return nil, err
+				}
+				a.requests[requestKey(request)] = requestObservation{request: request, input: ev.InputID}
+			}
 			if ev.Type == "user.message" {
 				var input core.Input
 				if err := json.Unmarshal(ev.Data, &input); err != nil {
@@ -235,6 +248,9 @@ func (e *Engine) load(ctx context.Context, id string) (*entry, error) {
 		a.meta.Status = "interrupted"
 		a.meta.UpdatedAt = time.Now().UTC()
 		a.err = e.opts.Store.Save(ctx, a.meta)
+	}
+	if a.err == nil {
+		_, a.err = e.settleModelRequests(a, "")
 	}
 	a.restore = true
 	return a, a.err
@@ -580,6 +596,11 @@ func (e *Engine) work(a *entry) {
 			}
 		}
 		cancel()
+		if pending, evidenceErr := e.settleModelRequests(a, q.event.ID); evidenceErr != nil {
+			err = errors.Join(err, evidenceErr)
+		} else if pending && err == nil {
+			err = errors.New("harness left model requests unsettled")
+		}
 		a.mu.Lock()
 		a.cancel = nil
 		a.current = ""
@@ -695,6 +716,9 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 		started := time.Now()
 		runner, err = e.opts.Factories[a.meta.Harness].Open(ctx, harness.Options{Lifetime: e.ctx, SessionID: a.meta.ID, Dir: nativeDir, Config: cfg, Tools: selected, Provider: provider,
 			Event: func(kind string, data json.RawMessage) error {
+				if kind == "model.request" {
+					return e.observeModel(a, data)
+				}
 				if kind != "assistant.message" && kind != "assistant.delta" {
 					return errors.New("unsupported native event")
 				}
