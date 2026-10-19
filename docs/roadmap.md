@@ -18,7 +18,7 @@ Brain is in active development. This page lists what you can use today, what's c
 
 Integrate services against one contract with Pi, Codex and OpenCode, server defaults and client-supplied model credentials, ordinary tool declarations, attached-tab and remote-browser tools, and retained model-usage evidence. Shared native servers keep their per-host caps; a common pool adds optional aggregate utilization controls without imposing another default limit. Platforms own session-inspection tools.
 
-- **Status:** Requirements selected; implementation planned. [ADR 0004](https://github.com/aexhq/brain/blob/main/docs/adr/0004-service-integration-readiness.md) records the decisions, research and remaining SDK/browser/accounting choices. [Plan 12](https://github.com/aexhq/brain/blob/main/docs/plans/12-service-integration-readiness.md) orders the work.
+- **Status:** Accepted for implementation. [ADR 0004](https://github.com/aexhq/brain/blob/main/docs/adr/0004-service-integration-readiness.md) records the decisions, research and implementation defaults. [Plan 12](https://github.com/aexhq/brain/blob/main/docs/plans/12-service-integration-readiness.md) orders the work.
 - **Today:** Use the implemented Pi/backend surface below for experiments. Complete the new integration gates before dependent services cut over; the current client still exposes low-level binding fields and lacks private per-session model credentials.
 
 ### Application SDK and session-bound integrations
@@ -123,7 +123,7 @@ These documents are for contributors. They record how Brain is designed and how 
 - [ADR 0001: Local-first ephemeral session server](https://github.com/aexhq/brain/blob/main/docs/adr/0001-local-first-session-server.md) records the architecture, ownership boundaries, and design decisions.
 - [ADR 0002: Subsystem contracts and published SDKs](https://github.com/aexhq/brain/blob/main/docs/adr/0002-subsystem-contracts-and-sdk-delivery.md) extends it with subsystem contracts and SDK delivery.
 - [ADR 0003: Application SDK, session bindings, and harness integration](https://github.com/aexhq/brain/blob/main/docs/adr/0003-application-sdk-and-session-bindings.md) selects application composition, session-bound integrations and shared native hosts.
-- [ADR 0004 Service integration readiness](https://github.com/aexhq/brain/blob/main/docs/adr/0004-service-integration-readiness.md) extends those decisions for dependent services and records the remaining choices.
+- [ADR 0004 Service integration readiness](https://github.com/aexhq/brain/blob/main/docs/adr/0004-service-integration-readiness.md) extends those decisions for dependent services and records implementation defaults.
 - The [implementation plan](https://github.com/aexhq/brain/blob/main/docs/implementation-plan.md) breaks the work down across runtime, persistence, harnesses, tools, API, and operations.
 - Research: [integration options](https://github.com/aexhq/brain/blob/main/docs/research/integration-options.md), [harness feasibility probes](https://github.com/aexhq/brain/blob/main/docs/research/harness-probes.md), [application SDK architecture spikes](https://github.com/aexhq/brain/blob/main/docs/research/application-sdk-spikes.md), and [integration evidence](https://github.com/aexhq/brain/blob/main/docs/research/qualification.md).
 

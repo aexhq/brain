@@ -1,18 +1,24 @@
 # 12 Service integration readiness
 
-Implements [ADR 0004](../adr/0004-service-integration-readiness.md). Requirements are selected; SDK syntax, the first browser transport, accounting precision and optional OS limits remain discussion items. This plan records outstanding work, not implemented behavior.
+Implements [ADR 0004](../adr/0004-service-integration-readiness.md), accepted on 2026-10-19. Start with slice 1, then follow the dependencies below. The initial browser path is a same-origin gateway with SSE/HTTP; usage may be explicitly unknown; aggregate pool controls and hard OS limits are off by default. Language-specific SDK signatures are implementation choices within the ADR's semantics. This plan records outstanding work, not implemented behavior.
+
+## Session handoff
+
+Work in `C:/Users/luowe/workspace/aex_wksp/brain` for Brain changes. Read `AGENTS.md`, ADR 0004 and this plan first; ADR 0004 amends ADR 0003. Code and tests own the baseline. Use the existing [harness probes](../research/harness-probes.md) and [adapter plan](03-harness-adapters.md) for native integration details.
+
+The dependent Aex checkout is `C:/Users/luowe/workspace/aex_workspace/aex`; its `docs/adr/011-brain-2-integration.md` owns gateway, product-data, billing, deletion and cutover work. Complete the neutral Brain prerequisites before switching Aex. Preserve one implementation owner for each behavior and make no backward-compatibility layer.
 
 ## Work sequence
 
 | Slice | Changes | Completion evidence |
 | --- | --- | --- |
-| 1. Authoring and private admission | Agree model/tool constructors for server and client roles; private model credentials alongside existing tool overrides; application authenticator; generated contracts and TS/Python clients | Startup defaults and authorized client keys; rejected override never falls back; encrypted restart/cold restore; examples require no hand-written binding or executor plumbing. |
+| 1. Authoring and private admission | Implement model/tool constructors for server and client roles; private model credentials alongside existing tool overrides; application authenticator; generated contracts and TS/Python clients | Startup defaults and authorized client keys; rejected override never falls back; encrypted restart/cold restore; examples require no hand-written binding or executor plumbing. |
 | 2. Common host ownership | Reuse shared native servers and per-host caps; factor acquisition, attachment reservation, drain and cleanup across installed factories; optional aggregate ceilings with no new default limit | Mixed harness factories, concurrent opens, unchanged per-host caps, no aggregate restriction when omitted, configured cap rejection and owned-process cleanup. |
 | 3. Model-request evidence | Extend runner/core events and retained history with request identity, purpose, terminal state, usage availability and snapshot semantics | Recording-provider fixture covers each enabled call path, repeated notifications, unknown usage and crash/restart deduplication; generated clients include new events. |
 | 4. Pi coverage | Wire credentials and request observation into ordinary generations, compaction and native retry paths | Current Pi tests plus separate keys with peers, compaction/retry receipts and no double-counted reasoning/cache tokens. |
 | 5. Codex adapter | Owned App Server, dynamic tools, pinned exclusion settings, passive native restore, incremental checkpoints and request/usage mapping | Full conformance with two credential contexts, shared-host qualification where native scope allows it, no startup inference, compaction recovery and recorded accounting gaps/upstream changes. |
 | 6. OpenCode adapter | Owned embedded host, exact tools, suppressed startup continuation, session-scoped incremental state and model-request observation | Full conformance; no whole-database copy per turn, native retry/auxiliary/WebSocket coverage, independent keys and no auto-resume after abrupt death. |
-| 7. Browser integrations | Attached-tab tool and external remote-browser provider; scoped browser authentication hooks; recommended first gateway SSE/HTTP journey | Real browser plus remote service journeys, no management/model keys in the page, explicit closed-tab behavior, origin/expiry/revocation and no redispatch. |
+| 7. Browser integrations | Attached-tab tool and external remote-browser provider; scoped browser authentication hooks; selected first gateway SSE/HTTP journey | Real browser plus remote service journeys, no management/model keys in the page, explicit closed-tab behavior, origin/expiry/revocation and no redispatch. |
 | 8. Integration release | Neutral deletion and single-owner requirements retained; update all artifacts/examples together; relocate the inspection-tool provider to platform integration | Fresh-state cutover, complete required CI/provider checks, installed-package service journey and matching published contracts. |
 
 Usage contract work precedes final adapter qualification so three implementations do not invent three incompatible receipt formats. Browser work can proceed independently after private admission and callback authority are specified. Hard OS limits are a separate launcher slice only if a deployment needs them; do not make them a prerequisite for the common pool.

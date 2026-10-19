@@ -1,6 +1,6 @@
 # ADR 0004 Service integration readiness
 
-- **Status:** Owner requirements accepted on 2026-10-19; implementation pending. Recommendations explicitly identified below remain open for discussion.
+- **Status:** Accepted for implementation on 2026-10-19; implementation pending.
 - **Extends:** [ADR 0003](0003-application-sdk-and-session-bindings.md).
 - **Baseline:** Brain `850f90b1`. Pi packages are pinned to `1.2.0`; existing feasibility probes cover Codex `0.163.0` and OpenCode `2.0.30`.
 
@@ -30,7 +30,7 @@ Private directories and logical session routing do not sandbox a compromised nat
 
 For optional hard limits, [Linux cgroup v2](https://docs.kernel.org/admin-guide/cgroup-v2.html) provides CPU, memory and process-count controls. [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects) provide process-tree limits and accounting. Brain already uses a Windows job for lifetime cleanup, but does not configure its CPU or memory ceilings. Linux's existing process-group guardian is likewise lifetime control, not a resource quota. OCI/container runtime integration can be supplied at the application/deployment boundary; do not build a container runtime into Brain.
 
-Proposed implementation: factor the existing host acquisition/supervision code into one small internal owner shared by harness factories. Expose only the application-level options needed to install it. No generic pool dependency or public worker-management HTTP resource is needed. Keep the default implementation simple and add another launcher only when a supported deployment needs it.
+Factor the existing host acquisition/supervision code into one small internal owner shared by harness factories. Expose only the application-level options needed to install it. No generic pool dependency or public worker-management HTTP resource is needed. Keep the default implementation simple and add another launcher only when a supported deployment needs it.
 
 | Control | Scope and default | Reachable failure and action |
 | --- | --- | --- |
@@ -63,7 +63,7 @@ Both the application SDK (the server role, called BrainServer here) and client S
 - At session creation, an authorized client selects a model and can supply its own private credential or an authorized credential reference. It can select managed tools with permitted resource settings/credentials and declare ordinary runtime functions.
 - Server and client tool declarations share input, output, progress, cancellation and result semantics. Their handler runs where it was declared. A client declaration never deploys a closure to the server.
 
-Recommended authoring shape, in pseudocode; signatures are not implemented:
+Selected authoring shape, in pseudocode; exact language-specific signatures are implementation details:
 
 ```text
 server = BrainServer(
@@ -81,7 +81,7 @@ session = brain.create(
 )
 ```
 
-Keep the session's model, instructions and tool selection fixed at creation. Model credentials belong to private admission input, never instructions, public config, model arguments, event data or logs. Recommend a private model-credential field distinct from tool aliases rather than overloading the existing tool `credentials[].binding` field.
+Keep the session's model, instructions and tool selection fixed at creation. Model credentials belong to private admission input, never instructions, public config, model arguments, event data or logs. Use a private model-credential field distinct from tool aliases rather than overloading the existing tool `credentials[].binding` field.
 
 Credential selection order is an explicit authorized session credential, then an authorized startup default when no override was supplied. A rejected, missing-on-restore or revoked override fails; it never falls back to a default. Persist direct overrides encrypted before admission succeeds and include encrypted recovery material in checkpoints. Authorized external references resolve in the session's tenant scope. Reuse the existing independent key-provider lifecycle and revocation rules.
 
@@ -116,9 +116,9 @@ Cross-origin JSON requests carrying `Authorization` normally need an OPTIONS pre
 
 Browser [EventSource](https://developer.mozilla.org/en-US/docs/Web/API/EventSource/EventSource) has no arbitrary Authorization-header option; use streaming fetch for bearer-authenticated SSE. The browser [WebSocket constructor](https://developer.mozilla.org/en-US/docs/Web/API/WebSocket/WebSocket) likewise does not accept arbitrary request headers. WebSocket authorization requires its own design, not an HTTP CORS switch. Brain additionally rejects every executor RPC request with an Origin header, even when the app and API are same-origin.
 
-Recommended first path: same-origin application/platform gateway, streaming fetch for observation and reverse SSE/HTTP runtime callbacks. The backend issues short-lived, revocable authority scoped to the permitted session/composition and executor; it retains management and model-provider keys. The gateway authorizes and relays calls/results rather than turning a browser grant into a management token. This avoids requiring browser WebSocket RPC for the initial journey. It does not grant arbitrary page execution or reconstruct a closed tab.
+The first supported path uses a same-origin application/platform gateway, streaming fetch for observation and reverse SSE/HTTP runtime callbacks. The backend issues short-lived, revocable authority scoped to the permitted session/composition and executor; it retains management and model-provider keys. The gateway authorizes and relays calls/results rather than turning a browser grant into a management token. This avoids requiring browser WebSocket RPC for the initial journey. It does not grant arbitrary page execution or reconstruct a closed tab.
 
-For direct cross-origin Brain deployments, add an explicit origin allowlist and preflight handling tied to the application's authenticator. Allow only needed methods/headers, expose the request ID, and vary origin-dependent responses. CORS controls browser access to responses; authentication still authorizes operations. If cookies authenticate mutations, also enforce the application's CSRF/origin policy. Deny unknown origins; never use wildcard credentials.
+Direct cross-origin Brain access is an optional follow-up. It requires an explicit origin allowlist and preflight handling tied to the application's authenticator. Allow only needed methods/headers, expose the request ID, and vary origin-dependent responses. CORS controls browser access to responses; authentication still authorizes operations. If cookies authenticate mutations, also enforce the application's CSRF/origin policy. Deny unknown origins; never use wildcard credentials.
 
 Browser RPC can follow with an explicit Origin check and a short-lived executor credential exchange suitable for the WebSocket API. Do not put long-lived secrets in URLs or log authentication subprotocols. No silent transport fallback can redispatch a tool call. Platforms issue browser grants; Brain supplies neutral authentication/transport hooks, not account or login UX.
 
@@ -134,7 +134,7 @@ Brain records model execution and usage evidence. Aex and other platforms own pr
 
 Current upstream documentation and the pinned probes are different evidence. Recheck the selected package/binary schemas before implementing adapters; a newer hook described online is not automatically available in the pinned release.
 
-Recommended neutral contract: durable `model.request.started` and `model.request.finished` events, extending the event set and runner protocol together. A request carries Brain session/input identity, logical request identity, purpose (primary/compaction/other enabled inference), harness, provider/model, and terminal state. Where native physical attempts are observable, retain their identity, reported provider request ID and outcomes. Where they are not, record the coverage gap rather than inventing attempt records or claiming exact provider billing.
+Add durable `model.request.started` and `model.request.finished` events, extending the event set and runner protocol together. A request carries Brain session/input identity, logical request identity, purpose (primary/compaction/other enabled inference), harness, provider/model, and terminal state. Where native physical attempts are observable, retain their identity, reported provider request ID and outcomes. Where they are not, record the coverage gap rather than inventing attempt records or claiming exact provider billing.
 
 Quantities carry explicit reported/partial/unknown availability and semantics. Preserve input/output/cache/reasoning distinctions, subset relationships, and whether a native value is cumulative or incremental. Normalize those meanings before platform rating. Store supplied provider/model identity even for errors; do not infer usage from answer length or use the native catalog's dollar estimate as an invoice.
 
@@ -148,12 +148,14 @@ Platforms implement session-inspection tools, cross-instance discovery and any m
 
 Keep routes unversioned. Update core, runners, generated contracts, SDKs and examples together. Do not add a legacy adapter, old-format importer or dual-runtime routing. Use fresh storage and a coordinated cutover. A platform may retain an old backup under its retention policy, but it is not promised continued execution or import into new Brain. Aex separately owns deletion/retention completion and financial reconciliation.
 
-## Remaining choices
+## Implementation defaults and boundaries
 
-1. **SDK syntax:** agree the concise model/provider/tool constructors and credential placement. The examples above select behavior, not signatures or package names.
-2. **Browser access:** confirm same-origin gateway plus SSE/HTTP as the first supported transport, with direct CORS as an optional application setting and browser RPC later.
-3. **Accounting precision:** accept explicitly unknown upstream usage, and decide which platform offers can use it; exact physical-attempt attribution may require upstream changes, particularly in Codex.
-4. **Resource enforcement:** decide whether the first implementation needs an OS-limit launcher. The shared-host pool itself needs no additional utilization policy by default.
+1. **SDK syntax:** use concise model/provider/tool constructors and private credentials. Implementers choose language-specific signatures and package names within these semantics; examples remain illustrative until code and generated types land.
+2. **Browser access:** implement the same-origin gateway plus SSE/HTTP journey first for both browser integrations. Direct CORS and browser RPC are follow-ups, not prerequisites for that journey.
+3. **Accounting precision:** permit explicitly documented unknown upstream usage. Every enabled path must be observed or identified as unmeasured; never substitute zero or claim exact provider invoices. Platforms own how unknown usage affects their offers and reconciliation.
+4. **Resource enforcement:** preserve existing per-host controls and add no aggregate utilization restriction by default. Hard OS limits are an optional launcher extension when a deployment needs them, not a prerequisite for the first pool implementation.
+
+No further product decision is required to start plan 12. Deployment-specific persistence, budgets and commercial billing policy remain platform choices.
 
 ## Verification
 
