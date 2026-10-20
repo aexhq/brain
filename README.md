@@ -76,7 +76,7 @@ You need Go 1.26+, Node.js 24+, and an API key from a model provider such as Ope
 
    ```sh
    export BRAIN_API_KEY="replace-with-a-random-token-of-at-least-24-bytes"
-   npm install --no-save --package-lock=false @aexhq/brain@2.0.0
+   npm install --no-save --package-lock=false @aexhq/brain@2.1.0
    node examples/session.mjs "Explain what makes a good agent tool."
    ```
 

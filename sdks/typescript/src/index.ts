@@ -61,6 +61,7 @@ export class Brain {
   async interrupt(id: string): Promise<void> { await this.request("send", id, { type: "user.interrupt" }); }
   async resume(id: string): Promise<Session> { return (await this.request("resume", id)).json(); }
   async close(id: string): Promise<void> { await this.request("close", id); const executor = this.executors.get(id); this.executors.delete(id); await executor?.close(); }
+  async delete(id: string, signal?: AbortSignal): Promise<void> { await this.request("delete", id, undefined, undefined, signal); const executor = this.executors.get(id); this.executors.delete(id); await executor?.close(); }
   async flush(id: string, signal = AbortSignal.timeout(60000)): Promise<SyncStatus> { return (await this.request("flush", id, undefined, undefined, signal)).json(); }
   async sync(id: string): Promise<SyncStatus> { return (await this.request("sync", id)).json(); }
   async restore(id: string, checkpoint: string, signal = AbortSignal.timeout(60000)): Promise<Session> { return (await this.request("restore", id, { checkpoint }, undefined, signal)).json(); }

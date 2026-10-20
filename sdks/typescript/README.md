@@ -1,6 +1,6 @@
 # Brain JavaScript and TypeScript SDK
 
-Install with `npm install --save-exact @aexhq/brain@2.0.0`. Requires Node.js 24+;
+Install with `npm install --save-exact @aexhq/brain@2.1.0`. Requires Node.js 24+;
 there are no runtime dependencies. JavaScript and TypeScript use the same package.
 
 ```js

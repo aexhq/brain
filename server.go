@@ -220,6 +220,10 @@ func (s *Server) ReadSession(ctx context.Context, tenant, id string) (Session, e
 	value.Credentials = nil
 	return value, err
 }
+
+func (s *Server) DeleteSession(ctx context.Context, tenant, id string) error {
+	return s.engine.Delete(ctx, core.Grant{Tenant: tenant, Manage: true}, id)
+}
 func (s *Server) ReadEvents(ctx context.Context, tenant, id, after string, limit int) ([]Event, error) {
 	log, release, err := s.engine.Log(ctx, core.Grant{Tenant: tenant, ReadOnly: true}, id)
 	if err != nil {

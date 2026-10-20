@@ -23,6 +23,7 @@ import (
 const MaxObjectBytes = 2 << 20
 
 type Objects interface {
+	DeletePrefix(context.Context, string) error
 	Put(context.Context, string, []byte, bool) error
 	Get(context.Context, string) ([]byte, error)
 }

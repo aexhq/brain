@@ -17,6 +17,26 @@ const retained = events => events.filter(event => event.cursor);
 const ids = events => events.map(event => event.id);
 const toolResults = events => events.filter(event => event.type === "tool.result");
 
+test("installed SDK deletion removes local and archived state and prevents cold resurrection", budget, async t => {
+  const f = await fixture(t, binaries, { persistence: {} });
+  await f.start();
+  const session = await f.api.create(config());
+  await f.api.send(session.id, message("Retain private history before deletion"));
+  await state(f.api, session.id);
+  const checkpoint = await f.api.flush(session.id);
+  const foreign = new Brain(f.url, tokens.b);
+  await rejects(foreign.delete(session.id), 404, "not_found");
+  await f.api.delete(session.id);
+  await f.api.delete(session.id);
+  await rejects(f.api.get(session.id), 404, "not_found");
+  assert.ok(!(await f.api.list()).sessions.some(value => value.id === session.id));
+  await assert.rejects(access(path.join(f.settings.data_dir, "sessions", session.id)));
+  await f.crash(); f.settings.data_dir = path.join(f.dir, "deleted-cold-cache"); await f.start();
+  await rejects(f.api.restore(session.id, checkpoint.checkpoint), 404, "not_found");
+  const python = await f.python(path.join(root, "tests/journeys/python_delete.py"));
+  assert.equal(python.deleted, true);
+});
+
 test("Pi receipts preserve reported cache/reasoning subsets on both OpenAI transports", budget, async t => {
   for (const api of ["openai-completions", "openai-responses"]) await t.test(api, async t => {
     const f = await fixture(t, binaries, { api });

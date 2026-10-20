@@ -129,6 +129,11 @@ func (e *Engine) hydrate(ctx context.Context, g core.Grant, id, reference string
 	}
 	e.hydrateMu.Lock()
 	defer e.hydrateMu.Unlock()
+	if tenant, err := e.opts.Store.Deleted(ctx, id); err != nil {
+		return core.Session{}, err
+	} else if tenant != "" {
+		return core.Session{}, core.E(core.NotFound, "session not found")
+	}
 	previous, err := e.opts.Store.Get(ctx, id)
 	if err == nil {
 		if !g.Allows(previous) {

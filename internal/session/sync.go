@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aexhq/brain/internal/core"
 	"github.com/aexhq/brain/internal/persistence"
 )
 
@@ -107,7 +108,7 @@ func (s *syncer) scan(ctx context.Context) error {
 			}
 			var size int64
 			info, err := os.Stat(filepath.Join(dir, "events.jsonl"))
-			if err == nil {
+			if err == nil || core.ErrorCode(err) == core.NotFound {
 				size = info.Size()
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return err

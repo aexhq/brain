@@ -216,6 +216,10 @@ export const routes = {
     "method": "POST",
     "path": "/sessions"
   },
+  "delete": {
+    "method": "DELETE",
+    "path": "/sessions/{id}"
+  },
   "events": {
     "method": "GET",
     "path": "/sessions/{id}/events"

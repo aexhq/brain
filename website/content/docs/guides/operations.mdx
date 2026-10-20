@@ -20,6 +20,8 @@ Health endpoints need no token and never call a model.
 
 ## Set capacity limits
 
+Use one Brain process per data directory. Brain locks the directory before opening its metadata database and rejects a second writer. Stop the previous owner before starting its replacement on the same volume.
+
 Every queue and buffer in Brain has a limit. Set them in the `limits` object of the [host config](/docs/reference/configuration):
 
 | Limit | Default | What it bounds | When the limit is reached |

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/aexhq/brain/internal/core"
 )
@@ -16,6 +17,8 @@ import (
 // Missing Get/Save returns core.NotFound; conflicting Import returns core.Forbidden.
 // Implementations must support concurrent calls and context cancellation.
 type Metadata interface {
+	Deleted(context.Context, string) (string, error)
+	Delete(context.Context, core.Session) error
 	Create(context.Context, core.Session) error
 	Get(context.Context, string) (core.Session, error)
 	Save(context.Context, core.Session) error
@@ -30,21 +33,29 @@ type Metadata interface {
 type Store struct {
 	Metadata
 	root string
+	lock *os.File
+	once sync.Once
+	err  error
 }
 
 func Open(root string) (*Store, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(root, 0700); err != nil {
+		return nil, err
+	}
+	lock, err := lockDirectory(root)
+	if err != nil {
 		return nil, err
 	}
 	db, err := OpenSQLite(filepath.Join(root, "metadata.sqlite"))
 	if err != nil {
+		lock.Close()
 		return nil, err
 	}
-	s, err := New(root, db)
-	if err != nil {
-		db.Close()
-	}
-	return s, err
+	return &Store{Metadata: db, root: root, lock: lock}, nil
 }
 
 // New takes ownership of metadata on success. The adapter stores records only;
@@ -60,7 +71,16 @@ func New(root string, metadata Metadata) (*Store, error) {
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return nil, err
 	}
-	return &Store{Metadata: metadata, root: root}, nil
+	lock, err := lockDirectory(root)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{Metadata: metadata, root: root, lock: lock}, nil
+}
+
+func (s *Store) Close() error {
+	s.once.Do(func() { s.err = errors.Join(s.Metadata.Close(), s.lock.Close()) })
+	return s.err
 }
 
 func (s *Store) Root() string { return s.root }

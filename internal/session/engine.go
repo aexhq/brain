@@ -348,6 +348,11 @@ func (e *Engine) List(ctx context.Context, g core.Grant, after string, limit int
 	}
 	for _, s := range remote {
 		if !seen[s.ID] {
+			if tenant, err := e.opts.Store.Deleted(ctx, s.ID); err != nil {
+				return nil, err
+			} else if tenant != "" {
+				continue
+			}
 			local = append(local, s)
 		}
 	}

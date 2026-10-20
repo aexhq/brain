@@ -228,6 +228,14 @@ func (s *Server) close(w http.ResponseWriter, r *http.Request, g core.Grant) {
 	write(w, 202, core.Status{Status: "close_requested"})
 }
 
+func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request, g core.Grant) {
+	if err := s.Engine.Delete(r.Context(), g, r.PathValue("id")); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	write(w, 200, core.Status{Status: "deleted"})
+}
+
 func (s *Server) flush(w http.ResponseWriter, r *http.Request, g core.Grant) {
 	status, err := s.Engine.Flush(r.Context(), g, r.PathValue("id"))
 	if err != nil {

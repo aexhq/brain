@@ -120,6 +120,12 @@ class Brain:
     def flush(self, session_id: str) -> SyncStatus:
         return self._request("POST", f"/sessions/{quote(session_id, safe='')}/flush")
 
+    def delete(self, session_id: str) -> None:
+        self._request("DELETE", f"/sessions/{quote(session_id, safe='')}")
+        executor = self._executors.pop(session_id, None)
+        if executor:
+            executor.close()
+
     def sync(self, session_id: str) -> SyncStatus:
         return self._request("GET", f"/sessions/{quote(session_id, safe='')}/sync")
 

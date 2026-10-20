@@ -41,6 +41,8 @@ Retain public native request identifiers only when supplied. Treat cumulative sn
 
 ## Delivery
 
+The dependent-service cutover audit on 2026-10-20 found that the baseline had neither neutral session deletion nor a data-directory ownership lock. These prerequisites are now implemented: deletion settles execution and revokes executors, removes private/local/online archive state, and retains tombstones across failed cleanup and cold restore. The directory lock rejects overlapping writers on Linux and Windows. Dedicated tests cover cancellation, open streams, unauthorized and repeated deletion, failed archive cleanup and restoration from a fresh owner. SDK 2.1.0 includes the deletion methods and the authoring/browser changes; release and dependent-service cutover still require their exact CI gates.
+
 Run the repository's complete required checks for changed runtime components and selected integrations; missing provider credentials leave their evidence blocked. Documentation-only changes use documentation validation. CI remains the release gate. Do not disable old tests as a shortcut: port supported behavior to the new contract and remove retired behavior only with the selected clean scope change.
 
 Slice 1 passed `node scripts/check.mjs` on Windows, including generated contracts, installed SDK packages, Go tests/vet, Pi and service tests, journeys, platform/release tests, and the documentation build/tests. The strengthened overlapping-key and plaintext-state checks also pass through the installed-client journey suite. This is recording-provider evidence; CI and live-provider qualification retain their separate gates. Pi's compaction/retry credential coverage remains slice 4.
