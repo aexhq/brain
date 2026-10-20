@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -230,6 +231,74 @@ func TestResidentReuseAndEviction(t *testing.T) {
 	if f.opens.Load() != 3 {
 		t.Fatal("evicted runner was not reopened")
 	}
+}
+
+type closingRunner struct {
+	testRunner
+	closing, finish chan struct{}
+}
+
+func (r *closingRunner) Close() error {
+	close(r.closing)
+	<-r.finish
+	return nil
+}
+
+type waitingContext struct {
+	context.Context
+	waiting chan struct{}
+	once    sync.Once
+}
+
+func (c *waitingContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.waiting) })
+	return c.Context.Done()
+}
+
+func TestEvictedRunnerSlotCannotBeStolenByWaitingExecution(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	runner := &closingRunner{closing: make(chan struct{}), finish: make(chan struct{})}
+	ready := make(chan struct{})
+	close(ready)
+	e := &Engine{resident: make(chan struct{}, 1), entries: map[string]*entry{"idle": {ready: ready, runner: runner}}}
+	e.resident <- struct{}{}
+	first := make(chan error, 1)
+	go func() { first <- e.acquireRunner(ctx) }()
+	select {
+	case <-runner.closing:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	waiter := &waitingContext{Context: ctx, waiting: make(chan struct{})}
+	second := make(chan error, 1)
+	go func() { second <- e.acquireRunner(waiter) }()
+	select {
+	case <-waiter.waiting:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	close(runner.finish)
+	select {
+	case err := <-first:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case err := <-second:
+		t.Fatalf("waiting execution stole the evicted runner's slot: %v", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	<-e.resident
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	<-e.resident
 }
 
 func TestShutdownAndAdmissionDoNotDeadlock(t *testing.T) {
