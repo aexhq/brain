@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -28,6 +29,7 @@ import (
 )
 
 type Options struct {
+	MediaOrigins  []string
 	Store         Repository
 	Keys          credentials.Keys
 	Tools         ToolExecutor
@@ -482,8 +484,20 @@ func (e *Engine) status(a *entry, status, input string) error {
 }
 
 func (e *Engine) Submit(ctx context.Context, g core.Grant, id string, input core.Input) (core.Event, error) {
-	if input.Type != "user.message" || strings.TrimSpace(input.Text) == "" || len(input.Text) > e.opts.MaxInputBytes || len(input.Key) > 128 {
+	if input.Type != "user.message" || (strings.TrimSpace(input.Text) == "" && len(input.Media) == 0) || len(input.Text) > e.opts.MaxInputBytes || len(input.Key) > 128 {
 		return core.Event{}, core.E(core.Invalid, "invalid message")
+	}
+	if len(input.Media) > 64 {
+		return core.Event{}, core.E(core.Invalid, "too many media inputs")
+	}
+	for _, media := range input.Media {
+		u, err := url.Parse(media.URL)
+		if err != nil || media.Type != "image" || len(media.URL) > 4096 || u.User != nil || u.Fragment != "" {
+			return core.Event{}, core.E(core.Invalid, "invalid image input")
+		}
+		if !slices.Contains(e.opts.MediaOrigins, u.Scheme+"://"+u.Host) {
+			return core.Event{}, core.E(core.Forbidden, "media origin is not authorized")
+		}
 	}
 	if input.Delivery == "" {
 		input.Delivery = "queue"
@@ -725,7 +739,7 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 			return err
 		}
 		started := time.Now()
-		runner, err = e.opts.Factories[a.meta.Harness].Open(ctx, harness.Options{Lifetime: e.ctx, SessionID: a.meta.ID, Dir: nativeDir, Config: cfg, Tools: selected, Provider: provider,
+		runner, err = e.opts.Factories[a.meta.Harness].Open(ctx, harness.Options{MediaOrigins: e.opts.MediaOrigins, Lifetime: e.ctx, SessionID: a.meta.ID, Dir: nativeDir, Config: cfg, Tools: selected, Provider: provider,
 			Event: func(kind string, data json.RawMessage) error {
 				if kind == "model.request" {
 					return e.observeModel(a, data)
@@ -815,7 +829,7 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := runner.Prompt(ctx, q.input.Text); err != nil {
+	if err := runner.Prompt(ctx, core.Text{Text: q.input.Text, Media: q.input.Media}); err != nil {
 		return err
 	}
 	a.mu.Lock()

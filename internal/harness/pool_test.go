@@ -52,18 +52,18 @@ func TestCommonPoolMixedFactoriesBudgetsAndDrain(t *testing.T) {
 				}
 			}
 			finished := make(chan error, 2)
-			go func() { finished <- a.Prompt(ctx, "wait") }()
+			go func() { finished <- a.Prompt(ctx, core.Text{Text: "wait"}) }()
 			select {
 			case <-started:
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
 			if limits.ActiveTurns > 0 {
-				if err := b.Prompt(ctx, "excess"); core.ErrorCode(err) != core.Overloaded {
+				if err := b.Prompt(ctx, core.Text{Text: "excess"}); core.ErrorCode(err) != core.Overloaded {
 					t.Fatalf("aggregate turn cap: %v", err)
 				}
 			} else {
-				go func() { finished <- b.Prompt(ctx, "wait") }()
+				go func() { finished <- b.Prompt(ctx, core.Text{Text: "wait"}) }()
 				select {
 				case <-started:
 				case <-ctx.Done():
@@ -77,7 +77,7 @@ func TestCommonPoolMixedFactoriesBudgetsAndDrain(t *testing.T) {
 				t.Fatal(err)
 			}
 			if limits.ActiveTurns > 0 {
-				go func() { finished <- b.Prompt(ctx, "released") }()
+				go func() { finished <- b.Prompt(ctx, core.Text{Text: "released"}) }()
 				select {
 				case <-started:
 				case <-ctx.Done():

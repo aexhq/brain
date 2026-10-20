@@ -32,7 +32,8 @@ type testRunner struct {
 	started chan string
 }
 
-func (r *testRunner) Prompt(ctx context.Context, text string) error {
+func (r *testRunner) Prompt(ctx context.Context, input core.Text) error {
+	text := input.Text
 	r.started <- text
 	if text == "block" {
 		<-ctx.Done()
@@ -41,8 +42,8 @@ func (r *testRunner) Prompt(ctx context.Context, text string) error {
 	data, _ := json.Marshal(core.Text{Text: text})
 	return r.opts.Event("assistant.message", data)
 }
-func (r *testRunner) Steer(context.Context, string) error { return errors.New("unsupported") }
-func (r *testRunner) Interrupt(context.Context) error     { return nil }
+func (r *testRunner) Steer(context.Context, core.Text) error { return errors.New("unsupported") }
+func (r *testRunner) Interrupt(context.Context) error        { return nil }
 func (r *testRunner) Checkpoint(context.Context) ([]core.NativeFile, error) {
 	return []core.NativeFile{}, nil
 }

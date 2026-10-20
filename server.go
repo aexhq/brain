@@ -201,7 +201,7 @@ func New(ctx context.Context, o Options) (_ *Server, err error) {
 		}
 	}
 	l := o.Config.Limits
-	s.engine, err = session.New(session.Options{Store: db, Keys: o.Keys, Tools: registry, Factories: factories, Provider: o.resolveModel, MaxActive: l.Active, MaxLoaded: l.Loaded, MaxQueue: l.Queue, MaxInputBytes: l.InputBytes, MaxLogBytes: l.SessionBytes, Logger: logger, Metrics: metrics, Archive: archive, SyncQueue: queue, SyncInterval: interval, Inspection: func(s core.Session) (string, string, func()) {
+	s.engine, err = session.New(session.Options{MediaOrigins: o.Config.MediaOrigins, Store: db, Keys: o.Keys, Tools: registry, Factories: factories, Provider: o.resolveModel, MaxActive: l.Active, MaxLoaded: l.Loaded, MaxQueue: l.Queue, MaxInputBytes: l.InputBytes, MaxLogBytes: l.SessionBytes, Logger: logger, Metrics: metrics, Archive: archive, SyncQueue: queue, SyncInterval: interval, Inspection: func(s core.Session) (string, string, func()) {
 		token, revoke := auth.Delegate(s)
 		return token, o.Config.PublicURL, revoke
 	}})

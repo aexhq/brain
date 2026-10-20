@@ -61,13 +61,13 @@ func TestNativeBrainCallbackFailureStopsTurnAndPreservesPeer(t *testing.T) {
 			if a.(*attachment).host != peer.(*attachment).host {
 				t.Fatal("native peers did not share a host")
 			}
-			if err := a.Prompt(ctx, "invoke echo"); err == nil || core.ErrorCode(err) != core.Internal {
+			if err := a.Prompt(ctx, core.Text{Text: "invoke echo"}); err == nil || core.ErrorCode(err) != core.Internal {
 				t.Fatalf("Brain callback failure was swallowed: %v", err)
 			}
 			if requests.Load() != 1 {
 				t.Fatalf("Brain failure continued inference: %d requests", requests.Load())
 			}
-			if err := peer.Prompt(ctx, "healthy peer"); err != nil {
+			if err := peer.Prompt(ctx, core.Text{Text: "healthy peer"}); err != nil {
 				t.Fatalf("peer was stopped by another turn's callback: %v", err)
 			}
 			if requests.Load() != 2 {
@@ -82,7 +82,7 @@ func TestNativeBrainCallbackFailureStopsTurnAndPreservesPeer(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer toolError.Close()
-			if err := toolError.Prompt(ctx, "invoke a denied external tool"); err != nil {
+			if err := toolError.Prompt(ctx, core.Text{Text: "invoke a denied external tool"}); err != nil {
 				t.Fatalf("external tool error stopped the native loop: %v", err)
 			}
 			if requests.Load() != 4 {
@@ -95,13 +95,13 @@ func TestNativeBrainCallbackFailureStopsTurnAndPreservesPeer(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer noDispatch.Close()
-			if err := noDispatch.Prompt(ctx, "do not dispatch without acknowledgement"); err == nil || core.ErrorCode(err) != core.Internal {
+			if err := noDispatch.Prompt(ctx, core.Text{Text: "do not dispatch without acknowledgement"}); err == nil || core.ErrorCode(err) != core.Internal {
 				t.Fatalf("rejected observation did not stop the turn: %v", err)
 			}
 			if requests.Load() != 4 {
 				t.Fatal("model dispatched before its start was acknowledged")
 			}
-			if err := peer.Prompt(ctx, "peer remains usable after observation failure"); err != nil {
+			if err := peer.Prompt(ctx, core.Text{Text: "peer remains usable after observation failure"}); err != nil {
 				t.Fatal(err)
 			}
 			if requests.Load() != 5 {
@@ -200,8 +200,8 @@ func testNativeOwnedHostFailure(t *testing.T, name string) {
 		t.Fatal("compatible native threads did not share their host")
 	}
 	done := make(chan error, 2)
-	go func() { done <- a.Prompt(ctx, "hold") }()
-	go func() { done <- b.Prompt(ctx, "hold") }()
+	go func() { done <- a.Prompt(ctx, core.Text{Text: "hold"}) }()
+	go func() { done <- b.Prompt(ctx, core.Text{Text: "hold"}) }()
 	for range 2 {
 		select {
 		case <-started:

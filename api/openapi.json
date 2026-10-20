@@ -253,6 +253,12 @@
           "key": {
             "type": "string"
           },
+          "media": {
+            "items": {
+              "$ref": "#/components/schemas/Media"
+            },
+            "type": "array"
+          },
           "text": {
             "type": "string"
           },
@@ -262,6 +268,22 @@
         },
         "required": [
           "type"
+        ],
+        "type": "object"
+      },
+      "Media": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "url"
         ],
         "type": "object"
       },

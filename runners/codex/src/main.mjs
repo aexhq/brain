@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { mkdir, readFile, writeFile, appendFile, stat, copyFile, open } from "node:fs/promises";
 import path from "node:path";
 import { RunnerSession, serve, lines, fatal, identity, unknownUsage } from "../../common/bridge.mjs";
+import { loadImages } from "../../common/media.mjs";
 
 const require = createRequire(import.meta.url);
 const binary = path.join(path.dirname(require.resolve("@openai/codex/package.json")), "bin/codex.js");
@@ -27,7 +28,7 @@ async function launchNative(options) {
   if (options.provider.api && options.provider.api !== "openai-responses") throw Object.assign(new Error(), { code: "unsupported", safeMessage: "Codex requires the Responses transport" });
   const home = path.join(process.cwd(), "codex"); await mkdir(home, { recursive: true });
   const base = options.provider.base_url || "https://api.openai.com/v1";
-  await writeFile(path.join(home, "config.toml"), `model_provider="brain"\nweb_search="disabled"\n[model_providers.brain]\nname="Brain"\nbase_url=${JSON.stringify(base)}\nwire_api="responses"\nenv_key="BRAIN_MODEL_KEY"\nrequires_openai_auth=false\nsupports_websockets=false\n[features]\nshell_tool=false\nimage_generation=false\napps=false\nplugins=false\nmemories=false\nmulti_agent=false\ngoals=false\ncollaboration_modes=false\n[tools.experimental_request_user_input]\nenabled=false\n`);
+  await writeFile(path.join(home, "config.toml"), `model_provider="brain"\nweb_search="disabled"\n[skills]\ninclude_instructions=false\n[skills.bundled]\nenabled=false\n[model_providers.brain]\nname="Brain"\nbase_url=${JSON.stringify(base)}\nwire_api="responses"\nenv_key="BRAIN_MODEL_KEY"\nrequires_openai_auth=false\nsupports_websockets=false\n[features]\nshell_tool=false\nimage_generation=false\napps=false\nplugins=false\nmemories=false\nmulti_agent=false\ngoals=false\ncollaboration_modes=false\n[tools.experimental_request_user_input]\nenabled=false\n`);
   native = spawn(process.execPath, [binary, "app-server"], { cwd: process.cwd(), env: { ...process.env, CODEX_HOME: home, BRAIN_MODEL_KEY: options.provider.api_key }, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
   native.stderr.on("data", () => {}); // Diagnostics can contain provider payloads.
   native.on("error", fatal); native.on("exit", fatal);
@@ -89,16 +90,21 @@ class CodexSession extends RunnerSession {
     threads.set(this.thread, this);
     return { tools: [...this.tools] };
   }
-  async prompt(text) {
+  async prompt({ text, media }) {
+    this.mediaAbort = new AbortController();
     this.interrupted = false;
     this.interruption = undefined;
+    let images;
+    try { images = await loadImages(media, this.options.media_origins, this.mediaAbort.signal); }
+    catch (error) { if (this.interrupted) return { interrupted: true }; throw error; }
+    if (this.interrupted) return { interrupted: true };
     const before = this.tokens;
     const beforeObservations = this.tokenObservations ?? 0;
     const request = { request_id: identity(), purpose: "primary", boundary: "native_turn", unmeasured: ["generations", "compaction", "retries"], state: "started", harness: "", provider: "", model: "", attempts: "unobserved", usage: unknownUsage() };
     await this.observe(request);
     const done = new Promise(resolve => { this.completed = resolve; });
     try {
-      const result = await rpc("turn/start", { threadId: this.thread, environments: [], input: [{ type: "text", text }] });
+      const result = await rpc("turn/start", { threadId: this.thread, environments: [], input: [{ type: "text", text }, ...images.map(image => ({ type: "image", url: `data:${image.mimeType};base64,${image.data}` }))] });
       this.nativeTurn = result.turn.id;
       if (this.interrupted) await this.interrupt();
       const turn = await done;
@@ -116,6 +122,7 @@ class CodexSession extends RunnerSession {
   }
   async interrupt() {
     this.interrupted = true;
+    this.mediaAbort?.abort();
     if (this.nativeTurn && !this.interruption) this.interruption = rpc("turn/interrupt", { threadId: this.thread, turnId: this.nativeTurn });
     if (this.interruption) await this.interruption;
     return {};

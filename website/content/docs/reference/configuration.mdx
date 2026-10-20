@@ -37,6 +37,8 @@ Configuration files are limited to 4 MiB. Unknown JSON fields and trailing JSON 
 
 ## Top-level fields
 
+`media_origins` is an optional array of exact HTTP/HTTPS origins, empty by default. Only images from those origins are admitted. Native runners accept PNG, JPEG, WebP and GIF responses, reject redirects, and limit one message's downloaded images to 20 MiB in total. A message accepts up to 64 image references; each URL is at most 4096 bytes. Image bytes enter native context and its checkpoints.
+
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `listen` | `string` | `"127.0.0.1:8080"` | TCP `host:port` address to bind. Validated with `net.SplitHostPort`. |

@@ -194,7 +194,7 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, g core.Grant) {
 		return
 	}
 	if input.Type == "user.interrupt" {
-		if input.Text != "" || input.Key != "" || input.Delivery != "" {
+		if input.Text != "" || input.Key != "" || input.Delivery != "" || len(input.Media) != 0 {
 			s.fail(w, r, core.E(core.Invalid, "interrupt accepts no message fields"))
 			return
 		}

@@ -72,6 +72,7 @@ type Limits struct {
 	SubscriberBytes  int64 `json:"subscriber_bytes"`
 }
 type Config struct {
+	MediaOrigins   []string              `json:"media_origins,omitempty"`
 	HostPool       harness.PoolLimits    `json:"host_pool,omitempty"`
 	CredentialKeys *KeyConfig            `json:"credential_keys,omitempty"`
 	Listen         string                `json:"listen"`
@@ -124,6 +125,12 @@ func (c *Config) ValidateFactories(factories map[string]harness.Factory) error {
 }
 
 func (c *Config) ValidateApplication(factories map[string]harness.Factory, externalAuth bool) error {
+	for _, origin := range c.MediaOrigins {
+		u, err := url.Parse(origin)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+			return errors.New("media_origins must contain exact HTTP origins")
+		}
+	}
 	if err := c.HostPool.Validate(); err != nil {
 		return err
 	}

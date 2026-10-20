@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { before, after, test } from "node:test";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { Model, ApiKey, build, fixture, config, message, call, result, history, state, until, root, removeTemp, modelReply } from "./fixture.mjs";
+import { Model, ApiKey, build, fixture, config, message, call, result, history, state, until, root, removeTemp, modelReply, rejects } from "./fixture.mjs";
 import { responsesReply } from "./model-responses.mjs";
 let binaries;
 before(async () => { binaries = await build(); }, { timeout: 120000 });
@@ -15,6 +15,29 @@ async function setup(t, harness, options = {}) {
   f.settings.harnesses = { [harness]: { command: [process.execPath, path.join(root, `runners/${harness}/src/main.mjs`)] } };
   return f;
 }
+
+for (const harness of ["pi", ...adapters]) test(`${harness}: native image inputs retain pixels through passive cold recovery`, budget, async t => {
+  const f = harness === "pi" ? await fixture(t, binaries, { api: "openai-responses", persistence: {} }) : await setup(t, harness, { persistence: {} });
+  const png = await readFile(path.join(root, "testdata/image.png"));
+  let fetched = 0;
+  const images = await f.listen((_req, res) => { fetched++; res.writeHead(200, { "content-type": "image/png" }); res.end(png); });
+  f.settings.media_origins = [images.url];
+  await f.start();
+  const s = await f.api.create(selection(harness));
+  await rejects(f.api.send(s.id, { ...message("denied origin"), media: [{ type: "image", url: "http://forbidden.invalid/image" }] }), 403, "forbidden");
+  assert.equal(f.model.requests.length, 0); assert.equal(fetched, 0);
+  await f.api.send(s.id, { ...message("Inspect these pixels"), media: [{ type: "image", url: images.url + "/image" }] });
+  await state(f.api, s.id);
+  assert.ok(JSON.stringify(f.model.requests.at(-1)).includes(png.toString("base64")), JSON.stringify(f.model.requests.at(-1)));
+  assert.ok(!JSON.stringify(f.model.requests.at(-1)).includes("<skills_instructions>"), "native skills contaminated the application prompt");
+  assert.equal(fetched, 1);
+  await f.api.flush(s.id); await f.crash(); f.settings.data_dir = path.join(f.dir, "image-cold-cache"); await f.start();
+  await f.api.get(s.id); await f.api.resume(s.id);
+  assert.equal(f.model.requests.length, 1); assert.equal(fetched, 1);
+  await f.api.send(s.id, message("Recall the image")); await state(f.api, s.id);
+  assert.ok(JSON.stringify(f.model.requests.at(-1)).includes(png.toString("base64")), "native recovery lost image content");
+  assert.equal(fetched, 1, "passive recovery fetched image input again");
+});
 
 for (const harness of adapters) {
   test(`${harness}: a crashed in-flight turn restores passively without replaying abandoned input`, budget, async t => {

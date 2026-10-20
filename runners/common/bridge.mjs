@@ -60,7 +60,7 @@ export function serve(create) {
       else if (frame.method === "prompt") {
         if (session.busy || !frame.turn) throw new Error("session already active");
         session.busy = true; session.turn = frame.turn; session.failure = undefined;
-        try { result = await session.prompt(frame.params.text); if (session.failure) throw session.failure; } finally { session.busy = false; }
+        try { result = await session.prompt(frame.params); if (session.failure) throw session.failure; } finally { session.busy = false; }
       } else if (frame.method === "interrupt") result = await session.interrupt();
       else if (frame.method === "checkpoint" || frame.method === "detach") {
         if (session.busy || session.pending.size) throw new Error("session is active");

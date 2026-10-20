@@ -66,8 +66,8 @@ export class Brain {
   async sync(id: string): Promise<SyncStatus> { return (await this.request("sync", id)).json(); }
   async restore(id: string, checkpoint: string, signal = AbortSignal.timeout(60000)): Promise<Session> { return (await this.request("restore", id, { checkpoint }, undefined, signal)).json(); }
   async catalog(): Promise<{ tools: ToolDescriptor[] }> { return (await this.request("catalog")).json(); }
-  async history(id: string, after = "", limit = 100): Promise<{ events: Event[]; next_cursor: string }> {
-    return (await this.request("events", id, undefined, new URLSearchParams({ after, limit: String(limit) }))).json();
+  async history(id: string, after = "", limit = 100, signal?: AbortSignal): Promise<{ events: Event[]; next_cursor: string }> {
+    return (await this.request("events", id, undefined, new URLSearchParams({ after, limit: String(limit) }), signal)).json();
   }
   async *observe(id: string, options: { after?: string; signal?: AbortSignal } = {}): AsyncGenerator<Event> {
     const target = new URL(routes.events.path.replace("{id}", encodeURIComponent(id)), this.url);

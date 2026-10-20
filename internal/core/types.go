@@ -133,14 +133,21 @@ func NewEvent(kind, inputID string, data any) (Event, error) {
 }
 
 type Input struct {
-	Type     string `json:"type"`
-	Text     string `json:"text,omitempty"`
-	Delivery string `json:"delivery,omitempty"`
-	Key      string `json:"key,omitempty"`
+	Media    []Media `json:"media,omitempty"`
+	Type     string  `json:"type"`
+	Text     string  `json:"text,omitempty"`
+	Delivery string  `json:"delivery,omitempty"`
+	Key      string  `json:"key,omitempty"`
 }
 
 type Text struct {
-	Text string `json:"text"`
+	Text  string  `json:"text"`
+	Media []Media `json:"media,omitempty"`
+}
+
+type Media struct {
+	Type string `json:"type"`
+	URL  string `json:"url"`
 }
 type Status struct {
 	Status string `json:"status"`

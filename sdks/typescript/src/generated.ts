@@ -76,10 +76,16 @@ export interface ExecutorRegistration {
 }
 
 export interface Input {
+  media?: Media[];
   type: string;
   text?: string;
   delivery?: string;
   key?: string;
+}
+
+export interface Media {
+  type: string;
+  url: string;
 }
 
 export interface ModelCredential {

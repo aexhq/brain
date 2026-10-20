@@ -66,10 +66,15 @@ class ExecutorRegistration(TypedDict):
     tools: list[Tool]
 
 class Input(TypedDict):
+    media: NotRequired[list[Media]]
     type: str
     text: NotRequired[str]
     delivery: NotRequired[str]
     key: NotRequired[str]
+
+class Media(TypedDict):
+    type: str
+    url: str
 
 class ModelCredential(TypedDict):
     api_key: NotRequired[str]

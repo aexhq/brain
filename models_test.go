@@ -36,10 +36,10 @@ func (f *modelFactory) Open(_ context.Context, o HarnessOptions) (Harness, error
 
 type modelRunner struct{ o HarnessOptions }
 
-func (r *modelRunner) Prompt(context.Context, string) error {
+func (r *modelRunner) Prompt(context.Context, Message) error {
 	return r.o.Event("assistant.message", json.RawMessage(`{"text":"done"}`))
 }
-func (*modelRunner) Steer(context.Context, string) error              { return errors.New("unsupported") }
+func (*modelRunner) Steer(context.Context, Message) error             { return errors.New("unsupported") }
 func (*modelRunner) Interrupt(context.Context) error                  { return nil }
 func (*modelRunner) Checkpoint(context.Context) ([]NativeFile, error) { return []NativeFile{}, nil }
 func (*modelRunner) Close() error                                     { return nil }

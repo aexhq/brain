@@ -136,6 +136,20 @@ Call `brain.delete(session.id)` in TypeScript or `brain.delete(session["id"])` i
 
 If cleanup fails, repeat the deletion with the same session ID. Brain retains a tombstone throughout cleanup so reads and checkpoint restores cannot recreate the session. A successful response confirms online cleanup; independently retained backups follow your retention policy. See [Delete a session](/docs/api/generated/delete).
 
+## Send images
+
+Add the image service's exact origin to `media_origins` in the host config, then send its image URLs with your message:
+
+```ts
+await brain.send(session.id, {
+  type: "user.message",
+  text: "Describe these pixels.",
+  media: [{ type: "image", url: "https://assets.example/image.png" }],
+});
+```
+
+Pi, Codex and OpenCode fetch the image bytes before inference and save them in native context. Keep the URLs valid until the queued message runs. Restoring native context uses the saved images without fetching them again.
+
 ## Stream events
 
 `GET /sessions/{id}/events` returns the session's events in two ways:

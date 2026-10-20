@@ -15,19 +15,20 @@ type Provider struct {
 }
 
 type Options struct {
-	Lifetime  context.Context                                       `json:"-"`
-	SessionID string                                                `json:"session_id"`
-	Dir       string                                                `json:"dir"`
-	Config    core.Config                                           `json:"config"`
-	Tools     []core.Tool                                           `json:"tools"`
-	Provider  Provider                                              `json:"provider"`
-	Event     func(string, json.RawMessage) error                   `json:"-"`
-	Call      func(context.Context, core.Call) (core.Result, error) `json:"-"`
+	MediaOrigins []string                                              `json:"media_origins,omitempty"`
+	Lifetime     context.Context                                       `json:"-"`
+	SessionID    string                                                `json:"session_id"`
+	Dir          string                                                `json:"dir"`
+	Config       core.Config                                           `json:"config"`
+	Tools        []core.Tool                                           `json:"tools"`
+	Provider     Provider                                              `json:"provider"`
+	Event        func(string, json.RawMessage) error                   `json:"-"`
+	Call         func(context.Context, core.Call) (core.Result, error) `json:"-"`
 }
 
 type Runner interface {
-	Prompt(context.Context, string) error
-	Steer(context.Context, string) error
+	Prompt(context.Context, core.Text) error
+	Steer(context.Context, core.Text) error
 	Interrupt(context.Context) error
 	Checkpoint(context.Context) ([]core.NativeFile, error)
 	Close() error

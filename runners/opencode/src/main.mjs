@@ -5,6 +5,7 @@ import { Model, Provider } from "@opencode/plugin";
 import { SessionRestart } from "@opencode/core/session/execution/restart";
 import { Effect, Layer } from "effect";
 import { RunnerSession, serve, identity, unknownUsage } from "../../common/bridge.mjs";
+import { loadImages } from "../../common/media.mjs";
 
 let boot;
 const attachments = new Map();
@@ -151,9 +152,14 @@ class OpenCodeSession extends RunnerSession {
     }
     return { tools: options.tools.map(tool => tool.name) };
   }
-  async prompt(text) {
+  async prompt({ text, media }) {
     this.cancelled = false;
-    await this.host.sessions.prompt({ sessionID: this.nativeID, text });
+    this.mediaAbort = new AbortController();
+    let images;
+    try { images = await loadImages(media, this.options.media_origins, this.mediaAbort.signal); }
+    catch (error) { if (this.cancelled) return { interrupted: true }; throw error; }
+    if (this.cancelled) return { interrupted: true };
+    await this.host.sessions.prompt({ sessionID: this.nativeID, text, files: images.map(image => ({ uri: `data:${image.mimeType};base64,${image.data}` })) });
     await this.host.sessions.wait({ sessionID: this.nativeID });
     const info = await this.host.sessions.get({ sessionID: this.nativeID });
     await this.finish(info.outcome === "interrupted" ? "cancelled" : undefined);
@@ -166,7 +172,7 @@ class OpenCodeSession extends RunnerSession {
     if (info.outcome === "failed") throw Object.assign(new Error(), { code: "provider_error", safeMessage: "OpenCode model execution failed" });
     return { interrupted: info.outcome === "interrupted" };
   }
-  async interrupt() { this.cancelled = true; await this.host.sessions.interrupt({ sessionID: this.nativeID, resume: false }); return {}; }
+  async interrupt() { this.cancelled = true; this.mediaAbort?.abort(); await this.host.sessions.interrupt({ sessionID: this.nativeID, resume: false }); return {}; }
   async checkpoint() {
     const exported = await this.host.sessions.export({ sessionID: this.nativeID, sanitize: false });
     const entries = [];

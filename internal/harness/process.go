@@ -366,7 +366,7 @@ type attachment struct {
 	closeErr error
 }
 
-func (a *attachment) Prompt(ctx context.Context, text string) error {
+func (a *attachment) Prompt(ctx context.Context, input core.Text) error {
 	select {
 	case a.host.active <- struct{}{}:
 	case <-ctx.Done():
@@ -387,11 +387,11 @@ func (a *attachment) Prompt(ctx context.Context, text string) error {
 	a.turn = core.ID()
 	a.mu.Unlock()
 	defer func() { a.mu.Lock(); a.turn = ""; a.mu.Unlock() }()
-	_, err := a.request(ctx, "prompt", core.Text{Text: text})
+	_, err := a.request(ctx, "prompt", input)
 	return err
 }
-func (a *attachment) Steer(ctx context.Context, text string) error {
-	_, err := a.request(ctx, "steer", core.Text{Text: text})
+func (a *attachment) Steer(ctx context.Context, input core.Text) error {
+	_, err := a.request(ctx, "steer", input)
 	return err
 }
 func (a *attachment) Interrupt(ctx context.Context) error {

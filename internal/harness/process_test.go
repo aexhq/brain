@@ -116,7 +116,7 @@ func TestSharedHostAdmissionActiveCapsCancellationAndCrash(t *testing.T) {
 	}
 	finished := make(chan error, 2)
 	for _, r := range runners[:2] {
-		go func() { finished <- r.Prompt(ctx, "wait") }()
+		go func() { finished <- r.Prompt(ctx, core.Text{Text: "wait"}) }()
 	}
 	for i := 0; i < 2; i++ {
 		select {
@@ -126,7 +126,7 @@ func TestSharedHostAdmissionActiveCapsCancellationAndCrash(t *testing.T) {
 		}
 	}
 	queued, stop := context.WithTimeout(ctx, 100*time.Millisecond)
-	if err := runners[2].Prompt(queued, "queued"); err == nil {
+	if err := runners[2].Prompt(queued, core.Text{Text: "queued"}); err == nil {
 		t.Fatal("active cap ignored")
 	}
 	stop()
@@ -167,7 +167,7 @@ func TestSharedHostAdmissionActiveCapsCancellationAndCrash(t *testing.T) {
 	if len(f.group.hosts) != 1 {
 		t.Fatal("idle eviction failed to reuse host")
 	}
-	go func() { finished <- replacement.Prompt(ctx, "wait") }()
+	go func() { finished <- replacement.Prompt(ctx, core.Text{Text: "wait"}) }()
 	select {
 	case <-started:
 	case <-ctx.Done():
