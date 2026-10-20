@@ -17,7 +17,11 @@ export function browserGateway({ origin, brainURL, brainToken }) {
   if (new URL(origin).origin !== origin || !brainToken) throw new Error("gateway origin and backend Brain authority are required");
   const authorities = new Map(), grants = new Set();
   async function upstream(route, method, body, token = brainToken, signal, accept = "application/json") {
-    return fetch(new URL(route, brainURL), { method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: accept }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: "error", signal: signal ?? AbortSignal.timeout(30000) });
+    const target = new URL(brainURL);
+    const query = route.indexOf("?");
+    target.pathname = query < 0 ? route : route.slice(0, query);
+    target.search = query < 0 ? "" : route.slice(query);
+    return fetch(target, { method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: accept }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: "error", signal: signal ?? AbortSignal.timeout(30000) });
   }
   async function revoke(token) {
     const grant = authorities.get(token)?.grant;

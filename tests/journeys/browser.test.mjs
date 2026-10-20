@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { before, after, test } from "node:test";
 import http from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
@@ -12,6 +12,7 @@ const requireBrowser = createRequire(new URL("../../services/browser/package.jso
 const requireSDK = createRequire(new URL("../../bin/sdk-consumer/package.json", import.meta.url));
 const { chromium } = requireBrowser("playwright");
 const sdk = path.dirname(requireSDK.resolve("@aexhq/brain"));
+const sdkFiles = new Map(await Promise.all((await readdir(sdk)).filter(name => name.endsWith(".js")).map(async name => [name, await readFile(path.join(sdk, name))])));
 const tool = { name: "read_tab", description: "Read the user-attached page", input_schema: { type: "object", properties: { wait: { type: "boolean" } }, additionalProperties: false } };
 const listen = server => new Promise(resolve => server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${server.address().port}`)));
 const stop = server => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); });
@@ -25,9 +26,9 @@ async function attached(t, { ttlMs = 300000 } = {}) {
   const f = await fixture(t, binaries); await f.start();
   server = http.createServer(async (req, res) => {
     if (req.url.startsWith("/sdk/")) {
-      const name = req.url.slice(5);
-      if (!/^[a-z-]+\.js$/.test(name)) { res.writeHead(404).end(); return; }
-      res.writeHead(200, { "content-type": "text/javascript" }); res.end(await readFile(path.join(sdk, name))); return;
+      const asset = sdkFiles.get(req.url.slice(5));
+      if (!asset) { res.writeHead(404).end(); return; }
+      res.writeHead(200, { "content-type": "text/javascript" }); res.end(asset); return;
     }
     if (req.url === "/") {
       res.writeHead(200, { "content-type": "text/html", "cache-control": "no-store" });
