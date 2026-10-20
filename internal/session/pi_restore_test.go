@@ -50,7 +50,7 @@ func TestPiRestorePreservesNextModelRequest(t *testing.T) {
 			t.Fatal(err)
 		}
 		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-		e, err := New(Options{Store: db, Tools: registry, Factories: map[string]harness.Factory{"pi": &harness.ProcessFactory{Command: []string{"node", runner}, Logger: logger}}, Provider: func(string) (harness.Provider, error) {
+		e, err := New(Options{Store: db, Tools: registry, Factories: map[string]harness.Factory{"pi": &harness.ProcessFactory{Command: []string{"node", runner}, Logger: logger}}, Provider: func(context.Context, core.Session, *core.ModelCredential) (harness.Provider, error) {
 			return harness.Provider{APIKey: "test-key", BaseURL: provider.URL + "/v1", API: "openai-completions"}, nil
 		}, MaxActive: 1, MaxLoaded: 2, MaxQueue: 2, MaxInputBytes: 4096, MaxLogBytes: 16 << 20, Archive: &persistence.Archive{Objects: objects, MaxSessionBytes: 16 << 20}, SyncQueue: 4, SyncInterval: time.Hour, Logger: logger})
 		if err != nil {

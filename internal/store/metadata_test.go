@@ -101,6 +101,7 @@ type failingMetadata struct {
 }
 
 func (m failingMetadata) Create(context.Context, core.Session) error { return m.failure }
+func (m failingMetadata) Close() error                               { return nil }
 
 func TestWorkspacePreparesFilesAndPropagatesDatabaseFailure(t *testing.T) {
 	failure := errors.New("database unavailable")
@@ -108,6 +109,7 @@ func TestWorkspacePreparesFilesAndPropagatesDatabaseFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { s.Close() })
 	id := core.ID()
 	if err := s.Create(context.Background(), core.Session{ID: id}); !errors.Is(err, failure) {
 		t.Fatal(err)

@@ -39,13 +39,14 @@ Always pass the exact `cursor` string from a retained event (or `next_cursor` fr
 
 ## Event types
 
-Brain emits eight event types. Six are saved to disk (`events.jsonl`) and replayed on history/stream requests; two are live-only progress signals sent to connected SSE subscribers.
+Retained events are saved to disk (`events.jsonl`) and replayed on history/stream requests. Two event types are live-only progress signals sent to connected SSE subscribers.
 
 | Type | Saved to history? | `data` fields | Description |
 | --- | --- | --- | --- |
 | `user.message` | Yes | `type` (`"user.message"`), `text`, `delivery` (`"queue"`), optional `key` | User message accepted by `POST /sessions/{id}/events`. |
 | `assistant.delta` | No (live only) | `text` | Incremental text chunk streamed while the model generates a response. |
 | `assistant.message` | Yes | `text`, plus `usage` and `stop_reason` from Pi | Complete assistant message emitted at the end of a model generation step. |
+| `model.request` | Yes | Request/attempt identity, purpose, state, provider/model, usage snapshot | Model execution evidence, including explicit unknown outcomes. |
 | `tool.call` | Yes | `id`, `name`, `arguments` | Tool invocation requested by the model before Brain dispatches the HTTP, SSE, or MCP call. |
 | `tool.progress` | No (live only) | `call_id`, `data` | Intermediate JSON progress frame emitted by an SSE tool (`event: progress`) or MCP progress notification. |
 | `tool.result` | Yes | `call_id`, `result` (`content[]`, optional `is_error`, optional `unknown_outcome`) | Final outcome of a tool call returned to the harness. Each item in `content` has `type: "text"` (`text`) or `type: "image"` (`data`, `mime_type`). |
@@ -53,6 +54,18 @@ Brain emits eight event types. Six are saved to disk (`events.jsonl`) and replay
 | `session.error` | Yes | `code` (`"provider_error"`, `"brain_error"`, `"conflict"`, etc.), `message` | Fatal turn error or cancelled queued input. See [Errors](/docs/reference/errors#session-errors-sessionerror). |
 
 Each retained record in `events.jsonl` is capped at 4 MiB, and the total log file is capped at `limits.session_bytes` (default 1 GiB).
+
+## Model-request evidence
+
+`model.request` data uses the generated `ModelRequest` type. `request_id` identifies a logical generation; optional `attempt_id` identifies a physical attempt. Both are opaque 32-character hex IDs. The event envelope supplies session/input identity. `purpose` is `primary`, `compaction`, or `other`. `harness`, `provider`, and the full `model` selection identify the configured execution. `provider_request_id` is optional and retained only when supplied by the native transport.
+
+`state` is `started`, `completed`, `failed`, `cancelled`, or `unknown`. Start observations are persisted and acknowledged before dispatch. A crash or stopped execution without a terminal observation becomes `unknown` during settlement/recovery; reading history does not retry inference. `attempts` is `observed` or `unobserved` and describes physical-attempt coverage.
+
+`boundary` is `request` for an individual generation or `native_turn` when a native server exposes only the encompassing operation. `unmeasured` identifies any unobservable `generations`, `compaction`, `retries`, or `auxiliary` paths inside that boundary. A turn observation is not evidence that its individual requests or physical attempts were measured.
+
+`usage.availability` is `reported`, `partial`, or `unknown`. Missing quantities are unknown, including on failed/cancelled requests. `usage.semantics` is `snapshot`: replace the previous observation for the same `(request_id, attempt_id)` rather than adding it. Identical repeated observations are deduplicated. Logical and physical usage are alternative evidence; do not add their totals together.
+
+Optional quantities are `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, and `reasoning_tokens`. `input_cache` and `output_reasoning` each specify `included`, `excluded`, or `unknown`. They describe whether cache quantities are subsets of input and reasoning is a subset of output. Use those meanings before calculating totals. Display usage attached to `assistant.message` is another observation of that generation, not a separate charge. Brain does not price model requests.
 
 ## SSE wire format
 

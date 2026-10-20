@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -21,16 +22,19 @@ import (
 const MaxFrame = 4 << 20
 
 type ProcessFactory struct {
-	Command        []string
-	Steering       bool
-	Logger         *slog.Logger
-	MaxShared      int
-	MaxActiveTurns int
-	MaxHosts       int
-	MaxStarting    int
-	mu             sync.Mutex
-	pool           []*process
-	starting       chan struct{}
+	Command         []string
+	Steering        bool
+	Logger          *slog.Logger
+	MaxShared       int
+	MaxActiveTurns  int
+	MaxHosts        int
+	MaxStarting     int
+	Pool            *HostPool
+	init            sync.Once
+	initErr         error
+	group           *hostGroup
+	CredentialHosts bool
+	Validate        func(core.Config, Provider) error
 }
 
 func (f *ProcessFactory) SupportsSteering() bool { return f.Steering }
@@ -48,24 +52,29 @@ type RunnerFrame struct {
 }
 
 type process struct {
-	cmd         *exec.Cmd
-	in          io.WriteCloser
-	writeMu     sync.Mutex
-	mu          sync.Mutex
-	pending     map[string]chan RunnerFrame
-	ctx         context.Context
-	cancel      context.CancelFunc
-	done        chan struct{}
-	waited      chan struct{}
-	readDone    chan struct{}
-	callWG      sync.WaitGroup
-	err         error
-	once        sync.Once
-	attachments map[string]*attachment
-	active      chan struct{}
-	directory   string
-	killTree    func() error
-	tools       chan struct{}
+	cmd               *exec.Cmd
+	in                io.WriteCloser
+	writeMu           sync.Mutex
+	mu                sync.Mutex
+	pending           map[string]chan RunnerFrame
+	ctx               context.Context
+	cancel            context.CancelFunc
+	done              chan struct{}
+	waited            chan struct{}
+	readDone          chan struct{}
+	callWG            sync.WaitGroup
+	err               error
+	once              sync.Once
+	attachments       map[string]*attachment
+	active            chan struct{}
+	directory         string
+	killTree          func() error
+	tools             chan struct{}
+	closeOnce         sync.Once
+	closeErr          error
+	owner             *HostPool
+	group             *hostGroup
+	credentialContext [32]byte
 }
 
 func (f *ProcessFactory) start(ctx context.Context, opts Options) (*process, error) {
@@ -123,7 +132,7 @@ func (f *ProcessFactory) start(ctx context.Context, opts Options) (*process, err
 		cancel()
 		return nil, err
 	}
-	p := &process{cmd: cmd, in: in, pending: make(map[string]chan RunnerFrame), ctx: procCtx, cancel: cancel, done: make(chan struct{}), waited: make(chan struct{}), readDone: make(chan struct{}), attachments: map[string]*attachment{}, active: make(chan struct{}, f.MaxActiveTurns), directory: directory, tools: make(chan struct{}, 32)}
+	p := &process{owner: f.Pool, group: f.group, cmd: cmd, in: in, pending: make(map[string]chan RunnerFrame), ctx: procCtx, cancel: cancel, done: make(chan struct{}), waited: make(chan struct{}), readDone: make(chan struct{}), attachments: map[string]*attachment{}, active: make(chan struct{}, f.MaxActiveTurns), directory: directory, tools: make(chan struct{}, 32)}
 	killTree, err := startOwned(cmd)
 	if err != nil {
 		cancel()
@@ -188,13 +197,27 @@ func (p *process) read(r io.Reader) {
 		a.mu.Lock()
 		turn := a.turn
 		a.mu.Unlock()
-		if (f.Event != "" || f.Method == "tool.call") && (turn == "" || f.Turn != turn) {
+		if (f.Event != "" || f.Method == "tool.call" || f.Method == "model.request") && (turn == "" || f.Turn != turn) {
 			p.fail(errors.New("stale harness turn"))
 			return
 		}
 		switch {
+		case f.Method == "model.request":
+			if f.ID == "" || len(f.Params) == 0 {
+				p.fail(errors.New("invalid model observation"))
+				return
+			}
+			response := RunnerFrame{Attachment: f.Attachment, Turn: f.Turn, ID: f.ID, Result: json.RawMessage(`{}`)}
+			if err := a.opts.Event("model.request", f.Params); err != nil {
+				response.Result = nil
+				response.Error = &core.Error{Code: core.Internal, Message: "model observation failed"}
+			}
+			if err := p.write(response); err != nil {
+				p.fail(err)
+				return
+			}
 		case f.Event != "":
-			if f.ID != "" || len(f.Data) == 0 {
+			if f.ID != "" || len(f.Data) == 0 || f.Event == "model.request" {
 				p.fail(errors.New("invalid harness event"))
 				return
 			}
@@ -334,7 +357,7 @@ func (a *attachment) request(ctx context.Context, method string, params any) (js
 type attachment struct {
 	id       string
 	host     *process
-	factory  *ProcessFactory
+	pool     *HostPool
 	opts     Options
 	mu       sync.Mutex
 	turn     string
@@ -343,79 +366,7 @@ type attachment struct {
 	closeErr error
 }
 
-func (f *ProcessFactory) Open(ctx context.Context, opts Options) (Runner, error) {
-	f.mu.Lock()
-	if f.starting == nil {
-		if f.MaxShared == 0 {
-			f.MaxShared = 1
-		}
-		if f.MaxActiveTurns == 0 {
-			f.MaxActiveTurns = f.MaxShared
-		}
-		if f.MaxHosts == 0 {
-			f.MaxHosts = 64
-		}
-		if f.MaxStarting == 0 {
-			f.MaxStarting = 4
-		}
-		if f.MaxShared < 1 || f.MaxShared > 1024 || f.MaxActiveTurns < 1 || f.MaxActiveTurns > f.MaxShared || f.MaxHosts < 1 || f.MaxStarting < 1 {
-			f.mu.Unlock()
-			return nil, errors.New("invalid harness host limits")
-		}
-		f.starting = make(chan struct{}, f.MaxStarting)
-	}
-	f.mu.Unlock()
-	select {
-	case f.starting <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	defer func() { <-f.starting }()
-	f.mu.Lock()
-	var host *process
-	alive := f.pool[:0]
-	for _, p := range f.pool {
-		select {
-		case <-p.done:
-			continue
-		default:
-		}
-		alive = append(alive, p)
-		p.mu.Lock()
-		available := len(p.attachments) < f.MaxShared
-		p.mu.Unlock()
-		if host == nil && available {
-			host = p
-		}
-	}
-	f.pool = alive
-	if host == nil {
-		if len(f.pool) >= f.MaxHosts {
-			f.mu.Unlock()
-			return nil, core.E(core.Overloaded, "harness host capacity reached")
-		}
-		var err error
-		host, err = f.start(ctx, opts)
-		if err != nil {
-			f.mu.Unlock()
-			return nil, err
-		}
-		f.pool = append(f.pool, host)
-	}
-	a := &attachment{id: core.ID(), host: host, factory: f, opts: opts}
-	host.mu.Lock()
-	host.attachments[a.id] = a
-	host.mu.Unlock()
-	f.mu.Unlock()
-	initCtx, stop := context.WithTimeout(ctx, 30*time.Second)
-	defer stop()
-	if _, err := a.request(initCtx, "open", opts); err != nil {
-		a.Close()
-		return nil, err
-	}
-	return a, nil
-}
-func (a *attachment) Prompt(ctx context.Context, text string) error {
+func (a *attachment) Prompt(ctx context.Context, input core.Text) error {
 	select {
 	case a.host.active <- struct{}{}:
 	case <-ctx.Done():
@@ -424,6 +375,10 @@ func (a *attachment) Prompt(ctx context.Context, text string) error {
 		return errors.New("harness host stopped")
 	}
 	defer func() { <-a.host.active }()
+	if err := a.pool.beginTurn(); err != nil {
+		return err
+	}
+	defer a.pool.endTurn()
 	a.mu.Lock()
 	if a.turn != "" {
 		a.mu.Unlock()
@@ -432,11 +387,11 @@ func (a *attachment) Prompt(ctx context.Context, text string) error {
 	a.turn = core.ID()
 	a.mu.Unlock()
 	defer func() { a.mu.Lock(); a.turn = ""; a.mu.Unlock() }()
-	_, err := a.request(ctx, "prompt", core.Text{Text: text})
+	_, err := a.request(ctx, "prompt", input)
 	return err
 }
-func (a *attachment) Steer(ctx context.Context, text string) error {
-	_, err := a.request(ctx, "steer", core.Text{Text: text})
+func (a *attachment) Steer(ctx context.Context, input core.Text) error {
+	_, err := a.request(ctx, "steer", input)
 	return err
 }
 func (a *attachment) Interrupt(ctx context.Context) error {
@@ -462,8 +417,7 @@ func (a *attachment) Close() error {
 		default:
 			_, a.closeErr = a.request(ctx, "detach", nil)
 		}
-		f := a.factory
-		f.mu.Lock()
+		a.pool.mu.Lock()
 		a.host.mu.Lock()
 		delete(a.host.attachments, a.id)
 		empty := len(a.host.attachments) == 0
@@ -471,7 +425,7 @@ func (a *attachment) Close() error {
 		if empty {
 			a.host.fail(errors.New("harness host empty"))
 		}
-		f.mu.Unlock()
+		a.pool.mu.Unlock()
 		if empty {
 			a.host.Close()
 		}
@@ -479,10 +433,16 @@ func (a *attachment) Close() error {
 	return a.closeErr
 }
 func (p *process) Close() error {
-	p.fail(errors.New("harness closed"))
-	p.in.Close()
-	<-p.waited
-	<-p.readDone
-	p.callWG.Wait()
-	return os.RemoveAll(p.directory)
+	p.closeOnce.Do(func() {
+		p.fail(errors.New("harness closed"))
+		p.in.Close()
+		<-p.waited
+		<-p.readDone
+		p.callWG.Wait()
+		p.closeErr = os.RemoveAll(p.directory)
+		p.owner.mu.Lock()
+		p.group.hosts = slices.DeleteFunc(p.group.hosts, func(host *process) bool { return host == p })
+		p.owner.mu.Unlock()
+	})
+	return p.closeErr
 }

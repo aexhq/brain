@@ -97,6 +97,11 @@ func saveState(dir string, m Manifest) error {
 // captured prefixes until this call returns; appending is safe during upload.
 func (a *Archive) Publish(ctx context.Context, s Snapshot) (Manifest, error) {
 	var zero Manifest
+	if deleted, err := a.deleted(ctx, s.Session.ID); err != nil {
+		return zero, err
+	} else if deleted {
+		return zero, core.E(core.NotFound, "session was deleted")
+	}
 	if !core.ValidID(s.Session.ID) || s.Session.Tenant == "" || s.Session.Checkpoint == nil || s.HistoryBytes < s.Session.Checkpoint.Offset {
 		return zero, errors.New("invalid checkpoint snapshot")
 	}
@@ -216,6 +221,11 @@ func (a *Archive) Restore(ctx context.Context, tenant, id, reference, parent str
 	var m Manifest
 	if !core.ValidID(id) || (reference != "" && !core.ValidID(reference)) {
 		return m, "", core.E(core.Invalid, "invalid checkpoint reference")
+	}
+	if deleted, err := a.deleted(ctx, id); err != nil {
+		return m, "", err
+	} else if deleted {
+		return m, "", core.E(core.NotFound, "session not found")
 	}
 	if reference == "" {
 		b, err := a.Objects.Get(ctx, "sessions/"+id+"/latest")
@@ -361,5 +371,19 @@ func (a *Archive) List(ctx context.Context, tenant, after string, limit int) ([]
 	if a.Metadata == nil {
 		return []core.Session{}, nil
 	}
-	return a.Metadata.List(ctx, tenant, after, limit)
+	sessions, err := a.Metadata.List(ctx, tenant, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	result := sessions[:0]
+	for _, session := range sessions {
+		deleted, err := a.deleted(ctx, session.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !deleted {
+			result = append(result, session)
+		}
+	}
+	return result, nil
 }

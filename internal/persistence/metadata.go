@@ -14,6 +14,7 @@ import (
 
 // Metadata is an eventual discovery index, never a session ownership lock.
 type Metadata interface {
+	Delete(context.Context, string, string) error
 	Put(context.Context, core.Session, string) error
 	Get(context.Context, string, string) (core.Session, string, error)
 	List(context.Context, string, string, int) ([]core.Session, error)
@@ -117,3 +118,11 @@ func (p *Postgres) List(ctx context.Context, tenant, after string, limit int) ([
 	return result, rows.Err()
 }
 func (p *Postgres) Close() error { return p.db.Close() }
+
+func (p *Postgres) Delete(ctx context.Context, tenant, id string) error {
+	if err := p.ensure(ctx); err != nil {
+		return err
+	}
+	_, err := p.db.ExecContext(ctx, `DELETE FROM brain_sessions WHERE tenant=$1 AND id=$2`, tenant, id)
+	return err
+}

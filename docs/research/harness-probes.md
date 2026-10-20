@@ -72,4 +72,4 @@ This closes the observed native `execute` catalog/executor exclusion gap. It doe
 
 ## Current supported subset
 
-Pi remains the supported runner. Third-party runners can implement the existing process contract, but Codex/OpenCode are not advertised as equivalent built-ins until the same passive-recovery, exact-tool, compaction, and append-efficiency fixtures pass. This keeps the session API unchanged and allows the remaining adapters to land independently of storage, MCP, tools, or deployment.
+Plan 12 implements all three runners and passes their local passive-recovery, exact-tool, credential, compaction and incremental-checkpoint journeys. See the [qualification record](qualification.md) for the completed adapter evidence and remaining live-service limits. The probes above remain historical feasibility evidence rather than substitutes for that conformance suite.

@@ -2,6 +2,8 @@
 
 Implements [ADR 0003](../adr/0003-application-sdk-and-session-bindings.md), including the decisions recorded in Copilot session `0b8f387c-67a2-48d2-96e6-a5390258fad6`. The starting runtime is `415b7c1`; the subsequent five local commits contain design and qualification evidence only.
 
+[ADR 0004](../adr/0004-service-integration-readiness.md) and [plan 12](12-service-integration-readiness.md) extend the implemented baseline with service-integration requirements. They assign inspection tools to platforms and add browser, model-credential, usage and common host-pool work; the original slice's exclusions below do not defer those new requirements.
+
 ## Decisions
 
 - Keep the Go coordinator. Publish a Go composition package and make the stock executable a consumer of it. Application code is trusted; session requests cannot install code.

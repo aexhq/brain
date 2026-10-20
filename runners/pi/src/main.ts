@@ -7,6 +7,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import type { OpenOptions, Result, RunnerFrame as Frame } from "./generated.js";
+import { observeRequests } from "./evidence.js";
+import { loadImages } from "../../common/media.mjs";
 
 const maxFrame = 4 << 20;
 
@@ -27,6 +29,8 @@ function send(value: unknown) {
 class NativeSession {
   session: AgentSession | undefined;
   nativeDir = "";
+  mediaOrigins: string[] = [];
+  mediaAbort: AbortController | undefined;
   busy = false;
   settled: (() => void) | undefined;
   lastError: string | undefined;
@@ -34,6 +38,7 @@ class NativeSession {
   brainError: Error | undefined;
   readonly pending = new Map<string, { resolve: (r: Result) => void; reject: (e: Error) => void }>();
   readonly cancelled = new Set<string>();
+  readonly observations = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
 
   turn = "";
   constructor(readonly attachment: string) {}
@@ -64,6 +69,7 @@ class NativeSession {
   async open(options: OpenOptions) {
     if (this.session) throw new Error("session already open");
     this.nativeDir = options.dir;
+    this.mediaOrigins = options.media_origins ?? [];
     const cwd = path.join(this.nativeDir, "work");
     const agentDir = path.join(this.nativeDir, "agent");
     const sessionDir = path.join(this.nativeDir, "session");
@@ -140,6 +146,11 @@ class NativeSession {
       noTools: "builtin", tools: options.tools.map(t => t.name), customTools,
     });
     this.session = created.session;
+    observeRequests(this.session, request => new Promise<void>((resolve, reject) => {
+      const id = randomBytes(16).toString("hex");
+      this.observations.set(id, { resolve, reject });
+      this.send({ id, method: "model.request", params: request });
+    }));
     if (created.modelFallbackMessage || this.session.model?.provider !== provider || this.session.model?.id !== modelID) {
       throw new Error("harness did not select the requested model");
     }
@@ -167,7 +178,7 @@ class NativeSession {
     if (method === "open") return this.open(params as OpenOptions);
     if (method === "detach") { if (this.busy || this.pending.size) throw new Error("cannot detach active session"); this.session?.dispose(); return {}; }
     if (!this.session) throw new Error("session is not open");
-    if (method === "interrupt") { this.aborted = true; await this.session.abort(); return {}; }
+    if (method === "interrupt") { this.aborted = true; this.mediaAbort?.abort(); await this.session.abort(); return {}; }
     if (method === "steer") {
       if (!this.busy) throw new Error("steering requires active execution");
       await this.session.steer((params as { text: string }).text); return {};
@@ -186,16 +197,22 @@ class NativeSession {
     if (method === "prompt") {
       if (this.busy) throw new Error("session is busy");
       this.busy = true; this.lastError = undefined; this.brainError = undefined; this.aborted = false;
+      this.mediaAbort = new AbortController();
       const completion = new Promise<void>(resolve => { this.settled = resolve; });
       try {
-        try { await this.session.prompt((params as { text: string }).text, { expandPromptTemplates: false }); }
+        const input = params as { text: string; media?: { type: string; url: string }[] };
+        let images;
+        try { images = await loadImages(input.media, this.mediaOrigins, this.mediaAbort.signal); }
+        catch (error) { if (this.aborted) return { interrupted: true }; throw error; }
+        if (this.aborted) return { interrupted: true };
+        try { await this.session.prompt(input.text, { images, expandPromptTemplates: false }); }
         catch (error) { if (!this.aborted) { if (this.lastError) throw new ProviderFailure(this.lastError); throw error; } }
         await completion;
         if (this.brainError) throw this.brainError;
         if (this.aborted) return { interrupted: true };
         if (this.lastError) throw new ProviderFailure(this.lastError);
         return {};
-      } finally { this.busy = false; this.settled = undefined; }
+      } finally { this.busy = false; this.settled = undefined; this.mediaAbort = undefined; }
     }
     throw new Error("unsupported runner operation");
   }
@@ -203,6 +220,15 @@ class NativeSession {
   async receive(frame: Frame) {
     if (!frame.id) fatal(new Error("missing frame identity"));
     if (!frame.method) {
+      const observation = this.observations.get(frame.id);
+      if (observation) {
+        if (frame.turn !== this.turn) fatal(new Error("stale model observation response"));
+        this.observations.delete(frame.id);
+        if (frame.error) {
+          this.brainError = new Error("model observation failed"); observation.reject(this.brainError); void this.session?.abort();
+        } else observation.resolve();
+        return;
+      }
       if (this.cancelled.delete(frame.id)) return;
       if (frame.turn !== this.turn) fatal(new Error("stale tool response"));
       const callback = this.pending.get(frame.id);

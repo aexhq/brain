@@ -4,13 +4,13 @@ JavaScript/TypeScript applications install `@aexhq/brain`; Python applications
 install `aex-brain` and import `brain`. Both are dependency-free at runtime.
 
 ```sh
-npm install --save-exact @aexhq/brain@2.0.0
-python -m pip install aex-brain==2.0.0
+npm install --save-exact @aexhq/brain@2.1.0
+python -m pip install aex-brain==2.1.0
 ```
 
 Release artifacts include the npm archive, Python wheel, and source distribution in [GitHub Releases](https://github.com/aexhq/brain/releases). The release workflow publishes those exact tested bytes to npm and PyPI.
 
-SDK 2.0.0 adds client-owned runtime functions and the session binding contract. Successful output schemas validate `structured_content`. Update server, runner, and clients together; routes and local state have no compatibility layer or migration. Pin the SDK and the server image commit recorded in the publishing workflow summary.
+SDK 2.1.0 adds model/tool constructors, private model credentials, attached-tab tools, model-request evidence and session deletion. Client-owned runtime functions use the session binding contract. Successful output schemas validate `structured_content`. Update server, runner, and clients together; routes and local state have no compatibility layer or migration. Pin the SDK and the server image commit recorded in the publishing workflow summary.
 
 Go applications import `github.com/aexhq/brain` and optionally `github.com/aexhq/brain/integrations`. Pin the module to the source commit recorded in the matching release with `go get github.com/aexhq/brain@COMMIT`.
 

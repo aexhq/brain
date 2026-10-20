@@ -101,6 +101,9 @@
           },
           "harness": {
             "type": "string"
+          },
+          "model_credential": {
+            "$ref": "#/components/schemas/ModelCredential"
           }
         },
         "required": [
@@ -250,6 +253,12 @@
           "key": {
             "type": "string"
           },
+          "media": {
+            "items": {
+              "$ref": "#/components/schemas/Media"
+            },
+            "type": "array"
+          },
           "text": {
             "type": "string"
           },
@@ -259,6 +268,130 @@
         },
         "required": [
           "type"
+        ],
+        "type": "object"
+      },
+      "Media": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "url"
+        ],
+        "type": "object"
+      },
+      "ModelCredential": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key": {
+            "type": "string"
+          },
+          "reference": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "ModelRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_id": {
+            "type": "string"
+          },
+          "attempts": {
+            "type": "string"
+          },
+          "boundary": {
+            "type": "string"
+          },
+          "harness": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "provider_request_id": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "unmeasured": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/ModelUsage"
+          }
+        },
+        "required": [
+          "request_id",
+          "purpose",
+          "boundary",
+          "state",
+          "harness",
+          "provider",
+          "model",
+          "attempts",
+          "usage"
+        ],
+        "type": "object"
+      },
+      "ModelUsage": {
+        "additionalProperties": false,
+        "properties": {
+          "availability": {
+            "type": "string"
+          },
+          "cache_read_tokens": {
+            "type": "integer"
+          },
+          "cache_write_tokens": {
+            "type": "integer"
+          },
+          "input_cache": {
+            "type": "string"
+          },
+          "input_tokens": {
+            "type": "integer"
+          },
+          "output_reasoning": {
+            "type": "string"
+          },
+          "output_tokens": {
+            "type": "integer"
+          },
+          "reasoning_tokens": {
+            "type": "integer"
+          },
+          "semantics": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "availability",
+          "semantics",
+          "input_cache",
+          "output_reasoning"
         ],
         "type": "object"
       },
@@ -944,6 +1077,50 @@
       }
     },
     "/sessions/{id}": {
+      "delete": {
+        "description": "Settles execution, revokes executors, and removes local private state, events, native files and online checkpoints. A retained tombstone prevents restoration. Repeat after a failed cleanup; success means online cleanup completed. Independently retained backups follow their retention policy.",
+        "operationId": "delete",
+        "parameters": [
+          {
+            "description": "Opaque session ID.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-fA-F0-9]{32}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            },
+            "description": "Delete a session"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error. 400 invalid_request; 401 missing/invalid Bearer token; 403 forbidden; 404 not_found; 409 conflict or cursor_unavailable; 413 body limit; 422 unsupported; 429 overloaded (Retry-After: 1); 500 brain_error. X-Request-ID is present on every response."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Delete a session"
+      },
       "get": {
         "description": "Returns metadata and current status for a session. If the session is not on local disk and external storage is configured, Brain loads the latest published checkpoint.",
         "operationId": "get",

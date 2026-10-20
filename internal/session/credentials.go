@@ -2,8 +2,26 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/aexhq/brain/internal/core"
+	"github.com/aexhq/brain/internal/credentials"
+	"github.com/aexhq/brain/internal/harness"
 )
+
+func (e *Engine) modelProvider(ctx context.Context, s core.Session) (harness.Provider, error) {
+	value, err := credentials.Open(ctx, e.opts.Keys, s, credentials.ModelBinding)
+	if err != nil {
+		return harness.Provider{}, err
+	}
+	var credential *core.ModelCredential
+	if value != nil {
+		credential = new(core.ModelCredential)
+		if err := json.Unmarshal(value, credential); err != nil {
+			return harness.Provider{}, err
+		}
+	}
+	return e.opts.Provider(ctx, s, credential)
+}
 
 // ChangeCredentials serializes application credential administration with local
 // metadata writes. The mutation must atomically update private rows and UpdatedAt.

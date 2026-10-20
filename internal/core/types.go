@@ -80,6 +80,12 @@ type CredentialInput struct {
 	Value   json.RawMessage `json:"value"`
 }
 
+// ModelCredential is private admission input. Exactly one source is required.
+type ModelCredential struct {
+	APIKey    string `json:"api_key,omitempty"`
+	Reference string `json:"reference,omitempty"`
+}
+
 // CredentialRecord is private recovery material, not part of the public contract.
 type CredentialRecord struct {
 	Binding    string `json:"binding"`
@@ -89,9 +95,10 @@ type CredentialRecord struct {
 }
 
 type CreateSession struct {
-	Harness     string            `json:"harness"`
-	Config      Config            `json:"config"`
-	Credentials []CredentialInput `json:"credentials,omitempty"`
+	ModelCredential *ModelCredential  `json:"model_credential,omitempty"`
+	Harness         string            `json:"harness"`
+	Config          Config            `json:"config"`
+	Credentials     []CredentialInput `json:"credentials,omitempty"`
 }
 
 type Session struct {
@@ -126,14 +133,21 @@ func NewEvent(kind, inputID string, data any) (Event, error) {
 }
 
 type Input struct {
-	Type     string `json:"type"`
-	Text     string `json:"text,omitempty"`
-	Delivery string `json:"delivery,omitempty"`
-	Key      string `json:"key,omitempty"`
+	Media    []Media `json:"media,omitempty"`
+	Type     string  `json:"type"`
+	Text     string  `json:"text,omitempty"`
+	Delivery string  `json:"delivery,omitempty"`
+	Key      string  `json:"key,omitempty"`
 }
 
 type Text struct {
-	Text string `json:"text"`
+	Text  string  `json:"text"`
+	Media []Media `json:"media,omitempty"`
+}
+
+type Media struct {
+	Type string `json:"type"`
+	URL  string `json:"url"`
 }
 type Status struct {
 	Status string `json:"status"`

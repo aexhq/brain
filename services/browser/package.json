@@ -1,0 +1,11 @@
+{
+  "name": "brain-browser-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.mjs",
+    "test": "node --test test/*.test.mjs",
+    "install-browser": "playwright install chromium"
+  },
+  "dependencies": { "playwright": "1.64.1" }
+}

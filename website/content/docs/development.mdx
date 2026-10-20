@@ -13,13 +13,13 @@ This guide is for contributors. It covers how to set up a local development envi
 
 ## 1. Install workspace dependencies
 
-Install the locked Node dependencies for the Pi runner, TypeScript SDK, sandbox service, and documentation site:
+Install the locked dependencies for the three harness runners, TypeScript SDK, sandbox and browser services, and documentation site:
 
 ```sh
 node scripts/setup.mjs
 ```
 
-The script runs `npm ci --ignore-scripts` in `runners/pi`, `sdks/typescript`, `services/sandbox`, and `website`.
+The script installs each workspace lockfile and Chromium for the browser journeys. On Linux, install Chromium's OS dependencies with `npm --prefix services/browser exec -- playwright install-deps chromium`.
 
 ## 2. Run all checks
 
@@ -31,7 +31,7 @@ node scripts/check.mjs
 
 It runs these steps in order and stops at the first failure:
 
-1. `npm --prefix runners/pi run build`: compiles the TypeScript Pi runner (`runners/pi/dist/main.js`).
+1. `npm --prefix runners/pi run build`: compiles Pi; Codex and OpenCode build commands validate their JavaScript entry points.
 2. `npm --prefix sdks/typescript run build`: compiles the TypeScript SDK (`sdks/typescript/dist/`).
 3. `go run ./cmd/generate -check`: verifies that `api/openapi.json`, `runners/pi/src/generated.ts`, `sdks/typescript/src/generated.ts`, and `sdks/python/brain/types.py` match the Go source.
 4. `node scripts/package-sdks.mjs`: packs the npm package, builds the Python wheel and source distribution, and installs all three in isolated environments. It then runs the TypeScript client tests and a strict type check against the installed npm package, and the Python client tests against both Python installs.
@@ -39,9 +39,9 @@ It runs these steps in order and stops at the first failure:
 6. `go vet ./...`: runs Go static analysis.
 7. `npm --prefix runners/pi test`: runs the Pi runner unit and integration tests against a local recording provider.
 8. `npm --prefix sdks/typescript test`: runs the TypeScript SDK test suite.
-9. `npm --prefix services/sandbox test`: runs the sandbox tool service test suite.
+9. The sandbox and browser services run their test suites, including real Chromium network and cancellation checks.
 10. The Python unit suite runs against the installed wheel from `bin/sdk-consumer/python` using `bin/sdk-python`.
-11. `node --test tests/journeys/journeys.test.mjs`: runs the [end-to-end journeys](https://github.com/aexhq/brain/blob/main/tests/journeys/README.md) through the installed clients.
+11. The three suites in `tests/journeys/` run the [end-to-end journeys](https://github.com/aexhq/brain/blob/main/tests/journeys/README.md) through installed clients and all three native harnesses, including browser attachment and the remote service.
 12. `node --test tests/platforms.test.mjs`: validates the platform deployment examples under `examples/platforms/`.
 13. `node --test tests/registry-artifacts.test.mjs`: tests the SDK release workflow's admission checks and registry publication, including partial uploads, registry outages, and version reuse.
 14. `npm --prefix website run build`: generates the derived docs pages and builds the static Next.js / Fumadocs export.
@@ -115,4 +115,4 @@ Nothing publishes unless every job passes. After that, each push to `main`:
 2. Deploys the tested docs site to GitHub Pages, then smoke-tests the published site.
 3. Starts the SDK release, which publishes the SDK archives tested on Linux to npm and PyPI through registry trusted publishing, without rebuilding them, and attaches the same archives to a GitHub release.
 
-SDK 2.0.0 is the client for the current server and replaces the predecessor's 0.x API. The server's routes and local state have no versioning or compatibility layer, so pin production images by digest and use the SDK version that matches your server commit. [SDK delivery](https://github.com/aexhq/brain/blob/main/docs/sdk-releases.md) covers versioning, the release workflow, and registry setup.
+SDK 2.1.0 is the client for the current server and replaces the predecessor's 0.x API. The server's routes and local state have no versioning or compatibility layer, so pin production images by digest and use the SDK version that matches your server commit. [SDK delivery](https://github.com/aexhq/brain/blob/main/docs/sdk-releases.md) covers versioning, the release workflow, and registry setup.

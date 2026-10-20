@@ -14,12 +14,15 @@ import (
 type Config = config.Config
 type Limits = config.Limits
 type Token = config.Token
-type ModelProvider = config.Provider
 type ProcessConfig = config.Runner
 type Persistence = persistence.Settings
 type Grant = core.Grant
 type Session = core.Session
 type Event = core.Event
+type Message = core.Text
+type Media = core.Media
+type ModelRequest = core.ModelRequest
+type ModelUsage = core.ModelUsage
 type SessionConfig = core.Config
 type Tool = core.Tool
 type ToolBinding = core.ToolBinding
@@ -29,6 +32,7 @@ type Result = core.Result
 type Content = core.Content
 type CreateSession = core.CreateSession
 type CredentialInput = core.CredentialInput
+type ModelCredential = core.ModelCredential
 type CredentialKeys = credentials.Keys
 type KeyConfig = config.KeyConfig
 type ManagedTool = tools.Binding
@@ -43,6 +47,12 @@ type HarnessOptions = harness.Options
 type HarnessProvider = harness.Provider
 type NativeFile = core.NativeFile
 type ProcessFactory = harness.ProcessFactory
+type HostPool = harness.HostPool
+type HostPoolLimits = harness.PoolLimits
+
+func NewHostPool(limits HostPoolLimits) (*HostPool, error) { return harness.NewHostPool(limits) }
+func Codex(command []string) *ProcessFactory               { return harness.Codex(command) }
+func OpenCode(command []string) *ProcessFactory            { return harness.OpenCode(command) }
 
 func DefaultConfig() Config                         { return config.Default() }
 func LoadConfig(file string) (Config, error)        { return config.Load(file) }

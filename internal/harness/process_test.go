@@ -39,6 +39,17 @@ func TestSharedHostHelper(t *testing.T) {
 					send(frame)
 					continue
 				}
+				if options.Config.Model == "wait-open" {
+					if os.WriteFile(options.Dir+"/started", []byte("ready"), 0600) != nil {
+						os.Exit(5)
+					}
+					for {
+						if _, err := os.Stat(options.Dir + "/release"); err == nil {
+							break
+						}
+						time.Sleep(time.Millisecond)
+					}
+				}
 			}
 			frame.Method = ""
 			frame.Params = nil
@@ -100,12 +111,12 @@ func TestSharedHostAdmissionActiveCapsCancellationAndCrash(t *testing.T) {
 			t.Fatal(result.err)
 		}
 	}
-	if len(runners) != 8 || len(f.pool) != 1 {
-		t.Fatalf("admission: %d sessions in %d hosts", len(runners), len(f.pool))
+	if len(runners) != 8 || len(f.group.hosts) != 1 {
+		t.Fatalf("admission: %d sessions in %d hosts", len(runners), len(f.group.hosts))
 	}
 	finished := make(chan error, 2)
 	for _, r := range runners[:2] {
-		go func() { finished <- r.Prompt(ctx, "wait") }()
+		go func() { finished <- r.Prompt(ctx, core.Text{Text: "wait"}) }()
 	}
 	for i := 0; i < 2; i++ {
 		select {
@@ -115,7 +126,7 @@ func TestSharedHostAdmissionActiveCapsCancellationAndCrash(t *testing.T) {
 		}
 	}
 	queued, stop := context.WithTimeout(ctx, 100*time.Millisecond)
-	if err := runners[2].Prompt(queued, "queued"); err == nil {
+	if err := runners[2].Prompt(queued, core.Text{Text: "queued"}); err == nil {
 		t.Fatal("active cap ignored")
 	}
 	stop()
@@ -153,16 +164,16 @@ func TestSharedHostAdmissionActiveCapsCancellationAndCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer replacement.Close()
-	if len(f.pool) != 1 {
+	if len(f.group.hosts) != 1 {
 		t.Fatal("idle eviction failed to reuse host")
 	}
-	go func() { finished <- replacement.Prompt(ctx, "wait") }()
+	go func() { finished <- replacement.Prompt(ctx, core.Text{Text: "wait"}) }()
 	select {
 	case <-started:
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	if err := f.pool[0].cmd.Process.Kill(); err != nil {
+	if err := f.group.hosts[0].cmd.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {

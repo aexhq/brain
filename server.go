@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/aexhq/brain/internal/api"
+	"github.com/aexhq/brain/internal/config"
 	"github.com/aexhq/brain/internal/core"
 	"github.com/aexhq/brain/internal/credentials"
 	"github.com/aexhq/brain/internal/harness"
@@ -22,11 +23,15 @@ import (
 )
 
 type Options struct {
-	Config    Config
-	Harnesses map[string]HarnessFactory
-	Providers map[string]ToolProvider
-	Keys      CredentialKeys
-	Logger    *slog.Logger
+	Config       Config
+	Models       map[string]ModelProvider
+	HostPool     *HostPool
+	Tools        []ManagedTool
+	Authenticate func(*http.Request) (Grant, bool)
+	Harnesses    map[string]HarnessFactory
+	Providers    map[string]ToolProvider
+	Keys         CredentialKeys
+	Logger       *slog.Logger
 }
 
 // Server owns opened resources. Call Shutdown even when serving through Handler.
@@ -42,6 +47,32 @@ type Server struct {
 }
 
 func validate(o *Options) error {
+	poolLimits := o.Config.HostPool
+	if o.HostPool != nil {
+		if poolLimits != (harness.PoolLimits{}) {
+			return errors.New("host pool is declared twice")
+		}
+		poolLimits = o.HostPool.Limits()
+	}
+	if poolLimits != (harness.PoolLimits{}) {
+		for _, factory := range o.Harnesses {
+			if _, ok := factory.(*harness.ProcessFactory); !ok {
+				return errors.New("aggregate host limits require a process factory")
+			}
+		}
+	}
+	providers := make(map[string]config.Provider, len(o.Config.Providers)+len(o.Models))
+	for name, provider := range o.Config.Providers {
+		providers[name] = provider
+	}
+	for name, provider := range o.Models {
+		if _, exists := providers[name]; exists {
+			return errors.New("model provider is declared twice: " + name)
+		}
+		providers[name] = config.Provider{APIKey: provider.APIKey, BaseURL: provider.BaseURL, API: provider.API}
+	}
+	o.Config.Providers = providers
+	o.Config.Tools = append(append([]ManagedTool{}, o.Config.Tools...), o.Tools...)
 	if o.Config.Harnesses == nil {
 		o.Config.Harnesses = map[string]ProcessConfig{}
 	}
@@ -50,7 +81,7 @@ func validate(o *Options) error {
 			o.Config.Harnesses[name] = ProcessConfig{}
 		}
 	}
-	if err := o.Config.ValidateFactories(o.Harnesses); err != nil {
+	if err := o.Config.ValidateApplication(o.Harnesses, o.Authenticate != nil); err != nil {
 		return err
 	}
 	return tools.ValidateProviders(o.Providers)
@@ -138,16 +169,39 @@ func New(ctx context.Context, o Options) (_ *Server, err error) {
 		interval = time.Duration(p.IntervalSeconds) * time.Second
 	}
 	auth := api.NewAuth(o.Config.Tokens)
+	auth.Application = o.Authenticate
+	pool := o.HostPool
+	if pool == nil {
+		pool, err = harness.NewHostPool(o.Config.HostPool)
+		if err != nil {
+			return nil, err
+		}
+	}
+	s.close = append(s.close, pool.Close)
 	factories := map[string]harness.Factory{}
 	for name, r := range o.Config.Harnesses {
 		if f := o.Harnesses[name]; f != nil {
+			if process, ok := f.(*harness.ProcessFactory); ok {
+				if err := process.UseHostPool(pool); err != nil {
+					return nil, err
+				}
+			}
 			factories[name] = f
 		} else {
-			factories[name] = &harness.ProcessFactory{Command: r.Command, Steering: name == "pi", Logger: logger, MaxShared: r.MaxShared, MaxActiveTurns: r.MaxActiveTurns, MaxHosts: r.MaxHosts, MaxStarting: r.MaxStarting}
+			factory := &harness.ProcessFactory{}
+			if name == "codex" {
+				factory = harness.Codex(r.Command)
+			} else if name == "opencode" {
+				factory = harness.OpenCode(r.Command)
+			}
+			factory.Pool, factory.Command, factory.Steering, factory.Logger = pool, r.Command, name == "pi", logger
+			factory.CredentialHosts = factory.CredentialHosts || r.CredentialHosts
+			factory.MaxShared, factory.MaxActiveTurns, factory.MaxHosts, factory.MaxStarting = r.MaxShared, r.MaxActiveTurns, r.MaxHosts, r.MaxStarting
+			factories[name] = factory
 		}
 	}
 	l := o.Config.Limits
-	s.engine, err = session.New(session.Options{Store: db, Keys: o.Keys, Tools: registry, Factories: factories, Provider: o.Config.Provider, MaxActive: l.Active, MaxLoaded: l.Loaded, MaxQueue: l.Queue, MaxInputBytes: l.InputBytes, MaxLogBytes: l.SessionBytes, Logger: logger, Metrics: metrics, Archive: archive, SyncQueue: queue, SyncInterval: interval, Inspection: func(s core.Session) (string, string, func()) {
+	s.engine, err = session.New(session.Options{MediaOrigins: o.Config.MediaOrigins, Store: db, Keys: o.Keys, Tools: registry, Factories: factories, Provider: o.resolveModel, MaxActive: l.Active, MaxLoaded: l.Loaded, MaxQueue: l.Queue, MaxInputBytes: l.InputBytes, MaxLogBytes: l.SessionBytes, Logger: logger, Metrics: metrics, Archive: archive, SyncQueue: queue, SyncInterval: interval, Inspection: func(s core.Session) (string, string, func()) {
 		token, revoke := auth.Delegate(s)
 		return token, o.Config.PublicURL, revoke
 	}})
@@ -165,6 +219,10 @@ func (s *Server) ReadSession(ctx context.Context, tenant, id string) (Session, e
 	value, err := s.engine.Get(ctx, core.Grant{Tenant: tenant, ReadOnly: true}, id)
 	value.Credentials = nil
 	return value, err
+}
+
+func (s *Server) DeleteSession(ctx context.Context, tenant, id string) error {
+	return s.engine.Delete(ctx, core.Grant{Tenant: tenant, Manage: true}, id)
 }
 func (s *Server) ReadEvents(ctx context.Context, tenant, id, after string, limit int) ([]Event, error) {
 	log, release, err := s.engine.Log(ctx, core.Grant{Tenant: tenant, ReadOnly: true}, id)

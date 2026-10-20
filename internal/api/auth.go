@@ -12,8 +12,9 @@ import (
 )
 
 type Auth struct {
-	mu   sync.RWMutex
-	keys map[[32]byte]core.Grant
+	Application func(*http.Request) (core.Grant, bool)
+	mu          sync.RWMutex
+	keys        map[[32]byte]core.Grant
 }
 
 func NewAuth(tokens []config.Token) *Auth {
@@ -25,13 +26,18 @@ func NewAuth(tokens []config.Token) *Auth {
 }
 func (a *Auth) Authenticate(r *http.Request) (core.Grant, bool) {
 	value := r.Header.Get("Authorization")
-	if !strings.HasPrefix(value, "Bearer ") || len(value) > 1024 {
-		return core.Grant{}, false
+	var g core.Grant
+	var ok bool
+	if strings.HasPrefix(value, "Bearer ") && len(value) <= 1024 {
+		key := sha256.Sum256([]byte(strings.TrimPrefix(value, "Bearer ")))
+		a.mu.RLock()
+		g, ok = a.keys[key]
+		a.mu.RUnlock()
 	}
-	key := sha256.Sum256([]byte(strings.TrimPrefix(value, "Bearer ")))
-	a.mu.RLock()
-	g, ok := a.keys[key]
-	a.mu.RUnlock()
+	if !ok && a.Application != nil {
+		g, ok = a.Application(r)
+		ok = ok && g.Tenant != "" && len(g.Tenant) <= 128 && (g.Session == "" || core.ValidID(g.Session)) && g.Executor == ""
+	}
 	return g, ok
 }
 

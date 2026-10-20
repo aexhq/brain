@@ -1,6 +1,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Brain, BrainError } from "../dist/index.js";
+import { Brain, BrainError, Model, ApiKey, CredentialReference, ManagedTool } from "../dist/index.js";
+
+test("model and managed tool declarations lower private admission separately from config", async () => {
+  const client = new Brain("http://brain.test", "token", async (_url, init) => {
+    assert.deepEqual(JSON.parse(init.body), { harness: "pi", config: { model: "test/model", tools: ["lookup"], bindings: [
+      { alias: "records", provider: "data", operations: ["read"], parameters: { bucket: "one" } },
+    ] }, model_credential: { api_key: "customer-key" }, credentials: [{ binding: "records", value: { token: "tool-key" } }] });
+    return Response.json({ id: "session" });
+  });
+  await client.create({ harness: "pi", model: Model("test/model", ApiKey("customer-key")), tools: [ManagedTool("lookup"),
+    ManagedTool("data", { alias: "records", operations: ["read"], parameters: { bucket: "one" }, credential: { token: "tool-key" } }),
+  ] });
+  assert.deepEqual(CredentialReference("tenant-key"), { reference: "tenant-key" });
+  await assert.rejects(client.create({ harness: "pi", model: Model("test/model"), tools: [ManagedTool("lookup", { credential: "ignored" })] }), /require operations/);
+});
 
 test("an unsupported callback transport fails before registration", async () => {
   const brain = new Brain("http://brain.test", "token", async () => { assert.fail("invalid transport made a request"); });

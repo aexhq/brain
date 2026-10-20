@@ -77,6 +77,34 @@ For each `tool.call`, Brain validates that the tool is bound to the session, app
 
 Wire types for this protocol are generated in `internal/harness` and `runners/pi/src/generated.ts` via `go run ./cmd/generate`.
 
+### Acknowledge model observations
+
+Send a reverse request with `method: "model.request"` and `params` containing a [ModelRequest snapshot](/docs/reference/events#model-request-evidence). Await its matching result before dispatching the model request and before returning a terminal result from `Prompt`. Model observations use this acknowledged method, not fire-and-forget event frames. A rejected observation stops the affected execution.
+
+Go runners call `Options.Event("model.request", data)` synchronously and check its error before dispatch. Reuse a request/attempt identity for replacement snapshots, not for another inference call. Mark unobservable native paths and quantities explicitly; do not invent physical attempt identities.
+
+## Codex App Server adapter
+
+Install the workspace dependencies with `node scripts/setup.mjs`. Start a three-harness server with `go run ./cmd/brain -config examples/harnesses.json` after setting `BRAIN_API_KEY` and `OPENAI_API_KEY`. Select `pi`, `codex` or `opencode` in the same session-creation request. Use the [integration status](https://github.com/aexhq/brain/blob/main/docs/roadmap.md#integration-status) to distinguish local and live-service evidence.
+
+Configure `harnesses.codex.command` as `["node", "runners/codex/src/main.mjs"]` and select a provider using the `openai-responses` transport. The installed package pins Codex `0.163.0`. `brain.Codex(command)` installs its Go process-factory policy. Unsupported transports and reasoning selections fail admission.
+
+One owned native App Server shares compatible threads. Hosts are partitioned by a private credential-context digest; the key is supplied in the child environment without mutating the Brain or runner process environment. Dynamic tools are the exact Brain catalog, environment access is disabled, and the pinned exclusion settings remove native local tools and question/approval capabilities.
+
+The adapter selects the pinned server's complete JSONL history mode (`historyMode: "legacy"`). This is an upstream storage selection, not a Brain compatibility layer. Checkpoints append only the changed native rollout suffix and a small adapter-state record. Cold opens import the native checkpoint into the owned host and resume it without inference. Detachment archives the settled native thread and verifies `notLoaded` before releasing residency. Repeated interruption shares the same cancellation operation.
+
+App Server exposes native-turn and cumulative token observations rather than a complete per-request pre-dispatch hook. Receipts identify `boundary: "native_turn"`, mark generation/compaction/retry coverage as unmeasured, and retain observed positive token deltas as partial evidence. Unreported or ambiguous counters stay unknown. See the [qualification matrix](https://github.com/aexhq/brain/blob/main/docs/research/qualification.md).
+
+## OpenCode embedded adapter
+
+Configure `harnesses.opencode.command` as `["node", "runners/opencode/src/main.mjs"]` with the `openai-responses` transport. `brain.OpenCode(command)` installs the process-factory policy. The runner pins the SDK, core and plugin packages to `2.0.30` and the Effect runtime family to `4.0.1`. Unsupported transports, reasoning selections and the reserved `execute` tool name fail admission.
+
+One owned embedded host uses separate native instance registries for each Brain session. The registry removes native tools and selects HTTP transport explicitly; permissions deny every action except selected Brain tools and always deny Code Mode. Model hooks inject each attachment's private credential into its own request. Optional title inference is suppressed. The embedding layer replaces `SessionRestart` with a passive startup service, so restoring native state does not continue work.
+
+Native session exports supply metadata and messages, including compaction state. Each checkpoint scans that session's export and appends only changed message records and current metadata to `session.jsonl`. It never copies the shared SQLite database or peer sessions. Restoring folds those records and imports them through the native session API. This keeps checkpoint writes incremental; export reads still grow with that session's history.
+
+Acknowledged native model hooks record logical primary, compaction and other enabled requests. HTTP hooks record physical attempts, failures and provider identifiers; raw Responses usage carries explicit cache/reasoning inclusion semantics. Streaming and non-streaming summary responses use the same evidence contract. WebSocket transport is excluded by the selected native provider settings and a rejecting handshake hook. See the [qualification matrix](https://github.com/aexhq/brain/blob/main/docs/research/qualification.md).
+
 ## Isolation and verification
 
 A harness adapter must disable all built-in local tools (such as local shell execution or file editors), ambient plugins, and background cache warmers so the model can only invoke tools explicitly bound in `config.tools`. `harness.ProcessFactory` passes only minimal OS environment variables (`PATH`, `SystemRoot`, `WINDIR`, `COMSPEC`, `PATHEXT`, `TMP`, `TEMP`, `TMPDIR`, `LANG`, `LC_ALL`, and `NO_COLOR=1`) and supplies provider credentials exclusively through the `open` frame.

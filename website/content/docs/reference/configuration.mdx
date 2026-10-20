@@ -37,6 +37,8 @@ Configuration files are limited to 4 MiB. Unknown JSON fields and trailing JSON 
 
 ## Top-level fields
 
+`media_origins` is an optional array of exact HTTP/HTTPS origins, empty by default. Only images from those origins are admitted. Native runners accept PNG, JPEG, WebP and GIF responses, reject redirects, and limit one message's downloaded images to 20 MiB in total. A message accepts up to 64 image references; each URL is at most 4096 bytes. Image bytes enter native context and its checkpoints.
+
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `listen` | `string` | `"127.0.0.1:8080"` | TCP `host:port` address to bind. Validated with `net.SplitHostPort`. |
@@ -46,6 +48,7 @@ Configuration files are limited to 4 MiB. Unknown JSON fields and trailing JSON 
 | `harnesses` | `Record<string, Runner>` | Required | Map of harness name (`1`–`64` characters) to child process command (see [`harnesses`](#harnesses-harnesses)). At least one harness is required. |
 | `providers` | `Record<string, Provider>` | `{}` | Map of model provider prefix to credentials and optional transport overrides (see [`providers`](#model-providers-providers)). |
 | `tools` | `Binding[]` | `[]` | Array of external HTTP, SSE, or MCP tool bindings (see [`tools`](#external-tools-tools)). |
+| `host_pool` | `object` | `{}` | Optional aggregate host, startup and active-turn ceilings across installed process factories. |
 | `limits` | `Limits` | See below | In-memory, disk, queue, and SSE subscriber bounds (see [`limits`](#resource-limits-limits)). |
 | `persistence` | `Settings` | `null` | Optional background checkpoint storage and session index settings (see [`persistence`](#external-persistence-persistence)). |
 | `credential_keys` | `object` | `null` | Independent encryption key configuration for private session overrides. |
@@ -76,6 +79,20 @@ Each key in `harnesses` is the harness name clients pass in `POST /sessions` (fo
 
 Hosts use private working and home directories. Linux process guardians and Windows Job Objects own descendant lifetimes. Idle session eviction detaches only that session; the last detach closes the host. Global `limits.active` also bounds resident native session attachments.
 
+## Aggregate host pool
+
+`host_pool` adds optional ceilings across installed process factories. Omitted or zero values impose no additional aggregate restriction. Adapter-specific host occupancy, active-turn, host-count, and startup settings still apply. Capacity exhaustion rejects acquisition or dispatch with `overloaded`; Brain does not switch harnesses or replay tools.
+
+`harnesses.<name>.credential_hosts` partitions a process factory by a private digest of its provider credential context. It defaults to `false`; the installed `codex` policy enables it because native authentication is process-scoped. Keys are not pool labels. In application code, install process factories with the application's pool before first use; an already-opened factory cannot be transferred to another server.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `hosts` | `integer` | No | `0` | Maximum live native hosts across factories. |
+| `starting` | `integer` | No | `0` | Maximum native hosts awaiting their first attachment's readiness. |
+| `active_turns` | `integer` | No | `0` | Maximum turns dispatched across native hosts. |
+
+Values must be non-negative. In Go applications, supply `Options.HostPool` from `brain.NewHostPool(brain.HostPoolLimits{...})` instead of declaring `host_pool` in configuration. Aggregate limits require process factories; an opaque custom factory owns its own host lifecycle. Pool shutdown refuses new acquisitions and reaps owned process trees after sessions drain.
+
 ## Private credential keys
 
 ```json
@@ -88,11 +105,11 @@ Private overrides are authenticated encrypted SQL records, bound to tenant, sess
 
 ## Model providers (`providers`)
 
-Each key in `providers` matches the `provider` prefix in `config.model` (`provider/model`). Every configured provider must have its `api_key_env` environment variable set and non-empty when Brain starts. See [Models & providers](/docs/reference/models).
+Each key in `providers` matches the `provider` prefix in `config.model` (`provider/model`). A configured `api_key_env` must name a non-empty environment variable at startup. Omit it to require a private session credential. See [Models & providers](/docs/reference/models).
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `api_key_env` | `string` | Yes | — | Environment variable containing the provider API key. Passed to the harness runner via stdio `open` options. |
+| `api_key_env` | `string` | No | `""` | Environment variable containing the startup default API key. Passed to the harness runner via stdio `open` options when no session override is supplied. |
 | `base_url` | `string` | No | `""` | Optional `http` or `https` base URL override for proxies or compatible endpoints (must not include user credentials). |
 | `api` | `string` | No | `""` | Optional transport override in the Pi model registry (for example, `"openai-completions"`). |
 

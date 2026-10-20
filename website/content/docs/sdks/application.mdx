@@ -19,52 +19,67 @@ go run ./examples/application
 
 Create a session that selects the installed operation and its resource parameters:
 
-```json
-{
-  "harness": "pi",
-  "config": {
-    "model": "openai/gpt-4.1-mini",
-    "tools": [],
-    "bindings": [{
-      "alias": "welcome",
-      "provider": "greetings",
-      "operations": ["hello"],
-      "parameters": {"prefix": "Hello, "}
-    }]
-  }
-}
+```typescript
+import { Brain, Model, ManagedTool } from "@aexhq/brain";
+
+const brain = new Brain("http://127.0.0.1:8080", process.env.BRAIN_API_KEY!);
+const session = await brain.create({
+  harness: "pi", model: Model("openai/gpt-4.1-mini"),
+  tools: [ManagedTool("greetings", {
+    alias: "welcome", operations: ["hello"], parameters: { prefix: "Hello, " },
+  })],
+});
 ```
 
 The model sees `welcome_hello`. Bind the provider again with another alias to use different parameters in the same session. Keep action execution inside `Handler`; `Authorize` and `Bind` resolve permitted resources and descriptors without performing an action. Handlers receive trusted tenant, session, and call identity separately from model arguments. Honor the supplied context for cancellation and deadlines.
 
 Return text or image blocks in `Result.Content`, and the successful JSON value in `Result.StructuredContent`. An `output_schema` validates that value. Return `brain.ToolError(message, unknownOutcome)` for failures; mark the outcome unknown when the action may already have happened.
 
+## Install models and ordinary functions
+
+Use `Options.Models` to install `brain.NewModelProvider(apiKey)` values. Set `BaseURL` and `API` on that value to choose an application-owned endpoint. Declare each provider prefix in either `Config.Providers` or `Options.Models`; duplicate declarations fail startup validation.
+
+Add `brain.NewTool(descriptor, tenants, handler)` values to `Options.Tools`. The handler uses the same `ToolRequest`, progress callback, cancellation context, and `Result` contract as provider-bound handlers. Select an ordinary installed tool with `ManagedTool("name")` in the client. Its name is the model-visible name.
+
+Set `ModelProvider.Authorize` to authorize the model and credential selection using `ModelContext.Tenant`, `Session`, `Model`, and `Credential`. Set `Resolve` to resolve private credential references within that scope. Both run during admission and before each turn. Return an error to stop the selection; errors are redacted before returning to clients. An omitted authorization callback permits selections made by clients with session-management authority. A reference always requires an installed resolver.
+
+## Authenticate application requests
+
+Set `Options.Authenticate` to a function receiving `*http.Request` and returning `(brain.Grant, bool)`. Verify your application's token, expiry, and revocation before returning a grant. Return `false` for a rejected identity. An accepted grant needs a tenant; a session scope must be a valid session ID. `Manage`, `ReadOnly`, tenant, and session restrictions apply to application grants through the same HTTP checks as configured tokens.
+
+Configured bearer tokens and delegated tool tokens are checked first; unmatched requests reach the application callback. Omit `Config.Tokens` when the application callback is the authentication authority. Keep model-provider keys separate from Brain authentication tokens.
+
 ## Connect managed services
 
-Import `github.com/aexhq/brain/integrations` for `HTTP`, `MCP`, and `Sessions` constructors. Supply a parameter schema, an authorization function, and a resolver that returns only application-approved endpoints. Select MCP names explicitly. MCP stdio commands and environment values are installed by application code; clients select bindings, never commands.
+Import `github.com/aexhq/brain/integrations` for `HTTP` and `MCP` constructors. Supply a parameter schema, an authorization function, and a resolver that returns only application-approved endpoints. Select MCP names explicitly. MCP stdio commands and environment values are installed by application code; clients select bindings, never commands.
 
 Each MCP discovery or invocation owns its connection. Stdio uses a private directory and an owned process tree that closes after the operation. HTTP connections are pooled; MCP sessions are separate per operation. Changed discovered descriptors reject a saved session before an action runs.
 
-Use `integrations.Sessions` with a `SessionReader` and an explicit target authorization function to expose public session metadata and bounded event pages. The authenticated binding supplies the tenant. Authorize each target independently; the operation returns neither private credentials nor native files.
+Implement model-visible session inspection in your platform. The [platform example](https://github.com/aexhq/brain/tree/main/examples/platforms/sessiontools) uses Brain's authorized `ReadSession` and `ReadEvents` methods with explicit target authorization. Copy the policy into your application and choose its permitted targets and discovery rules there.
 
 ## Persist private overrides
 
 Provide `Options.Keys` or configure [`credential_keys`](/docs/reference/configuration#private-credential-keys) before accepting direct credentials. Keep keys independently of the SQL database and checkpoint archive.
 
-```json
-{
-  "harness": "pi",
-  "config": {
-    "model": "openai/gpt-4.1-mini", "tools": [],
-    "bindings": [{"alias":"records","provider":"installed_data","operations":["read"],"parameters":{"resource":"permitted-resource"}}]
-  },
-  "credentials": [{"binding":"records","value":{"token":"SESSION_RESOURCE_TOKEN"}}]
-}
+```typescript
+import { Brain, Model, ManagedTool } from "@aexhq/brain";
+
+const brain = new Brain("http://127.0.0.1:8080", process.env.BRAIN_API_KEY!);
+const session = await brain.create({
+  harness: "pi", model: Model("openai/gpt-4.1-mini"),
+  tools: [ManagedTool("installed_data", {
+    alias: "records", operations: ["read"],
+    parameters: { resource: "permitted-resource" },
+    credential: { token: process.env.SESSION_RESOURCE_TOKEN! },
+  })],
+});
 ```
 
 The installed provider authorizes and interprets the private value through `BindingContext.Credential`. Use deployment defaults only when the value is absent. SQL stores authenticated encrypted records, and checkpoints carry encrypted recovery records. Public session data exposes only the aliases that require overrides. A missing key, missing record, or failed authentication stops execution; it never switches credentials.
 
 Call `Server.RotateCredentials` to re-encrypt a session with the active key, or `Server.RevokeCredential` to retain a revocation tombstone. Both mark checkpoint state as changed. Retain old keys until their retained checkpoints expire. Existing local private records win over older restored records. Restoring an old backup into an empty deployment restores that backup's credential state, so apply your revocation inventory before resuming it.
+
+Supply model overrides with the client `Model(name, ApiKey(value))` or `Model(name, CredentialReference(reference))` constructors. These use private `model_credential` admission input, separate from tool aliases and credentials. Call `Server.RevokeModelCredential` to revoke that selection. Rotation includes both model and tool records. See [model credential selection](/docs/reference/models#private-model-credentials).
 
 ## Own the server lifecycle
 

@@ -20,6 +20,11 @@ function client(t, toolResult) {
   lines.on("line", async line => {
     const frame = JSON.parse(line);
     if (frame.event) { events.push(frame); return; }
+    if (frame.method === "model.request") {
+      events.push({ ...frame, event: "model.request", data: frame.params });
+      child.stdin.write(JSON.stringify({ attachment: frame.attachment, turn: frame.turn, id: frame.id, result: {} }) + "\n");
+      return;
+    }
     if (frame.method === "tool.call") {
       const result = await toolResult(frame.params, frame.attachment);
       const response = result instanceof Error ? { error: { code: "brain_error", message: "tool dispatch failed" } } : { result };

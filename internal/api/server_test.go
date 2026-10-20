@@ -57,7 +57,7 @@ func TestRealPiHTTPAndIsolation(t *testing.T) {
 	_, file, _, _ := runtime.Caller(0)
 	runner := filepath.Join(filepath.Dir(file), "..", "..", "runners", "pi", "dist", "main.js")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	engine, err := session.New(session.Options{Store: db, Tools: registry, Factories: map[string]harness.Factory{"pi": &harness.ProcessFactory{Command: []string{"node", runner}, Logger: logger}}, Provider: func(string) (harness.Provider, error) {
+	engine, err := session.New(session.Options{Store: db, Tools: registry, Factories: map[string]harness.Factory{"pi": &harness.ProcessFactory{Command: []string{"node", runner}, Logger: logger}}, Provider: func(context.Context, core.Session, *core.ModelCredential) (harness.Provider, error) {
 		return harness.Provider{APIKey: "test-key", BaseURL: provider.URL + "/v1", API: "openai-completions"}, nil
 	}, MaxActive: 2, MaxLoaded: 16, MaxQueue: 2, MaxInputBytes: 1024, MaxLogBytes: 16 << 20, Logger: logger})
 	if err != nil {

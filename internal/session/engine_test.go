@@ -32,7 +32,8 @@ type testRunner struct {
 	started chan string
 }
 
-func (r *testRunner) Prompt(ctx context.Context, text string) error {
+func (r *testRunner) Prompt(ctx context.Context, input core.Text) error {
+	text := input.Text
 	r.started <- text
 	if text == "block" {
 		<-ctx.Done()
@@ -41,8 +42,8 @@ func (r *testRunner) Prompt(ctx context.Context, text string) error {
 	data, _ := json.Marshal(core.Text{Text: text})
 	return r.opts.Event("assistant.message", data)
 }
-func (r *testRunner) Steer(context.Context, string) error { return errors.New("unsupported") }
-func (r *testRunner) Interrupt(context.Context) error     { return nil }
+func (r *testRunner) Steer(context.Context, core.Text) error { return errors.New("unsupported") }
+func (r *testRunner) Interrupt(context.Context) error        { return nil }
 func (r *testRunner) Checkpoint(context.Context) ([]core.NativeFile, error) {
 	return []core.NativeFile{}, nil
 }
@@ -59,7 +60,9 @@ func setup(t *testing.T) (*Engine, *testFactory, core.Grant) {
 		t.Fatal(err)
 	}
 	f := &testFactory{started: make(chan string, 32)}
-	e, err := New(Options{Store: db, Tools: r, Factories: map[string]harness.Factory{"pi": f}, Provider: func(string) (harness.Provider, error) { return harness.Provider{}, nil }, MaxActive: 1, MaxLoaded: 16, MaxQueue: 1, MaxInputBytes: 4096, MaxLogBytes: 16 << 20, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	e, err := New(Options{Store: db, Tools: r, Factories: map[string]harness.Factory{"pi": f}, Provider: func(context.Context, core.Session, *core.ModelCredential) (harness.Provider, error) {
+		return harness.Provider{}, nil
+	}, MaxActive: 1, MaxLoaded: 16, MaxQueue: 1, MaxInputBytes: 4096, MaxLogBytes: 16 << 20, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,7 +8,7 @@ description: Create sessions, send messages, and stream events with the zero-dep
 ## Install
 
 ```sh
-python -m pip install aex-brain==2.0.0
+python -m pip install aex-brain==2.1.0
 ```
 
 ## Declare runtime tools
@@ -17,7 +17,7 @@ Keep your Python process alive while the session uses its functions. The SDK own
 
 ```python
 import os
-from brain import Brain, RuntimeTool
+from brain import Brain, Model, Tool
 
 client = Brain("http://127.0.0.1:8080", os.environ["BRAIN_API_KEY"])
 
@@ -27,10 +27,8 @@ def lookup(arguments, context):
     context.progress({"stage": "reading"})
     return {"value": "application data for " + context.scope["tenant_id"]}
 
-tools = [RuntimeTool("lookup", "Read application data", {"type": "object"}, lookup)]
-session = client.create({"harness": "pi", "config": {
-    "model": "openai/gpt-4.1-mini", "tools": []
-}}, runtime_tools=tools)
+tools = [Tool("lookup", "Read application data", {"type": "object"}, lookup)]
+session = client.create(harness="pi", model=Model("openai/gpt-4.1-mini"), tools=tools)
 client.send(session["id"], {"type": "user.message", "text": "Use runtime_lookup."})
 stream = client.observe(session["id"])
 try:
@@ -47,6 +45,12 @@ finally:
 Return a JSON value to populate `structured_content`; raise an exception for a tool error. Functions run on bounded callback threads and must cooperate with `context.cancelled`. `context.scope` is authenticated host identity, separate from arguments. Function source and captured credentials are never registered with Brain.
 
 `client.dispose()` closes callback connections without closing sessions. Reattach matching descriptors after restart with `client.rebind(session_id, tools)`, then explicitly resume and send a new input. A disconnected callback returns an unavailable or unknown-outcome tool error according to whether dispatch occurred; the SDK never resends an action.
+
+## Select models and managed tools
+
+Import `ApiKey`, `CredentialReference`, and `ManagedTool` from `brain`. Pass `Model("provider/model", ApiKey(customer_key))` to supply a private API key, or use `CredentialReference(reference)` for an application-authorized reference. Omit the credential to select the startup default. Configure independent encryption keys on the server before supplying overrides. Rejected or unavailable overrides fail without switching to the default.
+
+Select an ordinary installed tool with `ManagedTool("lookup")`. Select resource operations with `ManagedTool("storage", operations=["read"], alias="docs", parameters={"bucket": "authorized-bucket"}, credential={"token": resource_token})`. The SDK lowers these declarations to the [HTTP contract](/docs/api); model and resource credentials stay outside public session configuration. Provider operations have an alias prefix such as `docs_read`.
 
 The distribution is named `aex-brain`; the import package is `brain`. Wheels and
 source distributions are published on PyPI and include generated types and the

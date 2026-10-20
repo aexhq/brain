@@ -29,8 +29,10 @@ func main() {
 		panic(err)
 	}
 	cfg.Tokens = []brain.Token{{Env: "CONSUMER_TOKEN", Grant: brain.Grant{Tenant: "one", Manage: true}}}
-	cfg.Providers = map[string]brain.ModelProvider{"test": {APIKeyEnv: "CONSUMER_TOKEN"}}
-	options := brain.Options{Config: cfg, Harnesses: map[string]brain.HarnessFactory{"custom": factory{}}}
+	options := brain.Options{Config: cfg, Models: map[string]brain.ModelProvider{"test": {APIKey: "startup-model-key"}}, Harnesses: map[string]brain.HarnessFactory{"custom": factory{}}}
+	options.Tools = []brain.ManagedTool{brain.NewTool(brain.Tool{Name: "hello", Description: "Greet", InputSchema: json.RawMessage(`{"type":"object"}`)}, []string{"one"}, func(context.Context, brain.ToolRequest, func(json.RawMessage)) brain.Result {
+		return brain.Result{Content: []brain.Content{{Type: "text", Text: "hello"}}}
+	})}
 	if err := brain.Validate(options); err != nil {
 		panic(err)
 	}
@@ -42,7 +44,8 @@ func main() {
 		panic(err)
 	}
 	// Optional integrations compile against the same public types.
-	_ = integrations.Sessions(server, func(context.Context, brain.BindingContext, string) error { return nil })
+	_ = integrations.HTTP(integrations.ProviderOptions{}, nil)
+	_ = integrations.MCP(integrations.ProviderOptions{}, nil)
 	request := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(`{"harness":"custom","config":{"model":"test/model","tools":[]}}`))
 	request.Header.Set("Authorization", "Bearer consumer-secret-with-24-bytes")
 	response := httptest.NewRecorder()

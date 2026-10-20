@@ -194,7 +194,7 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, g core.Grant) {
 		return
 	}
 	if input.Type == "user.interrupt" {
-		if input.Text != "" || input.Key != "" || input.Delivery != "" {
+		if input.Text != "" || input.Key != "" || input.Delivery != "" || len(input.Media) != 0 {
 			s.fail(w, r, core.E(core.Invalid, "interrupt accepts no message fields"))
 			return
 		}
@@ -226,6 +226,14 @@ func (s *Server) close(w http.ResponseWriter, r *http.Request, g core.Grant) {
 		return
 	}
 	write(w, 202, core.Status{Status: "close_requested"})
+}
+
+func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request, g core.Grant) {
+	if err := s.Engine.Delete(r.Context(), g, r.PathValue("id")); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	write(w, 200, core.Status{Status: "deleted"})
 }
 
 func (s *Server) flush(w http.ResponseWriter, r *http.Request, g core.Grant) {

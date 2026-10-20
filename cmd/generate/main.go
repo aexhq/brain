@@ -108,6 +108,7 @@ func main() {
 	}
 	visit(reflect.TypeFor[api.ErrorResponse]())
 	visit(reflect.TypeFor[core.SyncStatus]())
+	visit(reflect.TypeFor[core.ModelRequest]())
 	for _, t := range []reflect.Type{reflect.TypeFor[core.CreateSession](), reflect.TypeFor[core.Session](), reflect.TypeFor[core.Input](), reflect.TypeFor[core.Event](), reflect.TypeFor[core.Tool](), reflect.TypeFor[core.Call](), reflect.TypeFor[core.Result](), reflect.TypeFor[core.ToolResult](), reflect.TypeFor[core.Error]()} {
 		visit(t)
 	}

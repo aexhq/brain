@@ -25,16 +25,18 @@ type Token struct {
 	core.Grant
 }
 type Provider struct {
-	APIKeyEnv string `json:"api_key_env"`
+	APIKey    string `json:"-"`
+	APIKeyEnv string `json:"api_key_env,omitempty"`
 	BaseURL   string `json:"base_url,omitempty"`
 	API       string `json:"api,omitempty"`
 }
 type Runner struct {
-	Command        []string `json:"command"`
-	MaxShared      int      `json:"max_shared,omitempty"`
-	MaxActiveTurns int      `json:"max_active_turns,omitempty"`
-	MaxHosts       int      `json:"max_hosts,omitempty"`
-	MaxStarting    int      `json:"max_starting,omitempty"`
+	CredentialHosts bool     `json:"credential_hosts,omitempty"`
+	Command         []string `json:"command"`
+	MaxShared       int      `json:"max_shared,omitempty"`
+	MaxActiveTurns  int      `json:"max_active_turns,omitempty"`
+	MaxHosts        int      `json:"max_hosts,omitempty"`
+	MaxStarting     int      `json:"max_starting,omitempty"`
 }
 
 // KeyConfig names deployment environment variables, never encryption key values.
@@ -70,6 +72,8 @@ type Limits struct {
 	SubscriberBytes  int64 `json:"subscriber_bytes"`
 }
 type Config struct {
+	MediaOrigins   []string              `json:"media_origins,omitempty"`
+	HostPool       harness.PoolLimits    `json:"host_pool,omitempty"`
 	CredentialKeys *KeyConfig            `json:"credential_keys,omitempty"`
 	Listen         string                `json:"listen"`
 	PublicURL      string                `json:"public_url"`
@@ -117,6 +121,19 @@ func Load(file string) (Config, error) {
 func (c *Config) Validate() error { return c.ValidateFactories(nil) }
 
 func (c *Config) ValidateFactories(factories map[string]harness.Factory) error {
+	return c.ValidateApplication(factories, false)
+}
+
+func (c *Config) ValidateApplication(factories map[string]harness.Factory, externalAuth bool) error {
+	for _, origin := range c.MediaOrigins {
+		u, err := url.Parse(origin)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+			return errors.New("media_origins must contain exact HTTP origins")
+		}
+	}
+	if err := c.HostPool.Validate(); err != nil {
+		return err
+	}
 	if c.CredentialKeys != nil {
 		if _, _, err := c.CredentialKeys.Active(context.Background()); err != nil {
 			return err
@@ -147,7 +164,7 @@ func (c *Config) ValidateFactories(factories map[string]harness.Factory) error {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return errors.New("invalid public_url")
 	}
-	if len(c.Tokens) == 0 {
+	if len(c.Tokens) == 0 && !externalAuth {
 		return errors.New("at least one authentication token is required")
 	}
 	seen := make(map[string]bool)
@@ -189,7 +206,7 @@ func (c *Config) ValidateFactories(factories map[string]harness.Factory) error {
 		}
 	}
 	for name, p := range c.Providers {
-		if name == "" || p.APIKeyEnv == "" || os.Getenv(p.APIKeyEnv) == "" {
+		if name == "" || (p.APIKeyEnv != "" && os.Getenv(p.APIKeyEnv) == "") || (p.APIKeyEnv != "" && p.APIKey != "") {
 			return fmt.Errorf("provider %q requires its configured API key", name)
 		}
 		if p.BaseURL != "" {
@@ -207,6 +224,10 @@ func (c *Config) ValidateFactories(factories map[string]harness.Factory) error {
 }
 
 func (c Config) Provider(model string) (harness.Provider, error) {
+	return c.ModelProvider(model, nil)
+}
+
+func (c Config) ModelProvider(model string, override *string) (harness.Provider, error) {
 	name, id, ok := strings.Cut(model, "/")
 	if !ok || id == "" {
 		return harness.Provider{}, core.E(core.Invalid, "model must be provider/model")
@@ -215,7 +236,13 @@ func (c Config) Provider(model string) (harness.Provider, error) {
 	if !ok {
 		return harness.Provider{}, core.E(core.Invalid, "model provider is not configured")
 	}
-	key := os.Getenv(p.APIKeyEnv)
+	key := p.APIKey
+	if p.APIKeyEnv != "" {
+		key = os.Getenv(p.APIKeyEnv)
+	}
+	if override != nil {
+		key = *override
+	}
 	if key == "" {
 		return harness.Provider{}, core.E(core.Invalid, "model credentials are unavailable")
 	}

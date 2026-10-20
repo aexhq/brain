@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { access, appendFile, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { access, appendFile, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { responsesReply } from "./model-responses.mjs";
 import {
-  Brain, build, call, config, delay, fixture, history, jsonBody, message,
+  Brain, Model, ApiKey, Tool, ManagedTool, build, call, config, delay, fixture, history, jsonBody, message,
   modelReply, rejects, removeTemp, result, root, state, tokens, until,
 } from "./fixture.mjs";
 
@@ -15,6 +16,277 @@ const completed = (input, event) => event.type === "session.status" && event.inp
 const retained = events => events.filter(event => event.cursor);
 const ids = events => events.map(event => event.id);
 const toolResults = events => events.filter(event => event.type === "tool.result");
+
+test("installed SDK deletion removes local and archived state and prevents cold resurrection", budget, async t => {
+  const f = await fixture(t, binaries, { persistence: {} });
+  await f.start();
+  const session = await f.api.create(config());
+  await f.api.send(session.id, message("Retain private history before deletion"));
+  await state(f.api, session.id);
+  const checkpoint = await f.api.flush(session.id);
+  const foreign = new Brain(f.url, tokens.b);
+  await rejects(foreign.delete(session.id), 404, "not_found");
+  await f.api.delete(session.id);
+  await f.api.delete(session.id);
+  await rejects(f.api.get(session.id), 404, "not_found");
+  assert.ok(!(await f.api.list()).sessions.some(value => value.id === session.id));
+  await assert.rejects(access(path.join(f.settings.data_dir, "sessions", session.id)));
+  await f.crash(); f.settings.data_dir = path.join(f.dir, "deleted-cold-cache"); await f.start();
+  await rejects(f.api.restore(session.id, checkpoint.checkpoint), 404, "not_found");
+  const python = await f.python(path.join(root, "tests/journeys/python_delete.py"));
+  assert.equal(python.deleted, true);
+});
+
+test("Pi receipts preserve reported cache/reasoning subsets on both OpenAI transports", budget, async t => {
+  for (const api of ["openai-completions", "openai-responses"]) await t.test(api, async t => {
+    const f = await fixture(t, binaries, { api });
+    await f.start();
+    const s = await f.api.create(config());
+    f.model.respond = async (_input, response) => {
+      const starts = (await history(f.api, s.id)).filter(event => event.type === "model.request" && event.data.state === "started");
+      assert.ok(starts.some(event => event.data.attempt_id), "provider dispatched before physical start was retained");
+      response.setHeader("x-request-id", "request-evidence");
+      if (api === "openai-responses") responsesReply(response, "counted", { input_tokens: 20, output_tokens: 10, total_tokens: 30, input_tokens_details: { cached_tokens: 8 }, output_tokens_details: { reasoning_tokens: 4 } });
+      else modelReply(response, "counted", { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30, prompt_tokens_details: { cached_tokens: 8 }, completion_tokens_details: { reasoning_tokens: 4 } });
+    };
+    await f.api.send(s.id, message("Account for this generation")); await state(f.api, s.id);
+    const receipts = (await history(f.api, s.id)).filter(event => event.type === "model.request" && event.data.state === "completed");
+    assert.equal(receipts.length, 2);
+    const request = receipts.find(event => event.data.attempt_id).data;
+    assert.equal(request.provider_request_id, "request-evidence");
+    assert.deepEqual(request.usage, { availability: "reported", semantics: "snapshot", input_tokens: 12, output_tokens: 10, cache_read_tokens: 8, reasoning_tokens: 4, input_cache: "excluded", output_reasoning: "included" });
+    assert.equal(request.usage.input_tokens + request.usage.cache_read_tokens + request.usage.output_tokens, 30);
+  });
+});
+
+test("Pi records retry attempts and leaves absent provider usage unknown", budget, async t => {
+  const f = await fixture(t, binaries);
+  await f.start();
+  const s = await f.api.create(config());
+  f.model.respond = async (_input, response) => {
+    if (f.model.requests.length === 1) { response.writeHead(429, { "Content-Type": "application/json", "Retry-After": "0" }); response.end(JSON.stringify({ error: { message: "rate limit" } })); }
+    else modelReply(response, "retried");
+  };
+  await f.api.send(s.id, message("Retry the model, never a tool action")); await state(f.api, s.id);
+  assert.equal(f.model.requests.length, 2);
+  const receipts = (await history(f.api, s.id)).filter(event => event.type === "model.request" && event.data.state !== "started");
+  const physical = receipts.filter(event => event.data.attempt_id);
+  assert.equal(physical.length, 2);
+  assert.equal(physical[0].data.state, "failed"); assert.equal(physical[1].data.state, "completed");
+  assert.ok(receipts.every(event => event.data.usage.availability === "unknown" && event.data.usage.input_tokens === undefined));
+});
+
+test("Pi evidence settles rejection, partial streams, cancellation and abrupt host loss", budget, async t => {
+  for (const outcome of ["rejected", "partial", "cancelled", "crashed"]) await t.test(outcome, async t => {
+    const f = await fixture(t, binaries);
+    f.model.respond = async (_input, response) => {
+      if (outcome === "rejected") { response.writeHead(400, { "Content-Type": "application/json" }); response.end(JSON.stringify({ error: { message: "fixture rejected request" } })); }
+      else if (outcome === "partial") {
+        response.writeHead(200, { "Content-Type": "text/event-stream" });
+        response.write(`data: ${JSON.stringify({ id: "partial", choices: [{ index: 0, delta: { role: "assistant", content: "partial output" }, finish_reason: null }] })}\n\n`);
+        await delay(30); response.destroy();
+      }
+    };
+    await f.start();
+    const s = await f.api.create(config());
+    await f.api.send(s.id, message(`Exercise ${outcome}`));
+    await until(() => f.model.requests.length);
+    if (outcome === "cancelled") { await f.api.interrupt(s.id); await state(f.api, s.id, "interrupted"); }
+    else if (outcome === "crashed") { await f.crash(); await f.start(); await f.api.get(s.id); }
+    else await state(f.api, s.id, "interrupted");
+    const evidence = (await history(f.api, s.id)).filter(event => event.type === "model.request");
+    const latest = new Map(evidence.map(event => [`${event.data.request_id}/${event.data.attempt_id ?? ""}`, event.data]));
+    assert.ok(latest.size >= 2);
+    assert.ok([...latest.values()].every(value => value.state !== "started"), "an observed dispatch remained unsettled");
+    assert.ok([...latest.values()].every(value => value.usage.availability === "unknown" && value.usage.input_tokens === undefined));
+    if (outcome === "crashed") {
+      assert.equal(evidence.filter(event => event.data.state === "unknown").length, 2);
+      const before = evidence.length;
+      await f.api.get(s.id);
+      assert.equal((await history(f.api, s.id)).filter(event => event.type === "model.request").length, before);
+      assert.equal(f.model.requests.length, 1);
+    }
+  });
+});
+
+test("Pi automatic compaction uses the private key and survives passive cold recovery", budget, async t => {
+  const key = "private-compaction-provider-key";
+  const f = await fixture(t, binaries, { persistence: {}, modelKeys: [key] });
+  f.env.JOURNEY_ENCRYPTION = Buffer.alloc(32, 9).toString("base64");
+  f.settings.credential_keys = { active: "test", keys: { test: "JOURNEY_ENCRYPTION" } };
+  await f.start();
+  const s = await f.api.create({ harness: "pi", model: Model("openai/gpt-4.1-mini", ApiKey(key)), tools: [] });
+  f.model.respond = async (_input, response) => {
+    const n = f.model.requests.length;
+    modelReply(response, n === 1 ? "retained prior context ".repeat(6000) : "compacted-context-marker", { prompt_tokens: n === 2 ? 1_100_000 : 20, completion_tokens: 5, total_tokens: n === 2 ? 1_100_005 : 25 });
+  };
+  await f.api.send(s.id, message("Build prior context")); await state(f.api, s.id);
+  await f.api.send(s.id, message("Compact the native context")); await state(f.api, s.id);
+  const evidence = (await history(f.api, s.id)).filter(event => event.type === "model.request");
+  assert.ok(evidence.some(event => event.data.purpose === "compaction" && event.data.state === "completed"), "native compaction was unobserved");
+  assert.ok(f.model.authorization.every(value => value === `Bearer ${key}`));
+  await f.api.flush(s.id); await f.crash(); f.settings.data_dir = path.join(f.dir, "compacted-cold-cache"); await f.start();
+  const before = f.model.requests.length;
+  await f.api.get(s.id); await f.api.resume(s.id);
+  assert.equal(f.model.requests.length, before);
+  await f.api.send(s.id, message("Continue after compaction")); await state(f.api, s.id);
+  assert.ok(JSON.stringify(f.model.requests.at(-1).messages).includes("compacted-context-marker"));
+  assert.equal((await history(f.api, s.id)).filter(event => event.type === "model.request" && event.data.state === "unknown").length, 0);
+});
+
+test("request evidence replaces repeated snapshots and reconciles a crashed dispatch once", budget, async t => {
+  const f = await fixture(t, binaries, { persistence: {} });
+  f.settings.harnesses.evidence = { command: [process.execPath, path.join(root, "tests/journeys/evidence-runner.mjs")] };
+  await f.start();
+  const s = await f.api.create({ ...config(), harness: "evidence" });
+  f.model.respond = async (input, response) => {
+    const evidence = (await history(f.api, s.id)).filter(event => event.type === "model.request");
+    assert.ok(evidence.some(event => event.data.request_id === input.messages[0].content && event.data.state === "started"), "inference preceded persisted start");
+    response.setHeader("x-request-id", "provider-request");
+    modelReply(response, "observed");
+  };
+  await f.api.send(s.id, message("all paths"));
+  await state(f.api, s.id);
+  const snapshots = (await history(f.api, s.id)).filter(event => event.type === "model.request");
+  assert.equal(snapshots.length, 15, "identical native snapshots duplicated history");
+  assert.deepEqual([...new Set(snapshots.map(event => event.data.purpose))].toSorted(), ["compaction", "other", "primary"]);
+  const latest = new Map(snapshots.map(event => [`${event.data.request_id}/${event.data.attempt_id ?? ""}`, event.data]));
+  assert.equal(latest.size, 6);
+  assert.equal([...latest.values()].filter(value => value.usage.availability === "reported").length, 3);
+  for (const value of latest.values()) {
+    assert.equal(value.state, "completed"); assert.equal(value.harness, "evidence");
+    assert.equal(value.model, "openai/gpt-4.1-mini");
+    if (value.attempt_id) { assert.equal(value.usage.output_tokens, 4); assert.equal(value.usage.reasoning_tokens, 1); assert.equal(value.usage.output_reasoning, "included"); }
+  }
+  await f.api.send(s.id, message("unknown usage"));
+  await state(f.api, s.id);
+  const unknowns = (await history(f.api, s.id)).filter(event => event.type === "model.request" && event.data.state === "completed" && event.data.usage.availability === "unknown");
+  assert.ok(unknowns.length > 0);
+  assert.ok(unknowns.every(event => event.data.usage.input_tokens === undefined));
+  f.model.respond = async () => {}; // Kill after a real dispatch, with no observed outcome.
+  const before = f.model.requests.length;
+  await f.api.send(s.id, message("pending dispatch"));
+  await until(() => f.model.requests.length, count => count === before + 1);
+  await f.api.flush(s.id);
+  await f.crash();
+  f.settings.data_dir = path.join(f.dir, "evidence-cold-cache");
+  await f.start();
+  await f.api.get(s.id);
+  const recovered = await history(f.api, s.id);
+  const unsettled = recovered.filter(event => event.type === "model.request" && event.data.state === "unknown");
+  assert.equal(unsettled.length, 2);
+  assert.ok(unsettled.every(event => event.data.usage.availability === "unknown"));
+  await f.api.get(s.id);
+  assert.equal((await history(f.api, s.id)).length, recovered.length, "re-reading recovery duplicated request records");
+  assert.equal(f.model.requests.length, before + 1, "recovery redispatched inference");
+});
+
+test("a harness that omits terminal model evidence fails the affected turn", budget, async t => {
+  const f = await fixture(t, binaries);
+  f.settings.harnesses.evidence = { command: [process.execPath, path.join(root, "tests/journeys/evidence-runner.mjs")] };
+  await f.start();
+  const s = await f.api.create({ ...config(), harness: "evidence" });
+  await f.api.send(s.id, message("omit outcome"));
+  await state(f.api, s.id, "failed");
+  const events = await history(f.api, s.id);
+  assert.equal(events.filter(event => event.type === "model.request" && event.data.state === "unknown").length, 2);
+  const peer = await f.api.create(config());
+  await f.api.send(peer.id, message("Healthy peer"));
+  await state(f.api, peer.id);
+});
+
+test("common host pool defaults and aggregate limits apply across installed factories", budget, async t => {
+  for (const limited of [false, true]) await t.test(limited ? "configured ceiling" : "no aggregate restriction", async t => {
+    const f = await fixture(t, binaries);
+    f.settings.harnesses.peer = { ...f.settings.harnesses.pi };
+    if (limited) f.settings.host_pool = { hosts: 1 };
+    await f.start();
+    const first = await f.api.create(config());
+    await f.api.send(first.id, message("First factory"));
+    await state(f.api, first.id);
+    const second = await f.api.create({ ...config(), harness: "peer" });
+    await f.api.send(second.id, message("Second factory"));
+    await state(f.api, second.id, limited ? "failed" : "idle");
+    assert.equal(f.model.requests.length, limited ? 1 : 2);
+    if (limited) {
+      assert.ok((await history(f.api, second.id)).some(event => event.type === "session.error"));
+      await f.api.close(first.id);
+      await f.api.resume(second.id);
+      await f.api.send(second.id, message("Capacity released"));
+      await state(f.api, second.id);
+      assert.equal(f.model.requests.length, 2);
+    }
+  });
+});
+
+test("private model keys reach Pi independently and survive restart and cold restore", budget, async t => {
+  const keys = ["customer-one-private-key", "customer-two-private-key"];
+  const f = await fixture(t, binaries, { persistence: {}, modelKeys: keys });
+  f.env.JOURNEY_ENCRYPTION = Buffer.alloc(32, 7).toString("base64");
+  f.settings.credential_keys = { active: "test", keys: { test: "JOURNEY_ENCRYPTION" } };
+  await f.start();
+  const sessions = await Promise.all(keys.map(key => f.api.create({ harness: "pi", model: Model("openai/gpt-4.1-mini", ApiKey(key)), tools: [] })));
+  const peers = [];
+  f.model.respond = async (_input, response) => {
+    peers.push(response);
+    if (peers.length === 2) {
+      f.model.respond = undefined;
+      for (const peer of peers) modelReply(peer, "independent customer keys");
+    }
+  };
+  const run = async () => {
+    for (const s of sessions) await f.api.send(s.id, message("Use the selected model."));
+    await Promise.all(sessions.map(s => state(f.api, s.id)));
+    assert.deepEqual(f.model.authorization.slice(-2).toSorted(), keys.map(key => `Bearer ${key}`).toSorted());
+  };
+  await run();
+  await Promise.all(sessions.map(s => f.api.flush(s.id)));
+  await f.crash();
+  await f.start();
+  await run();
+  await f.crash();
+  f.settings.data_dir = path.join(f.dir, "cold-cache");
+  await f.start();
+  const before = f.model.requests.length;
+  for (const s of sessions) { await f.api.get(s.id); await f.api.resume(s.id); }
+  assert.equal(f.model.requests.length, before, "recovery called the model");
+  await run();
+  for (const s of sessions) {
+    const publicData = JSON.stringify([await f.api.get(s.id), await history(f.api, s.id)]);
+    for (const key of keys) { assert.ok(!publicData.includes(key)); assert.ok(!f.logs.includes(key)); }
+  }
+  await f.crash();
+  const inspect = async directory => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) await inspect(file);
+      else {
+        const data = await readFile(file);
+        for (const key of keys) assert.ok(!data.includes(Buffer.from(key)), `plaintext provider key in ${file}`);
+      }
+    }
+  };
+  await inspect(f.dir);
+});
+
+test("authoring constructors compose a managed service and a connected client function", budget, async t => {
+  const f = await fixture(t, binaries);
+  await f.tool("lookup", async (_req, res) => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(result("managed"))); });
+  await f.start();
+  let calls = 0;
+  const s = await f.api.create({ harness: "pi", model: Model("openai/gpt-4.1-mini"), tools: [
+    ManagedTool("lookup"), Tool({ name: "local", description: "Read client data", input_schema: { type: "object" }, run() { calls++; return { value: "local" }; } }),
+  ] });
+  assert.deepEqual(s.descriptors.map(tool => tool.name), ["lookup", "runtime_local"]);
+  await f.api.send(s.id, message(call("runtime_local")));
+  await state(f.api, s.id);
+  assert.equal(calls, 1);
+  await f.api.send(s.id, message(call("lookup")));
+  await state(f.api, s.id);
+  assert.equal(toolResults(await history(f.api, s.id)).length, 2);
+  await f.api.close(s.id);
+  await f.api.dispose();
+});
 
 test("installed Python SDK owns its runtime function connection", budget, async t => {
   const f = await fixture(t, binaries);

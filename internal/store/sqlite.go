@@ -67,6 +67,9 @@ func (s *SQLite) Get(ctx context.Context, id string) (core.Session, error) {
 	if err := json.Unmarshal(data, &session); err != nil {
 		return session, fmt.Errorf("unreadable session metadata: %w", err)
 	}
+	if session.Status == "deleted" {
+		return core.Session{}, core.E(core.NotFound, "session not found")
+	}
 	session.Credentials, err = s.credentials(ctx, session)
 	return session, err
 }
@@ -76,7 +79,7 @@ func (s *SQLite) Save(ctx context.Context, session core.Session) error {
 	if err != nil {
 		return err
 	}
-	r, err := s.db.ExecContext(ctx, `UPDATE sessions SET data=? WHERE id=? AND tenant=?`, data, session.ID, session.Tenant)
+	r, err := s.db.ExecContext(ctx, `UPDATE sessions SET data=? WHERE id=? AND tenant=? AND json_extract(data,'$.status') != 'deleted'`, data, session.ID, session.Tenant)
 	if err != nil {
 		return err
 	}
@@ -91,7 +94,7 @@ func (s *SQLite) List(ctx context.Context, tenant, after string, limit int) ([]c
 	if limit < 1 || limit > 1000 {
 		return nil, core.E(core.Invalid, "invalid list limit")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT tenant,data FROM sessions WHERE tenant=? AND id>? ORDER BY id LIMIT ?`, tenant, after, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT tenant,data FROM sessions WHERE tenant=? AND id>? AND json_extract(data,'$.status') != 'deleted' ORDER BY id LIMIT ?`, tenant, after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +119,7 @@ func (s *SQLite) Scan(ctx context.Context, after string, limit int) ([]core.Sess
 	if limit < 1 || limit > 1000 {
 		return nil, errors.New("invalid scan limit")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT tenant,data FROM sessions WHERE id>? ORDER BY id LIMIT ?`, after, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT tenant,data FROM sessions WHERE id>? AND json_extract(data,'$.status') != 'deleted' ORDER BY id LIMIT ?`, after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +150,7 @@ func (s *SQLite) Import(ctx context.Context, session core.Session) error {
 		return err
 	}
 	defer tx.Rollback()
-	r, err := tx.ExecContext(ctx, `INSERT INTO sessions(id,tenant,created,data) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data WHERE sessions.tenant=excluded.tenant`, session.ID, session.Tenant, session.CreatedAt.Format(time.RFC3339Nano), data)
+	r, err := tx.ExecContext(ctx, `INSERT INTO sessions(id,tenant,created,data) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data WHERE sessions.tenant=excluded.tenant AND json_extract(sessions.data,'$.status') != 'deleted'`, session.ID, session.Tenant, session.CreatedAt.Format(time.RFC3339Nano), data)
 	if err != nil {
 		return err
 	}

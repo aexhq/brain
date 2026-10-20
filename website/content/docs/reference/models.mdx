@@ -22,11 +22,11 @@ Pass `config.model` in `provider/model` format (`1`–`256` characters) when cal
 
 Model validation happens in two steps:
 
-1. **Session creation (`POST /sessions`):** Brain splits `config.model` on the first `/`, verifies that the `provider` prefix exists in your host config's `providers` map, and checks that the configured `api_key_env` environment variable is non-empty. Missing slashes, unknown providers, or missing credentials fail immediately with `400 invalid_request`.
+1. **Session creation (`POST /sessions`):** Brain splits `config.model` on the first `/`, verifies that the `provider` prefix is installed, and selects an authorized private session credential or the startup default. Missing slashes, unknown providers, or missing credentials fail immediately with `400 invalid_request`. Application policy denials return `403 forbidden`.
 2. **Turn execution (Pi runner startup):** When the first `user.message` starts the Pi runner, the runner looks up `provider` and `model` in its pinned offline [Model catalog](/docs/reference/model-catalog) (`allowModelNetwork: false`, `refreshOnCreate: false`). If the model ID is not in the catalog or the harness falls back to a different model, the turn fails with a `session.error` (`brain_error`) event.
 
 <Callout type="info" title="Explicit credentials only">
-Brain authenticates providers with API keys. It passes the resolved key to the runner over stdio in an in-memory credential store (`InMemoryCredentialStore`) and strips ambient host environment variables when spawning child processes.
+Brain authenticates providers with explicit API keys. It passes the resolved key privately to the selected runner and strips ambient authentication environment variables when spawning harness processes. Credential scope follows the selected [adapter](/docs/adapters/harness).
 </Callout>
 
 ## Configure providers
@@ -42,7 +42,20 @@ Declare each provider prefix in the `providers` map of your host configuration f
 }
 ```
 
-Every provider entry requires `api_key_env`, and that environment variable must be set and non-empty when `brain` starts (or when running `brain -check`). If a provider's API key changes in the host environment while Brain is running, Brain recycles any idle runner using the old credential before the next turn.
+When `api_key_env` is present, that environment variable must be set and non-empty when `brain` starts (or when running `brain -check`). Omit it to require a private session credential. If a provider's API key changes in the host environment while Brain is running, Brain recycles any idle runner using the old credential before the next turn.
+
+## Private model credentials
+
+`POST /sessions` accepts `model_credential` separately from `config` and tool `credentials`. Creation requires session-management authority and an independent [credential key](/docs/reference/configuration#private-credential-keys). Application provider authorization runs at admission and before each turn. The JSON-encoded credential object is limited to 65,536 bytes; the total HTTP request body limit also applies.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `model_credential.api_key` | `string` | Exactly one source | — | Non-empty provider API key, up to 65,536 bytes; the total HTTP request body limit also applies. |
+| `model_credential.reference` | `string` | Exactly one source | — | Non-empty reference, up to 1,024 bytes. The installed application's resolver authorizes and resolves it in the session tenant's scope. |
+
+An override takes precedence over the startup key. Rejected, revoked, unavailable, or missing override records fail explicitly without selecting the default. Direct keys and reference selections are encrypted before admission succeeds and included as encrypted recovery records in checkpoints. Public configuration, events, and model arguments contain neither the key nor the reference. Clients cannot supply provider endpoints through this field.
+
+Use `Model(name, ApiKey(key))` or `Model(name, CredentialReference(reference))` in the [TypeScript](/docs/sdks/typescript) and [Python](/docs/sdks/python) clients. The Go application SDK installs defaults and authorization through `Options.Models` and administers overrides with `Server.RotateCredentials` and `Server.RevokeModelCredential`.
 
 ## Reasoning effort
 
@@ -52,6 +65,8 @@ Set `config.reasoning_effort` when creating a session to control extended thinki
 | --- | --- |
 | `"off"` | Default when `reasoning_effort` is omitted or `""`. Disables extended reasoning. |
 | `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"` | Requests the corresponding thinking level from the Pi harness. |
+
+Codex accepts `off`, `minimal`, `low`, `medium`, `high` and `xhigh`; `max` returns `422 unsupported` at admission. OpenCode accepts `off` and rejects other effort selections at admission. Empty values normalize to `off`.
 
 - Any value outside this set is rejected at session creation with `400 invalid_request`.
 - When the Pi runner opens the session, it checks `session.thinkingLevel === options.config.reasoning_effort`. If the selected model does not support the requested reasoning effort, the runner fails the turn explicitly with `session.error` (`"requested reasoning effort is unsupported by the model"`) rather than silently downgrading it.
@@ -75,6 +90,8 @@ Each entry in `providers` accepts optional `base_url` and `api` fields to route 
 - **`base_url`:** Must be a valid `http` or `https` URL with a host and no embedded user credentials.
 - **`api`:** Overrides the transport protocol used by the Pi runtime for that provider (for example, `"openai-completions"` or `"openai-responses"`).
 - **Catalog scope:** `base_url` and `api` override transport settings for models that already exist under that provider in the [Model catalog](/docs/reference/model-catalog); they do not register arbitrary new model IDs.
+
+The catalog lookup and transport override above describe Pi. Codex and OpenCode require `openai-responses` (or an omitted `api`, selecting Responses); another transport returns `422 unsupported` before admission. Their native provider uses the selected model suffix at the installed endpoint. The application authorizes provider/model selections. OpenCode's installed model definition uses a 200,000-token context and 32,000-token output limit.
 
 ## Prompt caching
 

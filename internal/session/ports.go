@@ -13,6 +13,8 @@ import (
 // by native harnesses and staged recovery; remote databases do not replace it.
 // The composition root owns Close, after Engine.Shutdown has drained executions.
 type Repository interface {
+	Deleted(context.Context, string) (string, error)
+	Delete(context.Context, core.Session) error
 	Create(context.Context, core.Session) error
 	Get(context.Context, string) (core.Session, error)
 	Save(context.Context, core.Session) error
@@ -35,6 +37,7 @@ type ToolExecutor interface {
 // Checkpoints publishes and restores immutable snapshots without inference.
 // List is eventual discovery; it must never be used as an ownership lock.
 type Checkpoints interface {
+	Delete(context.Context, string, string) error
 	Publish(context.Context, persistence.Snapshot) (persistence.Manifest, error)
 	Restore(context.Context, string, string, string, string) (persistence.Manifest, string, error)
 	List(context.Context, string, string, int) ([]core.Session, error)

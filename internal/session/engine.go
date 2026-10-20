@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -28,11 +29,12 @@ import (
 )
 
 type Options struct {
+	MediaOrigins  []string
 	Store         Repository
 	Keys          credentials.Keys
 	Tools         ToolExecutor
 	Factories     map[string]harness.Factory
-	Provider      func(string) (harness.Provider, error)
+	Provider      func(context.Context, core.Session, *core.ModelCredential) (harness.Provider, error)
 	MaxActive     int
 	MaxLoaded     int
 	MaxQueue      int
@@ -83,6 +85,7 @@ type entry struct {
 	log         *store.Log
 	queue       []queued
 	keys        map[string]accepted
+	requests    map[string]requestObservation
 	working     bool
 	closing     bool
 	interrupted bool
@@ -173,7 +176,7 @@ func (e *Engine) load(ctx context.Context, id string) (*entry, error) {
 			return nil, core.E(core.Overloaded, "loaded session limit reached")
 		}
 	}
-	a := &entry{ready: make(chan struct{}), keys: make(map[string]accepted), refs: 1, syncGate: make(chan struct{}, 1)}
+	a := &entry{ready: make(chan struct{}), keys: make(map[string]accepted), requests: make(map[string]requestObservation), refs: 1, syncGate: make(chan struct{}, 1)}
 	e.entries[id] = a
 	e.mu.Unlock()
 	if evicted != nil {
@@ -218,6 +221,18 @@ func (e *Engine) load(ctx context.Context, id string) (*entry, error) {
 			break
 		}
 		for _, ev := range batch {
+			if ev.Type == "model.request" {
+				var request core.ModelRequest
+				if err := json.Unmarshal(ev.Data, &request); err != nil {
+					a.err = err
+					return nil, err
+				}
+				if err := request.Validate(); err != nil {
+					a.err = err
+					return nil, err
+				}
+				a.requests[requestKey(request)] = requestObservation{request: request, input: ev.InputID}
+			}
 			if ev.Type == "user.message" {
 				var input core.Input
 				if err := json.Unmarshal(ev.Data, &input); err != nil {
@@ -235,6 +250,9 @@ func (e *Engine) load(ctx context.Context, id string) (*entry, error) {
 		a.meta.Status = "interrupted"
 		a.meta.UpdatedAt = time.Now().UTC()
 		a.err = e.opts.Store.Save(ctx, a.meta)
+	}
+	if a.err == nil {
+		_, a.err = e.settleModelRequests(a, "")
 	}
 	a.restore = true
 	return a, a.err
@@ -332,6 +350,11 @@ func (e *Engine) List(ctx context.Context, g core.Grant, after string, limit int
 	}
 	for _, s := range remote {
 		if !seen[s.ID] {
+			if tenant, err := e.opts.Store.Deleted(ctx, s.ID); err != nil {
+				return nil, err
+			} else if tenant != "" {
+				continue
+			}
 			local = append(local, s)
 		}
 	}
@@ -353,9 +376,6 @@ func (e *Engine) Create(ctx context.Context, g core.Grant, input core.CreateSess
 	case "", "off", "minimal", "low", "medium", "high", "xhigh", "max":
 	default:
 		return core.Session{}, core.E(core.Invalid, "invalid reasoning effort")
-	}
-	if _, err := e.opts.Provider(input.Config.Model); err != nil {
-		return core.Session{}, err
 	}
 	e.mu.Lock()
 	closed := e.closed
@@ -380,12 +400,33 @@ func (e *Engine) Create(ctx context.Context, g core.Grant, input core.CreateSess
 		s.Config.Tools = []string{}
 	}
 	var err error
+	if input.ModelCredential != nil {
+		s.CredentialBindings = append(s.CredentialBindings, credentials.ModelBinding)
+		value, _ := json.Marshal(input.ModelCredential)
+		// Copy before appending: admission must not mutate the caller's inputs.
+		input.Credentials = append(slices.Clone(input.Credentials), core.CredentialInput{Binding: credentials.ModelBinding, Value: value})
+	}
+	for _, credential := range input.Credentials {
+		if credential.Binding == credentials.ModelBinding && input.ModelCredential == nil {
+			return core.Session{}, core.E(core.Invalid, "model credentials require model_credential")
+		}
+	}
 	s.Credentials, err = credentials.Seal(ctx, e.opts.Keys, s, input.Credentials)
 	if err != nil {
 		return core.Session{}, err
 	}
+	s.CredentialBindings = nil
 	for _, record := range s.Credentials {
 		s.CredentialBindings = append(s.CredentialBindings, record.Binding)
+	}
+	provider, err := e.modelProvider(ctx, s)
+	if err != nil {
+		return core.Session{}, err
+	}
+	if factory, ok := e.opts.Factories[s.Harness].(harness.Validator); ok {
+		if err := factory.ValidateSession(s.Config, provider); err != nil {
+			return core.Session{}, err
+		}
 	}
 	if err := e.opts.Tools.Bind(ctx, &s); err != nil {
 		return core.Session{}, err
@@ -443,8 +484,20 @@ func (e *Engine) status(a *entry, status, input string) error {
 }
 
 func (e *Engine) Submit(ctx context.Context, g core.Grant, id string, input core.Input) (core.Event, error) {
-	if input.Type != "user.message" || strings.TrimSpace(input.Text) == "" || len(input.Text) > e.opts.MaxInputBytes || len(input.Key) > 128 {
+	if input.Type != "user.message" || (strings.TrimSpace(input.Text) == "" && len(input.Media) == 0) || len(input.Text) > e.opts.MaxInputBytes || len(input.Key) > 128 {
 		return core.Event{}, core.E(core.Invalid, "invalid message")
+	}
+	if len(input.Media) > 64 {
+		return core.Event{}, core.E(core.Invalid, "too many media inputs")
+	}
+	for _, media := range input.Media {
+		u, err := url.Parse(media.URL)
+		if err != nil || media.Type != "image" || len(media.URL) > 4096 || u.User != nil || u.Fragment != "" {
+			return core.Event{}, core.E(core.Invalid, "invalid image input")
+		}
+		if !slices.Contains(e.opts.MediaOrigins, u.Scheme+"://"+u.Host) {
+			return core.Event{}, core.E(core.Forbidden, "media origin is not authorized")
+		}
 	}
 	if input.Delivery == "" {
 		input.Delivery = "queue"
@@ -568,6 +621,11 @@ func (e *Engine) work(a *entry) {
 			}
 		}
 		cancel()
+		if pending, evidenceErr := e.settleModelRequests(a, q.event.ID); evidenceErr != nil {
+			err = errors.Join(err, evidenceErr)
+		} else if pending && err == nil {
+			err = errors.New("harness left model requests unsettled")
+		}
 		a.mu.Lock()
 		a.cancel = nil
 		a.current = ""
@@ -656,7 +714,7 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 		a.restore = false
 		a.mu.Unlock()
 	}
-	provider, err := e.opts.Provider(cfg.Model)
+	provider, err := e.modelProvider(ctx, metadata)
 	if err != nil {
 		return err
 	}
@@ -681,8 +739,11 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 			return err
 		}
 		started := time.Now()
-		runner, err = e.opts.Factories[a.meta.Harness].Open(ctx, harness.Options{Lifetime: e.ctx, SessionID: a.meta.ID, Dir: nativeDir, Config: cfg, Tools: selected, Provider: provider,
+		runner, err = e.opts.Factories[a.meta.Harness].Open(ctx, harness.Options{MediaOrigins: e.opts.MediaOrigins, Lifetime: e.ctx, SessionID: a.meta.ID, Dir: nativeDir, Config: cfg, Tools: selected, Provider: provider,
 			Event: func(kind string, data json.RawMessage) error {
+				if kind == "model.request" {
+					return e.observeModel(a, data)
+				}
 				if kind != "assistant.message" && kind != "assistant.delta" {
 					return errors.New("unsupported native event")
 				}
@@ -768,7 +829,7 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := runner.Prompt(ctx, q.input.Text); err != nil {
+	if err := runner.Prompt(ctx, core.Text{Text: q.input.Text, Media: q.input.Media}); err != nil {
 		return err
 	}
 	a.mu.Lock()
