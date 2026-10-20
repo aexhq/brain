@@ -916,8 +916,9 @@ func (e *Engine) acquireRunner(ctx context.Context) error {
 		a.runner = nil
 		a.mu.Unlock()
 		runner.Close()
-		<-e.resident
-		break
+		// Transfer the evicted runner's slot directly. Releasing it first lets a
+		// concurrent waiter take it while this execution waits behind idle runners.
+		return nil
 	}
 	select {
 	case e.resident <- struct{}{}:
