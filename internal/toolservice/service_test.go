@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/aexhq/brain/internal/core"
@@ -17,6 +18,62 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
+
+func TestSharedCapacityBoundsManagedAndHTTPCalls(t *testing.T) {
+	capacity := make(chan struct{}, 1)
+	first, err := New(context.Background(), Settings{Token: strings.Repeat("a", 32), Capacity: capacity})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := New(context.Background(), Settings{Token: strings.Repeat("b", 32), Capacity: capacity})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	started, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	first.fetch.Transport = transportFunc(func(request *http.Request) (*http.Response, error) {
+		close(started)
+		<-release
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/plain"}}, Body: io.NopCloser(strings.NewReader("done")), Request: request}, nil
+	})
+	var extra atomic.Int32
+	second.fetch.Transport = transportFunc(func(*http.Request) (*http.Response, error) {
+		extra.Add(1)
+		return nil, io.ErrUnexpectedEOF
+	})
+	request := tools.Request{ToolScope: core.ToolScope{Tenant: "tenant", Session: "session", Call: "call"}, Arguments: json.RawMessage(`{"url":"https://example.com"}`)}
+	finished := make(chan core.Result, 1)
+	go func() { finished <- first.Call(context.Background(), "/web_fetch", request) }()
+	<-started
+	result := second.Call(context.Background(), "/web_fetch", request)
+	if !result.IsError || result.UnknownOutcome {
+		t.Fatal("managed call bypassed shared capacity", result)
+	}
+	server := httptest.NewServer(second.Handler())
+	defer server.Close()
+	body, _ := json.Marshal(request)
+	httpRequest, _ := http.NewRequest("POST", server.URL+"/web_fetch", strings.NewReader(string(body)))
+	httpRequest.Header.Set("Authorization", "Bearer "+strings.Repeat("b", 32))
+	response, err := http.DefaultClient.Do(httpRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError || extra.Load() != 0 {
+		t.Fatal("HTTP call bypassed shared capacity", result)
+	}
+	unblock()
+	if result := <-finished; result.IsError {
+		t.Fatal(result)
+	}
+}
 
 func TestStorageJourneyAndTenantIsolation(t *testing.T) {
 	var mu sync.Mutex

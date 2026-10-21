@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/aexhq/brain"
+	"github.com/aexhq/brain/integrations"
 	"io"
 	"log/slog"
 	"net"
@@ -25,6 +26,7 @@ func run() error {
 	file := flag.String("config", "brain.json", "host configuration JSON")
 	check := flag.Bool("check", false, "validate configuration without serving")
 	stdio := flag.Bool("stdio", false, "report the listening URL on stdout and stop when stdin closes")
+	toolProviders := flag.String("tool-providers", "", "installed integration configuration JSON")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		return errors.New("unexpected arguments")
@@ -36,6 +38,12 @@ func run() error {
 		return err
 	}
 	opts := brain.Options{Config: cfg, Logger: logger}
+	if *toolProviders != "" {
+		opts.Providers, err = integrations.LoadBuiltins(*toolProviders)
+		if err != nil {
+			return err
+		}
+	}
 	if *check {
 		if err := brain.Validate(opts); err != nil {
 			return err

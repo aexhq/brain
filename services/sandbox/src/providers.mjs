@@ -19,6 +19,7 @@ export function providersFromEnv(env = process.env) {
     if (!env.MODAL_TOKEN_ID || !env.MODAL_TOKEN_SECRET) throw new Error('both Modal token variables are required');
     const client = new ModalClient({ tokenId: env.MODAL_TOKEN_ID, tokenSecret: env.MODAL_TOKEN_SECRET, timeoutMs: 60000 });
     providers.modal = {
+      close() { client.close(); },
       async create() {
         const app = await client.apps.fromName(env.MODAL_APP ?? 'brain-tools', { createIfMissing: true });
         const image = client.images.fromRegistry(env.MODAL_IMAGE ?? 'python:3.13-slim');

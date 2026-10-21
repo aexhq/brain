@@ -21,6 +21,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
+COPY integrations ./integrations
 COPY *.go ./
 RUN CGO_ENABLED=0 go build -trimpath -o /brain ./cmd/brain
 RUN CGO_ENABLED=0 go build -trimpath -o /resource-tools ./cmd/resource-tools

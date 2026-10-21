@@ -1,13 +1,50 @@
 {
   "name": "brainserver",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Run Brain with its bundled Pi harness from Node.js",
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=24" },
-  "repository": { "type": "git", "url": "git+https://github.com/aexhq/brain.git", "directory": "packages/brainserver" },
+  "engines": {
+    "node": ">=24"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aexhq/brain.git",
+    "directory": "packages/brainserver"
+  },
   "homepage": "https://aexhq.github.io/brain/docs/quickstart/",
-  "publishConfig": { "access": "public" },
-  "exports": { ".": { "types": "./index.d.ts", "default": "./index.js" } },
-  "files": ["index.js", "index.d.ts", "sdk", "runners", "README.md", "LICENSE"]
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "process.js",
+    "sandbox.js",
+    "sdk",
+    "runners",
+    "services",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.2.0",
+    "@earendil-works/pi-coding-agent": "1.2.0",
+    "@daytona/sdk": "0.224.1",
+    "@e2b/code-interpreter": "2.9.0",
+    "modal": "0.11.0"
+  },
+  "bundleDependencies": [
+    "@earendil-works/pi-ai",
+    "@earendil-works/pi-coding-agent",
+    "@daytona/sdk",
+    "@e2b/code-interpreter",
+    "modal"
+  ]
 }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -11,7 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-let directory, BrainServer, Model, Tool;
+let directory, BrainServer, Brain, Model, ApiKey, Tool, AwsS3, Modal, E2B, Daytona;
 before(async () => {
   directory = await mkdtemp(path.join(tmpdir(), 'brainserver consumer '));
   await writeFile(path.join(directory, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
@@ -25,7 +25,7 @@ before(async () => {
   assert.ifError(installed.error);
   assert.equal(installed.status, 0, installed.stderr);
   const require = createRequire(path.join(directory, 'package.json'));
-  ({ BrainServer, Model, Tool } = await import(pathToFileURL(require.resolve('brainserver')).href));
+  ({ BrainServer, Brain, Model, ApiKey, Tool, AwsS3, Modal, E2B, Daytona } = await import(pathToFileURL(require.resolve('brainserver')).href));
 }, { timeout: 270000 });
 after(async () => {
   if (directory) {
@@ -35,8 +35,9 @@ after(async () => {
 });
 
 test('installed TypeScript declarations expose the server and client without extra dependencies', async () => {
-  await writeFile(path.join(directory, 'consumer.ts'), `import { BrainServer, Model, type Session } from 'brainserver';
-const brain: BrainServer = await BrainServer.start({providers:{openai:{apiKey:'key'}}});
+  await writeFile(path.join(directory, 'consumer.ts'), `import { BrainServer, Model, AwsS3, Modal, E2B, Daytona, type Session } from 'brainserver';
+const brain: BrainServer = new BrainServer({providers:{openai:{apiKey:'key'}}, tools:[AwsS3(), Modal(), E2B(), Daytona()]});
+await brain.start();
 const session: Session = await brain.create({harness:'pi', model:Model('openai/gpt-4.1-mini'), tools:[]});
 void session;
 await brain.stop();
@@ -47,6 +48,7 @@ await brain.stop();
 
 async function provider(t) {
   const requests = [];
+  const fixture = { requests, toolCall: undefined };
   const errors = [];
   const server = http.createServer(async (req, res) => {
     try {
@@ -64,7 +66,10 @@ async function provider(t) {
         choices: [{ index: 0, delta, finish_reason }],
       })}\n\n`);
       chunk({ role: 'assistant' });
-      if (call) chunk({ tool_calls: [{ index: 0, id: 'call-package', type: 'function', function: { name: input.tools[0].function.name, arguments: '{"text":"hello"}' } }] });
+      if (call) {
+        const selected = fixture.toolCall?.(input) ?? { name: input.tools[0].function.name, args: { text: 'hello' } };
+        chunk({ tool_calls: [{ index: 0, id: 'call-package', type: 'function', function: { name: selected.name, arguments: JSON.stringify(selected.args) } }] });
+      }
       else chunk({ content: 'hello from packaged Pi' });
       chunk({}, call ? 'tool_calls' : 'stop');
       res.end('data: [DONE]\n\n');
@@ -77,10 +82,11 @@ async function provider(t) {
     await new Promise(resolve => server.close(resolve));
     assert.deepEqual(errors, []);
   });
-  return { requests, options: {
+  fixture.options = {
     dataDir: path.join(directory, t.name),
     providers: { openai: { apiKey: 'package-test-provider', baseUrl: `http://127.0.0.1:${server.address().port}/v1`, api: 'openai-completions' } },
-  } };
+  };
+  return fixture;
 }
 async function turn(brain, session) {
   const input = await brain.send(session.id, { type: 'user.message', text: 'hello' });
@@ -96,7 +102,7 @@ async function turn(brain, session) {
 
 test('installed package runs bundled Pi and application tools, then recovers sessions', { timeout: 90000 }, async t => {
   const f = await provider(t);
-  let brain = await BrainServer.start(f.options);
+  let brain = await new BrainServer(f.options).start();
   t.after(() => brain.stop());
   assert.match(brain.url, /^http:\/\/127\.0\.0\.1:\d+$/);
   const values = [];
@@ -108,10 +114,10 @@ test('installed package runs bundled Pi and application tools, then recovers ses
   const events = await turn(brain, session);
   assert.deepEqual(values, ['hello']);
   assert.ok(events.some(e => e.type === 'assistant.message' && e.data.text === 'hello from packaged Pi'));
-  assert.ok(events.some(e => e.type === 'tool.result' && !e.data.is_error));
+  assert.ok(events.some(e => e.type === 'tool.result' && !e.data.result.is_error));
   await brain.stop();
   assert.equal((await brain.exited).code, 0);
-  brain = await BrainServer.start(f.options);
+  brain = await new BrainServer(f.options).start();
   assert.equal((await brain.get(session.id)).id, session.id);
   await brain.rebind(session.id, [echo]);
   await turn(brain, session);
@@ -121,21 +127,96 @@ test('installed package runs bundled Pi and application tools, then recovers ses
 });
 
 test('startup rejects invalid provider keys, invalid ports, and an occupied port', { timeout: 30000 }, async t => {
-  await assert.rejects(BrainServer.start({ data_dir: './misplaced' }), /Unknown BrainServer option: data_dir/);
-  await assert.rejects(BrainServer.start({ providers: { openai: { apiKey: 'key', base_url: 'https://proxy.example.com' } } }), /Unknown provider openai option: base_url/);
-  await assert.rejects(BrainServer.start({ providers: { openai: { apiKey: '' } } }), /API key/);
-  await assert.rejects(BrainServer.start({ port: -1 }), /port/);
+  assert.throws(() => new BrainServer({ data_dir: './misplaced' }), /Unknown BrainServer option: data_dir/);
+  assert.throws(() => new BrainServer({ providers: { openai: { apiKey: 'key', base_url: 'https://proxy.example.com' } } }), /Unknown provider openai option: base_url/);
+  assert.throws(() => new BrainServer({ providers: { openai: { apiKey: '' } } }), /API key/);
+  assert.throws(() => new BrainServer({ port: -1 }), /port/);
   const f = await provider(t);
-  const brain = await BrainServer.start(f.options);
+  const brain = await new BrainServer(f.options).start();
   t.after(() => brain.stop());
-  await assert.rejects(BrainServer.start({ ...f.options, port: Number(new URL(brain.url).port), dataDir: path.join(directory, 'occupied') }), /Brain exited/);
+  await assert.rejects(new BrainServer({ ...f.options, port: Number(new URL(brain.url).port), dataDir: path.join(directory, 'occupied') }).start(), /Brain child exited/);
+});
+
+test('construction installs a flat list without starting processes or requiring tool credentials', async () => {
+  const dataDir = path.join(directory, 'not-started');
+  const brain = new BrainServer({ dataDir, providers: { openai: {} }, tools: [Modal(), AwsS3(), E2B(), Daytona()] });
+  await assert.rejects(access(dataDir), { code: 'ENOENT' });
+  assert.throws(() => brain.exited, /has not started/);
+  await brain.stop();
+  await assert.rejects(brain.start(), /stopped/);
+});
+
+test('remote SDK sessions use optional defaults and encrypted credential overrides across restart', { timeout: 90000 }, async t => {
+  const f = await provider(t);
+  const apiKey = 'remote-sdk-client-authentication-token';
+  const options = { ...f.options, apiKey, tools: [
+    AwsS3({ bucket: 'installed-bucket', region: 'eu-west-2', accessKeyId: 'server-s3-access', secretAccessKey: 'server-s3-private-secret' }),
+    Modal({ tokenId: 'server-modal-id', tokenSecret: 'server-modal-private-secret' }),
+  ] };
+  let server = new BrainServer(options);
+  const starting = server.start();
+  assert.equal(server.start(), starting);
+  await starting;
+  t.after(() => server.stop());
+  let client = new Brain(server.url, apiKey);
+  const defaults = await client.create({ harness: 'pi', model: Model('openai/gpt-4.1-mini'), tools: [AwsS3(), Modal()] });
+  const privateSession = await client.create({ harness: 'pi', model: Model('openai/gpt-4.1-mini'), tools: [
+    AwsS3({ accessKeyId: 'session-s3-access', secretAccessKey: 'session-s3-private-secret', sessionToken: 'session-temporary-token', operations: ['read'] }),
+    Modal({ tokenId: 'session-modal-id', tokenSecret: 'session-modal-private-secret', operations: ['inspect'] }),
+  ] });
+  assert.deepEqual(privateSession.descriptors.map(tool => tool.name), ['aws_s3_read', 'modal_inspect']);
+  assert.doesNotMatch(JSON.stringify(privateSession), /session-s3-access|private-secret|temporary-token|session-modal-id/);
+  await assert.rejects(client.create({ harness: 'pi', model: Model('openai/gpt-4.1-mini'), tools: [AwsS3({ accessKeyId: 'incomplete-override' })] }), error => error.status === 403);
+  assert.equal(f.requests.length, 0);
+  await server.stop();
+  const dataFiles = async dir => {
+    const result = [];
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) result.push(...await dataFiles(file));
+      else result.push(await readFile(file));
+    }
+    return result;
+  };
+  for (const data of await dataFiles(options.dataDir)) {
+    for (const secret of ['session-s3-private-secret', 'session-modal-private-secret', 'session-temporary-token']) assert.equal(data.includes(Buffer.from(secret)), false, 'plaintext credential on disk');
+  }
+  server = await new BrainServer(options).start();
+  client = new Brain(server.url, apiKey);
+  assert.equal((await client.get(privateSession.id)).id, privateSession.id);
+  assert.equal((await client.get(defaults.id)).id, defaults.id);
+  // The reused sandbox service rejects a forged handle without a cloud action.
+  f.toolCall = () => ({ name: 'modal_inspect', args: { sandbox: 'forged-handle' } });
+  const events = await turn(client, privateSession);
+  assert.ok(events.some(event => event.type === 'tool.result' && event.data.result.is_error));
+  assert.doesNotMatch(JSON.stringify(f.requests), /session-s3-access|private-secret|temporary-token|session-modal-id/);
+});
+
+test('integrations without defaults accept session credentials and reject missing or malformed overrides', { timeout: 60000 }, async t => {
+  const f = await provider(t);
+  const server = await new BrainServer({ ...f.options,
+    providers: { openai: { ...f.options.providers.openai, apiKey: undefined } },
+    tools: [AwsS3(), Modal(), E2B(), Daytona()],
+  }).start();
+  t.after(() => server.stop());
+  for (const selection of [AwsS3(), Modal(), E2B(), Daytona()]) {
+    await assert.rejects(server.create({ harness: 'pi', model: Model('openai/gpt-4.1-mini', ApiKey('package-test-provider')), tools: [selection] }), error => error.status === 403);
+  }
+  const session = await server.create({ harness: 'pi', model: Model('openai/gpt-4.1-mini', ApiKey('package-test-provider')), tools: [
+    AwsS3({ bucket: 'session-bucket', region: 'us-east-1', accessKeyId: 'session-access', secretAccessKey: 'private-session-key' }),
+    Modal({ tokenId: 'session-id', tokenSecret: 'private-modal-key' }),
+    E2B({ apiKey: 'private-e2b-key' }), Daytona({ apiKey: 'private-daytona-key' }),
+  ] });
+  assert.equal(session.descriptors.length, 14);
+  assert.equal(f.requests.length, 0, 'binding integrations caused inference');
 });
 
 test('the child and active harness shut down after the parent script exits', { timeout: 60000 }, async t => {
   const f = await provider(t);
+  f.options.tools = [Modal()];
   const script = path.join(directory, 'parent.mjs');
   await writeFile(script, `import { BrainServer, Model } from 'brainserver';
-const brain = await BrainServer.start(JSON.parse(process.argv[2]));
+const brain = await new BrainServer(JSON.parse(process.argv[2])).start();
 const session = await brain.create({harness:'pi', model:Model('openai/gpt-4.1-mini'), tools:[]});
 await brain.send(session.id, {type:'user.message', text:'hello'});
 for await (const e of brain.observe(session.id)) {
@@ -161,7 +242,7 @@ process.exit(0);
     await delay(25);
   }
   // A clean shutdown releases the session store for a new server.
-  const brain = await BrainServer.start(f.options);
+  const brain = await new BrainServer(f.options).start();
   t.after(() => brain.stop());
   assert.equal((await brain.list()).sessions.length, 1);
 });

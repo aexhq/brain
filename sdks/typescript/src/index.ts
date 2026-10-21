@@ -1,6 +1,8 @@
 import { RuntimeExecutor, type RuntimeTool, type RuntimeTransport } from "./runtime.js";
 import { lower, type SessionOptions } from "./authoring.js";
 export { ApiKey, CredentialReference, Model, Tool, ManagedTool } from "./authoring.js";
+export { AwsS3, Modal, E2B, Daytona } from './integrations.js';
+export type { AwsS3Options, ModalOptions, E2BOptions, DaytonaOptions } from './integrations.js';
 export { connectTab } from "./browser.js";
 export type { SessionOptions, ManagedSelection } from "./authoring.js";
 export type { RuntimeTool, RuntimeContext, RuntimeTransport } from "./runtime.js";

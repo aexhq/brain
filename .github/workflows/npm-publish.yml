@@ -132,7 +132,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/brainserver-consumer"
           cd "$RUNNER_TEMP/brainserver-consumer"
           npm install --ignore-scripts --no-audit --no-fund --save-exact "brainserver@$version"
-          node --input-type=module -e 'import {BrainServer} from "brainserver"; const brain = await BrainServer.start({providers:{}}); try { if (!(await fetch(brain.url + "/health/ready")).ok) throw Error("server not ready"); } finally { await brain.stop(); }'
+          node --input-type=module -e 'import {BrainServer} from "brainserver"; const brain = new BrainServer({providers:{}}); await brain.start(); try { if (!(await fetch(brain.url + "/health/ready")).ok) throw Error("server not ready"); } finally { await brain.stop(); }'
 
   pypi:
     needs: validate

@@ -28,7 +28,8 @@ Brain gives you session-oriented primitives for building agents. Your applicatio
 ```ts
 import { BrainServer, Model } from "brainserver";
 
-const brain = await BrainServer.start();
+const brain = new BrainServer();
+await brain.start();
 try {
   const session = await brain.create({ harness: "pi", model: Model("openai/gpt-4.1-mini"), tools: [] });
   const input = await brain.send(session.id, { type: "user.message", text: "Say hello." });

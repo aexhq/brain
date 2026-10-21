@@ -32,6 +32,34 @@ class ManagedTool:
     credential: Any = None
 
 
+def _integration(name, options, parameters, secrets, operations):
+    unknown = options.keys() - (parameters.keys() | secrets.keys() | {"operations"})
+    if unknown:
+        raise ValueError(f"Unknown {name} option: {sorted(unknown)[0]}")
+    values = {wire: options[key] for key, wire in parameters.items() if key in options}
+    credential = {wire: options[key] for key, wire in secrets.items() if key in options}
+    return ManagedTool(name, operations=options.get("operations", operations),
+                       parameters=values, credential=credential if credential else None)
+
+
+def AwsS3(**options) -> ManagedTool:
+    return _integration("aws_s3", options, {key: key for key in ["bucket", "region", "endpoint", "prefix"]},
+                        {"access_key_id": "accessKeyId", "secret_access_key": "secretAccessKey", "session_token": "sessionToken"}, ["list", "read"])
+
+
+def Modal(**options) -> ManagedTool:
+    return _integration("modal", options, {"app": "app", "image": "image"}, {"token_id": "tokenId", "token_secret": "tokenSecret"},
+                        ["create", "exec", "inspect", "terminate"])
+
+
+def E2B(**options) -> ManagedTool:
+    return _integration("e2b", options, {"template": "template"}, {"api_key": "apiKey"}, ["create", "exec", "inspect", "terminate"])
+
+
+def Daytona(**options) -> ManagedTool:
+    return _integration("daytona", options, {"api_url": "apiUrl", "target": "target"}, {"api_key": "apiKey"}, ["create", "exec", "inspect", "terminate"])
+
+
 def lower(harness: str, model: Model, tools: list[ManagedTool | RuntimeTool],
           instructions: str | None, reasoning_effort: str | None) -> tuple[CreateSession, list[RuntimeTool]]:
     config: SessionConfig = {"model": model.name, "tools": []}

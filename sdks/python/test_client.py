@@ -2,10 +2,29 @@ import io
 import json
 import unittest
 from urllib.error import HTTPError
-from brain import Brain, BrainError, Model, ApiKey, CredentialReference, ManagedTool
+from brain import Brain, BrainError, Model, ApiKey, CredentialReference, ManagedTool, AwsS3, Modal, E2B, Daytona
 
 
 class ClientTests(unittest.TestCase):
+    def test_integration_helpers_keep_overrides_private(self):
+        client = Brain("http://brain.test", "token")
+        bodies = []
+        class Opener:
+            def open(self, request, **kwargs):
+                bodies.append(json.loads(request.data))
+                return io.BytesIO(b'{"id":"session"}')
+        client._opener = Opener()
+        client.create(harness="pi", model=Model("test/model"), tools=[
+            AwsS3(bucket="bucket", region="eu-west-2", access_key_id="customer-access", secret_access_key="private-s3-secret"),
+            Modal(token_id="customer-id", token_secret="private-modal-secret"), E2B(), Daytona()])
+        wire = bodies[0]
+        self.assertEqual([b["provider"] for b in wire["config"]["bindings"]], ["aws_s3", "modal", "e2b", "daytona"])
+        self.assertEqual(len(wire["credentials"]), 2)
+        self.assertEqual(wire["credentials"][0]["value"]["secretAccessKey"], "private-s3-secret")
+        self.assertNotIn("private-", json.dumps(wire["config"]))
+        with self.assertRaisesRegex(ValueError, "Unknown aws_s3 option"):
+            AwsS3(api_key="misspelled")
+
     def test_model_and_tool_authoring(self):
         client = Brain("http://brain.test", "token")
         bodies = []

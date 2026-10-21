@@ -26,6 +26,11 @@ Integrate services against one contract with Pi, Codex and OpenCode, server defa
 - **Status:** Available for Go application composition, authorized provider bindings, encrypted session credentials, TypeScript/Python runtime functions, direct HTTP/SSE, reverse SSE/HTTP, WebSocket RPC, MCP HTTP/stdio, and optional authorized session reads. [Plan 11](https://github.com/aexhq/brain/blob/main/docs/plans/11-application-sdk.md) records implementation evidence and remaining adapter gates.
 - **Today:** Use the [Go application SDK](https://aexhq.github.io/brain/docs/sdks/application/) to install providers and keep runtime clients connected. Browser apps use the [same-origin gateway](https://aexhq.github.io/brain/docs/tools/browser/); reconnect and rebind explicitly.
 
+### Node application package
+
+- **Status:** Verified locally on Linux and Windows. Installed npm archives include the server, compiled Pi harness, and client. S3, Modal, E2B, and Daytona helpers accept optional server credentials and private session overrides. Package tests cover encrypted recovery, missing credentials, and rejection without fallback. Live cloud-account qualification remains separate. npm publication requires package ownership and trusted publishing setup.
+- **Today:** Build with `node scripts/package-server.mjs` and install the generated platform and main archives. The [quickstart](https://aexhq.github.io/brain/docs/quickstart/) describes the constructor and session API.
+
 ### Local harness-host supervision
 
 - **Status:** Locally verified for Pi, Codex and OpenCode on Linux and Windows. Hosts retain occupancy/active-turn caps, private homes, session-local cancellation, coherent eviction and owned process trees. Tests cover compatible peers, independent context and credentials, concurrent admission, detachment and host loss. These are correctness tests, not fleet capacity measurements.

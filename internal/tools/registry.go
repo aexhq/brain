@@ -21,9 +21,10 @@ import (
 type Handler func(context.Context, Request, func(json.RawMessage)) core.Result
 
 type Binding struct {
-	Handler    Handler      `json:"-"`
-	Credential string       `json:"-"`
-	Stdio      *StdioConfig `json:"-"`
+	Handler    Handler         `json:"-"`
+	Credential string          `json:"-"`
+	Context    json.RawMessage `json:"-"`
+	Stdio      *StdioConfig    `json:"-"`
 	core.Tool
 	Transport      string   `json:"transport,omitempty"`
 	URL            string   `json:"url"`

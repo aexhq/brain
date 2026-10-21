@@ -28,6 +28,8 @@ type Settings struct {
 	Token, SearchProvider, SearchKey                       string
 	Bucket, Region, Endpoint, Prefix, AccessKey, SecretKey string
 	AllowWrite                                             bool
+	SessionToken                                           string
+	Capacity                                               chan struct{}
 }
 
 type Service struct {
@@ -50,14 +52,18 @@ func New(ctx context.Context, cfg Settings) (*Service, error) {
 	if cfg.Prefix != "" && !validKey(strings.TrimSuffix(cfg.Prefix, "/")) {
 		return nil, errors.New("invalid storage prefix")
 	}
-	s := &Service{cfg: cfg, active: make(chan struct{}, 32), fetch: publicClient(), client: &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect disabled") }}}
+	capacity := cfg.Capacity
+	if capacity == nil {
+		capacity = make(chan struct{}, 32)
+	}
+	s := &Service{cfg: cfg, active: capacity, fetch: publicClient(), client: &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect disabled") }}}
 	if cfg.Bucket != "" {
 		opts := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(cfg.Region), awsconfig.WithRetryMaxAttempts(1)}
 		if cfg.AccessKey != "" || cfg.SecretKey != "" {
 			if cfg.AccessKey == "" || cfg.SecretKey == "" {
 				return nil, errors.New("both storage credentials are required")
 			}
-			opts = append(opts, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, "")))
+			opts = append(opts, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, cfg.SessionToken)))
 		}
 		if cfg.Endpoint != "" {
 			u, err := url.Parse(cfg.Endpoint)
@@ -96,13 +102,6 @@ func (s *Service) Handler() http.Handler {
 			w.WriteHeader(405)
 			return
 		}
-		select {
-		case s.active <- struct{}{}:
-			defer func() { <-s.active }()
-		default:
-			_ = json.NewEncoder(w).Encode(core.ToolError("tool service is at capacity; no action dispatched", false))
-			return
-		}
 		var request tools.Request
 		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 		d.DisallowUnknownFields()
@@ -110,11 +109,19 @@ func (s *Service) Handler() http.Handler {
 			w.WriteHeader(400)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
-		defer cancel()
-		result := s.call(ctx, r.URL.Path, request)
+		result := s.Call(r.Context(), r.URL.Path, request)
 		_ = json.NewEncoder(w).Encode(result)
 	})
+}
+
+func (s *Service) Close() {
+	if s.objects != nil {
+		if client, ok := s.objects.Options().HTTPClient.(interface{ CloseIdleConnections() }); ok {
+			client.CloseIdleConnections()
+		}
+	}
+	s.client.CloseIdleConnections()
+	s.fetch.CloseIdleConnections()
 }
 
 func decode(raw json.RawMessage, target any) error {
@@ -137,7 +144,16 @@ func textResult(value any) core.Result {
 	return core.Result{Content: []core.Content{{Type: "text", Text: string(data)}}}
 }
 
-func (s *Service) call(ctx context.Context, operation string, request tools.Request) core.Result {
+// Call shares the service's validation, scoping, and failure rules with managed integrations.
+func (s *Service) Call(ctx context.Context, operation string, request tools.Request) core.Result {
+	select {
+	case s.active <- struct{}{}:
+		defer func() { <-s.active }()
+	default:
+		return core.ToolError("tool service is at capacity; no action dispatched", false)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
 	switch operation {
 	case "/web_fetch":
 		var args struct {
@@ -258,5 +274,5 @@ func (s *Service) Catalog(base, tenant string) []tools.Binding {
 }
 
 func FromEnv() Settings {
-	return Settings{Token: os.Getenv("TOOL_API_KEY"), SearchProvider: os.Getenv("SEARCH_PROVIDER"), SearchKey: os.Getenv("SEARCH_API_KEY"), Bucket: os.Getenv("STORAGE_BUCKET"), Region: os.Getenv("STORAGE_REGION"), Endpoint: os.Getenv("STORAGE_ENDPOINT"), Prefix: os.Getenv("STORAGE_PREFIX"), AccessKey: os.Getenv("STORAGE_ACCESS_KEY"), SecretKey: os.Getenv("STORAGE_SECRET_KEY"), AllowWrite: os.Getenv("STORAGE_ALLOW_WRITE") == "true"}
+	return Settings{Token: os.Getenv("TOOL_API_KEY"), SearchProvider: os.Getenv("SEARCH_PROVIDER"), SearchKey: os.Getenv("SEARCH_API_KEY"), Bucket: os.Getenv("STORAGE_BUCKET"), Region: os.Getenv("STORAGE_REGION"), Endpoint: os.Getenv("STORAGE_ENDPOINT"), Prefix: os.Getenv("STORAGE_PREFIX"), AccessKey: os.Getenv("STORAGE_ACCESS_KEY"), SecretKey: os.Getenv("STORAGE_SECRET_KEY"), SessionToken: os.Getenv("STORAGE_SESSION_TOKEN"), AllowWrite: os.Getenv("STORAGE_ALLOW_WRITE") == "true"}
 }

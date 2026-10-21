@@ -1,6 +1,26 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Brain, BrainError, Model, ApiKey, CredentialReference, ManagedTool } from "../dist/index.js";
+import { Brain, BrainError, Model, ApiKey, CredentialReference, ManagedTool, AwsS3, Modal, E2B, Daytona } from "../dist/index.js";
+
+test('integration helpers keep credentials in private admission input and omit absent overrides', async () => {
+  let wire;
+  const brain = new Brain('http://brain.test', 'token', async (_url, init) => {
+    wire = JSON.parse(init.body);
+    return Response.json({ id: 'session' });
+  });
+  await brain.create({ harness: 'pi', model: Model('openai/model'), tools: [
+    AwsS3({ bucket: 'customer-bucket', region: 'eu-west-2', accessKeyId: 'customer-access', secretAccessKey: 'private-s3-secret', sessionToken: 'temporary' }),
+    Modal({ tokenId: 'customer-modal', tokenSecret: 'private-modal-secret', operations: ['inspect'] }),
+    E2B(), Daytona(),
+  ] });
+  assert.deepEqual(wire.config.bindings.map(b => b.provider), ['aws_s3', 'modal', 'e2b', 'daytona']);
+  assert.deepEqual(wire.config.bindings[0].parameters, { bucket: 'customer-bucket', region: 'eu-west-2' });
+  assert.equal(wire.credentials.length, 2);
+  assert.equal(wire.credentials[0].value.secretAccessKey, 'private-s3-secret');
+  assert.equal(wire.credentials[1].value.tokenSecret, 'private-modal-secret');
+  assert.doesNotMatch(JSON.stringify(wire.config), /private-|customer-access|customer-modal|temporary/);
+  assert.throws(() => AwsS3({ secret_access_key: 'misspelled' }), /Unknown aws_s3 option/);
+});
 
 test("model and managed tool declarations lower private admission separately from config", async () => {
   const client = new Brain("http://brain.test", "token", async (_url, init) => {

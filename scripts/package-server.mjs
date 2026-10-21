@@ -32,6 +32,10 @@ run('npm', ['--prefix', 'runners/pi', 'run', 'build']);
 run('npm', ['--prefix', 'sdks/typescript', 'run', 'build']);
 const pkg = JSON.parse(await readFile(path.join(root, 'packages/brainserver/package.json'), 'utf8'));
 const pi = JSON.parse(await readFile(path.join(root, 'runners/pi/package.json'), 'utf8'));
+const sandbox = JSON.parse(await readFile(path.join(root, 'services/sandbox/package.json'), 'utf8'));
+for (const [name, version] of Object.entries({ ...pi.dependencies, ...sandbox.dependencies })) {
+  assert.equal(pkg.dependencies[name], version, `brainserver must pin ${name} to the integration's version`);
+}
 const archives = [];
 async function pack(directory, name) {
   const [result] = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', output], directory, {}, true));
@@ -60,16 +64,19 @@ const main = path.join(stage, 'main');
 await mkdir(main);
 // Bundle the lockfile's production dependency tree, rather than resolving Pi's
 // transitive version ranges on each user's machine. No install scripts run.
-for (const name of ['package.json', 'package-lock.json']) await copyFile(path.join(root, 'runners/pi', name), path.join(main, name));
+for (const name of ['package.json', 'package-lock.json']) await copyFile(path.join(root, 'packages/brainserver', name), path.join(main, name));
 run('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], main);
 await cp(path.join(root, 'packages/brainserver'), main, { recursive: true });
 await cp(path.join(root, 'sdks/typescript/dist'), path.join(main, 'sdk'), { recursive: true });
 await cp(path.join(root, 'runners/pi/dist'), path.join(main, 'runners/pi/dist'), { recursive: true });
 await cp(path.join(root, 'runners/common'), path.join(main, 'runners/common'), { recursive: true });
+await mkdir(path.join(main, 'services'), { recursive: true });
+await copyFile(path.join(root, 'services/http.mjs'), path.join(main, 'services/http.mjs'));
+await cp(path.join(root, 'services/sandbox/src'), path.join(main, 'services/sandbox/src'), { recursive: true });
 await copyFile(path.join(root, 'LICENSE'), path.join(main, 'LICENSE'));
 await rm(path.join(main, 'package-lock.json'));
 await writeFile(path.join(main, 'package.json'), JSON.stringify({
-  ...pkg, dependencies: pi.dependencies, bundleDependencies: Object.keys(pi.dependencies),
+  ...pkg,
   optionalDependencies: Object.fromEntries(targets.map(target => [`@aexhq/brainserver-${target}`, pkg.version])),
 }, null, 2) + '\n');
 const packed = await pack(main, pkg.name);

@@ -16,6 +16,11 @@ configured listen address may use port `0`; Brain uses the assigned address as
 its public URL. The `brainserver` Node package uses this mode to own its child
 process without reserving a port in advance.
 
+The stock executable accepts `-tool-providers FILE` for application-installed
+integrations. The Node package creates this private registration file from the
+constructor's tool list; credential values are environment references. Integration
+selection and private session overrides use the existing session binding contract.
+
 ```powershell tab="Windows"
 go run ./cmd/brain -config brain.json -check
 ```
