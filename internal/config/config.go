@@ -31,12 +31,14 @@ type Provider struct {
 	API       string `json:"api,omitempty"`
 }
 type Runner struct {
-	CredentialHosts bool     `json:"credential_hosts,omitempty"`
-	Command         []string `json:"command"`
-	MaxShared       int      `json:"max_shared,omitempty"`
-	MaxActiveTurns  int      `json:"max_active_turns,omitempty"`
-	MaxHosts        int      `json:"max_hosts,omitempty"`
-	MaxStarting     int      `json:"max_starting,omitempty"`
+	Kind            string             `json:"kind,omitempty"`
+	Plugins         []harness.PiPlugin `json:"plugins,omitempty"`
+	CredentialHosts bool               `json:"credential_hosts,omitempty"`
+	Command         []string           `json:"command"`
+	MaxShared       int                `json:"max_shared,omitempty"`
+	MaxActiveTurns  int                `json:"max_active_turns,omitempty"`
+	MaxHosts        int                `json:"max_hosts,omitempty"`
+	MaxStarting     int                `json:"max_starting,omitempty"`
 }
 
 // KeyConfig names deployment environment variables, never encryption key values.
@@ -182,6 +184,30 @@ func (c *Config) ValidateApplication(factories map[string]harness.Factory, exter
 		return errors.New("at least one harness is required")
 	}
 	for name, r := range c.Harnesses {
+		if r.Kind == "" {
+			r.Kind = name
+		}
+		if len(r.Plugins) > 0 {
+			if r.Kind != "pi" {
+				return fmt.Errorf("plugins require the Pi harness")
+			}
+			if r.MaxShared == 0 {
+				r.MaxShared = 1
+			}
+			if r.MaxActiveTurns == 0 {
+				r.MaxActiveTurns = 1
+			}
+			if r.MaxShared != 1 || r.MaxActiveTurns != 1 {
+				return fmt.Errorf("Pi plugins require one session per host")
+			}
+			seen := map[string]bool{}
+			for _, plugin := range r.Plugins {
+				if (plugin.Name != "web-access" && plugin.Name != "subagents" && plugin.Name != "mcp") || seen[plugin.Name] {
+					return fmt.Errorf("invalid or duplicate Pi plugin %q", plugin.Name)
+				}
+				seen[plugin.Name] = true
+			}
+		}
 		if r.MaxShared == 0 {
 			r.MaxShared = 8
 		}

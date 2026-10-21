@@ -6,6 +6,7 @@ Brain is in active development. This page lists what you can use today, what's c
 
 - **[Sessions](https://aexhq.github.io/brain/docs/guides/sessions/):** choose Pi, Codex or OpenCode, stream events, interrupt and resume turns, and recover sessions after a restart.
 - **SDKs:** the [TypeScript SDK](https://aexhq.github.io/brain/docs/sdks/typescript/) on npm and the [Python SDK](https://aexhq.github.io/brain/docs/sdks/python/) on PyPI.
+- **Node application:** configure Pi, Codex, and OpenCode with typed harness constructors in `brainserver`; install Pi web-access, foreground-subagent, and MCP plugins through named server profiles.
 - **Tools:** [HTTP and SSE tools](https://aexhq.github.io/brain/docs/tools/) in your own services, and [MCP tools](https://aexhq.github.io/brain/docs/tools/mcp/) from remote MCP servers.
 - **[Persistence](https://aexhq.github.io/brain/docs/guides/persistence/):** checkpoint archives in a local directory, Amazon S3, Cloudflare R2, or Google Cloud Storage, and an optional PostgreSQL session index.
 - **Tool services:** [sandboxes](https://aexhq.github.io/brain/docs/tools/sandboxes/) on Modal, E2B, and Daytona; [storage and web tools](https://aexhq.github.io/brain/docs/tools/resources/) for S3 or R2 storage, Brave or Tavily search, and public web fetch; and an [example tool server](https://aexhq.github.io/brain/docs/tools/local-tools/) with operator approvals.

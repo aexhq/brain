@@ -8,19 +8,24 @@ description: Create sessions, send messages, and stream events in Node.js 24+ wi
 ## Install
 
 ```sh
-npm install --save-exact @aexhq/brain@2.2.0
+npm install --save-exact @aexhq/brain@2.3.0
 ```
 
 ## Declare runtime tools
 
+Use `Pi()`, `Codex()`, or `OpenCode()` to select a server-installed harness. A named
+profile, such as `Pi({ name: 'research' })`, selects the configuration installed by
+the application. Install profiles and Pi plugins in the `BrainServer` constructor;
+client selection does not install packages or send executable code.
+
 Pass ordinary functions when creating a session. The SDK registers descriptors and opens a callback connection before admitting the session. Functions and captured credentials stay in your Node process.
 
 ```typescript
-import { Brain, Model, Tool } from "@aexhq/brain";
+import { Pi, Brain, Model, Tool } from "@aexhq/brain";
 
 const client = new Brain("http://127.0.0.1:8080", process.env.BRAIN_API_KEY!);
 const session = await client.create({
-  harness: "pi",
+  harness: Pi(),
   model: Model("openai/gpt-4.1-mini"),
   tools: [Tool({
     name: "lookup", description: "Read application data",
@@ -53,11 +58,11 @@ Use `Model("provider/model", ApiKey(customerKey))` to supply a private API key, 
 Use `ManagedTool("lookup")` for an installed ordinary tool. Select builtin integrations with `AwsS3`, `Modal`, `E2B`, or `Daytona`:
 
 ```ts
-import { Brain, Model, AwsS3, Modal } from '@aexhq/brain';
+import { Pi, Brain, Model, AwsS3, Modal } from '@aexhq/brain';
 
 const brain = new Brain('http://127.0.0.1:8080', process.env.BRAIN_API_KEY!);
 const session = await brain.create({
-  harness: 'pi', model: Model('openai/gpt-4.1-mini'),
+  harness: Pi(), model: Model('openai/gpt-4.1-mini'),
   tools: [
     AwsS3({
       bucket: 'customer-documents', region: 'eu-west-2', operations: ['read'],
@@ -94,7 +99,7 @@ server commit from the release workflow.
 Pass the Brain server base URL and your bearer token to `new Brain(url, token, fetchImpl?)`:
 
 ```ts
-import { Brain } from '@aexhq/brain';
+import { Pi, Brain } from '@aexhq/brain';
 
 const brain = new Brain('http://127.0.0.1:8080', process.env.BRAIN_API_KEY!);
 ```
@@ -132,7 +137,7 @@ Call `observe(session.id)` to iterate over the session's SSE stream. Brain repla
 Run this `.mjs` script from the repository root while Brain is running (see `examples/session.mjs` for the CLI version):
 
 ```js
-import { Brain } from '@aexhq/brain';
+import { Pi, Brain } from '@aexhq/brain';
 
 const brain = new Brain('http://127.0.0.1:8080', process.env.BRAIN_API_KEY);
 const session = await brain.create({
@@ -196,7 +201,7 @@ Live-only events (`assistant.delta` and `tool.progress`) do not carry a `cursor`
 Non-2xx HTTP responses throw `BrainError`:
 
 ```ts
-import { Brain, BrainError } from '@aexhq/brain';
+import { Pi, Brain, BrainError } from '@aexhq/brain';
 
 try {
   await brain.send(session.id, { type: 'user.message', text: 'Continue.' });

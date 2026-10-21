@@ -29,14 +29,19 @@ for (const directory of [stage, output]) {
   await mkdir(directory, { recursive: true });
 }
 run('npm', ['--prefix', 'runners/pi', 'run', 'build']);
+run('npm', ['--prefix', 'runners/codex', 'run', 'build']);
+run('npm', ['--prefix', 'runners/opencode', 'run', 'build']);
 run('npm', ['--prefix', 'sdks/typescript', 'run', 'build']);
 const pkg = JSON.parse(await readFile(path.join(root, 'packages/brainserver/package.json'), 'utf8'));
 const pi = JSON.parse(await readFile(path.join(root, 'runners/pi/package.json'), 'utf8'));
 const sandbox = JSON.parse(await readFile(path.join(root, 'services/sandbox/package.json'), 'utf8'));
-for (const [name, version] of Object.entries({ ...pi.dependencies, ...sandbox.dependencies })) {
+const codex = JSON.parse(await readFile(path.join(root, 'runners/codex/package.json'), 'utf8'));
+const opencode = JSON.parse(await readFile(path.join(root, 'runners/opencode/package.json'), 'utf8'));
+for (const [name, version] of Object.entries({ ...pi.dependencies, ...sandbox.dependencies, ...codex.dependencies, ...opencode.dependencies })) {
   assert.equal(pkg.dependencies[name], version, `brainserver must pin ${name} to the integration's version`);
 }
 const archives = [];
+const productionLock = JSON.parse(await readFile(path.join(root, 'packages/brainserver/package-lock.json'), 'utf8'));
 async function pack(directory, name) {
   const [result] = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', output], directory, {}, true));
   archives.push({ name, file: result.filename });
@@ -52,38 +57,45 @@ for (const target of selected) {
   });
   await chmod(binary, 0o755);
   const name = `@aexhq/brainserver-${target}`;
-  await writeFile(path.join(directory, 'package.json'), JSON.stringify({
-    name, version: pkg.version, description: `Brain executable for ${target}`, license: 'MIT',
-    os: [os], cpu: [arch], files: [path.basename(binary), 'LICENSE'], publishConfig: { access: 'public' },
-    repository: pkg.repository,
-  }, null, 2) + '\n');
+  const manifest = {
+    name, version: pkg.version, description: `Brain and native harness runtimes for ${target}`, license: 'MIT', type: 'module',
+    os: [os], cpu: [arch], files: [path.basename(binary), 'runners', 'services', 'sandbox.js', 'LICENSE'], publishConfig: { access: 'public' },
+    repository: pkg.repository, dependencies: pkg.dependencies, overrides: pkg.overrides, bundleDependencies: Object.keys(pkg.dependencies),
+  };
+  await writeFile(path.join(directory, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
+  const lock = structuredClone(productionLock);
+  lock.name = name;
+  lock.packages[''] = { ...lock.packages[''], name, os: [os], cpu: [arch], bundleDependencies: manifest.bundleDependencies };
+  await writeFile(path.join(directory, 'package-lock.json'), JSON.stringify(lock, null, 2) + '\n');
+  run('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', `--os=${os}`, `--cpu=${arch}`], directory);
+  await cp(path.join(root, 'runners/pi/dist'), path.join(directory, 'runners/pi/dist'), { recursive: true });
+  for (const runner of ['codex', 'opencode']) await cp(path.join(root, 'runners', runner, 'src'), path.join(directory, 'runners', runner, 'src'), { recursive: true });
+  await cp(path.join(root, 'runners/common'), path.join(directory, 'runners/common'), { recursive: true });
+  await mkdir(path.join(directory, 'services'), { recursive: true });
+  await copyFile(path.join(root, 'services/http.mjs'), path.join(directory, 'services/http.mjs'));
+  await cp(path.join(root, 'services/sandbox/src'), path.join(directory, 'services/sandbox/src'), { recursive: true });
+  await copyFile(path.join(root, 'packages/brainserver/sandbox.js'), path.join(directory, 'sandbox.js'));
   await copyFile(path.join(root, 'LICENSE'), path.join(directory, 'LICENSE'));
-  await pack(directory, name);
+  const packed = await pack(directory, name);
+  for (const file of ['runners/pi/dist/main.js', 'runners/codex/src/main.mjs', 'runners/opencode/src/main.mjs', 'runners/common/bridge.mjs']) assert.ok(packed.files.some(entry => entry.path === file), `runtime missing ${file}`);
+  for (const dependency of Object.keys(pkg.dependencies)) assert.ok(packed.bundled.includes(dependency), `runtime did not bundle ${dependency}`);
 }
 const main = path.join(stage, 'main');
 await mkdir(main);
-// Bundle the lockfile's production dependency tree, rather than resolving Pi's
-// transitive version ranges on each user's machine. No install scripts run.
-for (const name of ['package.json', 'package-lock.json']) await copyFile(path.join(root, 'packages/brainserver', name), path.join(main, name));
-run('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], main);
-await cp(path.join(root, 'packages/brainserver'), main, { recursive: true });
+// The portable entry point has no runtime dependencies outside its selected
+// platform package. Each platform archive owns its complete locked native tree.
+for (const file of ['index.js', 'index.d.ts', 'process.js', 'README.md']) await copyFile(path.join(root, 'packages/brainserver', file), path.join(main, file));
 await cp(path.join(root, 'sdks/typescript/dist'), path.join(main, 'sdk'), { recursive: true });
-await cp(path.join(root, 'runners/pi/dist'), path.join(main, 'runners/pi/dist'), { recursive: true });
-await cp(path.join(root, 'runners/common'), path.join(main, 'runners/common'), { recursive: true });
-await mkdir(path.join(main, 'services'), { recursive: true });
-await copyFile(path.join(root, 'services/http.mjs'), path.join(main, 'services/http.mjs'));
-await cp(path.join(root, 'services/sandbox/src'), path.join(main, 'services/sandbox/src'), { recursive: true });
 await copyFile(path.join(root, 'LICENSE'), path.join(main, 'LICENSE'));
-await rm(path.join(main, 'package-lock.json'));
-await writeFile(path.join(main, 'package.json'), JSON.stringify({
-  ...pkg,
+const manifest = {
+  ...pkg, dependencies: undefined, overrides: undefined,
   optionalDependencies: Object.fromEntries(targets.map(target => [`@aexhq/brainserver-${target}`, pkg.version])),
-}, null, 2) + '\n');
+};
+await writeFile(path.join(main, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
 const packed = await pack(main, pkg.name);
-for (const name of ['index.js', 'index.d.ts', 'sdk/index.js', 'sdk/index.d.ts', 'runners/pi/dist/main.js', 'runners/common/media.mjs']) {
+for (const name of ['index.js', 'index.d.ts', 'sdk/index.js', 'sdk/index.d.ts']) {
   assert.ok(packed.files.some(file => file.path === name), `server package missing ${name}`);
 }
-assert.ok(packed.bundled.includes('@earendil-works/pi-coding-agent'), 'Pi dependencies were not bundled');
 const commit = run('git', ['rev-parse', 'HEAD'], root, {}, true).trim();
 await writeFile(path.join(output, 'release.json'), JSON.stringify({ version: pkg.version, commit, npmPackages: archives }, null, 2) + '\n');
 console.log(`Packaged brainserver ${pkg.version} (${selected.join(', ')}) in ${output}`);

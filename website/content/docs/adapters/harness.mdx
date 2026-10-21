@@ -7,6 +7,19 @@ A **harness adapter** runs the model loop, manages conversation context and comp
 
 ## Go lifecycle (`harness.Factory` and `harness.Runner`)
 
+The Node `brainserver` package installs all three runners and exports `Pi()`,
+`Codex()`, and `OpenCode()` constructors. Named profiles configure host limits.
+Pi profiles install `PiWebAccess()`, `PiSubagents()`, and `PiMcp()` plugins. Plugin
+configuration is server-owned; profile selection lowers to the wire harness name.
+
+Pi profiles with plugins run one session per host because their upstream packages
+use process-global settings. The runner reports selected native tool descriptors
+from `open`. Brain records a native tool call before dispatching `plugin.execute`
+back to the same attachment. Native calls therefore retain the ordinary tool
+events, cancellation scope, progress, and result handling. Child Pi sessions use
+the parent's model runtime, selected application tools, and request observer;
+their transcripts participate in the native checkpoint.
+
 `Factory.Open(ctx, opts)` receives a `harness.Options` struct containing the session ID, the `native/` working directory (`Dir`), the immutable session `Config`, enabled `Tools` schemas, resolved `Provider` credentials (`APIKey`, `BaseURL`, `API`), and two callbacks: `Event` (for emitting `assistant.delta` and `assistant.message`) and `Call` (for executing bound tools).
 
 The application package exports these contracts as `brain.HarnessFactory`, `brain.Harness`, and `brain.HarnessOptions`. `Open` returns a runner with five methods (see [Go interfaces](/docs/adapters/interfaces)):

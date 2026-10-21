@@ -58,12 +58,12 @@ run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-ex
 const tests = await readFile(path.join(root, 'sdks/typescript/test/client.test.mjs'), 'utf8');
 await writeFile(path.join(consumer, 'client.test.mjs'), tests.replace('"../dist/index.js"', '"@aexhq/brain"'));
 run(process.execPath, ['--test', 'client.test.mjs'], consumer);
-  await writeFile(path.join(consumer, 'consumer.ts'), `import { Brain, BrainError, Model, ApiKey, Tool, ManagedTool, type Session, type Event } from '@aexhq/brain';
+  await writeFile(path.join(consumer, 'consumer.ts'), `import { Pi, Brain, BrainError, Model, ApiKey, Tool, ManagedTool, type Session, type Event } from '@aexhq/brain';
 const brain = new Brain('http://brain.test', 'token');
 const session: Promise<Session> = brain.get('id');
 const events: AsyncGenerator<Event> = brain.observe('id');
 const error: Error = new BrainError(409, 'conflict', 'busy');
-  const declared: Promise<Session> = brain.create({ harness: 'pi', model: Model('openai/model', ApiKey('key')), tools: [ManagedTool('lookup'), Tool({name: 'local', description: 'Read', input_schema: {type: 'object'}, run: (_args, context) => ({tenant: context.scope.tenant_id})})] });
+  const declared: Promise<Session> = brain.create({ harness: Pi(), model: Model('openai/model', ApiKey('key')), tools: [ManagedTool('lookup'), Tool({name: 'local', description: 'Read', input_schema: {type: 'object'}, run: (_args, context) => ({tenant: context.scope.tenant_id})})] });
   const descriptor: Tool = {name: 'local', description: 'Read', input_schema: {type: 'object'}};
   void [session, events, error, declared, descriptor];\n`);
 run(process.execPath, [path.join(root, 'sdks/typescript/node_modules/typescript/bin/tsc'), '--noEmit', '--strict', '--module', 'NodeNext', '--target', 'ES2023', 'consumer.ts'], consumer);

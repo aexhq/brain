@@ -4,14 +4,15 @@ JavaScript/TypeScript applications install `@aexhq/brain`; Python applications
 install `aex-brain` and import `brain`. Both are dependency-free at runtime.
 
 Node applications that start their own Brain process install `brainserver`.
-It packages the client and compiled Pi harness with its locked production
-dependencies. npm selects a prebuilt executable through one of six optional
+It packages the portable client and Node server entry point. npm selects the Brain
+executable, Pi/Codex/OpenCode runners, and complete locked production dependency tree
+through one of six optional
 `@aexhq/brainserver-<platform>-<arch>` dependencies (Linux, macOS, and Windows;
 x64 and arm64). No installation scripts or user-side compilation are needed.
 
 ```sh
-npm install --save-exact @aexhq/brain@2.2.0
-python -m pip install aex-brain==2.2.0
+npm install --save-exact @aexhq/brain@2.3.0
+python -m pip install aex-brain==2.3.0
 ```
 
 Release artifacts include the npm archive, Python wheel, and source distribution in [GitHub Releases](https://github.com/aexhq/brain/releases). The release workflow publishes those exact tested bytes to npm and PyPI.

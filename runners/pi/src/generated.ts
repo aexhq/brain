@@ -127,12 +127,19 @@ export interface NativeFile {
 }
 
 export interface OpenOptions {
+  plugins?: PiPlugin[];
   media_origins?: string[];
   session_id: string;
   dir: string;
   config: SessionConfig;
   tools: Tool[];
   provider: Provider;
+}
+
+export interface PiPlugin {
+  name: string;
+  config?: unknown;
+  tools?: string[];
 }
 
 export interface Provider {

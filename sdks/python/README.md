@@ -1,6 +1,6 @@
 # Brain Python SDK
 
-Install with `python -m pip install aex-brain==2.2.0`. Requires Python 3.11+;
+Install with `python -m pip install aex-brain==2.3.0`. Requires Python 3.11+;
 there are no runtime dependencies. Import the client from `brain` and generated
 `TypedDict` definitions from `brain.types`. The wheel includes PEP 561 type data.
 

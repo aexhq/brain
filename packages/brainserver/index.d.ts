@@ -1,5 +1,5 @@
 /// <reference lib="esnext.disposable" />
-import { Brain, type ManagedSelection } from './sdk/index.js';
+import { Brain, type ManagedSelection, type Harness } from './sdk/index.js';
 export * from './sdk/index.js';
 
 export interface BrainServerOptions {
@@ -13,6 +13,8 @@ export interface BrainServerOptions {
   providers?: Record<string, { apiKey?: string; baseUrl?: string; api?: string }>;
   /** Installed integrations, such as [Modal({...}), AwsS3({...})]. Credentials are optional defaults. */
   tools?: ManagedSelection[];
+  /** Installed harness profiles. Default: [Pi(), Codex(), OpenCode()]. */
+  harnesses?: Harness[];
 }
 
 export class BrainServer extends Brain {

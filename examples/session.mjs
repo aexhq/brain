@@ -1,9 +1,9 @@
-import { Brain, Model, ManagedTool } from "@aexhq/brain";
+import { Pi, Brain, Model, ManagedTool } from "@aexhq/brain";
 
 if (!process.env.BRAIN_API_KEY) throw new Error("Set BRAIN_API_KEY before running this example");
 const brain = new Brain("http://127.0.0.1:8080", process.env.BRAIN_API_KEY);
 const tools = process.env.BRAIN_TOOLS?.split(",").map(x => x.trim()).filter(Boolean) ?? [];
-const session = await brain.create({ harness: "pi", model: Model("openai/gpt-4.1-mini"), tools: tools.map(name => ManagedTool(name)) });
+const session = await brain.create({ harness: Pi(), model: Model("openai/gpt-4.1-mini"), tools: tools.map(name => ManagedTool(name)) });
 console.log(`Session: ${session.id}`);
 const input = await brain.send(session.id, { type: "user.message", text: process.argv.slice(2).join(" ") || "Say hello.", key: crypto.randomUUID() });
 for await (const event of brain.observe(session.id)) {

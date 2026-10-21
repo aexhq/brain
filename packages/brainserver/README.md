@@ -9,13 +9,13 @@ npm install brainserver
 Use Node.js 24 or newer. Set `OPENAI_API_KEY`, save this as `agent.mjs`, and run `node agent.mjs`:
 
 ```js
-import { BrainServer, Model } from 'brainserver';
+import { Pi, BrainServer, Model } from 'brainserver';
 
 const brain = new BrainServer();
 await brain.start();
 try {
   const session = await brain.create({
-    harness: 'pi', model: Model('openai/gpt-4.1-mini'), tools: [],
+    harness: Pi(), model: Model('openai/gpt-4.1-mini'), tools: [],
   });
   const input = await brain.send(session.id, { type: 'user.message', text: 'Say hello.' });
   for await (const event of brain.observe(session.id)) {
@@ -29,7 +29,7 @@ try {
 }
 ```
 
-The package includes the compiled Pi harness, its pinned dependencies, the client,
+The package includes the Pi, Codex, and OpenCode runners, their pinned dependencies, the client,
 and a prebuilt Go executable selected by npm for your platform. Users need Node,
 with no Go toolchain or separate build. Installation works with `--ignore-scripts`.
 Linux, macOS, and Windows support x64 and arm64.
@@ -44,7 +44,7 @@ Callers that need to monitor an unexpected server exit can await it.
 Configure the server and install integrations in its constructor:
 
 ```js
-import { BrainServer, Modal, AwsS3 } from 'brainserver';
+import { Pi, BrainServer, Modal, AwsS3 } from 'brainserver';
 
 const server = new BrainServer({
   apiKey: process.env.BRAIN_API_KEY,
@@ -78,11 +78,11 @@ The same helpers are exported by `@aexhq/brain`. A session selects installed
 integrations and can supply private credentials:
 
 ```js
-import { Brain, Model, Modal, AwsS3 } from '@aexhq/brain';
+import { Pi, Brain, Model, Modal, AwsS3 } from '@aexhq/brain';
 
 const brain = new Brain('http://127.0.0.1:8080', process.env.BRAIN_API_KEY);
 const session = await brain.create({
-  harness: 'pi', model: Model('openai/gpt-4.1-mini'),
+  harness: Pi(), model: Model('openai/gpt-4.1-mini'),
   tools: [
     Modal(), // Uses the server's default credentials.
     AwsS3({
@@ -120,6 +120,57 @@ Server defaults remain in the server environment and are not recorded as session
 The API token belongs to the `local` tenant and can manage sessions.
 For application functions, use the exported `Tool` constructor in `brain.create()`.
 For a separately deployed server, install `@aexhq/brain` and connect with `Brain`.
+
+## Configure harnesses and Pi plugins
+
+The server installs `Pi()`, `Codex()`, and `OpenCode()` by default. Pass constructor
+objects when creating sessions. Codex and OpenCode use the Responses transport;
+configure their provider with `api: 'openai-responses'`.
+
+Install named profiles to configure residency and plugins:
+
+```js
+import { BrainServer, Model, Pi, Codex, OpenCode, PiWebAccess, PiSubagents, PiMcp } from 'brainserver';
+
+const research = Pi({
+  name: 'research',
+  plugins: [
+    PiWebAccess({ tools: ['web_search', 'fetch_content'], config: { braveApiKey: 'your-search-key' } }),
+    PiSubagents(),
+    PiMcp({ config: { mcpServers: { docs: { url: 'https://your-mcp-service.example/mcp', tools: ['search'] } } } }),
+  ],
+});
+const brain = new BrainServer({
+  harnesses: [research, Codex(), OpenCode()],
+  providers: { openai: { apiKey: 'your-model-key', api: 'openai-responses' } },
+});
+await brain.start();
+const session = await brain.create({ harness: research, model: Model('openai/gpt-4.1-mini'), tools: [] });
+```
+
+Each constructor accepts `name`, `maxShared`, `maxActiveTurns`, `maxHosts`, and
+`maxStarting`. Profile names identify the installed configuration; a remote client
+selects it with `Pi({ name: 'research' })`. Only server configuration installs code,
+plugin settings, endpoints, and credentials. Session requests contain the profile name.
+
+Pi plugins use pinned `pi-web-access`, `pi-subagents`, and `pi-mcp-adapter` packages.
+Plugin `tools` selects a subset of that package's tools; application `tools` adds
+Brain-managed or client functions. All selected tool calls produce Brain events.
+Plugin-enabled profiles use one session and one active turn per host because the
+packages read process-global configuration.
+
+Web access runs with raw results and no automatic browser or summarization.
+Subagents run in the foreground with the session's model and credentials. The
+default `brain_worker` agent has no tools. Supply `config.agents` as a map of names
+to definitions (`description`, `systemPrompt`, and `tools`) to install your own;
+child tools must be bound application tools from the parent session. Child model
+requests are recorded, and child transcripts are checkpointed. Background runs,
+scheduled inference, child extensions, and remote placement are rejected.
+
+MCP uses the package's host-managed profile: `config.mcpServers` maps server names
+to `url` and optional `headers`, or installed `command`, `args`, and `env`; `tools`
+selects remote names. Discovery freezes the catalog before inference. Brain owns
+dispatch records, cancellation, and connection shutdown; tool calls are not replayed.
 
 ## Build from this repository
 

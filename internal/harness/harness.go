@@ -15,6 +15,7 @@ type Provider struct {
 }
 
 type Options struct {
+	Plugins      []PiPlugin                                            `json:"plugins,omitempty"`
 	MediaOrigins []string                                              `json:"media_origins,omitempty"`
 	Lifetime     context.Context                                       `json:"-"`
 	SessionID    string                                                `json:"session_id"`
@@ -32,6 +33,18 @@ type Runner interface {
 	Interrupt(context.Context) error
 	Checkpoint(context.Context) ([]core.NativeFile, error)
 	Close() error
+}
+
+// PiPlugin is installed by trusted server code, never by a session request.
+type PiPlugin struct {
+	Name   string          `json:"name"`
+	Config json.RawMessage `json:"config,omitempty"`
+	Tools  []string        `json:"tools,omitempty"`
+}
+
+type NativeTools interface {
+	NativeTools() []core.Tool
+	InvokeNative(context.Context, core.Call, func(json.RawMessage)) (core.Result, error)
 }
 
 type Factory interface {

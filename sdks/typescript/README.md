@@ -1,14 +1,14 @@
 # Brain JavaScript and TypeScript SDK
 
-Install with `npm install --save-exact @aexhq/brain@2.2.0`. Requires Node.js 24+;
+Install with `npm install --save-exact @aexhq/brain@2.3.0`. Requires Node.js 24+;
 there are no runtime dependencies. JavaScript and TypeScript use the same package.
 
 ```js
-import { Brain, Model } from '@aexhq/brain';
+import { Pi, Brain, Model } from '@aexhq/brain';
 
 const brain = new Brain('http://127.0.0.1:8080', process.env.BRAIN_API_KEY);
 const session = await brain.create({
-  harness: 'pi', model: Model('openai/gpt-4.1-mini'), tools: [],
+  harness: Pi(), model: Model('openai/gpt-4.1-mini'), tools: [],
 });
 const input = await brain.send(session.id, { type: 'user.message', text: 'Hello!' });
 for await (const event of brain.observe(session.id)) {

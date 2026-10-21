@@ -3,8 +3,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { Brain } from './sdk/index.js';
+import { isDeepStrictEqual } from 'node:util';
+import { Brain, Pi, Codex, OpenCode } from './sdk/index.js';
 import { startProcess, stopProcess } from './process.js';
 
 export * from './sdk/index.js';
@@ -15,6 +15,7 @@ export class BrainServer extends Brain {
   #environment;
   #providers = {};
   #tools;
+  #harnesses;
   #dataDir;
   #port;
   #starting;
@@ -25,7 +26,7 @@ export class BrainServer extends Brain {
   #exited;
 
   constructor(options = {}) {
-    checkOptions(options, ['apiKey', 'dataDir', 'port', 'providers', 'tools'], 'BrainServer');
+    checkOptions(options, ['apiKey', 'dataDir', 'port', 'providers', 'tools', 'harnesses'], 'BrainServer');
     const token = options.apiKey ?? randomBytes(32).toString('hex');
     if (typeof token !== 'string' || Buffer.byteLength(token) < 24) throw new Error('Brain apiKey must contain at least 24 bytes');
     super('', token);
@@ -37,6 +38,23 @@ export class BrainServer extends Brain {
     this.#dataDir = path.resolve(dataDir);
     this.#port = port;
     this.#environment = { ...process.env, BRAIN_NODE_TOKEN: token };
+    const harnesses = options.harnesses ?? [Pi(), Codex(), OpenCode()];
+    if (!Array.isArray(harnesses) || !harnesses.length) throw new Error('harnesses must contain at least one harness constructor');
+    this.#harnesses = {};
+    for (const definition of harnesses) {
+      const { kind, ...settings } = definition;
+      const selected = ({ pi: Pi, codex: Codex, opencode: OpenCode })[kind]?.(settings);
+      if (!selected) throw new Error('Unknown harness kind');
+      if (this.#harnesses[selected.name]) throw new Error(`Duplicate harness: ${selected.name}`);
+      if (selected.plugins?.length && ((selected.maxShared ?? 1) !== 1 || (selected.maxActiveTurns ?? 1) !== 1)) throw new Error('Pi plugins require maxShared and maxActiveTurns of 1');
+      this.#harnesses[selected.name] = {
+        kind,
+        max_shared: selected.plugins?.length ? 1 : selected.maxShared,
+        max_active_turns: selected.plugins?.length ? 1 : selected.maxActiveTurns,
+        max_hosts: selected.maxHosts, max_starting: selected.maxStarting,
+        plugins: selected.plugins,
+      };
+    }
     for (const [name, provider] of Object.entries(providers)) {
       checkOptions(provider, ['apiKey', 'baseUrl', 'api'], `provider ${name}`);
       const { apiKey, baseUrl, api } = provider;
@@ -66,6 +84,20 @@ export class BrainServer extends Brain {
     return this.#starting ??= this.#launch();
   }
 
+  async create(input, signal) {
+    if (!('config' in input)) {
+      const selected = input.harness;
+      const installed = this.#harnesses[selected?.name];
+      if (!installed || installed.kind !== selected.kind) throw new Error('Harness profile is not installed on this BrainServer');
+      const fields = { plugins: 'plugins', maxShared: 'max_shared', maxActiveTurns: 'max_active_turns', maxHosts: 'max_hosts', maxStarting: 'max_starting' };
+      for (const [key, field] of Object.entries(fields)) {
+        if (selected[key] !== undefined && !isDeepStrictEqual(selected[key], installed[field])) throw new Error(`Harness ${key} differs from the installed profile`);
+      }
+      input = { ...input, harness: { kind: selected.kind, name: selected.name } };
+    }
+    return super.create(input, signal);
+  }
+
   get exited() {
     if (!this.#exited) throw new Error('BrainServer has not started');
     return this.#exited;
@@ -76,6 +108,8 @@ export class BrainServer extends Brain {
     let binary;
     try { binary = require.resolve(`${platformPackage}/${process.platform === 'win32' ? 'brain.exe' : 'brain'}`); }
     catch (cause) { throw new Error(`Missing ${platformPackage}. Install brainserver with optional dependencies enabled on a supported platform.`, { cause }); }
+    const runtime = path.dirname(binary);
+    for (const harness of Object.values(this.#harnesses)) harness.command = [process.execPath, path.join(runtime, 'runners', harness.kind, harness.kind === 'pi' ? 'dist/main.js' : 'src/main.mjs')];
     const directory = await mkdtemp(path.join(tmpdir(), 'brainserver-'));
     try {
       await mkdir(this.#dataDir, { recursive: true });
@@ -88,7 +122,7 @@ export class BrainServer extends Brain {
       const sandboxes = this.#tools.filter(tool => tool.name !== 'aws_s3');
       if (sandboxes.length) {
         const token = randomBytes(32).toString('hex');
-        this.#toolHost = await startProcess(process.execPath, [fileURLToPath(new URL('./sandbox.js', import.meta.url))], {
+        this.#toolHost = await startProcess(process.execPath, [path.join(runtime, 'sandbox.js')], {
           ...process.env,
           BRAIN_NODE_TOOL_TOKEN: token,
           BRAIN_NODE_SANDBOXES: JSON.stringify(sandboxes.map(tool => tool.name)),
@@ -107,7 +141,7 @@ export class BrainServer extends Brain {
       await writeFile(config, JSON.stringify({
         listen: `127.0.0.1:${this.#port}`, public_url: `http://127.0.0.1:${this.#port}`, data_dir: this.#dataDir,
         tokens: [{ token_env: 'BRAIN_NODE_TOKEN', tenant: 'local', manage: true }],
-        harnesses: { pi: { command: [process.execPath, fileURLToPath(new URL('./runners/pi/dist/main.js', import.meta.url))] } },
+        harnesses: this.#harnesses,
         providers: this.#providers, tools: [],
         credential_keys: { active: 'local', keys: { local: 'BRAIN_NODE_CREDENTIAL_KEY' } },
       }), { mode: 0o600 });

@@ -26,12 +26,12 @@ Brain gives you session-oriented primitives for building agents. Your applicatio
 - **[Checkpoints](https://aexhq.github.io/brain/docs/guides/persistence/)**: portable session state for recovering and moving sessions.
 
 ```ts
-import { BrainServer, Model } from "brainserver";
+import { Pi, BrainServer, Model } from "brainserver";
 
 const brain = new BrainServer();
 await brain.start();
 try {
-  const session = await brain.create({ harness: "pi", model: Model("openai/gpt-4.1-mini"), tools: [] });
+  const session = await brain.create({ harness: Pi(), model: Model("openai/gpt-4.1-mini"), tools: [] });
   const input = await brain.send(session.id, { type: "user.message", text: "Say hello." });
   for await (const event of brain.observe(session.id)) {
     if (event.type === "assistant.message") console.log(event.data.text);
@@ -59,7 +59,7 @@ Save this as `agent.mjs` and follow the setup below.
 
 You need Node.js 24+ and an OpenAI API key for the example above.
 
-1. **Install Brain.** The package includes the server and Pi harness:
+1. **Install Brain.** The package includes the server and harness runtimes:
 
    ```sh
    npm install brainserver

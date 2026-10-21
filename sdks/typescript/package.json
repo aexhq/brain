@@ -1,6 +1,6 @@
 {
   "name": "@aexhq/brain",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Typed client for Brain sessions, tools, checkpoints, and event streams",
   "license": "MIT",
   "homepage": "https://aexhq.github.io/brain/docs/sdks/typescript/",
