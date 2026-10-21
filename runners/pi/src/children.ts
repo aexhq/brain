@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { mkdir, copyFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, type AgentSession, type ModelRuntime, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { OpenOptions } from './generated.js';
 
@@ -29,7 +30,8 @@ export function children(options: OpenOptions, runtime: ModelRuntime, customTool
       let sessionManager: SessionManager;
       if (launch.storage.kind === 'file') {
         const snapshot = path.join(directory, randomUUID() + '.jsonl');
-        await copyFile(launch.storage.sessionFile, snapshot);
+        // Upstream uses file storage for both new children and existing forks.
+        if (existsSync(launch.storage.sessionFile)) await copyFile(launch.storage.sessionFile, snapshot);
         sessionManager = SessionManager.open(snapshot, directory);
       } else sessionManager = SessionManager.create(path.join(options.dir, 'work'), directory);
       const { session, modelFallbackMessage } = await createAgentSession({ cwd: path.join(options.dir, 'work'), agentDir: directory, modelRuntime: runtime, model,

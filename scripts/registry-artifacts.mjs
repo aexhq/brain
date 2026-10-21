@@ -14,7 +14,7 @@ export async function missingArtifacts(registry, release, directory, request = f
     return missing;
   }
   const url = registry === 'npm'
-    ? `https://registry.npmjs.org/${encodeURIComponent(release.npmName ?? '@aexhq/brain').replace('%40', '@')}/${release.version}`
+    ? `https://registry.npmjs.org/${encodeURIComponent(release.npmName ?? '@aexhq/brain').replaceAll('%40', '@')}/${release.version}`
     : `https://pypi.org/pypi/aex-brain/${release.version}/json`;
   const response = await request(url, { signal: AbortSignal.timeout(30000) });
   const files = registry === 'npm' ? [release.npm] : release.python;

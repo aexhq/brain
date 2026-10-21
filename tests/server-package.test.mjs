@@ -145,14 +145,14 @@ for (const extension of ['web-access', 'subagents', 'mcp']) {
     f.toolCall = input => extension === 'subagents'
       ? { name: 'subagent', args: { agent: 'brain_worker', task: 'Say hello.', async: false } }
       : extension === 'mcp' ? { name: input.tools.find(tool => tool.function.name.includes('echo')).function.name, args: { text: 'test' } }
-        : { name: 'fetch_content', args: { url: `http://127.0.0.1:${page.address().port}/page` } };
+        : { name: 'fetch_content', args: { url: `http://127.0.0.1:${page.address().port}/page`, mode: 'raw' } };
     let brain = await new BrainServer({ ...f.options, harnesses: [pi] }).start();
     t.after(() => brain.stop());
     const session = await brain.create({ harness: pi, model: Model('openai/gpt-4.1-mini'), tools: [] });
     const events = await turn(brain, session);
     const executed = events.find(event => event.type === 'tool.result');
     assert.ok(executed, 'plugin result was not recorded');
-    assert.ok(!executed.data.is_error, JSON.stringify(executed.data));
+    assert.ok(!executed.data.result.is_error, JSON.stringify(executed.data));
     assert.equal(f.requests.length, extension === 'subagents' ? 3 : 2);
     assert.match(JSON.stringify(executed.data), extension === 'subagents' ? /hello from packaged Pi/ : extension === 'mcp' ? /verified MCP plugin/ : /Verified plugin fetch/);
     const requests = f.requests.length;
