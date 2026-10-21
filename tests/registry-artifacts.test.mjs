@@ -48,3 +48,23 @@ test('publication distinguishes missing versions, immutable matches, partial upl
   await assert.rejects(waitForArtifacts('npm', release, directory, { request: async () => new Response('', { status: 404 }), pause, attempts: 2 }), /verification deadline/);
   await assert.rejects(waitForArtifacts('npm', release, directory, { request: async () => new Response('', { status: 503 }), pause, attempts: 2 }), /HTTP 503/);
 });
+
+test('server publication checks every platform before publishing the main package', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'brain-registry-server-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const release = { version: '2.1.0', npmPackages: [
+    { name: '@aexhq/brainserver-linux-x64', file: 'linux.tgz' },
+    { name: 'brainserver', file: 'server.tgz' },
+  ] };
+  for (const p of release.npmPackages) await writeFile(path.join(directory, p.file), 'tested bytes');
+  const seen = [];
+  const request = async url => {
+    seen.push(url);
+    if (url.includes('@aexhq')) return Response.json({ dist: { tarball: 'https://files.test/linux.tgz' } });
+    if (url.startsWith('https://files.test/')) return new Response('tested bytes');
+    return new Response('', { status: 404 });
+  };
+  assert.deepEqual(await missingArtifacts('npm', release, directory, request), ['server.tgz']);
+  assert.ok(seen.includes('https://registry.npmjs.org/@aexhq%2Fbrainserver-linux-x64/2.1.0'));
+  assert.ok(seen.includes('https://registry.npmjs.org/brainserver/2.1.0'));
+});

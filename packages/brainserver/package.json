@@ -1,0 +1,13 @@
+{
+  "name": "brainserver",
+  "version": "2.1.0",
+  "description": "Run Brain with its bundled Pi harness from Node.js",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "repository": { "type": "git", "url": "git+https://github.com/aexhq/brain.git", "directory": "packages/brainserver" },
+  "homepage": "https://aexhq.github.io/brain/docs/quickstart/",
+  "publishConfig": { "access": "public" },
+  "exports": { ".": { "types": "./index.d.ts", "default": "./index.js" } },
+  "files": ["index.js", "index.d.ts", "sdk", "runners", "README.md", "LICENSE"]
+}

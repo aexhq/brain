@@ -9,6 +9,13 @@ Brain reads its host configuration from a JSON file passed with `-config` (defau
 go run ./cmd/brain -config brain.json -check
 ```
 
+`-stdio` ties the server lifetime to its parent's stdin pipe. After initialization,
+the server writes one JSON line containing its listening `url` to stdout; logs
+remain on stderr. Closing stdin triggers graceful shutdown. In this mode the
+configured listen address may use port `0`; Brain uses the assigned address as
+its public URL. The `brainserver` Node package uses this mode to own its child
+process without reserving a port in advance.
+
 ```powershell tab="Windows"
 go run ./cmd/brain -config brain.json -check
 ```
