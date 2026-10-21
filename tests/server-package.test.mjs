@@ -9,9 +9,10 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { responsesReply } from './journeys/model-responses.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-let directory, BrainServer, Brain, Model, ApiKey, Tool, AwsS3, Modal, E2B, Daytona;
+let directory, BrainServer, Brain, Pi, Codex, OpenCode, PiWebAccess, PiSubagents, PiMcp, Model, ApiKey, Tool, AwsS3, Modal, E2B, Daytona;
 before(async () => {
   directory = await mkdtemp(path.join(tmpdir(), 'brainserver consumer '));
   await writeFile(path.join(directory, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
@@ -21,12 +22,12 @@ before(async () => {
   const args = ['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', ...packages.map(p => path.join(root, 'dist/server', p.file))];
   const command = process.platform === 'win32' ? process.execPath : 'npm';
   if (process.platform === 'win32') args.unshift(path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js'));
-  const installed = spawnSync(command, args, { cwd: directory, encoding: 'utf8', timeout: 240000, windowsHide: true });
+  const installed = spawnSync(command, args, { cwd: directory, encoding: 'utf8', timeout: 600000, windowsHide: true });
   assert.ifError(installed.error);
   assert.equal(installed.status, 0, installed.stderr);
   const require = createRequire(path.join(directory, 'package.json'));
-  ({ BrainServer, Brain, Model, ApiKey, Tool, AwsS3, Modal, E2B, Daytona } = await import(pathToFileURL(require.resolve('brainserver')).href));
-}, { timeout: 270000 });
+  ({ BrainServer, Brain, Pi, Codex, OpenCode, PiWebAccess, PiSubagents, PiMcp, Model, ApiKey, Tool, AwsS3, Modal, E2B, Daytona } = await import(pathToFileURL(require.resolve('brainserver')).href));
+}, { timeout: 630000 });
 after(async () => {
   if (directory) {
     assert.equal(path.dirname(directory), tmpdir());
@@ -35,10 +36,10 @@ after(async () => {
 });
 
 test('installed TypeScript declarations expose the server and client without extra dependencies', async () => {
-  await writeFile(path.join(directory, 'consumer.ts'), `import { BrainServer, Model, AwsS3, Modal, E2B, Daytona, type Session } from 'brainserver';
+  await writeFile(path.join(directory, 'consumer.ts'), `import { Pi, BrainServer, Model, AwsS3, Modal, E2B, Daytona, type Session } from 'brainserver';
 const brain: BrainServer = new BrainServer({providers:{openai:{apiKey:'key'}}, tools:[AwsS3(), Modal(), E2B(), Daytona()]});
 await brain.start();
-const session: Session = await brain.create({harness:'pi', model:Model('openai/gpt-4.1-mini'), tools:[]});
+const session: Session = await brain.create({harness: Pi(), model:Model('openai/gpt-4.1-mini'), tools:[]});
 void session;
 await brain.stop();
 `);
@@ -46,20 +47,25 @@ await brain.stop();
   assert.equal(checked.status, 0, checked.stdout + checked.stderr);
 });
 
-async function provider(t) {
+async function provider(t, api = 'openai-completions') {
   const requests = [];
   const fixture = { requests, toolCall: undefined };
   const errors = [];
   const server = http.createServer(async (req, res) => {
     try {
-      assert.equal(req.url, '/v1/chat/completions');
+      assert.equal(req.url, api === 'openai-responses' ? '/v1/responses' : '/v1/chat/completions');
       assert.equal(req.headers.authorization, 'Bearer package-test-provider');
       let body = '';
       for await (const chunk of req) body += chunk;
       const input = JSON.parse(body);
       requests.push(input);
-      const last = input.messages.at(-1);
+      const last = (input.messages ?? input.input).at(-1);
       const call = last.role === 'user' && input.tools?.length;
+      if (api === 'openai-responses') {
+        res.modelStreaming = input.stream !== false;
+        responsesReply(res, call ? fixture.toolCall?.(input) ?? { name: input.tools[0].name, args: { text: 'hello' } } : 'hello from packaged harness', { input_tokens: 20, output_tokens: 5, total_tokens: 25 });
+        return;
+      }
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       const chunk = (delta, finish_reason = null) => res.write(`data: ${JSON.stringify({
         id: 'package-test', object: 'chat.completion.chunk', created: 1, model: 'gpt-4.1-mini',
@@ -84,9 +90,80 @@ async function provider(t) {
   });
   fixture.options = {
     dataDir: path.join(directory, t.name),
-    providers: { openai: { apiKey: 'package-test-provider', baseUrl: `http://127.0.0.1:${server.address().port}/v1`, api: 'openai-completions' } },
+    providers: { openai: { apiKey: 'package-test-provider', baseUrl: `http://127.0.0.1:${server.address().port}/v1`, api } },
   };
   return fixture;
+}
+
+for (const harness of ['codex', 'opencode']) {
+  test(`installed BrainServer runs ${harness} with callbacks and passive restart`, { timeout: 120000 }, async t => {
+    const f = await provider(t, 'openai-responses');
+    const selected = harness === 'codex' ? Codex({ name: 'configured-codex', maxShared: 2 }) : OpenCode({ name: 'configured-opencode', maxShared: 2 });
+    let brain = new BrainServer({ ...f.options, harnesses: [selected] });
+    t.after(() => brain.stop());
+    await brain.start();
+    const echo = { name: 'echo', description: 'Echo text', input_schema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false }, run: args => args.text };
+    const session = await brain.create({ harness: selected, model: Model('openai/gpt-4.1-mini'), tools: [echo] });
+    const events = await turn(brain, session);
+    assert.ok(events.some(event => event.type === 'tool.result' && !event.data.is_error));
+    assert.equal(f.requests.length, 2);
+    await brain.stop();
+    brain = await new BrainServer({ ...f.options, harnesses: [selected] }).start();
+    await brain.get(session.id);
+    assert.equal(f.requests.length, 2, 'restart called the model');
+    await brain.rebind(session.id, [echo]);
+    await turn(brain, session);
+    assert.equal(f.requests.length, 4);
+  });
+}
+
+for (const extension of ['web-access', 'subagents', 'mcp']) {
+  test(`installed Pi ${extension} tools are recorded and recover after restart`, { timeout: 120000 }, async t => {
+    const f = await provider(t);
+    const page = http.createServer(async (req, res) => {
+      if (extension === 'mcp') {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
+        let body = ''; for await (const chunk of req) body += chunk;
+        const input = JSON.parse(body);
+        if (input.id === undefined) { res.writeHead(202); res.end(); return; }
+        const result = input.method === 'initialize'
+          ? { protocolVersion: input.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'brain-package-mcp', version: '1' } }
+          : input.method === 'tools/list'
+            ? { tools: [{ name: 'echo', description: 'Echo text', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } }] }
+            : { content: [{ type: 'text', text: 'verified MCP plugin ' + input.params.arguments.text }] };
+        res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ jsonrpc: '2.0', id: input.id, result }));
+      } else {
+        res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('<html><title>Brain fixture</title><body><article>Verified plugin fetch content from the local fixture.</article></body></html>');
+      }
+    });
+    page.listen(0, '127.0.0.1'); await once(page, 'listening');
+    const plugin = extension === 'subagents' ? PiSubagents()
+      : extension === 'mcp' ? PiMcp({ config: { mcpServers: { demo: { url: `http://127.0.0.1:${page.address().port}/mcp`, tools: ['echo'] } } } })
+      : PiWebAccess({ tools: ['fetch_content'], config: { ssrf: { allowRanges: ['127.0.0.0/8'] } } });
+    const pi = Pi({ plugins: [plugin] });
+    t.after(() => { page.closeAllConnections(); return new Promise(resolve => page.close(resolve)); });
+    f.toolCall = input => extension === 'subagents'
+      ? { name: 'subagent', args: { agent: 'brain_worker', task: 'Say hello.', async: false } }
+      : extension === 'mcp' ? { name: input.tools.find(tool => tool.function.name.includes('echo')).function.name, args: { text: 'test' } }
+        : { name: 'fetch_content', args: { url: `http://127.0.0.1:${page.address().port}/page` } };
+    let brain = await new BrainServer({ ...f.options, harnesses: [pi] }).start();
+    t.after(() => brain.stop());
+    const session = await brain.create({ harness: pi, model: Model('openai/gpt-4.1-mini'), tools: [] });
+    const events = await turn(brain, session);
+    const executed = events.find(event => event.type === 'tool.result');
+    assert.ok(executed, 'plugin result was not recorded');
+    assert.ok(!executed.data.is_error, JSON.stringify(executed.data));
+    assert.equal(f.requests.length, extension === 'subagents' ? 3 : 2);
+    assert.match(JSON.stringify(executed.data), extension === 'subagents' ? /hello from packaged Pi/ : extension === 'mcp' ? /verified MCP plugin/ : /Verified plugin fetch/);
+    const requests = f.requests.length;
+    await brain.stop();
+    brain = await new BrainServer({ ...f.options, harnesses: [pi] }).start();
+    await brain.get(session.id);
+    assert.equal(f.requests.length, requests);
+    await turn(brain, session);
+    assert.ok(f.requests.length > requests);
+    assert.equal((await brain.history(session.id)).events.filter(event => event.type === 'tool.call').length, 2);
+  });
 }
 async function turn(brain, session) {
   const input = await brain.send(session.id, { type: 'user.message', text: 'hello' });
@@ -110,7 +187,7 @@ test('installed package runs bundled Pi and application tools, then recovers ses
     name: 'echo', description: 'Echo text', input_schema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
     run: args => { values.push(args.text); return { content: [{ type: 'text', text: args.text }] }; },
   });
-  const session = await brain.create({ harness: 'pi', model: Model('openai/gpt-4.1-mini'), tools: [echo] });
+  const session = await brain.create({ harness: Pi(), model: Model('openai/gpt-4.1-mini'), tools: [echo] });
   const events = await turn(brain, session);
   assert.deepEqual(values, ['hello']);
   assert.ok(events.some(e => e.type === 'assistant.message' && e.data.text === 'hello from packaged Pi'));
@@ -159,14 +236,14 @@ test('remote SDK sessions use optional defaults and encrypted credential overrid
   await starting;
   t.after(() => server.stop());
   let client = new Brain(server.url, apiKey);
-  const defaults = await client.create({ harness: 'pi', model: Model('openai/gpt-4.1-mini'), tools: [AwsS3(), Modal()] });
-  const privateSession = await client.create({ harness: 'pi', model: Model('openai/gpt-4.1-mini'), tools: [
+  const defaults = await client.create({ harness: Pi(), model: Model('openai/gpt-4.1-mini'), tools: [AwsS3(), Modal()] });
+  const privateSession = await client.create({ harness: Pi(), model: Model('openai/gpt-4.1-mini'), tools: [
     AwsS3({ accessKeyId: 'session-s3-access', secretAccessKey: 'session-s3-private-secret', sessionToken: 'session-temporary-token', operations: ['read'] }),
     Modal({ tokenId: 'session-modal-id', tokenSecret: 'session-modal-private-secret', operations: ['inspect'] }),
   ] });
   assert.deepEqual(privateSession.descriptors.map(tool => tool.name), ['aws_s3_read', 'modal_inspect']);
   assert.doesNotMatch(JSON.stringify(privateSession), /session-s3-access|private-secret|temporary-token|session-modal-id/);
-  await assert.rejects(client.create({ harness: 'pi', model: Model('openai/gpt-4.1-mini'), tools: [AwsS3({ accessKeyId: 'incomplete-override' })] }), error => error.status === 403);
+  await assert.rejects(client.create({ harness: Pi(), model: Model('openai/gpt-4.1-mini'), tools: [AwsS3({ accessKeyId: 'incomplete-override' })] }), error => error.status === 403);
   assert.equal(f.requests.length, 0);
   await server.stop();
   const dataFiles = async dir => {
@@ -200,9 +277,9 @@ test('integrations without defaults accept session credentials and reject missin
   }).start();
   t.after(() => server.stop());
   for (const selection of [AwsS3(), Modal(), E2B(), Daytona()]) {
-    await assert.rejects(server.create({ harness: 'pi', model: Model('openai/gpt-4.1-mini', ApiKey('package-test-provider')), tools: [selection] }), error => error.status === 403);
+    await assert.rejects(server.create({ harness: Pi(), model: Model('openai/gpt-4.1-mini', ApiKey('package-test-provider')), tools: [selection] }), error => error.status === 403);
   }
-  const session = await server.create({ harness: 'pi', model: Model('openai/gpt-4.1-mini', ApiKey('package-test-provider')), tools: [
+  const session = await server.create({ harness: Pi(), model: Model('openai/gpt-4.1-mini', ApiKey('package-test-provider')), tools: [
     AwsS3({ bucket: 'session-bucket', region: 'us-east-1', accessKeyId: 'session-access', secretAccessKey: 'private-session-key' }),
     Modal({ tokenId: 'session-id', tokenSecret: 'private-modal-key' }),
     E2B({ apiKey: 'private-e2b-key' }), Daytona({ apiKey: 'private-daytona-key' }),
@@ -215,9 +292,9 @@ test('the child and active harness shut down after the parent script exits', { t
   const f = await provider(t);
   f.options.tools = [Modal()];
   const script = path.join(directory, 'parent.mjs');
-  await writeFile(script, `import { BrainServer, Model } from 'brainserver';
+  await writeFile(script, `import { Pi, BrainServer, Model } from 'brainserver';
 const brain = await new BrainServer(JSON.parse(process.argv[2])).start();
-const session = await brain.create({harness:'pi', model:Model('openai/gpt-4.1-mini'), tools:[]});
+const session = await brain.create({harness: Pi(), model:Model('openai/gpt-4.1-mini'), tools:[]});
 await brain.send(session.id, {type:'user.message', text:'hello'});
 for await (const e of brain.observe(session.id)) {
   if (e.type === 'session.error') throw Error(e.data.message);

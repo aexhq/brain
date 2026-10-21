@@ -11,9 +11,9 @@ import { createRequire } from "node:module";
 import { promisify } from "node:util";
 import { responsesReply } from "./model-responses.mjs";
 const requireSDK = createRequire(new URL("../../bin/sdk-consumer/package.json", import.meta.url));
-const { Brain, BrainError, Model, ApiKey, CredentialReference, Tool, ManagedTool } = await import(pathToFileURL(requireSDK.resolve("@aexhq/brain")).href);
+const { Brain, BrainError, Pi, Codex, OpenCode, Model, ApiKey, CredentialReference, Tool, ManagedTool } = await import(pathToFileURL(requireSDK.resolve("@aexhq/brain")).href);
 
-export { Brain, BrainError, Model, ApiKey, CredentialReference, Tool, ManagedTool, delay };
+export { Brain, BrainError, Pi, Codex, OpenCode, Model, ApiKey, CredentialReference, Tool, ManagedTool, delay };
 export const root = fileURLToPath(new URL("../../", import.meta.url));
 export const tokens = {
   a: "journey-tenant-a-0000000000000000", b: "journey-tenant-b-0000000000000000",

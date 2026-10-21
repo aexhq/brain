@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { before, after, test } from "node:test";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { Model, ApiKey, build, fixture, config, message, call, result, history, state, until, root, removeTemp, modelReply, rejects } from "./fixture.mjs";
+import { Codex, OpenCode, Model, ApiKey, build, fixture, config, message, call, result, history, state, until, root, removeTemp, modelReply, rejects } from "./fixture.mjs";
 import { responsesReply } from "./model-responses.mjs";
 let binaries;
 before(async () => { binaries = await build(); }, { timeout: 120000 });
@@ -98,7 +98,7 @@ for (const harness of adapters) {
     f.settings.credential_keys = { active: "test", keys: { test: "JOURNEY_KEYS" } };
     await f.start();
     const customers = [{ client: f.api, key: keys[0], label: "customer-one-context" }, { client: f.b, key: keys[1], label: "customer-two-context" }];
-    const sessions = await Promise.all(customers.map(({ client, key }) => client.create({ harness, model: Model("openai/gpt-4.1-mini", ApiKey(key)), tools: [] })));
+    const sessions = await Promise.all(customers.map(({ client, key }) => client.create({ harness: ({ codex: Codex, opencode: OpenCode })[harness](), model: Model("openai/gpt-4.1-mini", ApiKey(key)), tools: [] })));
     const pending = [];
     f.model.respond = async (_input, response) => { pending.push(response); if (pending.length === 2) for (const peer of pending) responsesReply(peer, "independent"); };
     await Promise.all(sessions.map((s, i) => customers[i].client.send(s.id, message(customers[i].label))));
