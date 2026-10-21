@@ -29,7 +29,7 @@ Integrate services against one contract with Pi, Codex and OpenCode, server defa
 ### Node application package
 
 - **Status:** Verified locally on Linux and Windows. Installed npm archives include the server, compiled Pi harness, and client. S3, Modal, E2B, and Daytona helpers accept optional server credentials and private session overrides. Package tests cover encrypted recovery, missing credentials, and rejection without fallback. Live cloud-account qualification remains separate. npm publication requires package ownership and trusted publishing setup.
-- **Today:** Build with `node scripts/package-server.mjs` and install the generated platform and main archives. The [quickstart](https://aexhq.github.io/brain/docs/quickstart/) describes the constructor and session API.
+- **Today:** Build with `npm run build` and install the generated platform and main archives. The [quickstart](https://aexhq.github.io/brain/docs/quickstart/) describes the constructor and session API.
 
 ### Local harness-host supervision
 

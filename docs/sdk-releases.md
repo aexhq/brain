@@ -85,8 +85,8 @@ environments under `bin/sdk-*`. No generated package, virtual environment, or
 credential is committed. To use an unpublished change, install the resulting
 archive with `npm install /path/to/archive.tgz` or `python -m pip install /path/to/package.whl`.
 
-`node scripts/package-server.mjs` builds the harness, client, and host executable in
-one command, then packs `dist/server/`. Use `--all-platforms` to cross-compile all
+`npm run build` builds the harness, client, and host executable in
+one command, then packs `dist/server/`. Use `npm run build -- --all-platforms` to cross-compile all
 six executable packages. `node --test tests/server-package.test.mjs` installs the
 main archive and the host platform archive in an isolated consumer and tests the
 installed server. The full check includes both commands; Linux CI uploads

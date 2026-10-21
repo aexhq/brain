@@ -126,12 +126,12 @@ For a separately deployed server, install `@aexhq/brain` and connect with `Brain
 After `node scripts/setup.mjs`, run:
 
 ```sh
-node scripts/package-server.mjs
+npm run build
 node --test tests/server-package.test.mjs
 ```
 
-The packaging command builds the client, Pi harness, and executable together.
-It writes npm archives and `release.json` to `dist/server/`. Add `--all-platforms`
+Run the build from the repository root. It builds the client, Pi harness, and executable together.
+It writes npm archives and `release.json` to `dist/server/`. Add `-- --all-platforms`
 to cross-compile every supported executable. Install your platform archive and
 the main archive together when testing an unpublished build. CI tests the
 installed archives outside the checkout before publishing those same files.

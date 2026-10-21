@@ -10,7 +10,7 @@ const commands = [
   ["npm", ["--prefix", "sdks/typescript", "run", "build"]],
   ["go", ["run", "./cmd/generate", "-check"]],
   ["node", ["scripts/package-sdks.mjs"]],
-  ["node", ["scripts/package-server.mjs", ...(process.env.CI && process.platform === 'linux' ? ['--all-platforms'] : [])]],
+  ["npm", ["run", "build", ...(process.env.CI && process.platform === 'linux' ? ['--', '--all-platforms'] : [])]],
   ["node", ["--test", "tests/server-package.test.mjs"]],
   ["go", ["test", "-count=1", "./..."]],
   ["go", ["vet", "./..."]],
