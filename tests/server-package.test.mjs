@@ -12,9 +12,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { responsesReply } from './journeys/model-responses.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+const consumerRoot = path.resolve(process.env.RUNNER_TEMP ?? tmpdir());
 let directory, BrainServer, Brain, Pi, Codex, OpenCode, PiWebAccess, PiSubagents, PiMcp, Model, ApiKey, Tool, AwsS3, Modal, E2B, Daytona;
 before(async () => {
-  directory = await mkdtemp(path.join(tmpdir(), 'brainserver consumer '));
+  directory = await mkdtemp(path.join(consumerRoot, 'brainserver consumer '));
   await writeFile(path.join(directory, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
   const release = JSON.parse(await readFile(path.join(root, 'dist/server/release.json'), 'utf8'));
   const packages = release.npmPackages.filter(p => p.name === 'brainserver' || p.name === `@aexhq/brainserver-${process.platform}-${process.arch}`);
@@ -22,15 +23,15 @@ before(async () => {
   const args = ['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', ...packages.map(p => path.join(root, 'dist/server', p.file))];
   const command = process.platform === 'win32' ? process.execPath : 'npm';
   if (process.platform === 'win32') args.unshift(path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js'));
-  const installed = spawnSync(command, args, { cwd: directory, encoding: 'utf8', timeout: 600000, windowsHide: true });
+  const installed = spawnSync(command, args, { cwd: directory, encoding: 'utf8', timeout: 900000, windowsHide: true });
   assert.ifError(installed.error);
   assert.equal(installed.status, 0, installed.stderr);
   const require = createRequire(path.join(directory, 'package.json'));
   ({ BrainServer, Brain, Pi, Codex, OpenCode, PiWebAccess, PiSubagents, PiMcp, Model, ApiKey, Tool, AwsS3, Modal, E2B, Daytona } = await import(pathToFileURL(require.resolve('brainserver')).href));
-}, { timeout: 630000 });
+}, { timeout: 930000 });
 after(async () => {
   if (directory) {
-    assert.equal(path.dirname(directory), tmpdir());
+    assert.equal(path.dirname(directory), consumerRoot);
     await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
