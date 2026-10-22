@@ -44,6 +44,7 @@ const archives = [];
 const productionLock = JSON.parse(await readFile(path.join(root, 'packages/brainserver/package-lock.json'), 'utf8'));
 async function pack(directory, name) {
   const [result] = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', output], directory, {}, true));
+  assert.ok(result.size < 180 * 1024 * 1024, `${name} exceeds the native archive upload budget; split its runtime before publishing`);
   archives.push({ name, file: result.filename, integrity: result.integrity, manifest: JSON.parse(await readFile(path.join(directory, 'package.json'), 'utf8')) });
   return result;
 }
@@ -76,27 +77,43 @@ for (const target of selected) {
   await mkdir(runtime);
   await rename(path.join(directory, 'node_modules'), path.join(runtime, 'node_modules'));
   await cp(path.join(root, 'runners/pi/dist'), path.join(runtime, 'runners/pi/dist'), { recursive: true });
-  for (const runner of ['codex', 'opencode']) await cp(path.join(root, 'runners', runner, 'src'), path.join(runtime, 'runners', runner, 'src'), { recursive: true });
+  await cp(path.join(root, 'runners/opencode/src'), path.join(runtime, 'runners/opencode/src'), { recursive: true });
   await cp(path.join(root, 'runners/common'), path.join(runtime, 'runners/common'), { recursive: true });
   await mkdir(path.join(runtime, 'services'), { recursive: true });
   await copyFile(path.join(root, 'services/http.mjs'), path.join(runtime, 'services/http.mjs'));
   await cp(path.join(root, 'services/sandbox/src'), path.join(runtime, 'services/sandbox/src'), { recursive: true });
   await copyFile(path.join(root, 'packages/brainserver/sandbox.js'), path.join(runtime, 'sandbox.js'));
   await copyFile(path.join(root, 'LICENSE'), path.join(directory, 'LICENSE'));
+  // Codex's native executable makes the combined archive exceed npm's upload
+  // limit. Keep its pinned tree opaque in an automatically installed companion.
+  const codexDirectory = path.join(stage, `codex-${target}`);
+  const codexRuntime = path.join(codexDirectory, 'runtime');
+  await mkdir(path.join(codexRuntime, 'node_modules'), { recursive: true });
+  await rename(path.join(runtime, 'node_modules/@openai'), path.join(codexRuntime, 'node_modules/@openai'));
+  await cp(path.join(root, 'runners/codex/src'), path.join(codexRuntime, 'runners/codex/src'), { recursive: true });
+  await cp(path.join(root, 'runners/common'), path.join(codexRuntime, 'runners/common'), { recursive: true });
+  await copyFile(path.join(root, 'LICENSE'), path.join(codexDirectory, 'LICENSE'));
+  const codexName = `@aexhq/brainserver-codex-${target}`;
+  await writeFile(path.join(codexDirectory, 'package.json'), JSON.stringify({ ...manifest, name: codexName,
+    description: `Brain's pinned Codex harness runtime for ${target}`, files: ['runtime', 'LICENSE'] }, null, 2) + '\n');
+  const codexPacked = await pack(codexDirectory, codexName);
+  for (const file of ['runners/codex/src/main.mjs', 'runners/common/bridge.mjs', 'node_modules/@openai/codex/package.json']) assert.ok(codexPacked.files.some(entry => entry.path === `runtime/${file}`), `Codex runtime missing ${file}`);
   const packed = await pack(directory, name);
-  for (const file of ['runners/pi/dist/main.js', 'runners/codex/src/main.mjs', 'runners/opencode/src/main.mjs', 'runners/common/bridge.mjs']) assert.ok(packed.files.some(entry => entry.path === `runtime/${file}`), `runtime missing ${file}`);
-  for (const dependency of Object.keys(pkg.dependencies)) assert.ok(packed.files.some(entry => entry.path === `runtime/node_modules/${dependency}/package.json`), `runtime did not include ${dependency}`);
+  for (const file of ['runners/pi/dist/main.js', 'runners/opencode/src/main.mjs', 'runners/common/bridge.mjs']) assert.ok(packed.files.some(entry => entry.path === `runtime/${file}`), `runtime missing ${file}`);
+  for (const dependency of Object.keys(pkg.dependencies).filter(name => name !== '@openai/codex')) assert.ok(packed.files.some(entry => entry.path === `runtime/node_modules/${dependency}/package.json`), `runtime did not include ${dependency}`);
 }
 const main = path.join(stage, 'main');
 await mkdir(main);
 // The portable entry point has no runtime dependencies outside its selected
-// platform package. Each platform archive owns its complete locked native tree.
+// platform packages. Their complete locked native trees stay opaque to npm.
 for (const file of ['index.js', 'index.d.ts', 'process.js', 'README.md']) await copyFile(path.join(root, 'packages/brainserver', file), path.join(main, file));
 await cp(path.join(root, 'sdks/typescript/dist'), path.join(main, 'sdk'), { recursive: true });
 await copyFile(path.join(root, 'LICENSE'), path.join(main, 'LICENSE'));
 const manifest = {
   ...pkg, dependencies: undefined, overrides: undefined,
-  optionalDependencies: Object.fromEntries(targets.map(target => [`@aexhq/brainserver-${target}`, pkg.version])),
+  optionalDependencies: Object.fromEntries(targets.flatMap(target => [
+    [`@aexhq/brainserver-${target}`, pkg.version], [`@aexhq/brainserver-codex-${target}`, pkg.version],
+  ])),
 };
 await writeFile(path.join(main, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
 const packed = await pack(main, pkg.name);

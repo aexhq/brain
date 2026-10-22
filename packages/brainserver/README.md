@@ -186,6 +186,6 @@ node --test tests/server-package.test.mjs
 
 Run the build from the repository root. It builds the client, Pi harness, and executable together.
 It writes npm archives and `release.json` to `dist/server/`. Add `-- --all-platforms`
-to cross-compile every supported executable. Install your platform archive and
-the main archive together when testing an unpublished build. CI tests the
+to cross-compile every supported executable. Install your platform archives
+(server and Codex runtime) and the main archive together when testing an unpublished build. CI tests the
 installed archives outside the checkout before publishing those same files.

@@ -28,7 +28,7 @@ test('publication distinguishes missing versions, immutable matches, partial upl
     const expected = registry === 'npm' ? [release.npm] : release.python;
     assert.deepEqual(await missingArtifacts(registry, release, directory, async () => new Response('', { status: 404 })), expected);
     await assert.rejects(missingArtifacts(registry, release, directory, async () => new Response('', { status: 503 })), /HTTP 503/);
-    const metadata = registry === 'npm' ? { dist: { tarball: 'https://files.test/sdk' } } : { urls: expected.map(filename => ({ filename, url: 'https://files.test/' + filename })) };
+    const metadata = registry === 'npm' ? { versions: { '1.0.0': { dist: { tarball: 'https://files.test/sdk' } } } } : { urls: expected.map(filename => ({ filename, url: 'https://files.test/' + filename })) };
     const request = bytes => async url => url.startsWith('https://files.test/') ? new Response(bytes) : Response.json(metadata);
     assert.deepEqual(await missingArtifacts(registry, release, directory, request('tested bytes')), []);
     await assert.rejects(missingArtifacts(registry, release, directory, request('different bytes')), /bump both SDK versions/);
@@ -40,7 +40,7 @@ test('publication distinguishes missing versions, immutable matches, partial upl
   const request = async url => {
     if (url.startsWith('https://files.test/')) return new Response('tested bytes');
     if (++reads < 3) return new Response('', { status: 404 });
-    return Response.json({ dist: { tarball: 'https://files.test/sdk' } });
+    return Response.json({ versions: { '1.0.0': { dist: { tarball: 'https://files.test/sdk' } } } });
   };
   await waitForArtifacts('npm', release, directory, { request, pause, attempts: 3 });
   assert.equal(reads, 3);
@@ -60,11 +60,22 @@ test('server publication checks every platform before publishing the main packag
   const seen = [];
   const request = async url => {
     seen.push(url);
-    if (url.includes('@aexhq')) return Response.json({ dist: { tarball: 'https://files.test/linux.tgz' } });
+    if (url.includes('@aexhq')) return Response.json({ versions: { '2.1.0': { dist: { tarball: 'https://files.test/linux.tgz' } } } });
     if (url.startsWith('https://files.test/')) return new Response('tested bytes');
     return new Response('', { status: 404 });
   };
   assert.deepEqual(await missingArtifacts('npm', release, directory, request), ['server.tgz']);
-  assert.ok(seen.includes('https://registry.npmjs.org/@aexhq%2Fbrainserver-linux-x64/2.1.0'));
-  assert.ok(seen.includes('https://registry.npmjs.org/brainserver/2.1.0'));
+  assert.deepEqual(seen, ['https://registry.npmjs.org/@aexhq%2Fbrainserver-linux-x64', 'https://files.test/linux.tgz', 'https://registry.npmjs.org/brainserver']);
+});
+
+test('publication waits until the npm install catalog exposes the version', async () => {
+  let reads = 0;
+  const missing = await missingArtifacts('npm', { version: '2.3.0', npm: 'sdk.tgz' }, '.', async (url, options) => {
+    reads++;
+    assert.equal(url, 'https://registry.npmjs.org/@aexhq%2Fbrain');
+    assert.equal(options.headers.Accept, 'application/vnd.npm.install-v1+json');
+    return Response.json({ versions: {} });
+  });
+  assert.deepEqual(missing, ['sdk.tgz']);
+  assert.equal(reads, 1, 'do not download an archive before npm can install it');
 });
