@@ -62,12 +62,15 @@ for (const target of selected) {
     os: [os], cpu: [arch], files: [path.basename(binary), 'runners', 'services', 'sandbox.js', 'LICENSE'], publishConfig: { access: 'public' },
     repository: pkg.repository, dependencies: pkg.dependencies, overrides: pkg.overrides, bundleDependencies: Object.keys(pkg.dependencies),
   };
-  await writeFile(path.join(directory, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
+  // npm checks the root against the build host before applying dependency targets.
+  // Add the archive's platform restriction after installing its target tree.
+  await writeFile(path.join(directory, 'package.json'), JSON.stringify({ ...manifest, os: undefined, cpu: undefined }, null, 2) + '\n');
   const lock = structuredClone(productionLock);
   lock.name = name;
-  lock.packages[''] = { ...lock.packages[''], name, os: [os], cpu: [arch], bundleDependencies: manifest.bundleDependencies };
+  lock.packages[''] = { ...lock.packages[''], name, bundleDependencies: manifest.bundleDependencies };
   await writeFile(path.join(directory, 'package-lock.json'), JSON.stringify(lock, null, 2) + '\n');
   run('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', `--os=${os}`, `--cpu=${arch}`], directory);
+  await writeFile(path.join(directory, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
   await cp(path.join(root, 'runners/pi/dist'), path.join(directory, 'runners/pi/dist'), { recursive: true });
   for (const runner of ['codex', 'opencode']) await cp(path.join(root, 'runners', runner, 'src'), path.join(directory, 'runners', runner, 'src'), { recursive: true });
   await cp(path.join(root, 'runners/common'), path.join(directory, 'runners/common'), { recursive: true });
