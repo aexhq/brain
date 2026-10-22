@@ -111,9 +111,12 @@ jobs:
         with:
           name: binaries-${{ runner.os }}
           path: |
-            bin/brain*
-            bin/resource-tools*
-            bin/mcp-tools*
+            bin/brain
+            bin/brain.exe
+            bin/resource-tools
+            bin/resource-tools.exe
+            bin/mcp-tools
+            bin/mcp-tools.exe
           retention-days: 7
       - if: runner.os == 'Linux'
         run: docker build --tag brain:local-dev .
