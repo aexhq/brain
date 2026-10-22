@@ -158,33 +158,45 @@ for (const extension of ['web-access', 'subagents', 'mcp']) {
       }
     });
     page.listen(0, '127.0.0.1'); await once(page, 'listening');
-    const plugin = extension === 'subagents' ? PiSubagents()
+    const plugin = extension === 'subagents' ? PiSubagents({ config: { agents: { brain_worker: {
+      description: 'Delegated callback task', systemPrompt: 'Complete the task.', tools: ['runtime_echo'],
+    } } } })
       : extension === 'mcp' ? PiMcp({ config: { mcpServers: { demo: { url: `http://127.0.0.1:${page.address().port}/mcp`, tools: ['echo'] } } } })
       : PiWebAccess({ tools: ['fetch_content'], config: { ssrf: { allowRanges: ['127.0.0.0/8'] } } });
     const pi = Pi({ plugins: [plugin] });
     t.after(() => { page.closeAllConnections(); return new Promise(resolve => page.close(resolve)); });
     f.toolCall = input => extension === 'subagents'
-      ? { name: 'subagent', args: { agent: 'brain_worker', task: 'Say hello.', async: false } }
+      ? input.tools.some(tool => tool.function.name === 'subagent')
+        ? { name: 'subagent', args: { agent: 'brain_worker', task: 'Say hello.', async: false } }
+        : { name: 'runtime_echo', args: { text: 'child' } }
       : extension === 'mcp' ? { name: input.tools.find(tool => tool.function.name.includes('echo')).function.name, args: { text: 'test' } }
         : { name: 'fetch_content', args: { url: `http://127.0.0.1:${page.address().port}/page`, mode: 'raw' } };
+    const childCalls = [];
+    const echo = { name: 'echo', description: 'Echo child text',
+      input_schema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+      run: args => { childCalls.push(args.text); return args.text; },
+    };
+    const tools = extension === 'subagents' ? [echo] : [];
     let brain = await new BrainServer({ ...f.options, harnesses: [pi] }).start();
     t.after(() => brain.stop());
-    const session = await brain.create({ harness: pi, model: Model('openai/gpt-4.1-mini'), tools: [] });
+    const session = await brain.create({ harness: pi, model: Model('openai/gpt-4.1-mini'), tools });
     const events = await turn(brain, session);
-    const executed = events.find(event => event.type === 'tool.result');
+    const executed = events.filter(event => event.type === 'tool.result').at(-1);
     assert.ok(executed, 'plugin result was not recorded');
     assert.ok(!executed.data.result.is_error, JSON.stringify(executed.data));
-    assert.equal(f.requests.length, extension === 'subagents' ? 3 : 2);
+    assert.equal(f.requests.length, extension === 'subagents' ? 4 : 2);
     assert.match(JSON.stringify(executed.data), extension === 'subagents' ? /hello from packaged Pi/ : extension === 'mcp' ? /verified MCP plugin/ : /Verified plugin fetch/);
     const requests = f.requests.length;
     await brain.stop();
     brain = await new BrainServer({ ...f.options, harnesses: [pi] }).start();
     await brain.get(session.id);
     assert.equal(f.requests.length, requests);
+    if (tools.length) await brain.rebind(session.id, tools);
     await turn(brain, session);
     assert.ok(f.requests.length > requests);
-    assert.equal((await brain.history(session.id)).events.filter(event => event.type === 'tool.call').length, 2);
+    assert.equal((await brain.history(session.id)).events.filter(event => event.type === 'tool.call').length, extension === 'subagents' ? 4 : 2);
     if (extension === 'subagents') {
+      assert.deepEqual(childCalls, ['child', 'child']);
       const before = f.requests.length;
       const marker = path.join(directory, 'unbound-command.txt');
       f.toolCall = () => ({ name: 'subagent', args: { agent: 'brain_worker', task: 'Say hello.', async: false,
