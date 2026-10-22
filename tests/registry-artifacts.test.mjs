@@ -65,8 +65,7 @@ test('server publication checks every platform before publishing the main packag
     return new Response('', { status: 404 });
   };
   assert.deepEqual(await missingArtifacts('npm', release, directory, request), ['server.tgz']);
-  assert.ok(seen.includes('https://registry.npmjs.org/@aexhq%2Fbrainserver-linux-x64'));
-  assert.ok(seen.includes('https://registry.npmjs.org/brainserver'));
+  assert.deepEqual(seen, ['https://registry.npmjs.org/@aexhq%2Fbrainserver-linux-x64', 'https://files.test/linux.tgz', 'https://registry.npmjs.org/brainserver']);
 });
 
 test('publication waits until the npm install catalog exposes the version', async () => {
