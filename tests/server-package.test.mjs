@@ -19,8 +19,10 @@ before(async () => {
   directory = await mkdtemp(path.join(consumerRoot, 'brainserver consumer '));
   await writeFile(path.join(directory, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
   const release = JSON.parse(await readFile(path.join(root, 'dist/server/release.json'), 'utf8'));
-  const packages = release.npmPackages.filter(p => p.name === 'brainserver' || p.name === `@aexhq/brainserver-${process.platform}-${process.arch}`);
-  assert.equal(packages.length, 2, 'package the server and this platform before testing');
+  const packages = release.npmPackages.filter(p => p.name === 'brainserver');
+  for (const name of ['brainserver', `@aexhq/brainserver-${process.platform}-${process.arch}`, `@aexhq/brainserver-codex-${process.platform}-${process.arch}`]) {
+    assert.ok(release.npmPackages.some(p => p.name === name), `package ${name} before testing`);
+  }
   // Exercise registry installation. npm's file-tarball fetcher first extracts the
   // entire runtime into a temporary cache just to discover its manifest.
   const registry = http.createServer((req, res) => {

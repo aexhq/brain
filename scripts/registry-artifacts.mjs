@@ -14,15 +14,17 @@ export async function missingArtifacts(registry, release, directory, request = f
     return missing;
   }
   const url = registry === 'npm'
-    ? `https://registry.npmjs.org/${encodeURIComponent(release.npmName ?? '@aexhq/brain').replaceAll('%40', '@')}/${release.version}`
+    ? `https://registry.npmjs.org/${encodeURIComponent(release.npmName ?? '@aexhq/brain').replaceAll('%40', '@')}`
     : `https://pypi.org/pypi/aex-brain/${release.version}/json`;
-  const response = await request(url, { signal: AbortSignal.timeout(30000) });
+  const response = await request(url, { headers: { Accept: registry === 'npm' ? 'application/vnd.npm.install-v1+json' : 'application/json' }, signal: AbortSignal.timeout(30000) });
   const files = registry === 'npm' ? [release.npm] : release.python;
   if (response.status === 404) return files;
   assert.equal(response.status, 200, `${registry} metadata: HTTP ${response.status}`);
   const metadata = await response.json();
+  // npm install reads this catalog, which can lag the per-version endpoint.
+  if (registry === 'npm' && !metadata.versions?.[release.version]) return files;
   const published = registry === 'npm'
-    ? [{ filename: release.npm, url: metadata.dist.tarball }]
+    ? [{ filename: release.npm, url: metadata.versions[release.version].dist.tarball }]
     : metadata.urls;
   const missing = [];
   for (const file of files) {
