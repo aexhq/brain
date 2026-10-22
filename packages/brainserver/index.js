@@ -108,7 +108,7 @@ export class BrainServer extends Brain {
     let binary;
     try { binary = require.resolve(`${platformPackage}/${process.platform === 'win32' ? 'brain.exe' : 'brain'}`); }
     catch (cause) { throw new Error(`Missing ${platformPackage}. Install brainserver with optional dependencies enabled on a supported platform.`, { cause }); }
-    const runtime = path.dirname(binary);
+    const runtime = path.join(path.dirname(binary), 'runtime');
     for (const harness of Object.values(this.#harnesses)) harness.command = [process.execPath, path.join(runtime, 'runners', harness.kind, harness.kind === 'pi' ? 'dist/main.js' : 'src/main.mjs')];
     const directory = await mkdtemp(path.join(tmpdir(), 'brainserver-'));
     try {

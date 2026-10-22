@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
+import { createReadStream } from 'node:fs';
 import { access, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { createRequire } from 'node:module';
@@ -20,12 +21,31 @@ before(async () => {
   const release = JSON.parse(await readFile(path.join(root, 'dist/server/release.json'), 'utf8'));
   const packages = release.npmPackages.filter(p => p.name === 'brainserver' || p.name === `@aexhq/brainserver-${process.platform}-${process.arch}`);
   assert.equal(packages.length, 2, 'package the server and this platform before testing');
-  const args = ['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', ...packages.map(p => path.join(root, 'dist/server', p.file))];
-  const command = process.platform === 'win32' ? process.execPath : 'npm';
-  if (process.platform === 'win32') args.unshift(path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js'));
-  const installed = spawnSync(command, args, { cwd: directory, encoding: 'utf8', timeout: 900000, windowsHide: true });
-  assert.ifError(installed.error);
-  assert.equal(installed.status, 0, installed.stderr);
+  // Exercise registry installation. npm's file-tarball fetcher first extracts the
+  // entire runtime into a temporary cache just to discover its manifest.
+  const registry = http.createServer((req, res) => {
+    const pathname = decodeURIComponent(new URL(req.url, 'http://registry').pathname.slice(1));
+    const archive = release.npmPackages.find(p => pathname === `archives/${p.file}`);
+    if (archive) { createReadStream(path.join(root, 'dist/server', archive.file)).on('error', error => res.destroy(error)).pipe(res); return; }
+    const item = release.npmPackages.find(p => p.name === pathname);
+    if (!item) { res.writeHead(404); res.end(); return; }
+    const version = item.manifest.version;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ name: item.name, 'dist-tags': { latest: version }, versions: {
+      [version]: { ...item.manifest, dist: { tarball: `http://127.0.0.1:${registry.address().port}/archives/${item.file}`, integrity: item.integrity } },
+    } }));
+  });
+  registry.listen(0, '127.0.0.1'); await once(registry, 'listening');
+  try {
+    const args = ['install', '--registry', `http://127.0.0.1:${registry.address().port}`, '--ignore-scripts', '--no-audit', '--no-fund', ...packages.map(p => `${p.name}@${p.manifest.version}`)];
+    const command = process.platform === 'win32' ? process.execPath : 'npm';
+    if (process.platform === 'win32') args.unshift(path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js'));
+    const installed = spawn(command, args, { cwd: directory, timeout: 900000, windowsHide: true });
+    let output = '';
+    for (const stream of [installed.stdout, installed.stderr]) stream.on('data', bytes => { output += bytes; });
+    const [code, signal] = await once(installed, 'close');
+    assert.equal(code, 0, output || `npm installation stopped: ${signal}`);
+  } finally { registry.closeAllConnections(); await new Promise(resolve => registry.close(resolve)); }
   const require = createRequire(path.join(directory, 'package.json'));
   ({ BrainServer, Brain, Pi, Codex, OpenCode, PiWebAccess, PiSubagents, PiMcp, Model, ApiKey, Tool, AwsS3, Modal, E2B, Daytona } = await import(pathToFileURL(require.resolve('brainserver')).href));
 }, { timeout: 930000 });
@@ -106,7 +126,7 @@ for (const harness of ['codex', 'opencode']) {
     const echo = { name: 'echo', description: 'Echo text', input_schema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false }, run: args => args.text };
     const session = await brain.create({ harness: selected, model: Model('openai/gpt-4.1-mini'), tools: [echo] });
     const events = await turn(brain, session);
-    assert.ok(events.some(event => event.type === 'tool.result' && !event.data.is_error));
+    assert.ok(events.some(event => event.type === 'tool.result' && !event.data.result.is_error));
     assert.equal(f.requests.length, 2);
     await brain.stop();
     brain = await new BrainServer({ ...f.options, harnesses: [selected] }).start();

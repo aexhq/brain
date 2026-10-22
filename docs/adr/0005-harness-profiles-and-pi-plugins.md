@@ -15,6 +15,8 @@ Remote clients cannot install packages or change a profile's server settings.
 The npm platform packages contain the Go executable and the complete locked
 runtime dependency tree selected for that OS and CPU. The portable package
 contains the client and application entry point. Installation runs no scripts.
+The runtime tree is private package content under `runtime/`; consumer dependency
+resolution cannot replace its pinned dependencies.
 
 Pi profiles can install the pinned web-access, subagents, and MCP packages.
 These are trusted server extensions. Clients and models cannot supply extension

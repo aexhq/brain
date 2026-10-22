@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmod, copyFile, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -44,7 +44,7 @@ const archives = [];
 const productionLock = JSON.parse(await readFile(path.join(root, 'packages/brainserver/package-lock.json'), 'utf8'));
 async function pack(directory, name) {
   const [result] = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', output], directory, {}, true));
-  archives.push({ name, file: result.filename });
+  archives.push({ name, file: result.filename, integrity: result.integrity, manifest: JSON.parse(await readFile(path.join(directory, 'package.json'), 'utf8')) });
   return result;
 }
 for (const target of selected) {
@@ -59,29 +59,33 @@ for (const target of selected) {
   const name = `@aexhq/brainserver-${target}`;
   const manifest = {
     name, version: pkg.version, description: `Brain and native harness runtimes for ${target}`, license: 'MIT', type: 'module',
-    os: [os], cpu: [arch], files: [path.basename(binary), 'runners', 'services', 'sandbox.js', 'LICENSE'], publishConfig: { access: 'public' },
-    repository: pkg.repository, dependencies: pkg.dependencies, overrides: pkg.overrides, bundleDependencies: Object.keys(pkg.dependencies),
+    os: [os], cpu: [arch], files: [path.basename(binary), 'runtime', 'LICENSE'], publishConfig: { access: 'public' },
+    repository: pkg.repository,
   };
   // npm checks the root against the build host before applying dependency targets.
   // Add the archive's platform restriction after installing its target tree.
-  await writeFile(path.join(directory, 'package.json'), JSON.stringify({ ...manifest, os: undefined, cpu: undefined }, null, 2) + '\n');
+  await writeFile(path.join(directory, 'package.json'), JSON.stringify({ ...manifest, os: undefined, cpu: undefined, dependencies: pkg.dependencies, overrides: pkg.overrides }, null, 2) + '\n');
   const lock = structuredClone(productionLock);
   lock.name = name;
-  lock.packages[''] = { ...lock.packages[''], name, bundleDependencies: manifest.bundleDependencies };
+  lock.packages[''] = { ...lock.packages[''], name };
   await writeFile(path.join(directory, 'package-lock.json'), JSON.stringify(lock, null, 2) + '\n');
   run('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', `--os=${os}`, `--cpu=${arch}`], directory);
   await writeFile(path.join(directory, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
-  await cp(path.join(root, 'runners/pi/dist'), path.join(directory, 'runners/pi/dist'), { recursive: true });
-  for (const runner of ['codex', 'opencode']) await cp(path.join(root, 'runners', runner, 'src'), path.join(directory, 'runners', runner, 'src'), { recursive: true });
-  await cp(path.join(root, 'runners/common'), path.join(directory, 'runners/common'), { recursive: true });
-  await mkdir(path.join(directory, 'services'), { recursive: true });
-  await copyFile(path.join(root, 'services/http.mjs'), path.join(directory, 'services/http.mjs'));
-  await cp(path.join(root, 'services/sandbox/src'), path.join(directory, 'services/sandbox/src'), { recursive: true });
-  await copyFile(path.join(root, 'packages/brainserver/sandbox.js'), path.join(directory, 'sandbox.js'));
+  // Keep the locked runtime private: npm must not resolve its bundled peer graph.
+  const runtime = path.join(directory, 'runtime');
+  await mkdir(runtime);
+  await rename(path.join(directory, 'node_modules'), path.join(runtime, 'node_modules'));
+  await cp(path.join(root, 'runners/pi/dist'), path.join(runtime, 'runners/pi/dist'), { recursive: true });
+  for (const runner of ['codex', 'opencode']) await cp(path.join(root, 'runners', runner, 'src'), path.join(runtime, 'runners', runner, 'src'), { recursive: true });
+  await cp(path.join(root, 'runners/common'), path.join(runtime, 'runners/common'), { recursive: true });
+  await mkdir(path.join(runtime, 'services'), { recursive: true });
+  await copyFile(path.join(root, 'services/http.mjs'), path.join(runtime, 'services/http.mjs'));
+  await cp(path.join(root, 'services/sandbox/src'), path.join(runtime, 'services/sandbox/src'), { recursive: true });
+  await copyFile(path.join(root, 'packages/brainserver/sandbox.js'), path.join(runtime, 'sandbox.js'));
   await copyFile(path.join(root, 'LICENSE'), path.join(directory, 'LICENSE'));
   const packed = await pack(directory, name);
-  for (const file of ['runners/pi/dist/main.js', 'runners/codex/src/main.mjs', 'runners/opencode/src/main.mjs', 'runners/common/bridge.mjs']) assert.ok(packed.files.some(entry => entry.path === file), `runtime missing ${file}`);
-  for (const dependency of Object.keys(pkg.dependencies)) assert.ok(packed.bundled.includes(dependency), `runtime did not bundle ${dependency}`);
+  for (const file of ['runners/pi/dist/main.js', 'runners/codex/src/main.mjs', 'runners/opencode/src/main.mjs', 'runners/common/bridge.mjs']) assert.ok(packed.files.some(entry => entry.path === `runtime/${file}`), `runtime missing ${file}`);
+  for (const dependency of Object.keys(pkg.dependencies)) assert.ok(packed.files.some(entry => entry.path === `runtime/node_modules/${dependency}/package.json`), `runtime did not include ${dependency}`);
 }
 const main = path.join(stage, 'main');
 await mkdir(main);
