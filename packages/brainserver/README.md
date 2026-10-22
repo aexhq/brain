@@ -166,6 +166,9 @@ to definitions (`description`, `systemPrompt`, and `tools`) to install your own;
 child tools must be bound application tools from the parent session. Child model
 requests are recorded, and child transcripts are checkpointed. Background runs,
 scheduled inference, child extensions, and remote placement are rejected.
+The model can select configured agents, tasks/chains, the session model, and
+foreground context/time/output limits. Host commands, filesystem placement,
+sharing, and management actions remain server configuration.
 
 MCP uses the package's host-managed profile: `config.mcpServers` maps server names
 to `url` and optional `headers`, or installed `command`, `args`, and `env`; `tools`

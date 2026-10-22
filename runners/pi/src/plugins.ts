@@ -8,6 +8,22 @@ import type { PiPlugin, Tool } from './generated.js';
 
 const require = createRequire(import.meta.url);
 const jiti = createJiti(import.meta.url, { fsCache: false });
+const subagentFields = ['agent', 'task', 'tasks', 'chain', 'async', 'model', 'options'];
+const subagentOptions = ['context', 'timeoutMs', 'maxRuntimeMs', 'toolTimeoutMs', 'includeProgress', 'maxOutput'];
+
+function foregroundSubagent(parameters: Record<string, any>) {
+  const check = (value: Record<string, unknown>, allowed: string[]) => {
+    for (const key of Object.keys(value)) if (!allowed.includes(key)) throw new Error(`Unsupported foreground subagent parameter: ${key}`);
+  };
+  check(parameters, subagentFields);
+  check(parameters.options ?? {}, subagentOptions);
+  if (parameters.async === true) throw new Error('Background subagents are not supported by Brain');
+  const step = (value: Record<string, any>) => {
+    check(value, ['agent', 'task', 'as', 'parallel', 'model']);
+    for (const child of value.parallel ?? []) step(child);
+  };
+  for (const child of [...(parameters.tasks ?? []), ...(parameters.chain ?? [])]) step(child);
+}
 
 /** Plugins use process-global configuration, so their factory owns one session per host. */
 export async function plugins(
@@ -54,7 +70,7 @@ export async function plugins(
         if (plugin.name === 'web-access' && (!settings.fetch?.allowedModes || settings.fetch.allowedModes.includes('answer'))) throw new Error('Brain web fetch supports readable and raw modes');
         if (plugin.name === 'subagents') {
           if (settings.asyncByDefault !== false || settings.forceTopLevelAsync !== false || settings.scheduledRuns?.enabled !== false || settings.forkContext?.mode === 'pruned') throw new Error('Brain subagents must finish within the active turn');
-          settings.disabledFeatures = [...new Set([...(settings.disabledFeatures ?? []), 'workflow-scripts', 'agent-management', 'panes', 'external-machines', 'extension-bindings', 'watchdog'])];
+          settings.disabledFeatures = [...new Set([...(settings.disabledFeatures ?? []), 'workflow-scripts', 'agent-management', 'panes', 'external-machines', 'extension-bindings', 'watchdog', 'gates', 'control-overrides', 'lane-management'])];
         }
         const file = plugin.name === 'web-access' ? 'web-search.json' : 'extensions/subagent/config.json';
         await mkdir(path.dirname(path.join(directory, file)), { recursive: true });
@@ -83,9 +99,23 @@ export async function plugins(
             return (tool: ToolDefinition) => {
               if (plugin.name === 'subagents' && tool.name !== 'subagent') return;
               if (plugin.tools && !plugin.tools.includes(tool.name)) return;
-              if (tools.some(t => t.name === tool.name)) throw new Error(`Duplicate plugin tool: ${tool.name}`);
+              if (plugin.name === 'subagents') {
+                const schema = JSON.parse(JSON.stringify(tool.parameters));
+                for (const shape of [schema.properties.tasks?.items, schema.properties.chain?.items, schema.properties.chain?.items?.properties?.parallel?.items]) {
+                  if (shape) delete shape.properties.cwd;
+                }
+                schema.properties.options.description = 'Foreground options: ' + subagentOptions.join(', ') + '. Host commands, paths, sharing, and management actions are server-owned.';
+                tool = { ...tool, description: 'Run configured foreground agents with the session model and bound tools. Use agent/task for one child, tasks for parallel children, or chain for sequential children. Options: ' + subagentOptions.join(', ') + '.',
+                  parameters: { ...schema, additionalProperties: false, properties: Object.fromEntries(Object.entries(schema.properties).filter(([name]) => subagentFields.includes(name))) },
+                };
+              }
+              const existing = tools.findIndex(t => t.name === tool.name);
+              if (existing >= 0 && !registered.has(tool.name)) throw new Error(`Duplicate plugin tool: ${tool.name}`);
               registered.add(tool.name);
-              tools.push({ name: tool.name, description: tool.description, input_schema: tool.parameters });
+              const descriptor = { name: tool.name, description: tool.description, input_schema: tool.parameters };
+              // Upstream refreshes its own pinned declaration on session_start.
+              if (existing >= 0) tools[existing] = descriptor;
+              else tools.push(descriptor);
               target.registerTool({ ...tool, exposure: 'direct', defaultActive: true,
                 async execute(id, args, signal, onUpdate, ctx) {
                   // Background work would outlive Brain's turn/checkpoint boundary.
@@ -93,7 +123,7 @@ export async function plugins(
                   if (pending.has(id)) throw new Error('Duplicate plugin call');
                   pending.set(id, async () => {
                     try {
-                      if (plugin.name === 'subagents' && (parameters.async === true || parameters.options?.async === true)) throw new Error('Background subagents are not supported by Brain');
+                      if (plugin.name === 'subagents') foregroundSubagent(parameters);
                       const result = await tool.execute(id, args, signal, value => { onUpdate?.(value); progress(id, value); }, ctx);
                       const converted = { content: result.content.map((c: any) => c.type === 'image' ? { type: 'image', data: c.data, mime_type: c.mimeType } : { type: 'text', text: c.text ?? '' }), structured_content: result.details, is_error: (result as any).isError === true };
                       if (Buffer.byteLength(JSON.stringify(converted)) > 1 << 20) return { is_error: true, content: [{ type: 'text', text: 'Plugin output exceeds the size limit' }] };

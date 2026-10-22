@@ -164,6 +164,17 @@ for (const extension of ['web-access', 'subagents', 'mcp']) {
     await turn(brain, session);
     assert.ok(f.requests.length > requests);
     assert.equal((await brain.history(session.id)).events.filter(event => event.type === 'tool.call').length, 2);
+    if (extension === 'subagents') {
+      const before = f.requests.length;
+      const marker = path.join(directory, 'unbound-command.txt');
+      f.toolCall = () => ({ name: 'subagent', args: { agent: 'brain_worker', task: 'Say hello.', async: false,
+        options: { gate: `"${process.execPath}" -e "require('node:fs').writeFileSync('${marker.replaceAll('\\', '/')}', 'unbound')"` },
+      } });
+      const rejected = await turn(brain, session);
+      assert.ok(rejected.some(event => event.type === 'tool.result' && event.data.result.is_error));
+      assert.equal(f.requests.length, before + 2, 'rejected host controls launched child inference');
+      await assert.rejects(access(marker), { code: 'ENOENT' });
+    }
   });
 }
 async function turn(brain, session) {

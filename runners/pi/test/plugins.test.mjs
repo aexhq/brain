@@ -13,7 +13,7 @@ async function runner(t, plugin) {
   const child = spawn(process.execPath, [fileURLToPath(new URL('../dist/main.js', import.meta.url))], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] });
   let diagnostics = '';
   child.stderr.on('data', bytes => { diagnostics += bytes; });
-  t.after(async () => { if (child.exitCode === null && !child.signalCode) { const done = once(child, 'exit'); child.kill(); await done; } await rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { if (child.exitCode === null && !child.signalCode) { const done = once(child, 'exit'); child.kill(); await done; } await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   let seq = 0;
   const pending = new Map();
   readline.createInterface({ input: child.stdout }).on('line', line => {

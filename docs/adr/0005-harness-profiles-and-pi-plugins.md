@@ -36,6 +36,7 @@ Subagents run in the foreground using the parent's model, credentials, request
 observer, and bound application tools. Child transcripts join the checkpoint.
 Capability ceilings exclude child extensions and uninstalled agents. Background
 runs, scheduled inference, remote placement, and model-supplied workflow code
-are excluded from this profile. Web access uses raw results without automatic
+are excluded from this profile. Model parameters cannot request host commands,
+filesystem placement, sharing, or management actions. Web access uses raw results without automatic
 browser or answer-model execution. MCP uses the package's host-managed profile
 with a frozen catalog and no automatic action replay.
