@@ -44,6 +44,7 @@ const archives = [];
 const productionLock = JSON.parse(await readFile(path.join(root, 'packages/brainserver/package-lock.json'), 'utf8'));
 async function pack(directory, name) {
   const [result] = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', output], directory, {}, true));
+  assert.ok(result.files.length < 40000, `${name} exceeds the native archive file budget; remove development artifacts before publishing`);
   assert.ok(result.size < 180 * 1024 * 1024, `${name} exceeds the native archive upload budget; split its runtime before publishing`);
   archives.push({ name, file: result.filename, integrity: result.integrity, manifest: JSON.parse(await readFile(path.join(directory, 'package.json'), 'utf8')) });
   return result;
@@ -76,6 +77,9 @@ for (const target of selected) {
   const runtime = path.join(directory, 'runtime');
   await mkdir(runtime);
   await rename(path.join(directory, 'node_modules'), path.join(runtime, 'node_modules'));
+  // Private runtime declarations and source maps are not needed for execution.
+  // Keeping them produced 67,724 files and npm rejected the archive with HTTP 415.
+  await writeFile(path.join(runtime, '.npmignore'), '**/*.map\n**/*.d.ts\n**/*.d.mts\n**/*.d.cts\n');
   await cp(path.join(root, 'runners/pi/dist'), path.join(runtime, 'runners/pi/dist'), { recursive: true });
   await cp(path.join(root, 'runners/opencode/src'), path.join(runtime, 'runners/opencode/src'), { recursive: true });
   await cp(path.join(root, 'runners/common'), path.join(runtime, 'runners/common'), { recursive: true });
