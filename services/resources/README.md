@@ -35,6 +35,7 @@ Copy the printed JSON descriptors into the `tools` array of your Brain configura
 
 - **AWS S3:** Uses the default AWS credential chain unless `STORAGE_ACCESS_KEY` and `STORAGE_SECRET_KEY` are set.
 - **Cloudflare R2:** Set `STORAGE_ENDPOINT=https://ACCOUNT_ID.r2.cloudflarestorage.com`, `STORAGE_REGION=auto`, `STORAGE_ACCESS_KEY`, and `STORAGE_SECRET_KEY`.
+- **Temporary credentials:** Set `STORAGE_SESSION_TOKEN` alongside the explicit access and secret keys.
 - **Bucket isolation:** Keep this bucket separate from Brain's checkpoint storage bucket.
 
 ## Security, scoping, and limits

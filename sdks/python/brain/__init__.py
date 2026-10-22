@@ -11,9 +11,9 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from .types import CreateSession, Event, EventList, Input, Session, SessionList, SyncStatus, ToolCatalog
 
 from .runtime import RuntimeContext, RuntimeExecutor, RuntimeTool
-from .authoring import ApiKey, CredentialReference, Model, Tool, ManagedTool, lower
+from .authoring import ApiKey, CredentialReference, Model, Tool, ManagedTool, AwsS3, Modal, E2B, Daytona, lower
 
-__all__ = ["Brain", "BrainError", "RuntimeTool", "RuntimeContext", "ApiKey", "CredentialReference", "Model", "Tool", "ManagedTool"]
+__all__ = ["Brain", "BrainError", "RuntimeTool", "RuntimeContext", "ApiKey", "CredentialReference", "Model", "Tool", "ManagedTool", "AwsS3", "Modal", "E2B", "Daytona"]
 
 
 class BrainError(Exception):

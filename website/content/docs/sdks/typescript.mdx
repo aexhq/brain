@@ -8,19 +8,24 @@ description: Create sessions, send messages, and stream events in Node.js 24+ wi
 ## Install
 
 ```sh
-npm install --save-exact @aexhq/brain@2.1.0
+npm install --save-exact @aexhq/brain@2.3.0
 ```
 
 ## Declare runtime tools
 
+Use `Pi()`, `Codex()`, or `OpenCode()` to select a server-installed harness. A named
+profile, such as `Pi({ name: 'research' })`, selects the configuration installed by
+the application. Install profiles and Pi plugins in the `BrainServer` constructor;
+client selection does not install packages or send executable code.
+
 Pass ordinary functions when creating a session. The SDK registers descriptors and opens a callback connection before admitting the session. Functions and captured credentials stay in your Node process.
 
 ```typescript
-import { Brain, Model, Tool } from "@aexhq/brain";
+import { Pi, Brain, Model, Tool } from "@aexhq/brain";
 
 const client = new Brain("http://127.0.0.1:8080", process.env.BRAIN_API_KEY!);
 const session = await client.create({
-  harness: "pi",
+  harness: Pi(),
   model: Model("openai/gpt-4.1-mini"),
   tools: [Tool({
     name: "lookup", description: "Read application data",
@@ -50,7 +55,39 @@ Keep the client process alive while callbacks are needed. `dispose()` closes its
 
 Use `Model("provider/model", ApiKey(customerKey))` to supply a private API key, or `CredentialReference(reference)` for an application-authorized reference. Omit the second argument to select the startup default. Configure independent encryption keys on the server before supplying overrides. Rejected or unavailable overrides fail without switching to the default.
 
-Use `ManagedTool("lookup")` for an installed ordinary tool. For a resource provider, pass its operations and settings: `ManagedTool("storage", { alias: "docs", operations: ["read"], parameters: { bucket: "authorized-bucket" }, credential: { token: resourceToken } })`. The SDK lowers these declarations to the [HTTP contract](/docs/api); model and resource credentials stay outside public session configuration. Provider operations have an alias prefix such as `docs_read`.
+Use `ManagedTool("lookup")` for an installed ordinary tool. Select builtin integrations with `AwsS3`, `Modal`, `E2B`, or `Daytona`:
+
+```ts
+import { Pi, Brain, Model, AwsS3, Modal } from '@aexhq/brain';
+
+const brain = new Brain('http://127.0.0.1:8080', process.env.BRAIN_API_KEY!);
+const session = await brain.create({
+  harness: Pi(), model: Model('openai/gpt-4.1-mini'),
+  tools: [
+    AwsS3({
+      bucket: 'customer-documents', region: 'eu-west-2', operations: ['read'],
+      accessKeyId: process.env.CUSTOMER_AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.CUSTOMER_AWS_SECRET_ACCESS_KEY,
+    }),
+    Modal(),
+  ],
+});
+```
+
+Supply credentials to override the server default for that session. Omit them, as
+with `Modal()` here, to use the default. Either source can be omitted; selecting a
+tool with neither source fails before inference. Malformed, revoked, or rejected
+overrides never switch to a default. Brain stores direct overrides encrypted and
+recovers them after a restart. The Node `brainserver` package manages its local
+encryption key; other Go applications configure their key provider.
+
+The helpers lower into the existing [HTTP contract](/docs/api), with credential
+values in private admission input. The model sees names such as `aws_s3_read` and
+`modal_exec`. S3 defaults to `list` and `read`; sessions can select `write` and
+`delete` when those operations were installed by the server. Sandbox helpers
+provide `create`, `exec`, `inspect`, and `terminate`. Resource defaults belong to
+the server; private credentials permit session resource overrides, while custom
+endpoints remain application-owned.
 
 JavaScript and TypeScript use the same ESM package, including generated type declarations.
 No checkout or compilation is needed. Version 1 replaces the predecessor's incompatible
@@ -62,7 +99,7 @@ server commit from the release workflow.
 Pass the Brain server base URL and your bearer token to `new Brain(url, token, fetchImpl?)`:
 
 ```ts
-import { Brain } from '@aexhq/brain';
+import { Pi, Brain } from '@aexhq/brain';
 
 const brain = new Brain('http://127.0.0.1:8080', process.env.BRAIN_API_KEY!);
 ```
@@ -100,7 +137,7 @@ Call `observe(session.id)` to iterate over the session's SSE stream. Brain repla
 Run this `.mjs` script from the repository root while Brain is running (see `examples/session.mjs` for the CLI version):
 
 ```js
-import { Brain } from '@aexhq/brain';
+import { Pi, Brain } from '@aexhq/brain';
 
 const brain = new Brain('http://127.0.0.1:8080', process.env.BRAIN_API_KEY);
 const session = await brain.create({
@@ -164,7 +201,7 @@ Live-only events (`assistant.delta` and `tool.progress`) do not carry a `cursor`
 Non-2xx HTTP responses throw `BrainError`:
 
 ```ts
-import { Brain, BrainError } from '@aexhq/brain';
+import { Pi, Brain, BrainError } from '@aexhq/brain';
 
 try {
   await brain.send(session.id, { type: 'user.message', text: 'Continue.' });

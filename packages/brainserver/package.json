@@ -1,0 +1,57 @@
+{
+  "name": "brainserver",
+  "version": "2.3.0",
+  "description": "Run Brain with Pi, Codex, OpenCode, and configured Pi extensions from Node.js",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aexhq/brain.git",
+    "directory": "packages/brainserver"
+  },
+  "homepage": "https://aexhq.github.io/brain/docs/quickstart/",
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "process.js",
+    "sdk",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.2.0",
+    "@earendil-works/pi-coding-agent": "1.2.0",
+    "@daytona/sdk": "0.224.1",
+    "@e2b/code-interpreter": "2.9.0",
+    "modal": "0.11.0",
+    "jiti": "2.7.0",
+    "pi-mcp-adapter": "5.4.0",
+    "pi-subagents": "0.80.0",
+    "pi-web-access": "0.44.0",
+    "@openai/codex": "0.163.0",
+    "@effect/platform-node": "4.0.1",
+    "@effect/platform-node-shared": "4.0.1",
+    "@opencode/core": "2.0.30",
+    "@opencode/plugin": "2.0.30",
+    "@opencode/sdk": "2.0.30",
+    "effect": "4.0.1",
+    "@earendil-works/pi-agent-core": "1.2.0",
+    "@earendil-works/pi-tui": "1.2.0",
+    "typebox": "1.3.27"
+  },
+  "overrides": {
+    "@effect/platform-node-shared": "4.0.1"
+  }
+}

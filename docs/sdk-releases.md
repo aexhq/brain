@@ -3,14 +3,21 @@
 JavaScript/TypeScript applications install `@aexhq/brain`; Python applications
 install `aex-brain` and import `brain`. Both are dependency-free at runtime.
 
+Node applications that start their own Brain process install `brainserver`.
+It packages the portable client and Node server entry point. npm selects the Brain
+executable, Pi/Codex/OpenCode runners, and complete locked production dependency tree
+through one of six optional
+`@aexhq/brainserver-<platform>-<arch>` dependencies (Linux, macOS, and Windows;
+x64 and arm64). No installation scripts or user-side compilation are needed.
+
 ```sh
-npm install --save-exact @aexhq/brain@2.1.0
-python -m pip install aex-brain==2.1.0
+npm install --save-exact @aexhq/brain@2.3.0
+python -m pip install aex-brain==2.3.0
 ```
 
 Release artifacts include the npm archive, Python wheel, and source distribution in [GitHub Releases](https://github.com/aexhq/brain/releases). The release workflow publishes those exact tested bytes to npm and PyPI.
 
-SDK 2.1.0 adds model/tool constructors, private model credentials, attached-tab tools, model-request evidence and session deletion. Client-owned runtime functions use the session binding contract. Successful output schemas validate `structured_content`. Update server, runner, and clients together; routes and local state have no compatibility layer or migration. Pin the SDK and the server image commit recorded in the publishing workflow summary.
+SDK 2.2.0 adds `AwsS3`, `Modal`, `E2B`, and `Daytona` helpers. The Node server installs these through a constructor's tool list; client sessions use the same helpers to select operations and optionally supply private credentials. Missing credentials fail explicitly and rejected overrides never fall back to server defaults. Client-owned runtime functions use the session binding contract. Successful output schemas validate `structured_content`. Update server, runner, and clients together; routes and local state have no compatibility layer or migration. Pin the SDK and the server image commit recorded in the publishing workflow summary.
 
 Go applications import `github.com/aexhq/brain` and optionally `github.com/aexhq/brain/integrations`. Pin the module to the source commit recorded in the matching release with `go get github.com/aexhq/brain@COMMIT`.
 
@@ -52,6 +59,7 @@ in the existing registry owner's account:
 | Registry | Project | GitHub owner/repository | Workflow | Environment |
 | --- | --- | --- | --- | --- |
 | npm | `@aexhq/brain` | `aexhq/brain` | `npm-publish.yml` | None |
+| npm | `brainserver` and the six `@aexhq/brainserver-*` platform packages | `aexhq/brain` | `npm-publish.yml` | None |
 | PyPI | `aex-brain` | `aexhq/brain` | `npm-publish.yml` | `pypi` |
 
 npm uses the predecessor's workflow identity. For a new Python project, create
@@ -62,6 +70,13 @@ token is needed. Missing trust fails the job rather than silently skipping it.
 See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) and
 [PyPI pending publishers](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/).
 
+Claim the new server package names using the registry owner's account and configure
+their trusted publisher before the first automated server release. CI publishes
+platform archives before the main `brainserver` archive, verifies the public bytes,
+then installs and starts the server from npm. Missing registry ownership or trust
+fails publication. The existing SDK registry configuration does not grant access
+to these new names.
+
 ## Building from source
 
 Source builds remain available for contributors. `node scripts/package-sdks.mjs`
@@ -70,3 +85,12 @@ requires the TypeScript SDK to be built and creates all distributions in
 environments under `bin/sdk-*`. No generated package, virtual environment, or
 credential is committed. To use an unpublished change, install the resulting
 archive with `npm install /path/to/archive.tgz` or `python -m pip install /path/to/package.whl`.
+
+`npm run build` builds the harness, client, and host executable in
+one command, then packs `dist/server/`. Use `npm run build -- --all-platforms` to cross-compile all
+six executable packages. `node --test tests/server-package.test.mjs` installs the
+main archive and the host platform archive in an isolated consumer and tests the
+installed server. The full check includes both commands; Linux CI uploads
+`server-packages`, and the release workflow publishes those exact archives.
+Change `packages/brainserver/package.json` when releasing a changed server package;
+its platform packages share that version. The remote SDK versions are independent.

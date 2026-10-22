@@ -1,6 +1,36 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Brain, BrainError, Model, ApiKey, CredentialReference, ManagedTool } from "../dist/index.js";
+import { Pi, Codex, OpenCode, PiWebAccess, Brain, BrainError, Model, ApiKey, CredentialReference, ManagedTool, AwsS3, Modal, E2B, Daytona } from "../dist/index.js";
+
+test('typed harness references select installed profiles without transmitting server settings', async () => {
+  const bodies = [];
+  const brain = new Brain('http://brain.test', 'token', async (_url, init) => { bodies.push(JSON.parse(init.body)); return Response.json({ id: 'session' }); });
+  for (const harness of [Pi({ name: 'research' }), Codex(), OpenCode()]) await brain.create({ harness, model: Model('openai/model') });
+  assert.deepEqual(bodies.map(body => body.harness), ['research', 'codex', 'opencode']);
+  await assert.rejects(brain.create({ harness: Pi({ plugins: [PiWebAccess({ config: { braveApiKey: 'private' } })] }), model: Model('openai/model') }), /Install harness options/);
+  assert.equal(bodies.length, 3);
+  assert.throws(() => Codex({ unknown: true }), /Unknown codex option/);
+});
+
+test('integration helpers keep credentials in private admission input and omit absent overrides', async () => {
+  let wire;
+  const brain = new Brain('http://brain.test', 'token', async (_url, init) => {
+    wire = JSON.parse(init.body);
+    return Response.json({ id: 'session' });
+  });
+  await brain.create({ harness: Pi(), model: Model('openai/model'), tools: [
+    AwsS3({ bucket: 'customer-bucket', region: 'eu-west-2', accessKeyId: 'customer-access', secretAccessKey: 'private-s3-secret', sessionToken: 'temporary' }),
+    Modal({ tokenId: 'customer-modal', tokenSecret: 'private-modal-secret', operations: ['inspect'] }),
+    E2B(), Daytona(),
+  ] });
+  assert.deepEqual(wire.config.bindings.map(b => b.provider), ['aws_s3', 'modal', 'e2b', 'daytona']);
+  assert.deepEqual(wire.config.bindings[0].parameters, { bucket: 'customer-bucket', region: 'eu-west-2' });
+  assert.equal(wire.credentials.length, 2);
+  assert.equal(wire.credentials[0].value.secretAccessKey, 'private-s3-secret');
+  assert.equal(wire.credentials[1].value.tokenSecret, 'private-modal-secret');
+  assert.doesNotMatch(JSON.stringify(wire.config), /private-|customer-access|customer-modal|temporary/);
+  assert.throws(() => AwsS3({ secret_access_key: 'misspelled' }), /Unknown aws_s3 option/);
+});
 
 test("model and managed tool declarations lower private admission separately from config", async () => {
   const client = new Brain("http://brain.test", "token", async (_url, init) => {
@@ -9,11 +39,11 @@ test("model and managed tool declarations lower private admission separately fro
     ] }, model_credential: { api_key: "customer-key" }, credentials: [{ binding: "records", value: { token: "tool-key" } }] });
     return Response.json({ id: "session" });
   });
-  await client.create({ harness: "pi", model: Model("test/model", ApiKey("customer-key")), tools: [ManagedTool("lookup"),
+  await client.create({ harness: Pi(), model: Model("test/model", ApiKey("customer-key")), tools: [ManagedTool("lookup"),
     ManagedTool("data", { alias: "records", operations: ["read"], parameters: { bucket: "one" }, credential: { token: "tool-key" } }),
   ] });
   assert.deepEqual(CredentialReference("tenant-key"), { reference: "tenant-key" });
-  await assert.rejects(client.create({ harness: "pi", model: Model("test/model"), tools: [ManagedTool("lookup", { credential: "ignored" })] }), /require operations/);
+  await assert.rejects(client.create({ harness: Pi(), model: Model("test/model"), tools: [ManagedTool("lookup", { credential: "ignored" })] }), /require operations/);
 });
 
 test("an unsupported callback transport fails before registration", async () => {

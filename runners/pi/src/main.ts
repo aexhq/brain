@@ -8,6 +8,8 @@ import {
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import type { OpenOptions, Result, RunnerFrame as Frame } from "./generated.js";
 import { observeRequests } from "./evidence.js";
+import { plugins } from './plugins.js';
+import { children } from './children.js';
 import { loadImages } from "../../common/media.mjs";
 
 const maxFrame = 4 << 20;
@@ -36,6 +38,8 @@ class NativeSession {
   lastError: string | undefined;
   aborted = false;
   brainError: Error | undefined;
+  plugins: Awaited<ReturnType<typeof plugins>> | undefined;
+  children: ReturnType<typeof children> | undefined;
   readonly pending = new Map<string, { resolve: (r: Result) => void; reject: (e: Error) => void }>();
   readonly cancelled = new Set<string>();
   readonly observations = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
@@ -77,6 +81,7 @@ class NativeSession {
     const settings = SettingsManager.inMemory({
       cacheWarming: "off", extensions: [], skills: [], prompts: [], themes: [],
     });
+    this.plugins = await plugins(options.plugins ?? [], (name, id, args, signal) => this.callTool(name, id, args, signal), (id, data) => this.event('plugin.progress', { id, data }), options.tools.map(tool => tool.name));
     const instructions = options.config.instructions ?? "You are a helpful assistant. Use the available tools when needed.";
     const resources = new DefaultResourceLoader({
       cwd, agentDir, settingsManager: settings,
@@ -85,11 +90,12 @@ class NativeSession {
       systemPrompt: instructions,
       // Pi otherwise appends its local cwd even with a custom prompt. A private
       // runner path has no meaning for remote tools and changes on relocation.
-      extensionFactories: [pi => {
+      extensionFactories: [...this.plugins.factories, pi => {
         pi.on("before_agent_start", () => ({ systemPrompt: instructions }));
       }],
     });
     await resources.reload();
+    if (resources.getExtensions().errors.length) throw new Error('Pi plugin failed to load');
     const runtime = await ModelRuntime.create({
       credentials: new InMemoryCredentialStore(), modelsPath: null,
       modelsStorePath: path.join(agentDir, "models-cache.json"),
@@ -138,19 +144,26 @@ class NativeSession {
         };
       },
     }));
+    const observe = (session: AgentSession) => observeRequests(session, request => new Promise<void>((resolve, reject) => {
+      const id = randomBytes(16).toString('hex');
+      this.observations.set(id, { resolve, reject });
+      this.send({ id, method: 'model.request', params: request });
+    }));
+    this.children = children(options, runtime, customTools, observe);
+    this.plugins.setChildFactory(this.children);
     type CreateOptions = NonNullable<Parameters<typeof createAgentSession>[0]>;
     const created = await createAgentSession({
       cwd, agentDir, modelRuntime: runtime, model,
       thinkingLevel: (options.config.reasoning_effort ?? "off") as CreateOptions["thinkingLevel"],
       sessionManager: manager, settingsManager: settings, resourceLoader: resources,
-      noTools: "builtin", tools: options.tools.map(t => t.name), customTools,
+      noTools: "builtin", tools: [...options.tools.map(t => t.name), ...this.plugins.tools.map(t => t.name)], customTools,
     });
     this.session = created.session;
-    observeRequests(this.session, request => new Promise<void>((resolve, reject) => {
-      const id = randomBytes(16).toString("hex");
-      this.observations.set(id, { resolve, reject });
-      this.send({ id, method: "model.request", params: request });
-    }));
+    if (options.plugins?.length) {
+      await this.session.bindExtensions({ mode: 'print', onError: () => { this.brainError = new Error('Pi plugin lifecycle failed'); } });
+      if (this.brainError) throw this.brainError;
+    }
+    observe(this.session);
     if (created.modelFallbackMessage || this.session.model?.provider !== provider || this.session.model?.id !== modelID) {
       throw new Error("harness did not select the requested model");
     }
@@ -158,8 +171,9 @@ class NativeSession {
       throw new Error("requested reasoning effort is unsupported by the model");
     }
     const active = this.session.getActiveToolNames().sort();
-    const selected = options.tools.map(t => t.name).sort();
-    if (JSON.stringify(active) !== JSON.stringify(selected)) throw new Error("native tool isolation failed");
+    const selected = [...options.tools.map(t => t.name), ...this.plugins.tools.map(t => t.name)].sort();
+    if (new Set(selected).size !== selected.length) throw new Error('Plugin and application tools have duplicate names');
+    if (JSON.stringify(active) !== JSON.stringify(selected)) throw new Error(`native tool isolation failed: expected ${JSON.stringify(selected)}, got ${JSON.stringify(active)}`);
     this.session.subscribe(e => {
       if (e.type === "message_update" && e.assistantMessageEvent.type === "text_delta") {
         this.event("assistant.delta", { text: e.assistantMessageEvent.delta });
@@ -171,13 +185,14 @@ class NativeSession {
         this.aborted ||= e.aborted; this.settled?.();
       }
     });
-    return { tools: active };
+    return { tools: active, ...(this.plugins.tools.length ? { native_tools: this.plugins.tools } : {}) };
   }
 
   async dispatch(method: string, params: unknown): Promise<unknown> {
     if (method === "open") return this.open(params as OpenOptions);
-    if (method === "detach") { if (this.busy || this.pending.size) throw new Error("cannot detach active session"); this.session?.dispose(); return {}; }
+    if (method === "detach") { if (this.busy || this.pending.size) throw new Error("cannot detach active session"); if (this.plugins?.tools.length) await this.session?.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); await this.children?.dispose(); await this.plugins?.close(); this.session?.dispose(); return {}; }
     if (!this.session) throw new Error("session is not open");
+    if (method === 'plugin.execute') return this.plugins!.execute((params as { id: string }).id);
     if (method === "interrupt") { this.aborted = true; this.mediaAbort?.abort(); await this.session.abort(); return {}; }
     if (method === "steer") {
       if (!this.busy) throw new Error("steering requires active execution");
@@ -192,7 +207,14 @@ class NativeSession {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
         throw error;
       }
-      return [{ path: path.relative(this.nativeDir, file).split(path.sep).join("/"), size: info.size, append_only: true }];
+      const files = [{ path: path.relative(this.nativeDir, file).split(path.sep).join("/"), size: info.size, append_only: true }];
+      const childDir = path.join(this.nativeDir, 'children');
+      const entries = await readdir(childDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; return []; });
+      for (const entry of entries) if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+        const child = path.join(childDir, entry.name);
+        files.push({ path: `children/${entry.name}`, size: (await stat(child)).size, append_only: true });
+      }
+      return files;
     }
     if (method === "prompt") {
       if (this.busy) throw new Error("session is busy");

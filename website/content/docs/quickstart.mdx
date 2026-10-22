@@ -1,11 +1,98 @@
 ---
 title: Quickstart
-description: Start Brain on your machine, create a Pi session, and stream the reply with the TypeScript or Python SDK.
+description: Install Brain from npm, start it from a script, and stream your first reply.
 ---
 
 import { BookOpen, Braces, Code, Database, MessagesSquare, Wrench } from 'lucide-react';
 
-This guide walks you through running Brain on your machine and sending your first message. You start the server with the example host config, create a session that uses the Pi harness and an OpenAI model, and stream the reply with the TypeScript or Python SDK.
+Install `brainserver` and start Brain from your Node.js application. The package contains the server executable, Pi, Codex, and OpenCode runners, and client. Use Node.js 24+ on Linux, macOS, or Windows, with x64 or arm64.
+
+## Install and run
+
+In your application directory, install the package:
+
+```sh
+npm install brainserver
+```
+
+Set your OpenAI API key:
+
+```sh tab="macOS / Linux"
+export OPENAI_API_KEY="your-provider-key"
+```
+
+```powershell tab="Windows"
+$env:OPENAI_API_KEY = "your-provider-key"
+```
+
+Save this script as `agent.mjs`:
+
+```js
+import { Pi, BrainServer, Model } from 'brainserver';
+
+const brain = new BrainServer();
+await brain.start();
+try {
+  const session = await brain.create({
+    harness: Pi(), model: Model('openai/gpt-4.1-mini'), tools: [],
+  });
+  const input = await brain.send(session.id, {
+    type: 'user.message', text: 'Explain what makes a good agent tool.',
+  });
+  for await (const event of brain.observe(session.id)) {
+    if (event.type === 'assistant.message') console.log(event.data.text);
+    if (event.input_id !== input.id) continue;
+    if (event.type === 'session.error') throw new Error(event.data.message);
+    if (event.type === 'session.status' && event.data.status === 'idle') break;
+  }
+} finally {
+  await brain.stop();
+}
+```
+
+Run it with `node agent.mjs`. `brain.start()` starts a local server on an available loopback port and waits for it to initialize. Sessions are saved under `.brain/` in your application directory. `stop()` drains the server and its harnesses. The server also shuts down when the parent script exits.
+
+For a fixed port or a different data directory, pass options to the constructor:
+
+```js
+const brain = new BrainServer({ port: 8080, dataDir: './agent-data' });
+await brain.start();
+console.log(brain.url); // http://127.0.0.1:8080
+```
+
+`brainserver` exports the same model and tool constructors as the [TypeScript client](/docs/sdks/typescript). Pass application functions with `Tool()` when creating a session.
+
+## Install tool integrations
+
+Supply a list of configured helpers when constructing the server:
+
+```js
+import { Pi, BrainServer, Modal, AwsS3 } from 'brainserver';
+
+const brain = new BrainServer({
+  tools: [
+    Modal({ tokenId: process.env.MODAL_TOKEN_ID, tokenSecret: process.env.MODAL_TOKEN_SECRET }),
+    AwsS3({
+      bucket: 'documents', region: 'eu-west-2',
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    }),
+  ],
+});
+await brain.start();
+```
+
+Select integrations in each session with the same helpers. `tools: [Modal(), AwsS3()]`
+uses server defaults. Supply credentials in a helper to override them for that
+session. You can also install `tools: [Modal(), AwsS3()]` on the server and require
+sessions to supply their own credentials. Missing credentials fail before inference;
+invalid overrides never fall back to server defaults. Overrides are stored encrypted
+and survive a server restart. The [TypeScript SDK guide](/docs/sdks/typescript)
+shows the session-side API.
+
+## Run a standalone server from source
+
+To run Brain separately from your application, build it from a checkout as follows, or use the [container image](/docs/guides/operations#run-brain-in-a-container). Remote clients install `@aexhq/brain` or `aex-brain`.
 
 | Concept | In this guide |
 | --- | --- |
@@ -14,7 +101,7 @@ This guide walks you through running Brain on your machine and sending your firs
 | **Turn** | The work Brain runs for your message: model calls until Pi finishes its reply. |
 | **Event** | Records such as `assistant.message` and `session.status` that the example reads from the session's stream. |
 
-## Prerequisites
+### Source prerequisites
 
 - **Go 1.26 or newer** to run the server.
 - **Node.js 24 or newer** to run the Pi runner and JavaScript/TypeScript client.
@@ -57,7 +144,7 @@ $env:OPENAI_API_KEY = "your-provider-key"
 go run ./cmd/brain -config examples/local.json
 ```
 
-When the server is ready, it writes a JSON log line with `"msg":"brain listening"` to stderr. With `examples/local.json`, Brain listens on `http://127.0.0.1:8080`, writes local state to `.brain/`, grants `BRAIN_API_KEY` the `local` tenant with permission to manage sessions, registers the `pi` harness, and enables no tools.
+With `examples/local.json`, Brain listens on `http://127.0.0.1:8080`, writes local state to `.brain/`, grants `BRAIN_API_KEY` the `local` tenant with permission to manage sessions, registers the `pi` harness, and enables no tools.
 
 <Callout type="info" title="Customize the config">
 Copy `examples/local.json` to `brain.json` to change settings without editing tracked files. `brain.json` is gitignored, and Brain loads it when you omit `-config`. Add `-check` to validate a config, including the environment variables it names, and exit without starting the server.
@@ -71,12 +158,12 @@ Leave the server running. Open a second terminal in the repository root and set 
 
 ```sh tab="macOS / Linux"
 export BRAIN_API_KEY="replace-with-a-random-token-of-at-least-24-bytes"
-python -m pip install aex-brain==2.1.0
+python -m pip install aex-brain==2.3.0
 ```
 
 ```powershell tab="Windows"
 $env:BRAIN_API_KEY = "replace-with-a-random-token-of-at-least-24-bytes"
-python -m pip install aex-brain==2.1.0
+python -m pip install aex-brain==2.3.0
 ```
 </Step>
 
@@ -86,7 +173,7 @@ python -m pip install aex-brain==2.1.0
 Run the example script for your language. Install the published SDK for your language. If your system has no `python` command, use `python3`.
 
 ```sh tab="TypeScript"
-npm install --no-save --package-lock=false @aexhq/brain@2.1.0
+npm install --no-save --package-lock=false @aexhq/brain@2.3.0
 node examples/session.mjs "Explain what makes a good agent tool."
 ```
 
@@ -108,7 +195,7 @@ A good agent tool does one clearly named job, ...
 Both scripts create a session, send one message, and read events until the turn for that message ends. Here are the same steps with comments:
 
 ```ts tab="TypeScript"
-import { Brain } from "@aexhq/brain";
+import { Pi, Brain } from "@aexhq/brain";
 
 const token = process.env.BRAIN_API_KEY;
 if (!token) throw new Error("Set BRAIN_API_KEY before running this example");

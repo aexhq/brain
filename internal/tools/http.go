@@ -34,7 +34,10 @@ func (t *HTTPTransport) Close() { t.client.CloseIdleConnections() }
 func (t *HTTPTransport) Call(ctx context.Context, binding Binding, request Request, progress func(json.RawMessage)) core.Result {
 	var connected atomic.Bool
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { connected.Store(true) }})
-	body, err := json.Marshal(request)
+	body, err := json.Marshal(struct {
+		Request
+		Context json.RawMessage `json:"context,omitempty"`
+	}{request, binding.Context})
 	if err != nil {
 		return core.ToolError("invalid tool request", false)
 	}

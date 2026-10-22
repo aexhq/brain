@@ -20,11 +20,11 @@ go run ./examples/application
 Create a session that selects the installed operation and its resource parameters:
 
 ```typescript
-import { Brain, Model, ManagedTool } from "@aexhq/brain";
+import { Pi, Brain, Model, ManagedTool } from "@aexhq/brain";
 
 const brain = new Brain("http://127.0.0.1:8080", process.env.BRAIN_API_KEY!);
 const session = await brain.create({
-  harness: "pi", model: Model("openai/gpt-4.1-mini"),
+  harness: Pi(), model: Model("openai/gpt-4.1-mini"),
   tools: [ManagedTool("greetings", {
     alias: "welcome", operations: ["hello"], parameters: { prefix: "Hello, " },
   })],
@@ -62,11 +62,11 @@ Implement model-visible session inspection in your platform. The [platform examp
 Provide `Options.Keys` or configure [`credential_keys`](/docs/reference/configuration#private-credential-keys) before accepting direct credentials. Keep keys independently of the SQL database and checkpoint archive.
 
 ```typescript
-import { Brain, Model, ManagedTool } from "@aexhq/brain";
+import { Pi, Brain, Model, ManagedTool } from "@aexhq/brain";
 
 const brain = new Brain("http://127.0.0.1:8080", process.env.BRAIN_API_KEY!);
 const session = await brain.create({
-  harness: "pi", model: Model("openai/gpt-4.1-mini"),
+  harness: Pi(), model: Model("openai/gpt-4.1-mini"),
   tools: [ManagedTool("installed_data", {
     alias: "records", operations: ["read"],
     parameters: { resource: "permitted-resource" },

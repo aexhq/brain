@@ -3,8 +3,7 @@ import { after, before, test } from "node:test";
 import { access, appendFile, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { responsesReply } from "./model-responses.mjs";
-import {
-  Brain, Model, ApiKey, Tool, ManagedTool, build, call, config, delay, fixture, history, jsonBody, message,
+import { Pi, Brain, Model, ApiKey, Tool, ManagedTool, build, call, config, delay, fixture, history, jsonBody, message,
   modelReply, rejects, removeTemp, result, root, state, tokens, until,
 } from "./fixture.mjs";
 
@@ -115,7 +114,7 @@ test("Pi automatic compaction uses the private key and survives passive cold rec
   f.env.JOURNEY_ENCRYPTION = Buffer.alloc(32, 9).toString("base64");
   f.settings.credential_keys = { active: "test", keys: { test: "JOURNEY_ENCRYPTION" } };
   await f.start();
-  const s = await f.api.create({ harness: "pi", model: Model("openai/gpt-4.1-mini", ApiKey(key)), tools: [] });
+  const s = await f.api.create({ harness: Pi(), model: Model("openai/gpt-4.1-mini", ApiKey(key)), tools: [] });
   f.model.respond = async (_input, response) => {
     const n = f.model.requests.length;
     modelReply(response, n === 1 ? "retained prior context ".repeat(6000) : "compacted-context-marker", { prompt_tokens: n === 2 ? 1_100_000 : 20, completion_tokens: 5, total_tokens: n === 2 ? 1_100_005 : 25 });
@@ -225,7 +224,7 @@ test("private model keys reach Pi independently and survive restart and cold res
   f.env.JOURNEY_ENCRYPTION = Buffer.alloc(32, 7).toString("base64");
   f.settings.credential_keys = { active: "test", keys: { test: "JOURNEY_ENCRYPTION" } };
   await f.start();
-  const sessions = await Promise.all(keys.map(key => f.api.create({ harness: "pi", model: Model("openai/gpt-4.1-mini", ApiKey(key)), tools: [] })));
+  const sessions = await Promise.all(keys.map(key => f.api.create({ harness: Pi(), model: Model("openai/gpt-4.1-mini", ApiKey(key)), tools: [] })));
   const peers = [];
   f.model.respond = async (_input, response) => {
     peers.push(response);
@@ -274,7 +273,7 @@ test("authoring constructors compose a managed service and a connected client fu
   await f.tool("lookup", async (_req, res) => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(result("managed"))); });
   await f.start();
   let calls = 0;
-  const s = await f.api.create({ harness: "pi", model: Model("openai/gpt-4.1-mini"), tools: [
+  const s = await f.api.create({ harness: Pi(), model: Model("openai/gpt-4.1-mini"), tools: [
     ManagedTool("lookup"), Tool({ name: "local", description: "Read client data", input_schema: { type: "object" }, run() { calls++; return { value: "local" }; } }),
   ] });
   assert.deepEqual(s.descriptors.map(tool => tool.name), ["lookup", "runtime_local"]);

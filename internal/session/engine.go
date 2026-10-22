@@ -775,9 +775,21 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 				defer func() { stop(); cancel() }()
 				callCtx, span := otel.Tracer("github.com/aexhq/brain").Start(callCtx, "tool.call", trace.WithAttributes(attribute.String("tool.name", call.Name)))
 				defer span.End()
+				var native harness.NativeTools
 				if !selectedNames[call.Name] {
+					if installed, ok := runner.(harness.NativeTools); ok {
+						for _, tool := range installed.NativeTools() {
+							if tool.Name == call.Name {
+								native = installed
+								break
+							}
+						}
+					}
+				}
+				if !selectedNames[call.Name] && native == nil {
 					return core.Result{}, errors.New("harness called an unbound tool")
 				}
+				nativeCall := call
 				call.ID = core.ID()
 				if _, err := e.emit(a, "tool.call", inputID, call); err != nil {
 					return core.Result{}, err
@@ -793,9 +805,15 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 				if err != nil {
 					return core.Result{}, err
 				}
-				result, err := e.opts.Tools.Invoke(callCtx, current, scope, call, func(data json.RawMessage) {
+				progress := func(data json.RawMessage) {
 					_, _ = e.emit(a, "tool.progress", inputID, map[string]any{"call_id": call.ID, "data": data})
-				})
+				}
+				var result core.Result
+				if native != nil {
+					result, err = native.InvokeNative(callCtx, nativeCall, progress)
+				} else {
+					result, err = e.opts.Tools.Invoke(callCtx, current, scope, call, progress)
+				}
 				if err != nil {
 					return core.Result{}, err
 				}

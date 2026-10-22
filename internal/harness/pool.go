@@ -67,6 +67,10 @@ func (f *ProcessFactory) initialize() {
 	if f.MaxActiveTurns == 0 {
 		f.MaxActiveTurns = f.MaxShared
 	}
+	if len(f.Plugins) > 0 && (f.MaxShared != 1 || f.MaxActiveTurns != 1) {
+		f.initErr = errors.New("Pi plugins require one session per host")
+		return
+	}
 	if f.MaxHosts == 0 {
 		f.MaxHosts = 64
 	}
@@ -87,6 +91,7 @@ func (f *ProcessFactory) initialize() {
 }
 
 func (f *ProcessFactory) Open(ctx context.Context, opts Options) (Runner, error) {
+	opts.Plugins = f.Plugins
 	if err := f.ValidateSession(opts.Config, opts.Provider); err != nil {
 		return nil, err
 	}
@@ -161,10 +166,19 @@ func (f *ProcessFactory) Open(ctx context.Context, opts Options) (Runner, error)
 	}
 	initCtx, stop := context.WithTimeout(ctx, 30*time.Second)
 	defer stop()
-	if _, err := a.request(initCtx, "open", opts); err != nil {
+	data, err := a.request(initCtx, "open", opts)
+	if err != nil {
 		_ = a.Close()
 		return nil, err
 	}
+	var opened struct {
+		NativeTools []core.Tool `json:"native_tools"`
+	}
+	if err := json.Unmarshal(data, &opened); err != nil {
+		_ = a.Close()
+		return nil, err
+	}
+	a.nativeTools = opened.NativeTools
 	return a, nil
 }
 

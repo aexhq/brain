@@ -189,12 +189,13 @@ func New(ctx context.Context, o Options) (_ *Server, err error) {
 			factories[name] = f
 		} else {
 			factory := &harness.ProcessFactory{}
-			if name == "codex" {
+			if r.Kind == "codex" {
 				factory = harness.Codex(r.Command)
-			} else if name == "opencode" {
+			} else if r.Kind == "opencode" {
 				factory = harness.OpenCode(r.Command)
 			}
-			factory.Pool, factory.Command, factory.Steering, factory.Logger = pool, r.Command, name == "pi", logger
+			factory.Pool, factory.Command, factory.Steering, factory.Logger = pool, r.Command, r.Kind == "pi", logger
+			factory.Plugins = r.Plugins
 			factory.CredentialHosts = factory.CredentialHosts || r.CredentialHosts
 			factory.MaxShared, factory.MaxActiveTurns, factory.MaxHosts, factory.MaxStarting = r.MaxShared, r.MaxActiveTurns, r.MaxHosts, r.MaxStarting
 			factories[name] = factory

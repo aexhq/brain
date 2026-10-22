@@ -6,6 +6,7 @@ Brain is in active development. This page lists what you can use today, what's c
 
 - **[Sessions](https://aexhq.github.io/brain/docs/guides/sessions/):** choose Pi, Codex or OpenCode, stream events, interrupt and resume turns, and recover sessions after a restart.
 - **SDKs:** the [TypeScript SDK](https://aexhq.github.io/brain/docs/sdks/typescript/) on npm and the [Python SDK](https://aexhq.github.io/brain/docs/sdks/python/) on PyPI.
+- **Node application:** configure Pi, Codex, and OpenCode with typed harness constructors in `brainserver`; install Pi web-access, foreground-subagent, and MCP plugins through named server profiles.
 - **Tools:** [HTTP and SSE tools](https://aexhq.github.io/brain/docs/tools/) in your own services, and [MCP tools](https://aexhq.github.io/brain/docs/tools/mcp/) from remote MCP servers.
 - **[Persistence](https://aexhq.github.io/brain/docs/guides/persistence/):** checkpoint archives in a local directory, Amazon S3, Cloudflare R2, or Google Cloud Storage, and an optional PostgreSQL session index.
 - **Tool services:** [sandboxes](https://aexhq.github.io/brain/docs/tools/sandboxes/) on Modal, E2B, and Daytona; [storage and web tools](https://aexhq.github.io/brain/docs/tools/resources/) for S3 or R2 storage, Brave or Tavily search, and public web fetch; and an [example tool server](https://aexhq.github.io/brain/docs/tools/local-tools/) with operator approvals.
@@ -25,6 +26,11 @@ Integrate services against one contract with Pi, Codex and OpenCode, server defa
 
 - **Status:** Available for Go application composition, authorized provider bindings, encrypted session credentials, TypeScript/Python runtime functions, direct HTTP/SSE, reverse SSE/HTTP, WebSocket RPC, MCP HTTP/stdio, and optional authorized session reads. [Plan 11](https://github.com/aexhq/brain/blob/main/docs/plans/11-application-sdk.md) records implementation evidence and remaining adapter gates.
 - **Today:** Use the [Go application SDK](https://aexhq.github.io/brain/docs/sdks/application/) to install providers and keep runtime clients connected. Browser apps use the [same-origin gateway](https://aexhq.github.io/brain/docs/tools/browser/); reconnect and rebind explicitly.
+
+### Node application package
+
+- **Status:** Verified locally on Linux and Windows. Installed npm archives include the server, compiled Pi harness, and client. S3, Modal, E2B, and Daytona helpers accept optional server credentials and private session overrides. Package tests cover encrypted recovery, missing credentials, and rejection without fallback. Live cloud-account qualification remains separate. npm publication requires package ownership and trusted publishing setup.
+- **Today:** Build with `npm run build` and install the generated platform and main archives. The [quickstart](https://aexhq.github.io/brain/docs/quickstart/) describes the constructor and session API.
 
 ### Local harness-host supervision
 

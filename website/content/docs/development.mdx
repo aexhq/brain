@@ -21,6 +21,14 @@ node scripts/setup.mjs
 
 The script installs each workspace lockfile and Chromium for the browser journeys. On Linux, install Chromium's OS dependencies with `npm --prefix services/browser exec -- playwright install-deps chromium`.
 
+To build BrainServer from the repository root, run:
+
+```sh
+npm run build
+```
+
+This builds the Pi harness, TypeScript client, and Go executable together and writes npm archives to `dist/server/`. Use `npm run build -- --all-platforms` to cross-compile all six supported platforms.
+
 ## 2. Run all checks
 
 Run `node scripts/check.mjs` before you commit:
@@ -35,6 +43,7 @@ It runs these steps in order and stops at the first failure:
 2. `npm --prefix sdks/typescript run build`: compiles the TypeScript SDK (`sdks/typescript/dist/`).
 3. `go run ./cmd/generate -check`: verifies that `api/openapi.json`, `runners/pi/src/generated.ts`, `sdks/typescript/src/generated.ts`, and `sdks/python/brain/types.py` match the Go source.
 4. `node scripts/package-sdks.mjs`: packs the npm package, builds the Python wheel and source distribution, and installs all three in isolated environments. It then runs the TypeScript client tests and a strict type check against the installed npm package, and the Python client tests against both Python installs.
+   The suite also runs `npm run build` and `node --test tests/server-package.test.mjs`. These build the server, Pi harness, and client together, install their npm archives outside the checkout, and exercise model calls, application tools, restart recovery, startup failures, and parent-exit cleanup. Linux CI cross-compiles the six platform executables into the tested server release artifact.
 5. `go test -count=1 ./...`: runs all Go unit and integration tests across `cmd/` and `internal/`.
 6. `go vet ./...`: runs Go static analysis.
 7. `npm --prefix runners/pi test`: runs the Pi runner unit and integration tests against a local recording provider.

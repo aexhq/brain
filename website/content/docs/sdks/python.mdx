@@ -8,7 +8,7 @@ description: Create sessions, send messages, and stream events with the zero-dep
 ## Install
 
 ```sh
-python -m pip install aex-brain==2.1.0
+python -m pip install aex-brain==2.3.0
 ```
 
 ## Declare runtime tools
@@ -50,7 +50,32 @@ Return a JSON value to populate `structured_content`; raise an exception for a t
 
 Import `ApiKey`, `CredentialReference`, and `ManagedTool` from `brain`. Pass `Model("provider/model", ApiKey(customer_key))` to supply a private API key, or use `CredentialReference(reference)` for an application-authorized reference. Omit the credential to select the startup default. Configure independent encryption keys on the server before supplying overrides. Rejected or unavailable overrides fail without switching to the default.
 
-Select an ordinary installed tool with `ManagedTool("lookup")`. Select resource operations with `ManagedTool("storage", operations=["read"], alias="docs", parameters={"bucket": "authorized-bucket"}, credential={"token": resource_token})`. The SDK lowers these declarations to the [HTTP contract](/docs/api); model and resource credentials stay outside public session configuration. Provider operations have an alias prefix such as `docs_read`.
+Select an ordinary installed tool with `ManagedTool("lookup")`. Use the builtin
+helpers for S3 and sandbox providers:
+
+```python
+import os
+from brain import Brain, Model, AwsS3, Modal
+
+brain = Brain('http://127.0.0.1:8080', os.environ['BRAIN_API_KEY'])
+session = brain.create(
+    harness='pi', model=Model('openai/gpt-4.1-mini'),
+    tools=[
+        AwsS3(bucket='customer-documents', region='eu-west-2', operations=['read'],
+              access_key_id=os.environ['CUSTOMER_AWS_ACCESS_KEY_ID'],
+              secret_access_key=os.environ['CUSTOMER_AWS_SECRET_ACCESS_KEY']),
+        Modal(),
+    ],
+)
+```
+
+An explicit session credential overrides the server default. `Modal()` omits an
+override and uses the server default. Selecting a tool with neither source fails
+before inference. Invalid or revoked overrides fail without switching defaults.
+Direct overrides are stored encrypted and survive restart. `E2B(api_key=...)`
+and `Daytona(api_key=...)` follow the same rule. S3 also accepts `session_token`
+for temporary AWS credentials; Modal accepts `token_id` and `token_secret`.
+Credential values stay outside public config, events, and model arguments.
 
 The distribution is named `aex-brain`; the import package is `brain`. Wheels and
 source distributions are published on PyPI and include generated types and the

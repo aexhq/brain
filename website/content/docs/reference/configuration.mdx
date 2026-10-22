@@ -9,6 +9,18 @@ Brain reads its host configuration from a JSON file passed with `-config` (defau
 go run ./cmd/brain -config brain.json -check
 ```
 
+`-stdio` ties the server lifetime to its parent's stdin pipe. After initialization,
+the server writes one JSON line containing its listening `url` to stdout; logs
+remain on stderr. Closing stdin triggers graceful shutdown. In this mode the
+configured listen address may use port `0`; Brain uses the assigned address as
+its public URL. The `brainserver` Node package uses this mode to own its child
+process without reserving a port in advance.
+
+The stock executable accepts `-tool-providers FILE` for application-installed
+integrations. The Node package creates this private registration file from the
+constructor's tool list; credential values are environment references. Integration
+selection and private session overrides use the existing session binding contract.
+
 ```powershell tab="Windows"
 go run ./cmd/brain -config brain.json -check
 ```
@@ -72,6 +84,8 @@ Each key in `harnesses` is the harness name clients pass in `POST /sessions` (fo
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `command` | `string[]` | Yes | Non-empty command and arguments used to spawn the harness child process (for example, `["node", "runners/pi/dist/main.js"]`). `command[0]` must be non-empty. |
+| `kind` | `string` | No | Native adapter kind (`pi`, `codex`, or `opencode`); defaults to the profile name. Set it when the profile has a custom name. |
+| `plugins` | `PiPlugin[]` | No | Trusted Pi plugin definitions: `name` (`web-access`, `subagents`, or `mcp`), optional upstream `config`, and optional selected `tools`. Plugin profiles require `max_shared: 1` and `max_active_turns: 1`; these are their defaults. |
 | `max_shared` | `integer` | No | Session attachments per host; default `8`, range `1`–`1024`. |
 | `max_active_turns` | `integer` | No | Simultaneous turns per host; defaults to `max_shared`, range `1`–`max_shared`. |
 | `max_hosts` | `integer` | No | Maximum live hosts for this harness; default `16`, minimum `1`. |

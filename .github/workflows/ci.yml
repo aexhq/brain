@@ -1,6 +1,7 @@
 name: CI
 on:
   push:
+    branches: [main]
   pull_request:
   schedule:
     - cron: '32 6 * * 1'
@@ -69,7 +70,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -99,14 +100,24 @@ jobs:
           path: dist/sdk/
           if-no-files-found: error
           retention-days: 30
+      - if: runner.os == 'Linux'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: server-packages
+          path: dist/server/
+          if-no-files-found: error
+          retention-days: 30
       - run: go build -o bin/ ./cmd/brain ./cmd/resource-tools ./cmd/mcp-tools
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: binaries-${{ runner.os }}
           path: |
-            bin/brain*
-            bin/resource-tools*
-            bin/mcp-tools*
+            bin/brain
+            bin/brain.exe
+            bin/resource-tools
+            bin/resource-tools.exe
+            bin/mcp-tools
+            bin/mcp-tools.exe
           retention-days: 7
       - if: runner.os == 'Linux'
         run: docker build --tag brain:local-dev .

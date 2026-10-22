@@ -1,0 +1,7 @@
+{
+  "name": "@aexhq/brain-workspace",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/package-server.mjs"
+  }
+}

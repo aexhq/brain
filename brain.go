@@ -45,6 +45,7 @@ type HarnessFactory = harness.Factory
 type Harness = harness.Runner
 type HarnessOptions = harness.Options
 type HarnessProvider = harness.Provider
+type PiPlugin = harness.PiPlugin
 type NativeFile = core.NativeFile
 type ProcessFactory = harness.ProcessFactory
 type HostPool = harness.HostPool

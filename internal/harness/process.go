@@ -22,6 +22,7 @@ import (
 const MaxFrame = 4 << 20
 
 type ProcessFactory struct {
+	Plugins         []PiPlugin
 	Command         []string
 	Steering        bool
 	Logger          *slog.Logger
@@ -221,6 +222,25 @@ func (p *process) read(r io.Reader) {
 				p.fail(errors.New("invalid harness event"))
 				return
 			}
+			if f.Event == "plugin.progress" {
+				var update struct {
+					ID   string          `json:"id"`
+					Data json.RawMessage `json:"data"`
+				}
+				if json.Unmarshal(f.Data, &update) != nil {
+					p.fail(errors.New("invalid plugin progress"))
+					return
+				}
+				a.mu.Lock()
+				callback := a.progress[update.ID]
+				a.mu.Unlock()
+				if callback == nil {
+					p.fail(errors.New("unbound plugin progress"))
+					return
+				}
+				callback(update.Data)
+				continue
+			}
 			if err := a.opts.Event(f.Event, f.Data); err != nil {
 				p.fail(err)
 				return
@@ -355,15 +375,38 @@ func (a *attachment) request(ctx context.Context, method string, params any) (js
 }
 
 type attachment struct {
-	id       string
-	host     *process
-	pool     *HostPool
-	opts     Options
-	mu       sync.Mutex
-	turn     string
-	calls    sync.WaitGroup
-	once     sync.Once
-	closeErr error
+	nativeTools []core.Tool
+	progress    map[string]func(json.RawMessage)
+	id          string
+	host        *process
+	pool        *HostPool
+	opts        Options
+	mu          sync.Mutex
+	turn        string
+	calls       sync.WaitGroup
+	once        sync.Once
+	closeErr    error
+}
+
+func (a *attachment) NativeTools() []core.Tool { return a.nativeTools }
+
+func (a *attachment) InvokeNative(ctx context.Context, call core.Call, progress func(json.RawMessage)) (core.Result, error) {
+	a.mu.Lock()
+	if a.progress == nil {
+		a.progress = map[string]func(json.RawMessage){}
+	}
+	a.progress[call.ID] = progress
+	a.mu.Unlock()
+	defer func() { a.mu.Lock(); delete(a.progress, call.ID); a.mu.Unlock() }()
+	data, err := a.request(ctx, "plugin.execute", call)
+	if err != nil {
+		return core.Result{}, err
+	}
+	var result core.Result
+	if err := json.Unmarshal(data, &result); err != nil {
+		return result, err
+	}
+	return result, nil
 }
 
 func (a *attachment) Prompt(ctx context.Context, input core.Text) error {

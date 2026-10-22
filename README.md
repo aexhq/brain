@@ -26,22 +26,25 @@ Brain gives you session-oriented primitives for building agents. Your applicatio
 - **[Checkpoints](https://aexhq.github.io/brain/docs/guides/persistence/)**: portable session state for recovering and moving sessions.
 
 ```ts
-import { Brain } from "@aexhq/brain";
+import { Pi, BrainServer, Model } from "brainserver";
 
-const brain = new Brain("http://127.0.0.1:8080", process.env.BRAIN_API_KEY!);
-const session = await brain.create({ harness: "pi", config: { model: "openai/gpt-4.1-mini", tools: ["echo"] } });
-const input = await brain.send(session.id, { type: "user.message", text: "Use echo to say hello." });
-
-for await (const event of brain.observe(session.id)) {
-  const data = event.data as { text?: string; message?: string; status?: string };
-  if (event.type === "assistant.message") console.log(data.text);
-  if (event.input_id !== input.id) continue;
-  if (event.type === "session.error") throw new Error(data.message);
-  if (event.type === "session.status" && data.status === "idle") break;
+const brain = new BrainServer();
+await brain.start();
+try {
+  const session = await brain.create({ harness: Pi(), model: Model("openai/gpt-4.1-mini"), tools: [] });
+  const input = await brain.send(session.id, { type: "user.message", text: "Say hello." });
+  for await (const event of brain.observe(session.id)) {
+    if (event.type === "assistant.message") console.log(event.data.text);
+    if (event.input_id !== input.id) continue;
+    if (event.type === "session.error") throw new Error(event.data.message);
+    if (event.type === "session.status" && event.data.status === "idle") break;
+  }
+} finally {
+  await brain.stop();
 }
 ```
 
-The `echo` tool comes from the [example tool server](examples/tools/README.md), a small service you run next to Brain.
+Save this as `agent.mjs` and follow the setup below.
 
 ## Why Brain
 
@@ -54,33 +57,22 @@ The `echo` tool comes from the [example tool server](examples/tools/README.md), 
 
 ## Get started
 
-You need Go 1.26+, Node.js 24+, and an API key from a model provider such as OpenAI.
+You need Node.js 24+ and an OpenAI API key for the example above.
 
-1. **Start Brain.** Clone the repository, build the Pi harness, and start the server:
+1. **Install Brain.** The package includes the server and harness runtimes:
 
    ```sh
-   git clone https://github.com/aexhq/brain.git
-   cd brain
-   npm --prefix runners/pi ci --ignore-scripts
-   npm --prefix runners/pi run build
-   export BRAIN_API_KEY="replace-with-a-random-token-of-at-least-24-bytes"
+   npm install brainserver
+   ```
+
+2. **Run your script.** Set the provider key, then start the example:
+
+   ```sh
    export OPENAI_API_KEY="your-provider-key"
-   go run ./cmd/brain -config examples/local.json
+   node agent.mjs
    ```
 
-   To run the published container image instead, follow [Run Brain in a container](https://aexhq.github.io/brain/docs/guides/operations/#run-brain-in-a-container).
-
-2. **Install an SDK.** Add the SDK to your application with `npm install @aexhq/brain` or `pip install aex-brain`. Client applications need neither a checkout nor Go.
-
-3. **Run the example session.** In a second terminal in the checkout, install the SDK for the example and start a session:
-
-   ```sh
-   export BRAIN_API_KEY="replace-with-a-random-token-of-at-least-24-bytes"
-   npm install --no-save --package-lock=false @aexhq/brain@2.1.0
-   node examples/session.mjs "Explain what makes a good agent tool."
-   ```
-
-The [Quickstart](https://aexhq.github.io/brain/docs/quickstart/) walks through the same steps in PowerShell, Python, and cURL.
+The [Quickstart](https://aexhq.github.io/brain/docs/quickstart/) includes PowerShell setup. For a separately deployed server, use the [container image](https://aexhq.github.io/brain/docs/guides/operations/#run-brain-in-a-container) and connect with `@aexhq/brain` or `aex-brain`.
 
 ## Documentation
 
