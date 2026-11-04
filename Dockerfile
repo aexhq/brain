@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 AS runner
+FROM node:26-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS runner
 WORKDIR /build/runners/pi
 COPY runners/pi/package*.json ./
 RUN npm ci --ignore-scripts
@@ -26,7 +26,7 @@ COPY *.go ./
 RUN CGO_ENABLED=0 go build -trimpath -o /brain ./cmd/brain
 RUN CGO_ENABLED=0 go build -trimpath -o /resource-tools ./cmd/resource-tools
 
-FROM node:24-bookworm-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5
+FROM node:26-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9
 LABEL org.opencontainers.image.source="https://github.com/aexhq/brain"
 WORKDIR /app
 COPY --from=server /brain /app/brain
