@@ -2,6 +2,24 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Pi, Codex, OpenCode, PiWebAccess, Brain, BrainError, Model, ApiKey, CredentialReference, ManagedTool, AwsS3, Modal, E2B, Daytona } from "../dist/index.js";
 
+test('embedded servers can assign their URL after construction and change it on restart', async () => {
+  const requests = [];
+  const brain = new Brain('', 'token', async request => {
+    requests.push(request.url);
+    return Response.json({ id: 'one' });
+  });
+  brain.url = 'http://127.0.0.1:8001';
+  await brain.get('one');
+  brain.url = 'http://127.0.0.1:8002';
+  await brain.get('one');
+  await brain.downloadAttachment('one', 'attachment');
+  assert.deepEqual(requests, [
+    'http://127.0.0.1:8001/sessions/one',
+    'http://127.0.0.1:8002/sessions/one',
+    'http://127.0.0.1:8002/sessions/one/attachments?reference=attachment',
+  ]);
+});
+
 test('typed requests encode opaque IDs and preserve authentication, cancellation and redirect policy', async () => {
   const abort = new AbortController();
   let sent;

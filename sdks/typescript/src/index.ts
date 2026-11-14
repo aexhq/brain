@@ -26,14 +26,14 @@ export class Brain {
   private readonly http: Client<paths, "application/json">;
   constructor(readonly url: string, private readonly token: string, private readonly requestFetch: typeof fetch = (...args) => globalThis.fetch(...args)) {
     this.http = createClient<paths, "application/json">({
-      baseUrl: new URL("/", url).href, fetch: request => this.requestFetch(request),
+      fetch: request => this.requestFetch(request),
       headers: { Authorization: `Bearer ${token}` }, redirect: "error",
     });
     this.http.use({ onResponse: async ({ response }) => { if (!response.ok) await this.fail(response); } });
   }
-  private request<T>(operation: string, action: (options: { headers: Record<string, string>; signal: AbortSignal }) => Promise<{ data?: T }>, signal?: AbortSignal): Promise<T> {
+  private request<T>(operation: string, action: (options: { baseUrl: string; headers: Record<string, string>; signal: AbortSignal }) => Promise<{ data?: T }>, signal?: AbortSignal): Promise<T> {
     return instrumentRequest(operation, async headers => {
-      const { data } = await action({ headers, signal: signal ?? AbortSignal.timeout(30000) });
+      const { data } = await action({ baseUrl: new URL("/", this.url).href, headers, signal: signal ?? AbortSignal.timeout(30000) });
       if (data === undefined) throw new Error("missing response body");
       return data;
     });
@@ -94,7 +94,7 @@ export class Brain {
   }
   async downloadAttachment(id: string, reference: string, signal?: AbortSignal): Promise<Response> {
     return instrumentRequest('downloadAttachment', async headers => {
-      const { response } = await this.http.GET('/sessions/{id}/attachments', { params: { path: { id }, query: { reference } }, parseAs: 'stream', headers, signal: signal ?? AbortSignal.timeout(30000) });
+      const { response } = await this.http.GET('/sessions/{id}/attachments', { baseUrl: new URL('/', this.url).href, params: { path: { id }, query: { reference } }, parseAs: 'stream', headers, signal: signal ?? AbortSignal.timeout(30000) });
       return response;
     });
   }
