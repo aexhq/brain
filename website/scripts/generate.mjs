@@ -16,14 +16,14 @@ for (const entry of await readdir(apiDir, { withFileTypes: true })) {
   if (entry.isFile() && (entry.name.endsWith('.mdx') || entry.name === 'meta.json')) await unlink(path.join(apiDir, entry.name));
 }
 await generateFiles({
-  input: createOpenAPI({ input: { brain: path.join(root, 'api/openapi.json') } }),
+  input: createOpenAPI({ input: { brain: path.join(root, 'services/brain/api/openapi.json') } }),
   output: apiDir, includeDescription: true, addGeneratedComment: true,
 });
-const contract = JSON.parse(await readFile(path.join(root, 'api/openapi.json'), 'utf8'));
+const contract = JSON.parse(await readFile(path.join(root, 'services/brain/api/openapi.json'), 'utf8'));
 const operations = Object.values(contract.paths).flatMap(item => Object.values(item).map(op => op.operationId));
 await writeFile(path.join(apiDir, 'meta.json'), JSON.stringify({ title: 'Endpoints', pages: operations }));
 await mkdir(path.join(site, 'public'), { recursive: true });
-await copyFile(path.join(root, 'api/openapi.json'), path.join(site, 'public/openapi.json'));
+await copyFile(path.join(root, 'services/brain/api/openapi.json'), path.join(site, 'public/openapi.json'));
 
 async function page(file, title, description, body) {
   const target = path.join(content, file);

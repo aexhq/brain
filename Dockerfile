@@ -26,7 +26,7 @@ WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -trimpath -o /out/brain ./services/brain/cmd/brain && CGO_ENABLED=0 go build -trimpath -o /out/storage ./services/storage && CGO_ENABLED=0 go build -trimpath -o /out/tools ./services/tools && CGO_ENABLED=0 go build -trimpath -o /out/sandbox ./services/sandbox
+RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -trimpath -o /out/brain ./services/brain/cmd/brain && CGO_ENABLED=0 go build -trimpath -o /out/storage ./services/storage/cmd/storage && CGO_ENABLED=0 go build -trimpath -o /out/tools ./services/tools/cmd/tools && CGO_ENABLED=0 go build -trimpath -o /out/sandbox ./services/sandbox/cmd/sandbox
 
 FROM busybox:1.37.0-glibc@sha256:42a9ff19af33811ee466b24c66384461d37c32dcc28d1d27d49b8aca816bd5ee AS base
 LABEL org.opencontainers.image.source="https://github.com/aexhq/brain"

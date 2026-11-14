@@ -62,6 +62,38 @@ func TestAppendBlocksRestoreAndPublicationFailure(t *testing.T) {
 	archiveContract(t, a, objects, s, l)
 }
 
+func TestUploadStateConcurrentPublicationAndStatus(t *testing.T) {
+	_, _, snapshot, _ := fixture(t)
+	initial := Manifest{ID: core.ID(), Session: snapshot.Session}
+	if err := saveState(snapshot.Directory, initial); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("publish", func(t *testing.T) {
+		t.Parallel()
+		state := initial
+		for i := range 200 {
+			state.HistoryBytes = int64(i)
+			if err := saveState(snapshot.Directory, state); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+	for range 4 {
+		t.Run("status", func(t *testing.T) {
+			t.Parallel()
+			for range 200 {
+				state, err := ReadState(snapshot.Directory)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if state == nil || state.ID != initial.ID || state.HistoryBytes < 0 || state.HistoryBytes >= 200 {
+					t.Fatalf("incomplete upload state: %+v", state)
+				}
+			}
+		})
+	}
+}
+
 func archiveContract(t *testing.T, a *Archive, objects *recordedObjects, s Snapshot, l *store.Log) {
 	t.Helper()
 	ctx := context.Background()

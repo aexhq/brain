@@ -1,0 +1,410 @@
+{
+  "components": {
+    "schemas": {
+      "Content": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "ErrorDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ModelRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_id": {
+            "type": "string"
+          },
+          "attempts": {
+            "type": "string"
+          },
+          "boundary": {
+            "type": "string"
+          },
+          "harness": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "provider_request_id": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "unmeasured": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "usage": {
+            "$ref": "#/components/schemas/ModelUsage"
+          }
+        },
+        "required": [
+          "request_id",
+          "purpose",
+          "boundary",
+          "state",
+          "harness",
+          "provider",
+          "model",
+          "attempts",
+          "usage"
+        ],
+        "type": "object"
+      },
+      "ModelUsage": {
+        "additionalProperties": false,
+        "properties": {
+          "availability": {
+            "type": "string"
+          },
+          "cache_read_tokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "cache_write_tokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "input_cache": {
+            "type": "string"
+          },
+          "input_tokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "output_reasoning": {
+            "type": "string"
+          },
+          "output_tokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "reasoning_tokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "semantics": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "availability",
+          "semantics",
+          "input_cache",
+          "output_reasoning"
+        ],
+        "type": "object"
+      },
+      "NativeFile": {
+        "additionalProperties": false,
+        "properties": {
+          "append_only": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "size",
+          "append_only"
+        ],
+        "type": "object"
+      },
+      "OpenOptions": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/SessionConfig"
+          },
+          "dir": {
+            "type": "string"
+          },
+          "media_origins": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "plugins": {
+            "items": {
+              "$ref": "#/components/schemas/PiPlugin"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "provider": {
+            "$ref": "#/components/schemas/Provider"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/Tool"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "session_id",
+          "dir",
+          "config",
+          "tools",
+          "provider"
+        ],
+        "type": "object"
+      },
+      "PiPlugin": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {},
+          "name": {
+            "type": "string"
+          },
+          "tools": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "Provider": {
+        "additionalProperties": false,
+        "properties": {
+          "api": {
+            "type": "string"
+          },
+          "api_key": {
+            "type": "string"
+          },
+          "base_url": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "Result": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "items": {
+              "$ref": "#/components/schemas/Content"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "is_error": {
+            "type": "boolean"
+          },
+          "structured_content": {},
+          "unknown_outcome": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "type": "object"
+      },
+      "RunnerFrame": {
+        "additionalProperties": false,
+        "properties": {
+          "attachment": {
+            "type": "string"
+          },
+          "data": {},
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          },
+          "event": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "params": {},
+          "result": {},
+          "turn": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "attachment"
+        ],
+        "type": "object"
+      },
+      "SessionConfig": {
+        "additionalProperties": false,
+        "properties": {
+          "bindings": {
+            "items": {
+              "$ref": "#/components/schemas/ToolBinding"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "instructions": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "reasoning_effort": {
+            "type": "string"
+          },
+          "tools": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "model",
+          "tools"
+        ],
+        "type": "object"
+      },
+      "Tool": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "input_schema": {},
+          "name": {
+            "type": "string"
+          },
+          "output_schema": {}
+        },
+        "required": [
+          "name",
+          "description",
+          "input_schema"
+        ],
+        "type": "object"
+      },
+      "ToolBinding": {
+        "additionalProperties": false,
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "executor": {
+            "type": "string"
+          },
+          "operations": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "parameters": {},
+          "provider": {
+            "type": "string"
+          },
+          "runtime": {
+            "items": {
+              "$ref": "#/components/schemas/Tool"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "alias"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Brain agent protocol",
+    "version": "current"
+  },
+  "openapi": "3.1.0",
+  "paths": {}
+}

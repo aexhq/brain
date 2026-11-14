@@ -112,10 +112,15 @@ await mkdir(main);
 // platform packages. Their complete locked native trees stay opaque to npm.
 for (const file of ['index.js', 'index.d.ts', 'process.js', 'README.md']) await copyFile(path.join(root, 'packages/brainserver', file), path.join(main, file));
 await cp(path.join(root, 'sdks/typescript/dist'), path.join(main, 'sdk'), { recursive: true });
-await cp(path.join(root,'sdks/typescript/node_modules/@opentelemetry/api'),path.join(main,'node_modules/@opentelemetry/api'),{recursive:true});
+const sdk = JSON.parse(await readFile(path.join(root, 'sdks/typescript/package.json'), 'utf8'));
+// Bundle the SDK's production dependencies, including transitive dependencies.
+await cp(path.join(root, 'sdks/typescript/package-lock.json'), path.join(main, 'package-lock.json'));
+await writeFile(path.join(main, 'package.json'), JSON.stringify(sdk));
+run('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], main);
+await rm(path.join(main, 'package-lock.json'));
 await copyFile(path.join(root, 'LICENSE'), path.join(main, 'LICENSE'));
 const manifest = {
-  ...pkg, dependencies: {'@opentelemetry/api':'1.9.0'}, bundledDependencies:['@opentelemetry/api'], overrides: undefined,
+  ...pkg, dependencies: sdk.dependencies, bundledDependencies: Object.keys(sdk.dependencies), overrides: undefined,
   optionalDependencies: Object.fromEntries(targets.flatMap(target => [
     [`@aexhq/brainserver-${target}`, pkg.version], [`@aexhq/brainserver-codex-${target}`, pkg.version],
   ])),

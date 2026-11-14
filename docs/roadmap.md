@@ -21,7 +21,7 @@ The existing embedded Node/Go application package continues to ship Pi, Codex an
 ## Available today
 
 - **[Sessions](https://aexhq.github.io/brain/docs/guides/sessions/):** choose Pi, Codex or OpenCode, stream events, interrupt and resume turns, and recover sessions after a restart.
-- **SDKs:** the [TypeScript SDK](https://aexhq.github.io/brain/docs/sdks/typescript/) on npm and the [Python SDK](https://aexhq.github.io/brain/docs/sdks/python/) on PyPI.
+- **SDKs:** the [TypeScript SDK](https://aexhq.github.io/brain/docs/sdks/typescript/) on npm.
 - **Node application:** configure Pi, Codex, and OpenCode with typed harness constructors in `brainserver`; install Pi web-access, foreground-subagent, and MCP plugins through named server profiles.
 - **Tools:** [HTTP and SSE tools](https://aexhq.github.io/brain/docs/tools/) in your own services, and [MCP tools](https://aexhq.github.io/brain/docs/tools/mcp/) from remote MCP servers.
 - **[Persistence](https://aexhq.github.io/brain/docs/guides/persistence/):** checkpoint archives in a local directory, Amazon S3, Cloudflare R2, or Google Cloud Storage, and an optional PostgreSQL session index.
@@ -40,7 +40,7 @@ Integrate services against one contract with Pi, Codex and OpenCode, server defa
 
 ### Application SDK and session-bound integrations
 
-- **Status:** Available for Go application composition, authorized provider bindings, encrypted session credentials, TypeScript/Python runtime functions, direct HTTP/SSE, reverse SSE/HTTP, WebSocket RPC, MCP HTTP/stdio, and optional authorized session reads. [Plan 11](https://github.com/aexhq/brain/blob/main/docs/plans/11-application-sdk.md) records implementation evidence and remaining adapter gates.
+- **Status:** Available for Go application composition, authorized provider bindings, encrypted session credentials, TypeScript runtime functions, direct HTTP/SSE, reverse SSE/HTTP, WebSocket RPC, MCP HTTP/stdio, and optional authorized session reads. [Plan 11](https://github.com/aexhq/brain/blob/main/docs/plans/11-application-sdk.md) records implementation evidence and remaining adapter gates.
 - **Today:** Use the [Go application SDK](https://aexhq.github.io/brain/docs/sdks/application/) to install providers and keep runtime clients connected. Browser apps use the [same-origin gateway](https://aexhq.github.io/brain/docs/tools/browser/); reconnect and rebind explicitly.
 
 ### Node application package
@@ -136,7 +136,7 @@ Brain is built in stages: a solid local session server first, then portable sess
 | --- | --- | --- | --- | --- |
 | **R0: Local preview** | Run and manage local Pi sessions through one server. | Session records in SQLite, append-only event and harness-state files, the session and streaming API, interrupt and resume, HTTP and SSE tools, approval and inspection examples, the TypeScript SDK, OpenTelemetry, and bounded queues. | End-to-end Pi lifecycle, restart recovery, separate tool and session errors, responsiveness during tool waits, tenant isolation, stream reconnects, and overload checks. | Available |
 | **R1: Portable state** | Move or recover sessions across servers with external object storage. | S3, R2, and filesystem checkpoint stores, an optional PostgreSQL session index, background batching and retries, and explicit flush, sync, and restore. | PostgreSQL and S3/R2 contract suites, restore into an empty cache with the model's context intact, interrupted-upload tests, and backpressure tests during archive outages. | Available |
-| **R2: Multi-harness beta** | Choose Pi, OpenCode, or Codex per session through the same API. | Pinned native adapters, MCP tools, passive native recovery and the Python SDK. | Conformance for context after restore, queues during tool waits, error boundaries and native-tool exclusion. | Implemented and verified locally; CI gates release. |
+| **R2: Multi-harness beta** | Choose Pi, OpenCode, or Codex per session through the same API. | Pinned native adapters, MCP tools, passive native recovery. | Conformance for context after restore, queues during tool waits, error boundaries and native-tool exclusion. | Implemented and verified locally; CI gates release. |
 | **R3: Tool catalog beta** | Attach ready-made storage, web research, browser, and compute tools. | External tool services for storage, sandboxes, browsers and web research. | Isolation, quota, approval and cleanup tests for each service against real providers. | Partly available: storage, web research, sandboxes and browsers have local verification. Fly Machines and live-provider qualification remain follow-ups. |
 | **R4: Operational release** | Run Brain as a predictable compute unit in a multi-tenant fleet. | Multi-instance load and soak benchmarks, long-session compaction and checkpoint measurements, and handoff and disaster-recovery drills. | Every advertised adapter passes credentialed CI, soak suites, and restore drills on fresh infrastructure, with published hardware and workload numbers. | Planned |
 
@@ -160,7 +160,7 @@ These documents are for contributors. They record how Brain is designed and how 
 | Pi, OpenCode, and Codex runners | [03 Harness adapters](https://github.com/aexhq/brain/blob/main/docs/plans/03-harness-adapters.md) | R0 (Pi), R2 (OpenCode, Codex) |
 | Service integration prerequisites | [12 Service integration readiness](https://github.com/aexhq/brain/blob/main/docs/plans/12-service-integration-readiness.md) | Integration cutover gate |
 | HTTP/SSE, MCP, and external tool catalog | [04 Distributed tools](https://github.com/aexhq/brain/blob/main/docs/plans/04-distributed-tools.md) | R0 (HTTP/SSE), R2 (MCP), R3 (catalog) |
-| HTTP contract and TypeScript/Python SDKs | [05 API and SDKs](https://github.com/aexhq/brain/blob/main/docs/plans/05-api-and-sdks.md) | R0–R2 |
+| HTTP contract and TypeScript SDKs | [05 API and SDKs](https://github.com/aexhq/brain/blob/main/docs/plans/05-api-and-sdks.md) | R0–R2 |
 | Telemetry, limits, Docker, and capacity | [06 Observability and operations](https://github.com/aexhq/brain/blob/main/docs/plans/06-observability-and-operations.md) | R0–R4 |
 | Test suites and release gates | [07 Verification and release](https://github.com/aexhq/brain/blob/main/docs/plans/07-verification-and-release.md) | R0–R4 |
 | Cloud storage, MCP, tool catalog, harnesses, and capacity evidence | [08 Integration expansion](https://github.com/aexhq/brain/blob/main/docs/plans/08-integration-expansion.md) | R1–R4 |

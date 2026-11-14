@@ -1,5 +1,7 @@
 # 12 Service integration readiness
 
+> Scope update (2026-11-14): the Python SDK and its delivery path were removed. Python SDK evidence below describes the earlier implementation; the supported client is TypeScript. See [repository tooling decisions](../implementation-plan.md#sdk-and-tooling-direction).
+
 Implements [ADR 0004](../adr/0004-service-integration-readiness.md), accepted on 2026-10-19. All eight slices are implemented in source. CI remains the release gate; published packages and dependent-service cutover are separate actions. The browser path is a same-origin gateway with SSE/HTTP; usage may be explicitly unknown; aggregate pool controls and hard OS limits are off by default. Code and tests own implemented behavior; qualification records distinguish local tests from live-service evidence.
 
 ## Session handoff
@@ -25,7 +27,7 @@ Usage contract work precedes final adapter qualification so three implementation
 
 ## Implementation entry points
 
-- Authoring: `sdks/typescript/src/index.ts`, `runtime.ts`, Python client equivalents, `server.go`, public provider types and `integrations/providers.go`.
+- Authoring: `sdks/typescript/src/index.ts`, `executor.ts`, `server.go`, public provider types and `integrations/providers.go`.
 - Authority and credentials: `services/brain/api/auth.go`, `server.go`, `services/brain/api/types.go`, `services/brain/internal/sessions/credentials.go`, `credentials` and configured provider resolution.
 - Host ownership: `runtimes/host/process.go`, `ownership_linux.go`, `ownership_windows.go`, `services/brain/internal/sessions/engine.go`; preserve the existing protocol and native-state owner rather than introducing a second scheduler.
 - Request evidence: `runtimes/host/harness.go`, `services/brain/api/types.go`, session event persistence and `runtimes/pi/src/main.ts`; new adapters use the same path.

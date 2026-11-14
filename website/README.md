@@ -27,7 +27,7 @@ npm --prefix website start
 | Source | Generated / published output |
 | --- | --- |
 | `website/content/docs/**/*.mdx` | Authored guides and reference pages |
-| `api/openapi.json` | `/docs/api/generated/*` and `/openapi.json` |
+| `services/brain/api/openapi.json` | `/docs/api/generated/*` and `/openapi.json` |
 | `internal/harness` & `internal/persistence` | `/docs/adapters/interfaces` |
 | Pinned Pi runtime model registry (`runtimes/pi`) | `/docs/reference/model-catalog` |
 | `docs/running-persistence.md` | `/docs/guides/persistence` |

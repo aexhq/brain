@@ -11,8 +11,8 @@ test('SDK propagates trace context without recording credentials, IDs or payload
     } }) },
     meterProvider: { getMeter: () => ({ createHistogram: (name, options) => ({ record: (value, attributes) => measurements.push({ name, options, value, attributes }) }) }) },
   });
-  const brain = new Brain('http://private-host', 'secret-token', async (_url, init) => {
-    assert.equal(new Headers(init.headers).get('traceparent'), `00-${'1'.repeat(32)}-${'2'.repeat(16)}-01`);
+  const brain = new Brain('http://private-host', 'secret-token', async request => {
+    assert.equal(request.headers.get('traceparent'), `00-${'1'.repeat(32)}-${'2'.repeat(16)}-01`);
     return Response.json({ id: 'customer-private-session' });
   });
   await brain.get('customer-private-session');

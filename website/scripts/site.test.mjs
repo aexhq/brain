@@ -10,7 +10,7 @@ const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
 const read = file => readFile(path.join(out, file), 'utf8');
 const documentFiles = (await readdir(path.join(out, 'docs'), { recursive: true }))
   .filter(file => file.endsWith('index.html')).map(file => path.join('docs', file));
-const contractText = await readFile(path.join(site, '../api/openapi.json'), 'utf8');
+const contractText = await readFile(path.join(site, '../services/brain/api/openapi.json'), 'utf8');
 const contract = JSON.parse(contractText);
 const operations = Object.entries(contract.paths).flatMap(([route, methods]) =>
   Object.entries(methods).map(([method, operation]) => ({ route, method, ...operation })));

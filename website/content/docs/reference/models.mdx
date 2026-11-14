@@ -55,7 +55,7 @@ When `api_key_env` is present, that environment variable must be set and non-emp
 
 An override takes precedence over the startup key. Rejected, revoked, unavailable, or missing override records fail explicitly without selecting the default. Direct keys and reference selections are encrypted before admission succeeds and included as encrypted recovery records in checkpoints. Public configuration, events, and model arguments contain neither the key nor the reference. Clients cannot supply provider endpoints through this field.
 
-Use `Model(name, ApiKey(key))` or `Model(name, CredentialReference(reference))` in the [TypeScript](/docs/sdks/typescript) and [Python](/docs/sdks/python) clients. The Go application SDK installs defaults and authorization through `Options.Models` and administers overrides with `Server.RotateCredentials` and `Server.RevokeModelCredential`.
+Use `Model(name, ApiKey(key))` or `Model(name, CredentialReference(reference))` in the [TypeScript](/docs/sdks/typescript) client. The Go application SDK installs defaults and authorization through `Options.Models` and administers overrides with `Server.RotateCredentials` and `Server.RevokeModelCredential`.
 
 ## Reasoning effort
 

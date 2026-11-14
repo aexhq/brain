@@ -9,7 +9,7 @@ A session is one agent conversation that belongs to one tenant. You [create a se
 
 ## Before you begin
 
-The examples use a client for the `local` tenant from the [Quickstart](/docs/quickstart). Install the JavaScript/TypeScript or Python package as described there.
+The examples use a client for the `local` tenant from the [Quickstart](/docs/quickstart). Install the JavaScript/TypeScript package as described there.
 
 ```ts tab="TypeScript"
 import { Brain } from "@aexhq/brain";
@@ -17,13 +17,6 @@ import { Brain } from "@aexhq/brain";
 const brain = new Brain("http://127.0.0.1:8080", process.env.BRAIN_API_KEY!);
 ```
 
-```python tab="Python"
-import os
-
-from brain import Brain
-
-brain = Brain("http://127.0.0.1:8080", os.environ["BRAIN_API_KEY"])
-```
 
 ## Session statuses
 
@@ -61,12 +54,6 @@ const session = await brain.create({
 });
 ```
 
-```python tab="Python"
-session = brain.create({
-    "harness": "pi",
-    "config": {"model": "openai/gpt-4.1-mini", "instructions": "Answer in one paragraph.", "tools": []},
-})
-```
 
 Brain returns `201 Created` with the session in status `idle`:
 
@@ -106,9 +93,6 @@ curl http://127.0.0.1:8080/sessions/SESSION_ID/events \
 const input = await brain.send(session.id, { type: "user.message", text: "Summarize our plan.", key: "msg-0001" });
 ```
 
-```python tab="Python"
-message = brain.send(session["id"], {"type": "user.message", "text": "Summarize our plan.", "key": "msg-0001"})
-```
 
 A session runs one turn at a time. Messages sent while a turn runs wait in order, up to `queue` messages (16 by default).
 
@@ -132,7 +116,7 @@ Keys are stored with the event log and still apply after Brain restarts.
 
 ## Delete a session
 
-Call `brain.delete(session.id)` in TypeScript or `brain.delete(session["id"])` in Python. Deletion interrupts active work, disconnects runtime tools, and removes the session's local files, private credentials and online checkpoints. A management credential is required.
+Call `brain.delete(session.id)`. Deletion interrupts active work, disconnects runtime tools, and removes the session's local files, private credentials and online checkpoints. A management credential is required.
 
 If cleanup fails, repeat the deletion with the same session ID. Brain retains a tombstone throughout cleanup so reads and checkpoint restores cannot recreate the session. A successful response confirms online cleanup; independently retained backups follow your retention policy. See [Delete a session](/docs/api/generated/delete).
 
@@ -189,23 +173,6 @@ for await (const event of brain.observe(session.id, { after: cursor })) {
 }
 ```
 
-```python tab="Python"
-cursor = ""
-stream = brain.observe(session["id"], after=cursor)
-try:
-    for event in stream:
-        cursor = event.get("cursor") or cursor  # save for reconnecting
-        if event["type"] == "assistant.delta":
-            print(event["data"]["text"], end="", flush=True)
-        if event.get("input_id") != message["id"]:
-            continue
-        if event["type"] == "session.error":
-            raise RuntimeError(event["data"]["message"])
-        if event["type"] == "session.status" and event["data"]["status"] == "idle":
-            break
-finally:
-    stream.close()
-```
 
 ### Know when a turn ends
 
@@ -217,7 +184,7 @@ Brain emits `session.status` with `running` and the message's `input_id` when a 
 
 ### Reconnect after a disconnect
 
-Disconnecting doesn't stop the turn. To resume streaming after a disconnect, pass the cursor of the last retained event you processed as `{ after: cursor }` in TypeScript, `after=cursor` in Python, or the `after` query parameter or `Last-Event-ID` header over HTTP.
+Disconnecting doesn't stop the turn. To resume streaming after a disconnect, pass the cursor of the last retained event you processed as `{ after: cursor }` in TypeScript, or the `after` query parameter or `Last-Event-ID` header over HTTP.
 
 <Callout type="warn" title="Slow consumers">
 Brain buffers up to `subscriber_events` events (128) and `subscriber_bytes` (2 MiB) for each stream. A client that falls further behind is disconnected and must reconnect from its last cursor. When `subscribers` streams (128) are already open, a new stream gets `429`. A cursor outside the session's retained history returns `409 cursor_unavailable`; this can happen after a restore drops an unsynced tail.
@@ -238,9 +205,6 @@ curl http://127.0.0.1:8080/sessions/SESSION_ID/events \
 await brain.interrupt(session.id);
 ```
 
-```python tab="Python"
-brain.interrupt(session["id"])
-```
 
 Brain asks the harness to stop, cancels the turn, and emits `session.error` with code `conflict` for the turn and for each queued message. The session then moves to `interrupted`. An interrupt request accepts no other fields.
 
@@ -261,9 +225,6 @@ curl -X POST http://127.0.0.1:8080/sessions/SESSION_ID/resume \
 await brain.resume(session.id);
 ```
 
-```python tab="Python"
-brain.resume(session["id"])
-```
 
 Resuming needs a token with `manage` and returns the session. An `idle` session is returned unchanged. A running or closed session returns `409`. After resuming, send a new message to continue.
 
@@ -280,9 +241,6 @@ curl -X POST http://127.0.0.1:8080/sessions/SESSION_ID/close \
 await brain.close(session.id);
 ```
 
-```python tab="Python"
-brain.close(session["id"])
-```
 
 The event history stays readable after you close a session; new messages return `409`. Resources that tools created, such as sandboxes, belong to the tool services, which clean them up.
 

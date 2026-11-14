@@ -1,6 +1,6 @@
 {
   "name": "brainserver",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "description": "Run Brain with Pi, Codex, OpenCode, and configured Pi extensions from Node.js",
   "license": "MIT",
   "type": "module",

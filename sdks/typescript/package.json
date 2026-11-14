@@ -1,6 +1,6 @@
 {
   "name": "@aexhq/brain",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "description": "Typed client for Brain sessions, tools, checkpoints, and event streams",
   "license": "MIT",
   "homepage": "https://aexhq.github.io/brain/docs/sdks/typescript/",
@@ -40,15 +40,19 @@
     }
   },
   "scripts": {
-    "build": "tsc && node ../../scripts/build-cli.mjs",
+    "build": "node -e \"require('node:fs').rmSync('dist', {recursive:true, force:true})\" && tsc && node ../../cli/scripts/build.mjs",
     "check": "tsc --noEmit",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "generate": "node scripts/generate.mjs"
   },
   "devDependencies": {
+    "openapi-typescript": "7.13.0",
     "typescript": "5.9.3"
   },
   "dependencies": {
-    "@opentelemetry/api": "1.9.0"
+    "@opentelemetry/api": "1.9.0",
+    "commander": "15.1.0",
+    "openapi-fetch": "0.17.0"
   },
   "bin": {
     "brain": "./dist/cli.mjs"

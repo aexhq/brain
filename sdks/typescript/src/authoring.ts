@@ -1,11 +1,11 @@
 import type { CreateSession, ModelCredential, ToolBinding } from "./generated.js";
-import type { RuntimeTool } from "./runtime.js";
+import type { BrowserTool } from "./executor.js";
 import type { Harness } from './harnesses.js';
 
 export const ApiKey = (value: string): ModelCredential => ({ api_key: value });
 export const CredentialReference = (value: string): ModelCredential => ({ reference: value });
 export const Model = (name: string, credential?: ModelCredential) => ({ name, credential });
-export const Tool = (tool: RuntimeTool): RuntimeTool => tool;
+export const Tool = (tool: BrowserTool): BrowserTool => tool;
 export type Tool = import("./generated.js").Tool;
 
 export interface ManagedSelection {
@@ -22,15 +22,15 @@ export interface SessionOptions {
   id?: string;
   harness: Harness;
   model: ReturnType<typeof Model>;
-  tools?: (ManagedSelection | RuntimeTool)[];
+  tools?: (ManagedSelection | BrowserTool)[];
   instructions?: string;
   reasoning_effort?: string;
 }
 
-export function lower(input: SessionOptions): { wire: CreateSession; runtime: RuntimeTool[] } {
+export function lower(input: SessionOptions): { wire: CreateSession; runtime: BrowserTool[] } {
   if (!input.harness || typeof input.harness !== 'object' || typeof input.harness.name !== 'string') throw new Error('Select a harness with Pi(), Codex(), or OpenCode()');
   if (Object.keys(input.harness).some(key => key !== 'kind' && key !== 'name')) throw new Error('Install harness options on BrainServer; remote clients select a named profile');
-  const names: string[] = [], bindings: ToolBinding[] = [], runtime: RuntimeTool[] = [];
+  const names: string[] = [], bindings: ToolBinding[] = [], runtime: BrowserTool[] = [];
   const credentials: NonNullable<CreateSession["credentials"]> = [];
   for (const tool of input.tools ?? []) {
     if (!("kind" in tool)) { runtime.push(tool); continue; }

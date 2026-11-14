@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { createJiti } from 'jiti';
 import type { ExtensionAPI, ExtensionFactory, ToolDefinition } from '@earendil-works/pi-coding-agent';
-import type { PiPlugin, Tool } from './generated.js';
+import type { PiPlugin, Tool, Result } from './generated.js';
 
 const require = createRequire(import.meta.url);
 const jiti = createJiti(import.meta.url, { fsCache: false });
@@ -28,7 +28,7 @@ function foregroundSubagent(parameters: Record<string, any>) {
 /** Plugins use process-global configuration, so their factory owns one session per host. */
 export async function plugins(
   selected: PiPlugin[],
-  call: (name: string, id: string, args: unknown, signal?: AbortSignal) => Promise<{ content: any[]; structured_content?: unknown; is_error?: boolean }>,
+  call: (name: string, id: string, args: unknown, signal?: AbortSignal) => Promise<Result>,
   progress: (id: string, value: unknown) => void,
   applicationTools: string[],
 ) {
@@ -132,8 +132,12 @@ export async function plugins(
                   });
                   try {
                     const result = await call(tool.name, id, args, signal);
-                    if (result.is_error) throw new Error(result.content.map(c => c.text ?? '').join('\n'));
-                    return { content: result.content.map(c => c.type === 'image' ? { type: 'image' as const, data: c.data, mimeType: c.mime_type } : { type: 'text' as const, text: c.text ?? '' }), details: result.structured_content ?? {} };
+                    if (result.is_error) throw new Error((result.content ?? []).map(c => c.text ?? '').join('\n'));
+                    return { content: (result.content ?? []).map(c => {
+                      if (c.type === 'image' && c.data && c.mime_type) return { type: 'image' as const, data: c.data, mimeType: c.mime_type };
+                      if (c.type === 'text') return { type: 'text' as const, text: c.text ?? '' };
+                      throw new Error('unsupported tool content');
+                    }), details: result.structured_content ?? {} };
                   } finally { pending.delete(id); }
                 },
               });

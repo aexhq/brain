@@ -4,11 +4,11 @@ package store
 import (
 	"context"
 	"errors"
-	"github.com/aexhq/brain/internal/volume"
 	"os"
 	"path/filepath"
 	"sync"
 
+	"github.com/aexhq/brain/internal/dirlock"
 	core "github.com/aexhq/brain/services/brain/api"
 )
 
@@ -47,7 +47,7 @@ func Open(root string) (*Store, error) {
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return nil, err
 	}
-	lock, err := volume.Lock(root)
+	lock, err := dirlock.Lock(root)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +72,7 @@ func New(root string, metadata Metadata) (*Store, error) {
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return nil, err
 	}
-	lock, err := volume.Lock(root)
+	lock, err := dirlock.Lock(root)
 	if err != nil {
 		return nil, err
 	}

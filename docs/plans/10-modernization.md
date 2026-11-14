@@ -1,5 +1,7 @@
 # 10: Published clients and subsystem boundaries
 
+> Scope update (2026-11-14): the Python SDK and its delivery path were removed. Python SDK evidence below describes the earlier implementation; the supported client is TypeScript. See [repository tooling decisions](../implementation-plan.md#sdk-and-tooling-direction).
+
 Status: implemented and deployed. Main CI, images, and docs passed; SDK 1.0.0 is published on npm and PyPI, with tested archives also available on GitHub Releases. Authorized 2026-10-16.
 
 ## Findings and decisions

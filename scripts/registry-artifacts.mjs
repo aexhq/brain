@@ -5,27 +5,23 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 // A 404 means unpublished. Auth failures, outages, and version reuse must fail.
 export async function missingArtifacts(registry, release, directory, request = fetch) {
-  assert.ok(['npm', 'pypi'].includes(registry), 'unknown registry');
-  if (registry === 'npm' && release.npmPackages) {
+  assert.equal(registry, 'npm', 'unknown registry');
+  if (release.npmPackages) {
     const missing = [];
     for (const { name, file } of release.npmPackages) {
       missing.push(...await missingArtifacts(registry, { version: release.version, npm: file, npmName: name }, directory, request));
     }
     return missing;
   }
-  const url = registry === 'npm'
-    ? `https://registry.npmjs.org/${encodeURIComponent(release.npmName ?? '@aexhq/brain').replaceAll('%40', '@')}`
-    : `https://pypi.org/pypi/aex-brain/${release.version}/json`;
-  const response = await request(url, { headers: { Accept: registry === 'npm' ? 'application/vnd.npm.install-v1+json' : 'application/json' }, signal: AbortSignal.timeout(30000) });
-  const files = registry === 'npm' ? [release.npm] : release.python;
+  const url = `https://registry.npmjs.org/${encodeURIComponent(release.npmName ?? '@aexhq/brain').replaceAll('%40', '@')}`;
+  const response = await request(url, { headers: { Accept: 'application/vnd.npm.install-v1+json' }, signal: AbortSignal.timeout(30000) });
+  const files = [release.npm];
   if (response.status === 404) return files;
   assert.equal(response.status, 200, `${registry} metadata: HTTP ${response.status}`);
   const metadata = await response.json();
   // npm install reads this catalog, which can lag the per-version endpoint.
-  if (registry === 'npm' && !metadata.versions?.[release.version]) return files;
-  const published = registry === 'npm'
-    ? [{ filename: release.npm, url: metadata.versions[release.version].dist.tarball }]
-    : metadata.urls;
+  if (!metadata.versions?.[release.version]) return files;
+  const published = [{ filename: release.npm, url: metadata.versions[release.version].dist.tarball }];
   const missing = [];
   for (const file of files) {
     const remote = published.find(item => item.filename === file);
@@ -33,7 +29,7 @@ export async function missingArtifacts(registry, release, directory, request = f
     const download = await request(remote.url, { signal: AbortSignal.timeout(30000) });
     assert.equal(download.status, 200, `${file}: HTTP ${download.status}`);
     assert.ok((await readFile(path.join(directory, file))).equals(Buffer.from(await download.arrayBuffer())),
-      `${file} already exists with different bytes; bump both SDK versions or the server package version`);
+      `${file} already exists with different bytes; bump the SDK version or the server package version`);
   }
   return missing;
 }

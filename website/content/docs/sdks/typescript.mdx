@@ -8,10 +8,10 @@ description: Create sessions, send messages, and stream events in Node.js 24+ wi
 ## Install
 
 ```sh
-npm install --save-exact @aexhq/brain@3.0.0
+npm install --save-exact @aexhq/brain@4.0.0
 ```
 
-## Declare runtime tools
+## Declare browser tools
 
 Use `Pi()`, `Codex()`, or `OpenCode()` to select a server-installed harness. A named
 profile, such as `Pi({ name: 'research' })`, selects the configuration installed by
@@ -47,7 +47,7 @@ await client.close(session.id);
 await client.dispose();
 ```
 
-The alias `runtime` prefixes each function name. Return a JSON value; the SDK places it in `structured_content` and renders it as text. Throw an error to return a tool failure. Honor `signal` to stop local work after cancellation. The low-level wire input accepts `runtime_transport: "rpc"` for the WebSocket carrier.
+The alias `runtime` prefixes each function name. Return a JSON value; the SDK places it in `structured_content` and renders it as text. Throw an error to return a tool failure. Honor `signal` to stop local work after cancellation. The low-level wire input accepts `browser_transport: "rpc"` for the WebSocket carrier.
 
 Keep the client process alive while callbacks are needed. `dispose()` closes its executors without closing saved sessions. After restart or restore, call `client.rebind(sessionID, matchingTools, "sse")` and explicitly resume/send as required by the session status. Rebinding changes the connection, never replays an action. An unavailable executor fails before dispatch; a connection lost after dispatch reports an unknown outcome. Reading history or observing events cannot execute callbacks.
 

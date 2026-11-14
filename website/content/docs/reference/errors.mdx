@@ -23,7 +23,7 @@ Every failed HTTP request returns a JSON error envelope containing `error.code`,
 }
 ```
 
-In the TypeScript and Python SDKs, non-2xx HTTP responses raise `BrainError` with `status`, `code`, `message`, and `requestId` / `request_id`.
+In the TypeScript SDK, non-2xx HTTP responses raise `BrainError` with `status`, `code`, `message`, and `requestId`.
 
 ## HTTP status codes
 
@@ -46,7 +46,7 @@ Every HTTP response includes an `X-Request-ID` header (a 32-character hex ID). W
 
 ## Retries and `Retry-After`
 
-- **HTTP client requests:** Neither the TypeScript SDK nor the Python SDK retries failed HTTP requests automatically. When Brain returns `429 overloaded`, it sets the `Retry-After: 1` response header. When retrying `POST /sessions/{id}/events`, pass the same idempotency `key` on your `user.message` so duplicate submissions return the originally recorded event instead of queueing a second turn.
+- **HTTP client requests:** The TypeScript SDK does not retry failed HTTP requests automatically. When Brain returns `429 overloaded`, it sets the `Retry-After: 1` response header. When retrying `POST /sessions/{id}/events`, pass the same idempotency `key` on your `user.message` so duplicate submissions return the originally recorded event instead of queueing a second turn.
 - **Tool dispatches:** Brain never retries tool calls automatically. A transient network failure or timeout on a tool call is reported to the model so the harness or tool service can decide whether retrying is safe.
 
 ## Tool errors (`tool.result`)

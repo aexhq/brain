@@ -213,8 +213,8 @@ type NativeFile struct {
 type Checkpoint struct {
 	ID     string       `json:"id"`
 	Offset int64        `json:"offset"`
-	Files  []NativeFile `json:"files,omitempty" wire:"-"`
-	Config Config       `json:"config,omitzero" wire:"-"`
+	Files  []NativeFile `json:"files,omitempty" hidden:"true"`
+	Config Config       `json:"config,omitzero" hidden:"true"`
 	Time   time.Time    `json:"time"`
 }
 

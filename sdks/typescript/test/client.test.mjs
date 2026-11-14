@@ -2,9 +2,42 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Pi, Codex, OpenCode, PiWebAccess, Brain, BrainError, Model, ApiKey, CredentialReference, ManagedTool, AwsS3, Modal, E2B, Daytona } from "../dist/index.js";
 
+test('embedded servers can assign their URL after construction and change it on restart', async () => {
+  const requests = [];
+  const brain = new Brain('', 'token', async request => {
+    requests.push(request.url);
+    return Response.json({ id: 'one' });
+  });
+  brain.url = 'http://127.0.0.1:8001';
+  await brain.get('one');
+  brain.url = 'http://127.0.0.1:8002';
+  await brain.get('one');
+  await brain.downloadAttachment('one', 'attachment');
+  assert.deepEqual(requests, [
+    'http://127.0.0.1:8001/sessions/one',
+    'http://127.0.0.1:8002/sessions/one',
+    'http://127.0.0.1:8002/sessions/one/attachments?reference=attachment',
+  ]);
+});
+
+test('typed requests encode opaque IDs and preserve authentication, cancellation and redirect policy', async () => {
+  const abort = new AbortController();
+  let sent;
+  const brain = new Brain('http://brain.test/ignored-base', 'private-token', async request => {
+    sent = request;
+    assert.equal(request.url, 'http://brain.test/sessions/customer%2Fa%20b');
+    assert.equal(request.headers.get('authorization'), 'Bearer private-token');
+    assert.equal(request.redirect, 'error');
+    return Response.json({ id: 'customer/a b' });
+  });
+  await brain.get('customer/a b', abort.signal);
+  abort.abort();
+  assert.equal(sent.signal.aborted, true);
+});
+
 test('typed harness references select installed profiles without transmitting server settings', async () => {
   const bodies = [];
-  const brain = new Brain('http://brain.test', 'token', async (_url, init) => { bodies.push(JSON.parse(init.body)); return Response.json({ id: 'session' }); });
+  const brain = new Brain('http://brain.test', 'token', async request => { bodies.push(await request.json()); return Response.json({ id: 'session' }); });
   for (const harness of [Pi({ name: 'research' }), Codex(), OpenCode()]) await brain.create({ harness, model: Model('openai/model') });
   assert.deepEqual(bodies.map(body => body.harness), ['research', 'codex', 'opencode']);
   await assert.rejects(brain.create({ harness: Pi({ plugins: [PiWebAccess({ config: { braveApiKey: 'private' } })] }), model: Model('openai/model') }), /Install harness options/);
@@ -14,8 +47,8 @@ test('typed harness references select installed profiles without transmitting se
 
 test('integration helpers keep credentials in private admission input and omit absent overrides', async () => {
   let wire;
-  const brain = new Brain('http://brain.test', 'token', async (_url, init) => {
-    wire = JSON.parse(init.body);
+  const brain = new Brain('http://brain.test', 'token', async request => {
+    wire = await request.json();
     return Response.json({ id: 'session' });
   });
   await brain.create({ harness: Pi(), model: Model('openai/model'), tools: [
@@ -33,8 +66,8 @@ test('integration helpers keep credentials in private admission input and omit a
 });
 
 test("model and managed tool declarations lower private admission separately from config", async () => {
-  const client = new Brain("http://brain.test", "token", async (_url, init) => {
-    assert.deepEqual(JSON.parse(init.body), { id: "customer/session", harness: "pi", config: { model: "test/model", tools: ["lookup"], bindings: [
+  const client = new Brain("http://brain.test", "token", async request => {
+    assert.deepEqual(await request.json(), { id: "customer/session", harness: "pi", config: { model: "test/model", tools: ["lookup"], bindings: [
       { alias: "records", provider: "data", operations: ["read"], parameters: { bucket: "one" } },
     ] }, model_credential: { api_key: "customer-key" }, credentials: [{ binding: "records", value: { token: "tool-key" } }] });
     return Response.json({ id: "session" });
@@ -49,8 +82,8 @@ test("model and managed tool declarations lower private admission separately fro
 test("an unsupported callback transport fails before registration", async () => {
   const brain = new Brain("http://brain.test", "token", async () => { assert.fail("invalid transport made a request"); });
   await assert.rejects(brain.create({
-    harness: "pi", config: { model: "test/model", tools: [] }, runtime_transport: "invalid",
-    runtime_tools: [{ name: "read", description: "Read", input_schema: { type: "object" }, run: () => null }],
+    harness: "pi", config: { model: "test/model", tools: [] }, browser_transport: "invalid",
+    browser_tools: [{ name: "read", description: "Read", input_schema: { type: "object" }, run: () => null }],
   }), /unsupported runtime transport/);
 });
 

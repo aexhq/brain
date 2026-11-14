@@ -54,7 +54,7 @@ await brain.send(session.id, { type: 'user.message', text: 'Hello.' });
 | Issue tokens and isolate customers | [Authentication](https://aexhq.github.io/brain/docs/guides/authentication/) |
 | Back up sessions and move them between servers | [Persistence & recovery](https://aexhq.github.io/brain/docs/guides/persistence/) |
 | Deploy and monitor Brain | [Operations & observability](https://aexhq.github.io/brain/docs/guides/operations/) |
-| Call Brain from my backend | [TypeScript SDK](https://aexhq.github.io/brain/docs/sdks/typescript/) or [Python SDK](https://aexhq.github.io/brain/docs/sdks/python/) |
+| Call Brain from my backend | [TypeScript SDK](https://aexhq.github.io/brain/docs/sdks/typescript/) |
 | Look up routes and config fields | [HTTP API](https://aexhq.github.io/brain/docs/api/) and [Host configuration](https://aexhq.github.io/brain/docs/reference/configuration/) |
 | See what's coming next | [Roadmap](https://aexhq.github.io/brain/docs/roadmap/) |
 
@@ -64,7 +64,7 @@ Give your coding agent Brain's docs as plain text: [llms-full.txt](https://aexhq
 
 ## Contributing
 
-Install the dependencies and run every local check before you open a pull request. The checks need Go 1.26+, Node.js 24+, and Python 3.11+.
+Install the dependencies and run every local check before you open a pull request. The checks need Go 1.26+, Node.js 24+, and Python 3.11+ for the sandbox execution fixture.
 
 ```sh
 node scripts/setup.mjs

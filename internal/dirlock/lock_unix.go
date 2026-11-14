@@ -1,6 +1,6 @@
 //go:build !windows
 
-package volume
+package dirlock
 
 import (
 	"fmt"

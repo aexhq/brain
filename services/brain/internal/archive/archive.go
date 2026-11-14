@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	core "github.com/aexhq/brain/services/brain/api"
@@ -55,6 +56,10 @@ func blockKey(id, generation string, index int64) string {
 }
 func statePath(dir string) string { return filepath.Join(dir, "uploaded.json") }
 
+// Windows cannot replace an upload-state file while a status reader holds it
+// open. Data directories already have a single process owner.
+var uploadStateMu sync.RWMutex
+
 func strictJSON(data []byte, v any) error {
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
@@ -68,7 +73,9 @@ func strictJSON(data []byte, v any) error {
 }
 
 func ReadState(dir string) (*Manifest, error) {
+	uploadStateMu.RLock()
 	b, err := os.ReadFile(statePath(dir))
+	uploadStateMu.RUnlock()
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -90,6 +97,8 @@ func saveState(dir string, m Manifest) error {
 	if err != nil {
 		return err
 	}
+	uploadStateMu.Lock()
+	defer uploadStateMu.Unlock()
 	return (FileObjects{Root: dir}).Put(context.Background(), "uploaded.json", b, false)
 }
 
