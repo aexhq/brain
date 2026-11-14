@@ -1,7 +1,7 @@
 # Brain JavaScript and TypeScript SDK
 
-Install with `npm install --save-exact @aexhq/brain@2.3.0`. Requires Node.js 24+;
-there are no runtime dependencies. JavaScript and TypeScript use the same package.
+Install with `npm install --save-exact @aexhq/brain@3.0.0`. Requires Node.js 24+;
+the runtime dependency is the OpenTelemetry API. Bundle the SDK and its dependency for browser applications. JavaScript and TypeScript use the same package.
 
 ```js
 import { Pi, Brain, Model } from '@aexhq/brain';
@@ -30,7 +30,7 @@ The SDK owns SSE/HTTP or WebSocket callback connections; function source and cap
 credentials stay local. Keep the process alive and call `dispose()` on shutdown.
 After recovery, `rebind()` attaches matching functions without replaying actions.
 
-Version 2 uses session bindings and structured result schemas. Update the server,
+Version 3 adds distributed service support, external session IDs, streamed attachments, hosted packages, the CLI and public telemetry. Update the server,
 runner, and client together, and pin the matching release commit.
 
 [SDK reference](https://aexhq.github.io/brain/docs/sdks/typescript/) ·

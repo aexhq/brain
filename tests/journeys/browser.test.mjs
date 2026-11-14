@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
 import { before, after, test } from "node:test";
 import http from "node:http";
-import { readFile, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import path from "node:path";
 import { build, fixture, config, message, call, history, state, tokens, until, removeTemp } from "./fixture.mjs";
 import { browserGateway } from "../../examples/browser/gateway.mjs";
 import { browserService, descriptor as remoteDescriptor } from "../../tools/browser/src/browser.mjs";
 const requireBrowser = createRequire(new URL("../../tools/browser/package.json", import.meta.url));
 const requireSDK = createRequire(new URL("../../bin/sdk-consumer/package.json", import.meta.url));
 const { chromium } = requireBrowser("playwright");
-const sdk = path.dirname(requireSDK.resolve("@aexhq/brain"));
-const sdkFiles = new Map(await Promise.all((await readdir(sdk)).filter(name => name.endsWith(".js")).map(async name => [name, await readFile(path.join(sdk, name))])));
+const requireBuild = createRequire(new URL('../../website/package.json', import.meta.url));
+// Exercise the installed SDK as a browser app bundles it, including telemetry.
+const bundle = await requireBuild('esbuild').build({entryPoints:[requireSDK.resolve('@aexhq/brain')],bundle:true,write:false,format:'esm',platform:'browser'});
+const sdkFiles = new Map([['index.js', bundle.outputFiles[0].contents]]);
+
 const tool = { name: "read_tab", description: "Read the user-attached page", input_schema: { type: "object", properties: { wait: { type: "boolean" } }, additionalProperties: false } };
 const listen = server => new Promise(resolve => server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${server.address().port}`)));
 const stop = server => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); });
@@ -35,12 +35,13 @@ async function attached(t, { ttlMs = 300000 } = {}) {
       res.end(`<button id="attach">Attach this tab</button><p id="private">private content in this tab</p><script type="module">
         import { Brain, connectTab } from '/sdk/index.js';
         window.brain = new Brain(location.origin, ${JSON.stringify(pageGrant.token)});
+        const composition = await (await fetch('/composition', { headers: { Authorization: 'Bearer '+${JSON.stringify(pageGrant.token)} } })).json();
         window.calls = 0; window.scopes = []; window.observed = [];
         const tool = { ...${JSON.stringify(tool)}, run(args, context) { window.calls++; window.scopes.push(context.scope); return args.wait ? new Promise(resolve => window.complete = resolve) : { text: document.querySelector('#private').textContent }; } };
-        window.tryWithoutGesture = () => connectTab(brain, { create: { ...${JSON.stringify(config())}, runtime_tools: [tool] } });
+        window.tryWithoutGesture = () => connectTab(brain, { create: { ...composition.create, runtime_tools: [tool] } });
         window.withoutGesture = await window.tryWithoutGesture().then(() => 'incorrectly attached', e => e.message);
         document.querySelector('#attach').addEventListener('click', async () => { try {
-          window.attached = await connectTab(brain, window.rebind ? { session: window.rebind, tools: [tool] } : { create: { ...${JSON.stringify(config())}, runtime_tools: [tool] } });
+          window.attached = await connectTab(brain, window.rebind ? { session: window.rebind, tools: [tool] } : { create: { ...composition.create, runtime_tools: [tool] } });
           window.session = attached.session;
           const controller = new AbortController(); window.stopObserve = () => controller.abort();
           (async () => { try { for await (const event of brain.observe(session.id, { signal: controller.signal })) observed.push(event); } catch {} })();
@@ -52,7 +53,7 @@ async function attached(t, { ttlMs = 300000 } = {}) {
   });
   const origin = await listen(server);
   gateway = browserGateway({ origin, brainURL: f.api.url, brainToken: tokens.a });
-  const pageGrant = gateway.issue({ create: config(), tools: [tool], ttlMs });
+  const pageGrant = gateway.issue({ create: {...config(), id:'browser/'+crypto.randomUUID()}, tools: [tool], ttlMs });
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage(); await page.goto(origin); await page.waitForFunction(() => window.ready);
   return { f, gateway, page, origin, pageGrant, async attach() { await page.click("#attach"); await page.waitForFunction(() => window.session || window.attachError); assert.equal(await page.evaluate(() => window.attachError), undefined); return page.evaluate(() => window.session); } };

@@ -11,8 +11,8 @@ through one of six optional
 x64 and arm64). No installation scripts or user-side compilation are needed.
 
 ```sh
-npm install --save-exact @aexhq/brain@2.3.0
-python -m pip install aex-brain==2.3.0
+npm install --save-exact @aexhq/brain@3.0.0
+python -m pip install aex-brain==3.0.0
 ```
 
 Release artifacts include the npm archive, Python wheel, and source distribution in [GitHub Releases](https://github.com/aexhq/brain/releases). The release workflow publishes those exact tested bytes to npm and PyPI.

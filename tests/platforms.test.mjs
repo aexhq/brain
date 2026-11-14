@@ -10,7 +10,7 @@ test('platform host configurations validate against the actual Brain executable'
   const directory = await mkdtemp(path.join(tmpdir(), 'brain-configs-'));
   t.after(async () => { if (path.dirname(directory) !== tmpdir()) throw Error('unexpected temporary directory'); await rm(directory, { recursive: true, force: true }); });
   const binary = path.join(directory, process.platform === 'win32' ? 'brain.exe' : 'brain');
-  const build = spawnSync('go', ['build', '-o', binary, './services/brain'], { encoding: 'utf8' });
+  const build = spawnSync('go', ['build', '-o', binary, './services/brain/cmd/brain'], { encoding: 'utf8' });
   assert.equal(build.status, 0, build.stderr);
   for (const platform of ['docker','fly','ecs']) {
     const config = `examples/platforms/${platform}/brain.json`;
