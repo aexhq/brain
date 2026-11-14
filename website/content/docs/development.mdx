@@ -19,7 +19,7 @@ Install the locked dependencies for the three harness runners, TypeScript SDK, s
 node scripts/setup.mjs
 ```
 
-The script installs each workspace lockfile and Chromium for the browser journeys. On Linux, install Chromium's OS dependencies with `npm --prefix services/browser exec -- playwright install-deps chromium`.
+The script installs each workspace lockfile and Chromium for the browser journeys. On Linux, install Chromium's OS dependencies with `npm --prefix tools/browser exec -- playwright install-deps chromium`.
 
 To build BrainServer from the repository root, run:
 
@@ -39,14 +39,14 @@ node scripts/check.mjs
 
 It runs these steps in order and stops at the first failure:
 
-1. `npm --prefix runners/pi run build`: compiles Pi; Codex and OpenCode build commands validate their JavaScript entry points.
+1. `npm --prefix runtimes/pi run build`: compiles Pi; Codex and OpenCode build commands validate their JavaScript entry points.
 2. `npm --prefix sdks/typescript run build`: compiles the TypeScript SDK (`sdks/typescript/dist/`).
-3. `go run ./cmd/generate -check`: verifies that `api/openapi.json`, `runners/pi/src/generated.ts`, `sdks/typescript/src/generated.ts`, and `sdks/python/brain/types.py` match the Go source.
+3. `go run ./services/brain/cmd/generate -check`: verifies that `api/openapi.json`, `runtimes/pi/src/generated.ts`, `sdks/typescript/src/generated.ts`, and `sdks/python/brain/types.py` match the Go source.
 4. `node scripts/package-sdks.mjs`: packs the npm package, builds the Python wheel and source distribution, and installs all three in isolated environments. It then runs the TypeScript client tests and a strict type check against the installed npm package, and the Python client tests against both Python installs.
    The suite also runs `npm run build` and `node --test tests/server-package.test.mjs`. These build the server, Pi harness, and client together, install their npm archives outside the checkout, and exercise model calls, application tools, restart recovery, startup failures, and parent-exit cleanup. Linux CI cross-compiles the six platform executables into the tested server release artifact.
 5. `go test -count=1 ./...`: runs all Go unit and integration tests across `cmd/` and `internal/`.
 6. `go vet ./...`: runs Go static analysis.
-7. `npm --prefix runners/pi test`: runs the Pi runner unit and integration tests against a local recording provider.
+7. `npm --prefix runtimes/pi test`: runs the Pi runner unit and integration tests against a local recording provider.
 8. `npm --prefix sdks/typescript test`: runs the TypeScript SDK test suite.
 9. The sandbox and browser services run their test suites, including real Chromium network and cancellation checks.
 10. The Python unit suite runs against the installed wheel from `bin/sdk-consumer/python` using `bin/sdk-python`.
@@ -61,9 +61,9 @@ It runs these steps in order and stops at the first failure:
 When you edit Go route declarations, wire structs, or shared Markdown sources, regenerate the derived artifacts:
 
 ```sh
-# Regenerate api/openapi.json, runners/pi/src/generated.ts,
+# Regenerate api/openapi.json, runtimes/pi/src/generated.ts,
 # sdks/typescript/src/generated.ts, and sdks/python/brain/types.py
-go run ./cmd/generate
+go run ./services/brain/cmd/generate
 
 # Regenerate website/content/docs/** generated pages and website/public/openapi.json
 npm --prefix website run generate
@@ -87,17 +87,17 @@ npm --prefix website start
 
 ## Where to edit what
 
-Don't hand-edit generated files (`api/openapi.json`, `runners/pi/src/generated.ts`, `sdks/typescript/src/generated.ts`, `sdks/python/brain/types.py`, `website/public/openapi.json`, or generated MDX pages). Edit the source of truth and run the corresponding generator:
+Don't hand-edit generated files (`api/openapi.json`, `runtimes/pi/src/generated.ts`, `sdks/typescript/src/generated.ts`, `sdks/python/brain/types.py`, `website/public/openapi.json`, or generated MDX pages). Edit the source of truth and run the corresponding generator:
 
 | Area | Source of truth | Regenerate with |
 | --- | --- | --- |
-| HTTP routes, summaries, and wire types | `internal/api/contract.go` & `internal/core/types.go` | `go run ./cmd/generate` then `npm --prefix website run generate` |
-| Harness & storage Go interfaces | `internal/harness/harness.go`, `internal/harness/process.go`, `internal/persistence/*.go` | `npm --prefix website run generate` |
-| Model catalog | Pinned `@earendil-works/pi-coding-agent` in `runners/pi/package.json` (`runners/pi/scripts/model-catalog.mjs`) | `npm --prefix website run generate` |
+| HTTP routes, summaries, and wire types | `services/brain/internal/http/contract.go` & `services/brain/api/types.go` | `go run ./services/brain/cmd/generate` then `npm --prefix website run generate` |
+| Harness & storage Go interfaces | `runtimes/host/harness.go`, `runtimes/host/process.go`, `services/brain/internal/archive/*.go` | `npm --prefix website run generate` |
+| Model catalog | Pinned `@earendil-works/pi-coding-agent` in `runtimes/pi/package.json` (`runtimes/pi/scripts/model-catalog.mjs`) | `npm --prefix website run generate` |
 | Persistence guide | `docs/running-persistence.md` | `npm --prefix website run generate` |
 | Local tools walkthrough | `examples/tools/README.md` | `npm --prefix website run generate` |
-| Sandbox service guide | `services/sandbox/README.md` | `npm --prefix website run generate` |
-| Resource service guide | `services/resources/README.md` | `npm --prefix website run generate` |
+| Sandbox service guide | `tools/sandbox/README.md` | `npm --prefix website run generate` |
+| Resource service guide | `tools/resources/README.md` | `npm --prefix website run generate` |
 | Platform examples guide | `examples/platforms/README.md` | `npm --prefix website run generate` |
 | Roadmap | `docs/roadmap.md` | `npm --prefix website run generate` |
 | Docs pages & guides | `website/content/docs/**/*.mdx` | `npm --prefix website run build` |

@@ -16,7 +16,7 @@ Health endpoints need no token and never call a model.
 | `GET /health/live` | `200` with `{"status":"ok"}` while the HTTP server is running. | Liveness probes. |
 | `GET /health/ready` | `200` with `{"status":"ready"}` when Brain can accept new work, otherwise `503` with `{"status":"not_ready"}`. | Readiness probes and load balancer health checks. |
 
-`/health/ready` returns `503` while Brain is shutting down. With external persistence configured, it also returns `503` until Brain has checked which local sessions still need uploading after startup, and whenever the upload backlog is full.
+`/health/ready` returns `503` while Brain is shutting down or a configured service dependency is unreachable. With external persistence configured, it also returns `503` until Brain has checked which local sessions still need uploading after startup, and whenever the upload backlog is full.
 
 ## Set capacity limits
 
@@ -51,7 +51,7 @@ Brain logs each `500` response with its `request_id`, and each stopped turn with
 
 ## Export traces and metrics
 
-Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export OpenTelemetry traces and metrics over OTLP/HTTP. Brain reports as service `brain` and exports metrics every 15 seconds. Without the variable, Brain exports nothing.
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export OpenTelemetry traces and metrics over OTLP/HTTP. Services report as `brain`, `storage`, `tools` and `sandbox`, and export metrics every 15 seconds. Without the variable, Brain exports nothing.
 
 ```sh
 export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"
@@ -65,7 +65,7 @@ export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"
 | `brain.input.queue_delay` | Time a message waited before its turn started. |
 | `brain.assistant.first_output` | Time from accepting a message to the first assistant output for it. |
 | `brain.runner.startup` | Time to start a harness process, by harness. |
-| `brain.tool.calls`, `brain.tool.duration` | Tool calls and their latency, by tool and outcome (`success` or `tool_error`). |
+| `brain.tool.calls`, `brain.tool.duration` | Tool calls and their latency, by outcome (`success` or `tool_error`). |
 | `brain.transcript.bytes`, `brain.native.appended_bytes` | Growth of event logs and native harness state. |
 | `brain.sync.pending`, `brain.sync.duration`, `brain.sync.failures` | External storage upload backlog, upload time, and failures. |
 
@@ -75,27 +75,12 @@ Brain records a `session.execute` span for each turn, with the session ID and ha
 
 ## Run Brain in a container
 
-The repository's `Dockerfile` builds an image with the Brain server at `/app/brain`, the Pi runner at `/app/runners/pi`, and the resource tool service at `/app/resource-tools`. The image runs as the unprivileged `node` user (uid 1000), exposes port 8080, and starts Brain with `-config /config/brain.json`.
+Run the four services with the repository's Docker Compose deployment. Follow the [quickstart](/docs/quickstart), then use the [deployment guide](https://github.com/aexhq/brain/blob/main/deploy/docker/README.md) for configuration and volume operations.
 
-To run the image:
+The six image targets are Brain, Storage, Tools, Sandbox, Pi and tool-runtime. Sandbox starts the last two on demand. Only Brain publishes a host port. Sandbox is the trusted Docker controller; the other supervisors and user environments have no Docker socket.
 
-1. **Mount your host config** at `/config/brain.json`.
-2. **Listen on all interfaces:** Set `"listen": "0.0.0.0:8080"` in the config.
-3. **Store state on a volume:** Set `"data_dir": "/data"` and mount a volume at `/data`.
-4. **Pass secrets as environment variables:** For example `BRAIN_API_KEY` and your provider keys.
+Keep `storage-cache` and the credential keyring across replacement. The supplied external filesystem/SQLite volume shares the Docker host failure domain. Select an off-host backend for host-loss recovery. Flush returns only after referenced objects and the session head are externally committed.
 
-```sh
-docker build --tag brain:local-dev .
-docker run --rm -p 127.0.0.1:8080:8080 \
-  --mount type=bind,source="$PWD/brain.json",target=/config/brain.json,readonly \
-  --mount type=volume,source=brain-data,target=/data \
-  -e BRAIN_API_KEY -e OPENAI_API_KEY \
-  brain:local-dev
-```
-
-To check a locally built image, run `node scripts/container-smoke.mjs`. It starts `brain:local-dev` with a recording model provider, so it needs no model credentials.
-
-CI publishes the tested Brain, sandbox-tools and browser-tools images under `ghcr.io/aexhq/`, tagged `sha-<commit>` and `main`, with provenance attestations. Pin production images by digest, and use the SDK package built from your server commit.
 
 ## Route sessions across instances
 
@@ -120,3 +105,9 @@ Load-test with your own workload before you size a fleet.
   <Card icon={<Database />} title="Persistence & recovery" href="/docs/guides/persistence">Configure external storage and hand sessions between instances.</Card>
   <Card icon={<KeyRound />} title="Authentication & tenants" href="/docs/guides/authentication">Tokens, grants, and network security.</Card>
 </Cards>
+
+## Instrument SDK and CLI calls
+
+The TypeScript package exports `configureTelemetry` and `telemetry` from both its root and `@aexhq/brain/telemetry`. Register your application’s tracer/meter providers, context manager and propagator before creating clients. Your application owns exporter resources and shutdown. The CLI uses the same request instrumentation and exports this configuration API when imported programmatically.
+
+SDK request spans are named `brain.client.OPERATION`; the `brain.client.duration` histogram uses seconds and only `operation`/`status` labels. It propagates W3C trace context and excludes URLs, credentials, session IDs and request bodies. Server domain instruments stay beside the implementation that emits them. Pi reports model usage to Brain through runtime events; its process does not create an independent exporter.

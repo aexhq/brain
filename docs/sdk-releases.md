@@ -19,7 +19,7 @@ Release artifacts include the npm archive, Python wheel, and source distribution
 
 SDK 2.2.0 adds `AwsS3`, `Modal`, `E2B`, and `Daytona` helpers. The Node server installs these through a constructor's tool list; client sessions use the same helpers to select operations and optionally supply private credentials. Missing credentials fail explicitly and rejected overrides never fall back to server defaults. Client-owned runtime functions use the session binding contract. Successful output schemas validate `structured_content`. Update server, runner, and clients together; routes and local state have no compatibility layer or migration. Pin the SDK and the server image commit recorded in the publishing workflow summary.
 
-Go applications import `github.com/aexhq/brain` and optionally `github.com/aexhq/brain/integrations`. Pin the module to the source commit recorded in the matching release with `go get github.com/aexhq/brain@COMMIT`.
+Go applications import `github.com/aexhq/brain` and optionally `github.com/aexhq/brain/tools/integrations`. Pin the module to the source commit recorded in the matching release with `go get github.com/aexhq/brain@COMMIT`.
 
 ## Maintainer workflow
 

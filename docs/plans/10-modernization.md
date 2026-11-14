@@ -20,7 +20,7 @@ introduce a hosted control plane.
 ## Implementation sequence and acceptance
 
 1. **Subsystem contracts.** Put the interfaces used by session coordination in
-   `internal/session`; isolate tool policy from HTTP/SSE and MCP adapters; separate
+   `services/brain/internal/sessions`; isolate tool policy from HTTP/SSE and MCP adapters; separate
    SQL metadata from local files. Keep the existing behavior and add contract tests
    for tenant isolation, failed writes, cancellation, transport substitution, and
    restart persistence. Extend generated adapter documentation from actual code.

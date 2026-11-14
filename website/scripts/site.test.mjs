@@ -65,6 +65,8 @@ test('every operation publishes concrete responses, readable HTML, and complete 
     if (operation.operationId === 'executorRPC') {
       assert.ok(published.responses['101'], 'WebSocket upgrade must be documented');
       assert.ok(published.description.includes('brain-rpc'));
+    } else if (operation.operationId === 'downloadAttachment') {
+      assert.equal(published.responses['200'].content['application/octet-stream'].schema.format, 'binary');
     } else if (operation.operationId === 'executorCommands') {
       assert.ok(published.responses['200'].content['text/event-stream'].schema);
     } else {

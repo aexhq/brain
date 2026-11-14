@@ -1,0 +1,11 @@
+{
+  "listen": ":8083",
+  "instance": "local-brain",
+  "token_env": "BRAIN_SERVICE_TOKEN",
+  "capacity": 64,
+  "max_archive_bytes": 1073741824,
+  "profiles": {
+    "pi": {"image": "brain-pi:local-dev", "network": "brain-runtime", "memory_bytes": 536870912, "cpus": "1", "pids": 128, "workspace_bytes": 268435456, "lifetime_seconds": 7200},
+    "tool": {"image": "brain-tool-runtime:local-dev", "network": "none", "memory_bytes": 268435456, "cpus": "0.5", "pids": 64, "workspace_bytes": 67108864, "lifetime_seconds": 300}
+  }
+}

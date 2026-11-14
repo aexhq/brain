@@ -1,0 +1,12 @@
+{
+  "listen": ":8081",
+  "data_dir": "/data",
+  "token_env": "BRAIN_SERVICE_TOKEN",
+  "memory_bytes": 134217728,
+  "disk_bytes": 4294967296,
+  "memory_ttl_seconds": 300,
+  "disk_ttl_seconds": 86400,
+  "sync_seconds": 5,
+  "objects": {"kind": "filesystem", "path": "/external/objects"},
+  "metadata": {"kind": "sqlite", "path": "/external/metadata.sqlite"}
+}

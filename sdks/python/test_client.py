@@ -33,9 +33,9 @@ class ClientTests(unittest.TestCase):
                 bodies.append(json.loads(request.data))
                 return io.BytesIO(b'{"id":"session"}')
         client._opener = Opener()
-        client.create(harness="pi", model=Model("test/model", ApiKey("customer-key")), tools=[
+        client.create(id="customer/session", harness="pi", model=Model("test/model", ApiKey("customer-key")), tools=[
             ManagedTool("lookup"), ManagedTool("data", operations=["read"], alias="records", parameters={"bucket":"one"}, credential={"token":"tool-key"})])
-        self.assertEqual(bodies, [{"harness":"pi", "config":{"model":"test/model", "tools":["lookup"], "bindings":[
+        self.assertEqual(bodies, [{"id":"customer/session", "harness":"pi", "config":{"model":"test/model", "tools":["lookup"], "bindings":[
             {"alias":"records", "provider":"data", "operations":["read"], "parameters":{"bucket":"one"}}]},
             "model_credential":{"api_key":"customer-key"}, "credentials":[{"binding":"records", "value":{"token":"tool-key"}}]}])
         self.assertEqual(CredentialReference("tenant-key"), {"reference":"tenant-key"})

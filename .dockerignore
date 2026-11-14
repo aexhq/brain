@@ -9,3 +9,6 @@ brain.json
 bin
 website
 
+
+%SystemDrive%/
+.artifacts/

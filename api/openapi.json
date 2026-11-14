@@ -1,6 +1,30 @@
 {
   "components": {
     "schemas": {
+      "Attachment": {
+        "additionalProperties": false,
+        "properties": {
+          "media_type": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "reference",
+          "name",
+          "media_type",
+          "size"
+        ],
+        "type": "object"
+      },
       "Call": {
         "additionalProperties": false,
         "properties": {
@@ -102,11 +126,15 @@
           "harness": {
             "type": "string"
           },
+          "id": {
+            "type": "string"
+          },
           "model_credential": {
             "$ref": "#/components/schemas/ModelCredential"
           }
         },
         "required": [
+          "id",
           "harness",
           "config"
         ],
@@ -247,6 +275,12 @@
       "Input": {
         "additionalProperties": false,
         "properties": {
+          "attachments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "delivery": {
             "type": "string"
           },
@@ -256,6 +290,12 @@
           "media": {
             "items": {
               "$ref": "#/components/schemas/Media"
+            },
+            "type": "array"
+          },
+          "references": {
+            "items": {
+              "$ref": "#/components/schemas/Reference"
             },
             "type": "array"
           },
@@ -274,6 +314,12 @@
       "Media": {
         "additionalProperties": false,
         "properties": {
+          "data": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string"
+          },
           "type": {
             "type": "string"
           },
@@ -282,8 +328,7 @@
           }
         },
         "required": [
-          "type",
-          "url"
+          "type"
         ],
         "type": "object"
       },
@@ -392,6 +437,22 @@
           "semantics",
           "input_cache",
           "output_reasoning"
+        ],
+        "type": "object"
+      },
+      "Reference": {
+        "additionalProperties": false,
+        "properties": {
+          "media_type": {
+            "type": "string"
+          },
+          "uri": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "uri",
+          "media_type"
         ],
         "type": "object"
       },
@@ -680,7 +741,13 @@
           "call_id": {
             "type": "string"
           },
+          "epoch": {
+            "type": "integer"
+          },
           "inspection_token": {
+            "type": "string"
+          },
+          "owner": {
             "type": "string"
           },
           "session_id": {
@@ -1087,7 +1154,8 @@
             "name": "id",
             "required": true,
             "schema": {
-              "pattern": "^[a-fA-F0-9]{32}$",
+              "maxLength": 128,
+              "minLength": 1,
               "type": "string"
             }
           }
@@ -1131,7 +1199,8 @@
             "name": "id",
             "required": true,
             "schema": {
-              "pattern": "^[a-fA-F0-9]{32}$",
+              "maxLength": 128,
+              "minLength": 1,
               "type": "string"
             }
           }
@@ -1166,6 +1235,126 @@
         "summary": "Get a session"
       }
     },
+    "/sessions/{id}/attachments": {
+      "get": {
+        "description": "Streams a finalized attachment selected by the reference query parameter. Requires read access to the owning session.",
+        "operationId": "downloadAttachment",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "reference",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Opaque session ID.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Download an attachment"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error. 400 invalid_request; 401 missing/invalid Bearer token; 403 forbidden; 404 not_found; 409 conflict or cursor_unavailable; 413 body limit; 422 unsupported; 429 overloaded (Retry-After: 1); 500 brain_error. X-Request-ID is present on every response."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Download an attachment"
+      },
+      "post": {
+        "description": "Streams up to 16 MiB with Content-Type and a name query parameter. Returns a finalized reference scoped to this session. Flush commits linked attachments externally.",
+        "operationId": "uploadAttachment",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Opaque session ID.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Attachment"
+                }
+              }
+            },
+            "description": "Upload an attachment"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error. 400 invalid_request; 401 missing/invalid Bearer token; 403 forbidden; 404 not_found; 409 conflict or cursor_unavailable; 413 body limit; 422 unsupported; 429 overloaded (Retry-After: 1); 500 brain_error. X-Request-ID is present on every response."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Upload an attachment"
+      }
+    },
     "/sessions/{id}/close": {
       "post": {
         "description": "Permanently closes a session and stops any active or queued work. Requires a management token. Event history remains readable.",
@@ -1177,7 +1366,8 @@
             "name": "id",
             "required": true,
             "schema": {
-              "pattern": "^[a-fA-F0-9]{32}$",
+              "maxLength": 128,
+              "minLength": 1,
               "type": "string"
             }
           }
@@ -1223,7 +1413,8 @@
             "name": "id",
             "required": true,
             "schema": {
-              "pattern": "^[a-fA-F0-9]{32}$",
+              "maxLength": 128,
+              "minLength": 1,
               "type": "string"
             }
           },
@@ -1244,6 +1435,15 @@
               "maximum": 1000,
               "minimum": 1,
               "type": "integer"
+            }
+          },
+          {
+            "description": "Read the most recent limit events; cannot be combined with after.",
+            "in": "query",
+            "name": "tail",
+            "schema": {
+              "default": false,
+              "type": "boolean"
             }
           },
           {
@@ -1300,7 +1500,8 @@
             "name": "id",
             "required": true,
             "schema": {
-              "pattern": "^[a-fA-F0-9]{32}$",
+              "maxLength": 128,
+              "minLength": 1,
               "type": "string"
             }
           }
@@ -1363,7 +1564,8 @@
             "name": "id",
             "required": true,
             "schema": {
-              "pattern": "^[a-fA-F0-9]{32}$",
+              "maxLength": 128,
+              "minLength": 1,
               "type": "string"
             }
           }
@@ -1409,7 +1611,8 @@
             "name": "id",
             "required": true,
             "schema": {
-              "pattern": "^[a-fA-F0-9]{32}$",
+              "maxLength": 128,
+              "minLength": 1,
               "type": "string"
             }
           }
@@ -1465,7 +1668,8 @@
             "name": "id",
             "required": true,
             "schema": {
-              "pattern": "^[a-fA-F0-9]{32}$",
+              "maxLength": 128,
+              "minLength": 1,
               "type": "string"
             }
           }
@@ -1511,7 +1715,8 @@
             "name": "id",
             "required": true,
             "schema": {
-              "pattern": "^[a-fA-F0-9]{32}$",
+              "maxLength": 128,
+              "minLength": 1,
               "type": "string"
             }
           }

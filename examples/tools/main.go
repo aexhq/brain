@@ -18,8 +18,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aexhq/brain/internal/core"
-	"github.com/aexhq/brain/internal/tools"
+	"github.com/aexhq/brain/services/tools/registry"
+	core "github.com/aexhq/brain/services/brain/api"
 )
 
 type approval struct {
@@ -115,7 +115,7 @@ func (s *service) call(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid tool request", 400)
 		return
 	}
-	if req.Tenant != s.tenant || !core.ValidID(req.Session) || !core.ValidID(req.Call) {
+	if req.Tenant != s.tenant || !core.ValidSessionID(req.Session) || !core.ValidID(req.Call) {
 		http.Error(w, "invalid scope", 403)
 		return
 	}
@@ -208,7 +208,7 @@ func main() {
 	printConfig := flag.Bool("print-config", false, "print a local Brain configuration with these tool bindings")
 	flag.Parse()
 	if *printConfig {
-		cfg := map[string]any{"listen": "127.0.0.1:8080", "public_url": *brain, "data_dir": ".brain", "tokens": []any{map[string]any{"token_env": "BRAIN_API_KEY", "tenant": *tenant, "manage": true}}, "harnesses": map[string]any{"pi": map[string]any{"command": []string{"node", "runners/pi/dist/main.js"}}}, "providers": map[string]any{"openai": map[string]string{"api_key_env": "OPENAI_API_KEY"}}, "tools": bindings("http://"+*listen, *tenant), "persistence": map[string]any{"provider": "filesystem", "directory": ".brain-archive"}}
+		cfg := map[string]any{"listen": "127.0.0.1:8080", "public_url": *brain, "data_dir": ".brain", "tokens": []any{map[string]any{"token_env": "BRAIN_API_KEY", "tenant": *tenant, "manage": true}}, "harnesses": map[string]any{"pi": map[string]any{"command": []string{"node", "runtimes/pi/dist/main.js"}}}, "providers": map[string]any{"openai": map[string]string{"api_key_env": "OPENAI_API_KEY"}}, "tools": bindings("http://"+*listen, *tenant), "persistence": map[string]any{"provider": "filesystem", "directory": ".brain-archive"}}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(cfg); err != nil {

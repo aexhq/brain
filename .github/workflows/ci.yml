@@ -63,7 +63,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
-      - run: go test -tags postgres ./internal/persistence
+      - run: go test -tags postgres ./services/brain/internal/archive
   checks:
     strategy:
       fail-fast: false
@@ -82,16 +82,16 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
-      - run: npm --prefix runners/pi ci --ignore-scripts
-      - run: npm --prefix runners/codex ci --ignore-scripts
-      - run: npm --prefix runners/opencode ci --ignore-scripts
+      - run: npm --prefix runtimes/pi ci --ignore-scripts
+      - run: npm --prefix runtimes/codex ci --ignore-scripts
+      - run: npm --prefix runtimes/opencode ci --ignore-scripts
       - run: npm --prefix sdks/typescript ci --ignore-scripts
       - run: npm --prefix website ci --ignore-scripts
-      - run: npm --prefix services/sandbox ci --ignore-scripts
-      - run: npm --prefix services/browser ci --ignore-scripts
-      - run: npm --prefix services/browser run install-browser
+      - run: npm --prefix tools/sandbox ci --ignore-scripts
+      - run: npm --prefix tools/browser ci --ignore-scripts
+      - run: npm --prefix tools/browser run install-browser
       - if: runner.os == 'Linux'
-        run: npm --prefix services/browser exec -- playwright install-deps chromium
+        run: npm --prefix tools/browser exec -- playwright install-deps chromium
       - run: node scripts/check.mjs
       - if: runner.os == 'Linux'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -107,30 +107,37 @@ jobs:
           path: dist/server/
           if-no-files-found: error
           retention-days: 30
-      - run: go build -o bin/ ./cmd/brain ./cmd/resource-tools ./cmd/mcp-tools
+      - run: go build -o bin/ ./services/brain/cmd/brain ./services/storage ./services/tools ./services/sandbox ./tools/resources ./tools/mcp
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: binaries-${{ runner.os }}
           path: |
             bin/brain
             bin/brain.exe
-            bin/resource-tools
-            bin/resource-tools.exe
-            bin/mcp-tools
-            bin/mcp-tools.exe
+            bin/storage*
+            bin/tools*
+            bin/sandbox*
+            bin/resources*
+            bin/mcp*
           retention-days: 7
       - if: runner.os == 'Linux'
-        run: docker build --tag brain:local-dev .
+        run: node scripts/docker-env.mjs
+      - if: runner.os == 'Linux'
+        run: docker compose -f deploy/docker/compose.yaml --profile images build
+      - if: runner.os == 'Linux'
+        run: docker compose -f deploy/docker/compose.yaml up -d --wait
       - if: runner.os == 'Linux'
         run: node scripts/container-smoke.mjs
       - if: runner.os == 'Linux'
-        run: docker build --file services/sandbox/Dockerfile --tag brain-sandbox-tools:local-dev .
+        run: node scripts/adapter-services.mjs
+      - if: runner.os == 'Linux'
+        run: docker build --file tools/sandbox/Dockerfile --tag brain-sandbox-tools:local-dev .
       - if: runner.os == 'Linux'
         run: node scripts/sandbox-container-smoke.mjs
       - if: runner.os == 'Linux'
-        run: docker build --file services/browser/Dockerfile --tag brain-browser-tools:local-dev .
+        run: docker build --file tools/browser/Dockerfile --tag brain-browser-tools:local-dev .
       - if: runner.os == 'Linux'
-        run: docker save brain:local-dev brain-sandbox-tools:local-dev brain-browser-tools:local-dev -o images.tar
+        run: docker save brain:local-dev brain-storage:local-dev brain-tools:local-dev brain-sandbox:local-dev brain-pi:local-dev brain-tool-runtime:local-dev brain-sandbox-tools:local-dev brain-browser-tools:local-dev -o images.tar
       - if: runner.os == 'Linux'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -148,10 +155,10 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24'
-      - run: npm --prefix runners/pi ci --ignore-scripts
-      - run: npm --prefix runners/codex ci --ignore-scripts
-      - run: npm --prefix runners/opencode ci --ignore-scripts
-      - run: npm --prefix runners/pi run build
+      - run: npm --prefix runtimes/pi ci --ignore-scripts
+      - run: npm --prefix runtimes/codex ci --ignore-scripts
+      - run: npm --prefix runtimes/opencode ci --ignore-scripts
+      - run: npm --prefix runtimes/pi run build
       - run: go test -race ./...
 
   docs:
@@ -167,7 +174,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24'
-      - run: npm --prefix runners/pi ci --ignore-scripts
+      - run: npm --prefix runtimes/pi ci --ignore-scripts
       - run: npm --prefix website ci --ignore-scripts
       - run: npm --prefix website run build
       - run: npm --prefix website test
@@ -175,7 +182,7 @@ jobs:
         with:
           path: website/out
 
-  # Preserve the existing protected-branch gate while replacing its old Rust suite.
+  # All verification jobs gate publication.
   build-test:
     if: always()
     needs: [checks, race, postgres, docs, security]
@@ -208,7 +215,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          for image in brain brain-sandbox-tools brain-browser-tools; do
+          for image in brain brain-storage brain-tools brain-sandbox brain-pi brain-tool-runtime brain-sandbox-tools brain-browser-tools; do
             ref="ghcr.io/aexhq/$image"
             docker tag "$image:local-dev" "$ref:sha-$GITHUB_SHA"
             docker tag "$image:local-dev" "$ref:main"
@@ -231,6 +238,32 @@ jobs:
         with:
           subject-name: ghcr.io/aexhq/brain-browser-tools
           subject-digest: ${{ steps.images.outputs.brain-browser-tools }}
+          push-to-registry: true
+
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-name: ghcr.io/aexhq/brain-storage
+          subject-digest: ${{ steps.images.outputs.brain-storage }}
+          push-to-registry: true
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-name: ghcr.io/aexhq/brain-tools
+          subject-digest: ${{ steps.images.outputs.brain-tools }}
+          push-to-registry: true
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-name: ghcr.io/aexhq/brain-sandbox
+          subject-digest: ${{ steps.images.outputs.brain-sandbox }}
+          push-to-registry: true
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-name: ghcr.io/aexhq/brain-pi
+          subject-digest: ${{ steps.images.outputs.brain-pi }}
+          push-to-registry: true
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-name: ghcr.io/aexhq/brain-tool-runtime
+          subject-digest: ${{ steps.images.outputs.brain-tool-runtime }}
           push-to-registry: true
 
   deploy-docs:

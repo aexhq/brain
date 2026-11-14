@@ -1,0 +1,97 @@
+name: brain
+x-service: &service
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp]
+  environment: &environment
+    BRAIN_SERVICE_TOKEN: ${BRAIN_SERVICE_TOKEN:?Run node scripts/docker-env.mjs}
+    BRAIN_API_KEY: ${BRAIN_API_KEY:?Run node scripts/docker-env.mjs}
+    BRAIN_ENCRYPTION_KEY: ${BRAIN_ENCRYPTION_KEY:?Run node scripts/docker-env.mjs}
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://telemetry:4318
+  networks: [control]
+services:
+  brain:
+    <<: *service
+    image: brain:local-dev
+    build: {context: ../.., target: brain}
+    ports: [127.0.0.1:8080:8080]
+    networks: [control, runtime]
+    volumes:
+      - ./brain.json:/config/brain.json:ro
+      - brain-work:/data
+    mem_limit: 512m
+    depends_on:
+      storage: {condition: service_healthy}
+      tools: {condition: service_healthy}
+      sandbox: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080/health/ready]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  storage:
+    <<: *service
+    image: brain-storage:local-dev
+    build: {context: ../.., target: storage}
+    volumes:
+      - ./storage.json:/config/storage.json:ro
+      - storage-cache:/data
+      - external-storage:/external
+    networks: [control, runtime]
+    mem_limit: 512m
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8081/health/live]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  tools:
+    <<: *service
+    image: brain-tools:local-dev
+    build: {context: ../.., target: tools}
+    volumes: [./tools.json:/config/tools.json:ro]
+    networks: [control, runtime]
+    mem_limit: 256m
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8082/health/live]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  sandbox:
+    <<: *service
+    image: brain-sandbox:local-dev
+    build: {context: ../.., target: sandbox}
+    volumes:
+      - ./sandbox.json:/config/sandbox.json:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    mem_limit: 256m
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8083/health/live]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  telemetry:
+    image: otel/opentelemetry-collector:0.142.0@sha256:27e249dac470545ed31beefc86f9e1dc260a21e85aaa256903a2b6e0393a2d91
+    restart: unless-stopped
+    command: [--config=/etc/otel/config.yaml]
+    volumes: [./telemetry.yaml:/etc/otel/config.yaml:ro]
+    networks: [control, runtime]
+    mem_limit: 128m
+  pi:
+    profiles: [images]
+    image: brain-pi:local-dev
+    build: {context: ../.., target: pi}
+    entrypoint: ["true"]
+  tool-runtime:
+    profiles: [images]
+    image: brain-tool-runtime:local-dev
+    build: {context: ../.., target: tool-runtime}
+    entrypoint: ["true"]
+volumes:
+  brain-work:
+  storage-cache:
+  external-storage:
+networks:
+  control: {internal: true}
+  runtime: {name: brain-runtime}

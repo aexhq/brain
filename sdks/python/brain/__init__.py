@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from uuid import uuid4
 from collections.abc import Iterator
 from typing import Any
 from urllib.error import HTTPError
@@ -54,7 +55,7 @@ class Brain:
         with self._open(method, path, body) as response:
             return json.load(response)
 
-    def create(self, config: CreateSession | None = None, *, harness: str | None = None,
+    def create(self, config: CreateSession | None = None, *, id: str | None = None, harness: str | None = None,
                model: Model | None = None, tools: list[ManagedTool | RuntimeTool] | None = None,
                instructions: str | None = None, reasoning_effort: str | None = None,
                runtime_tools: list[RuntimeTool] | None = None) -> Session:
@@ -65,6 +66,7 @@ class Brain:
             runtime_tools = [*declared, *(runtime_tools or [])]
         elif any(value is not None for value in (harness, model, tools, instructions, reasoning_effort)):
             raise ValueError("choose wire input or model/tool declarations")
+        config = {**config, "id": config.get("id", id or str(uuid4()))}
         executor = None
         try:
             if runtime_tools:

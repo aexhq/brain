@@ -1,0 +1,104 @@
+// Package store owns local metadata and append-only event files.
+package store
+
+import (
+	"context"
+	"errors"
+	"github.com/aexhq/brain/internal/volume"
+	"os"
+	"path/filepath"
+	"sync"
+
+	core "github.com/aexhq/brain/services/brain/api"
+)
+
+// Metadata is the authoritative local session database, not an eventual index.
+// Writes are durable on return. Save and Import must never change a tenant.
+// List and Scan return ascending IDs strictly after the supplied cursor.
+// Missing Get/Save returns core.NotFound; conflicting Import returns core.Forbidden.
+// Implementations must support concurrent calls and context cancellation.
+type Metadata interface {
+	Deleted(context.Context, string) (string, error)
+	Delete(context.Context, core.Session) error
+	Create(context.Context, core.Session) error
+	Get(context.Context, string) (core.Session, error)
+	Save(context.Context, core.Session) error
+	List(context.Context, string, string, int) ([]core.Session, error)
+	Scan(context.Context, string, int) ([]core.Session, error)
+	Import(context.Context, core.Session) error
+	Close() error
+}
+
+// Store combines a local filesystem workspace with its metadata adapter.
+// Close closes the owned metadata adapter; it does not delete session files.
+type Store struct {
+	Metadata
+	root string
+	lock *os.File
+	once sync.Once
+	err  error
+}
+
+func Open(root string) (*Store, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return nil, err
+	}
+	lock, err := volume.Lock(root)
+	if err != nil {
+		return nil, err
+	}
+	db, err := OpenSQLite(filepath.Join(root, "metadata.sqlite"))
+	if err != nil {
+		lock.Close()
+		return nil, err
+	}
+	return &Store{Metadata: db, root: root, lock: lock}, nil
+}
+
+// New takes ownership of metadata on success. The adapter stores records only;
+// native state, transcripts, and staged recovery always remain local files.
+func New(root string, metadata Metadata) (*Store, error) {
+	if metadata == nil {
+		return nil, errors.New("metadata adapter is required")
+	}
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return nil, err
+	}
+	lock, err := volume.Lock(root)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{Metadata: metadata, root: root, lock: lock}, nil
+}
+
+func (s *Store) Close() error {
+	s.once.Do(func() { s.err = errors.Join(s.Metadata.Close(), s.lock.Close()) })
+	return s.err
+}
+
+func (s *Store) Root() string { return s.root }
+func (s *Store) Dir(id string) (string, error) {
+	if _, _, err := core.SplitSessionKey(id); err != nil {
+		return "", core.E(core.Invalid, "invalid session id")
+	}
+	return filepath.Join(s.root, "sessions", core.SessionDirectory(id)), nil
+}
+
+func (s *Store) Create(ctx context.Context, session core.Session) error {
+	dir, err := s.Dir(core.SessionKey(session.Tenant, session.ID))
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "native"), 0700); err != nil {
+		return err
+	}
+	return s.Metadata.Create(ctx, session)
+}

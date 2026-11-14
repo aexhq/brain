@@ -12,7 +12,7 @@ const selection = (harness, tools = []) => ({ ...config(tools), harness });
 const adapters = ["codex", "opencode"];
 async function setup(t, harness, options = {}) {
   const f = await fixture(t, binaries, { api: "openai-responses", ...options });
-  f.settings.harnesses = { [harness]: { command: [process.execPath, path.join(root, `runners/${harness}/src/main.mjs`)] } };
+  f.settings.harnesses = { [harness]: { command: [process.execPath, path.join(root, `runtimes/${harness}/src/main.mjs`)] } };
   return f;
 }
 

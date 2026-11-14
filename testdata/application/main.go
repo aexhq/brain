@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/aexhq/brain"
-	"github.com/aexhq/brain/integrations"
+	"github.com/aexhq/brain/services/brain"
+	"github.com/aexhq/brain/tools/integrations"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -46,7 +46,7 @@ func main() {
 	// Optional integrations compile against the same public types.
 	_ = integrations.HTTP(integrations.ProviderOptions{}, nil)
 	_ = integrations.MCP(integrations.ProviderOptions{}, nil)
-	request := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(`{"harness":"custom","config":{"model":"test/model","tools":[]}}`))
+	request := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(`{"id":"caller-session","harness":"custom","config":{"model":"test/model","tools":[]}}`))
 	request.Header.Set("Authorization", "Bearer consumer-secret-with-24-bytes")
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)

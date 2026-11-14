@@ -28,15 +28,15 @@ for (const directory of [stage, output]) {
   await rm(directory, { recursive: true, force: true });
   await mkdir(directory, { recursive: true });
 }
-run('npm', ['--prefix', 'runners/pi', 'run', 'build']);
-run('npm', ['--prefix', 'runners/codex', 'run', 'build']);
-run('npm', ['--prefix', 'runners/opencode', 'run', 'build']);
+run('npm', ['--prefix', 'runtimes/pi', 'run', 'build']);
+run('npm', ['--prefix', 'runtimes/codex', 'run', 'build']);
+run('npm', ['--prefix', 'runtimes/opencode', 'run', 'build']);
 run('npm', ['--prefix', 'sdks/typescript', 'run', 'build']);
 const pkg = JSON.parse(await readFile(path.join(root, 'packages/brainserver/package.json'), 'utf8'));
-const pi = JSON.parse(await readFile(path.join(root, 'runners/pi/package.json'), 'utf8'));
-const sandbox = JSON.parse(await readFile(path.join(root, 'services/sandbox/package.json'), 'utf8'));
-const codex = JSON.parse(await readFile(path.join(root, 'runners/codex/package.json'), 'utf8'));
-const opencode = JSON.parse(await readFile(path.join(root, 'runners/opencode/package.json'), 'utf8'));
+const pi = JSON.parse(await readFile(path.join(root, 'runtimes/pi/package.json'), 'utf8'));
+const sandbox = JSON.parse(await readFile(path.join(root, 'tools/sandbox/package.json'), 'utf8'));
+const codex = JSON.parse(await readFile(path.join(root, 'runtimes/codex/package.json'), 'utf8'));
+const opencode = JSON.parse(await readFile(path.join(root, 'runtimes/opencode/package.json'), 'utf8'));
 for (const [name, version] of Object.entries({ ...pi.dependencies, ...sandbox.dependencies, ...codex.dependencies, ...opencode.dependencies })) {
   assert.equal(pkg.dependencies[name], version, `brainserver must pin ${name} to the integration's version`);
 }
@@ -54,7 +54,7 @@ for (const target of selected) {
   const directory = path.join(stage, target);
   await mkdir(directory);
   const binary = path.join(directory, os === 'win32' ? 'brain.exe' : 'brain');
-  run('go', ['build', '-trimpath', '-o', binary, './cmd/brain'], root, {
+  run('go', ['build', '-trimpath', '-o', binary, './services/brain/cmd/brain'], root, {
     CGO_ENABLED: '0', GOOS: os === 'win32' ? 'windows' : os, GOARCH: arch === 'x64' ? 'amd64' : arch,
   });
   await chmod(binary, 0o755);
@@ -80,12 +80,12 @@ for (const target of selected) {
   // Private runtime declarations and source maps are not needed for execution.
   // Keeping them produced 67,724 files and npm rejected the archive with HTTP 415.
   await writeFile(path.join(runtime, '.npmignore'), '**/*.map\n**/*.d.ts\n**/*.d.mts\n**/*.d.cts\n');
-  await cp(path.join(root, 'runners/pi/dist'), path.join(runtime, 'runners/pi/dist'), { recursive: true });
-  await cp(path.join(root, 'runners/opencode/src'), path.join(runtime, 'runners/opencode/src'), { recursive: true });
-  await cp(path.join(root, 'runners/common'), path.join(runtime, 'runners/common'), { recursive: true });
-  await mkdir(path.join(runtime, 'services'), { recursive: true });
-  await copyFile(path.join(root, 'services/http.mjs'), path.join(runtime, 'services/http.mjs'));
-  await cp(path.join(root, 'services/sandbox/src'), path.join(runtime, 'services/sandbox/src'), { recursive: true });
+  await cp(path.join(root, 'runtimes/pi/dist'), path.join(runtime, 'runtimes/pi/dist'), { recursive: true });
+  await cp(path.join(root, 'runtimes/opencode/src'), path.join(runtime, 'runtimes/opencode/src'), { recursive: true });
+  await cp(path.join(root, 'runtimes/common'), path.join(runtime, 'runtimes/common'), { recursive: true });
+  await mkdir(path.join(runtime, 'tools'), { recursive: true });
+  await copyFile(path.join(root, 'tools/http.mjs'), path.join(runtime, 'tools/http.mjs'));
+  await cp(path.join(root, 'tools/sandbox/src'), path.join(runtime, 'tools/sandbox/src'), { recursive: true });
   await copyFile(path.join(root, 'packages/brainserver/sandbox.js'), path.join(runtime, 'sandbox.js'));
   await copyFile(path.join(root, 'LICENSE'), path.join(directory, 'LICENSE'));
   // Codex's native executable makes the combined archive exceed npm's upload
@@ -94,16 +94,16 @@ for (const target of selected) {
   const codexRuntime = path.join(codexDirectory, 'runtime');
   await mkdir(path.join(codexRuntime, 'node_modules'), { recursive: true });
   await rename(path.join(runtime, 'node_modules/@openai'), path.join(codexRuntime, 'node_modules/@openai'));
-  await cp(path.join(root, 'runners/codex/src'), path.join(codexRuntime, 'runners/codex/src'), { recursive: true });
-  await cp(path.join(root, 'runners/common'), path.join(codexRuntime, 'runners/common'), { recursive: true });
+  await cp(path.join(root, 'runtimes/codex/src'), path.join(codexRuntime, 'runtimes/codex/src'), { recursive: true });
+  await cp(path.join(root, 'runtimes/common'), path.join(codexRuntime, 'runtimes/common'), { recursive: true });
   await copyFile(path.join(root, 'LICENSE'), path.join(codexDirectory, 'LICENSE'));
   const codexName = `@aexhq/brainserver-codex-${target}`;
   await writeFile(path.join(codexDirectory, 'package.json'), JSON.stringify({ ...manifest, name: codexName,
     description: `Brain's pinned Codex harness runtime for ${target}`, files: ['runtime', 'LICENSE'] }, null, 2) + '\n');
   const codexPacked = await pack(codexDirectory, codexName);
-  for (const file of ['runners/codex/src/main.mjs', 'runners/common/bridge.mjs', 'node_modules/@openai/codex/package.json']) assert.ok(codexPacked.files.some(entry => entry.path === `runtime/${file}`), `Codex runtime missing ${file}`);
+  for (const file of ['runtimes/codex/src/main.mjs', 'runtimes/common/bridge.mjs', 'node_modules/@openai/codex/package.json']) assert.ok(codexPacked.files.some(entry => entry.path === `runtime/${file}`), `Codex runtime missing ${file}`);
   const packed = await pack(directory, name);
-  for (const file of ['runners/pi/dist/main.js', 'runners/opencode/src/main.mjs', 'runners/common/bridge.mjs']) assert.ok(packed.files.some(entry => entry.path === `runtime/${file}`), `runtime missing ${file}`);
+  for (const file of ['runtimes/pi/dist/main.js', 'runtimes/opencode/src/main.mjs', 'runtimes/common/bridge.mjs']) assert.ok(packed.files.some(entry => entry.path === `runtime/${file}`), `runtime missing ${file}`);
   for (const dependency of Object.keys(pkg.dependencies).filter(name => name !== '@openai/codex')) assert.ok(packed.files.some(entry => entry.path === `runtime/node_modules/${dependency}/package.json`), `runtime did not include ${dependency}`);
 }
 const main = path.join(stage, 'main');
@@ -112,9 +112,10 @@ await mkdir(main);
 // platform packages. Their complete locked native trees stay opaque to npm.
 for (const file of ['index.js', 'index.d.ts', 'process.js', 'README.md']) await copyFile(path.join(root, 'packages/brainserver', file), path.join(main, file));
 await cp(path.join(root, 'sdks/typescript/dist'), path.join(main, 'sdk'), { recursive: true });
+await cp(path.join(root,'sdks/typescript/node_modules/@opentelemetry/api'),path.join(main,'node_modules/@opentelemetry/api'),{recursive:true});
 await copyFile(path.join(root, 'LICENSE'), path.join(main, 'LICENSE'));
 const manifest = {
-  ...pkg, dependencies: undefined, overrides: undefined,
+  ...pkg, dependencies: {'@opentelemetry/api':'1.9.0'}, bundledDependencies:['@opentelemetry/api'], overrides: undefined,
   optionalDependencies: Object.fromEntries(targets.flatMap(target => [
     [`@aexhq/brainserver-${target}`, pkg.version], [`@aexhq/brainserver-codex-${target}`, pkg.version],
   ])),

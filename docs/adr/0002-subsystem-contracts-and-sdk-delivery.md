@@ -1,5 +1,8 @@
 # ADR 0002: Subsystem contracts and published SDKs
 
+> Service ownership, runtime placement, storage and telemetry decisions are superseded where they conflict by [ADR 0001](0001-local-first-session-server.md). This record retains historical rationale.
+
+
 - **Status:** Accepted
 - **Date:** 2026-10-16
 - **Extends:** [ADR 0001](0001-local-first-session-server.md)

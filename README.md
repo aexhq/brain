@@ -15,64 +15,32 @@
 <a href="https://aexhq.github.io/brain/docs/roadmap/">Roadmap</a>
 </p>
 
-Brain is a single application you deploy as a service to run the agents behind your products. It's an open-source alternative to Claude Managed Agents and the OpenAI Agents SDK, running on your own infrastructure with the models you choose.
+Brain runs agent sessions on infrastructure you control. Your application sends messages and connects tools; Brain keeps the session history and runs Pi in an isolated environment for each session.
 
-Brain gives you session-oriented primitives for building agents. Your application starts sessions, streams what the agent does, and connects tools from application code and services. Brain runs the agent loop and records each session's history, so you can replay a session or recover it after a failure.
+Four services divide the work:
 
-- **[Sessions](https://aexhq.github.io/brain/docs/guides/sessions/)**: agent conversations that outlive connections and restarts.
-- **[Events](https://aexhq.github.io/brain/docs/reference/events/)**: an ordered record of what the agent does, streamed live or replayed.
-- **[Harnesses](https://aexhq.github.io/brain/docs/adapters/harness/)**: pluggable agent loops that drive the model and manage context.
-- **[Tools](https://aexhq.github.io/brain/docs/tools/)**: capabilities implemented in your application, clients, or services.
-- **[Checkpoints](https://aexhq.github.io/brain/docs/guides/persistence/)**: portable session state for recovering and moving sessions.
+- **Brain** accepts messages, orders turns and streams events.
+- **Storage** keeps transcripts, attachments and session state across restarts.
+- **Tools** calls uploaded code, remote services and connected client functions.
+- **Sandbox** creates and cleans up isolated environments for Pi and uploaded tools.
 
-```ts
-import { Pi, BrainServer, Model } from "brainserver";
-
-const brain = new BrainServer();
-await brain.start();
-try {
-  const session = await brain.create({ harness: Pi(), model: Model("openai/gpt-4.1-mini"), tools: [] });
-  const input = await brain.send(session.id, { type: "user.message", text: "Say hello." });
-  for await (const event of brain.observe(session.id)) {
-    if (event.type === "assistant.message") console.log(event.data.text);
-    if (event.input_id !== input.id) continue;
-    if (event.type === "session.error") throw new Error(event.data.message);
-    if (event.type === "session.status" && event.data.status === "idle") break;
-  }
-} finally {
-  await brain.stop();
-}
-```
-
-Save this as `agent.mjs` and follow the setup below.
-
-## Why Brain
-
-- **Choose where tools run.** Compose functions into your application, attach client functions, or connect services in any language.
-- **Decide what the agent can do.** The model sees exactly the tools you enable for each session.
-- **Reconnect at any time.** Sessions keep running when clients disconnect and survive server restarts, so any client can reconnect and continue from the last event it read.
-- **Move sessions between servers.** Checkpoints let another server recover a session after a failure or take it over in a planned handoff.
-- **Isolate every customer.** Keep each customer's sessions and tools separate, and give each client only the access it needs.
-- **Run it yourself.** Brain is open source and self-hosted, with structured logs and OpenTelemetry traces and metrics.
+Sessions can outlive client connections. Your application chooses each session’s model, instructions and tools, then reconnects to its event history whenever it needs to.
 
 ## Get started
 
-You need Node.js 24+ and an OpenAI API key for the example above.
+Follow the [Docker quickstart](https://aexhq.github.io/brain/docs/quickstart/) to start the services and connect with the TypeScript SDK or CLI. The [embedded application guide](https://aexhq.github.io/brain/docs/sdks/application/) covers running the existing server package from Node.js.
 
-1. **Install Brain.** The package includes the server and harness runtimes:
+```ts
+import { Brain, Pi, Model, ApiKey } from '@aexhq/brain';
 
-   ```sh
-   npm install brainserver
-   ```
-
-2. **Run your script.** Set the provider key, then start the example:
-
-   ```sh
-   export OPENAI_API_KEY="your-provider-key"
-   node agent.mjs
-   ```
-
-The [Quickstart](https://aexhq.github.io/brain/docs/quickstart/) includes PowerShell setup. For a separately deployed server, use the [container image](https://aexhq.github.io/brain/docs/guides/operations/#run-brain-in-a-container) and connect with `@aexhq/brain` or `aex-brain`.
+const brain = new Brain('http://127.0.0.1:8080', process.env.BRAIN_API_KEY);
+const session = await brain.create({
+  id: 'support/issue-42',
+  harness: Pi(),
+  model: Model('openai/gpt-4.1-mini', ApiKey(process.env.OPENAI_API_KEY)),
+});
+await brain.send(session.id, { type: 'user.message', text: 'Hello.' });
+```
 
 ## Documentation
 

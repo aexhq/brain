@@ -31,7 +31,7 @@ export const result = text => ({ content: [{ type: "text", text }] });
 export async function build() {
   const dir = await mkdtemp(path.join(os.tmpdir(), "brain-journeys-build-"));
   try {
-    for (const [name, source] of [["brain", "./cmd/brain"], ["tools", "./examples/tools"]]) {
+    for (const [name, source] of [["brain", "./services/brain/cmd/brain"], ["tools", "./examples/tools"]]) {
       const output = spawnSync("go", ["build", "-o", path.join(dir, name + (process.platform === "win32" ? ".exe" : "")), source], { cwd: root, encoding: "utf8", timeout: 120000 });
       assert.ifError(output.error);
       assert.equal(output.status, 0, output.stderr);
@@ -221,7 +221,7 @@ export async function fixture(t, binaries, options = {}) {
       { token_env: "JOURNEY_A", tenant: "a", manage: true }, { token_env: "JOURNEY_B", tenant: "b", manage: true },
       { token_env: "JOURNEY_READER", tenant: "a", read_only: true }, { token_env: "JOURNEY_USER", tenant: "a" },
     ],
-    harnesses: { pi: { command: [process.execPath, path.join(root, "runners/pi/dist/main.js")] } },
+    harnesses: { pi: { command: [process.execPath, path.join(root, "runtimes/pi/dist/main.js")] } },
     providers: { openai: { api_key_env: "JOURNEY_MODEL", base_url: provider.url + "/v1", api: options.api ?? "openai-completions" } },
     limits: { active: 2, loaded: 16, queue: 2, input_bytes: 4096, session_bytes: 16 << 20, subscribers: 4, subscriber_events: 128, subscriber_bytes: 1 << 20, ...options.limits },
     tools: [],

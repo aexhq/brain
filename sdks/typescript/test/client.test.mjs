@@ -34,12 +34,12 @@ test('integration helpers keep credentials in private admission input and omit a
 
 test("model and managed tool declarations lower private admission separately from config", async () => {
   const client = new Brain("http://brain.test", "token", async (_url, init) => {
-    assert.deepEqual(JSON.parse(init.body), { harness: "pi", config: { model: "test/model", tools: ["lookup"], bindings: [
+    assert.deepEqual(JSON.parse(init.body), { id: "customer/session", harness: "pi", config: { model: "test/model", tools: ["lookup"], bindings: [
       { alias: "records", provider: "data", operations: ["read"], parameters: { bucket: "one" } },
     ] }, model_credential: { api_key: "customer-key" }, credentials: [{ binding: "records", value: { token: "tool-key" } }] });
     return Response.json({ id: "session" });
   });
-  await client.create({ harness: Pi(), model: Model("test/model", ApiKey("customer-key")), tools: [ManagedTool("lookup"),
+  await client.create({ id: "customer/session", harness: Pi(), model: Model("test/model", ApiKey("customer-key")), tools: [ManagedTool("lookup"),
     ManagedTool("data", { alias: "records", operations: ["read"], parameters: { bucket: "one" }, credential: { token: "tool-key" } }),
   ] });
   assert.deepEqual(CredentialReference("tenant-key"), { reference: "tenant-key" });

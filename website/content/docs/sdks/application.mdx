@@ -3,7 +3,7 @@ title: Go application SDK
 description: Compose Brain with installed tools, resource authorization, credential keys, and harness factories.
 ---
 
-Build your application with `github.com/aexhq/brain`. The stock `cmd/brain` executable uses this package too. Pin the module to the commit recorded in your [release](https://github.com/aexhq/brain/releases):
+Build your application with `github.com/aexhq/brain`. The stock `services/brain` executable uses this package too. Pin the module to the commit recorded in your [release](https://github.com/aexhq/brain/releases):
 
 ```sh
 go get github.com/aexhq/brain@COMMIT
@@ -51,7 +51,7 @@ Configured bearer tokens and delegated tool tokens are checked first; unmatched 
 
 ## Connect managed services
 
-Import `github.com/aexhq/brain/integrations` for `HTTP` and `MCP` constructors. Supply a parameter schema, an authorization function, and a resolver that returns only application-approved endpoints. Select MCP names explicitly. MCP stdio commands and environment values are installed by application code; clients select bindings, never commands.
+Import `github.com/aexhq/brain/tools/integrations` for `HTTP` and `MCP` constructors. Supply a parameter schema, an authorization function, and a resolver that returns only application-approved endpoints. Select MCP names explicitly. MCP stdio commands and environment values are installed by application code; clients select bindings, never commands.
 
 Each MCP discovery or invocation owns its connection. Stdio uses a private directory and an owned process tree that closes after the operation. HTTP connections are pooled; MCP sessions are separate per operation. Changed discovered descriptors reject a saved session before an action runs.
 

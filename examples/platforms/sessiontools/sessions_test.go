@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/aexhq/brain"
-	"github.com/aexhq/brain/internal/core"
-	"github.com/aexhq/brain/internal/tools"
+	"github.com/aexhq/brain/services/brain"
+	core "github.com/aexhq/brain/services/brain/api"
+	"github.com/aexhq/brain/services/tools/registry"
 	"strings"
 	"testing"
 )

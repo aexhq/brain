@@ -1,0 +1,17 @@
+{
+  "listen": ":8080",
+  "public_url": "http://brain:8080",
+  "data_dir": "/data",
+  "tokens": [{"token_env": "BRAIN_API_KEY", "tenant": "local", "manage": true}],
+  "credential_keys": {"active": "local", "keys": {"local": "BRAIN_ENCRYPTION_KEY"}},
+  "harnesses": {"pi": {"max_shared": 1, "max_active_turns": 1, "max_starting": 4}},
+  "providers": {"openai": {}, "anthropic": {}},
+  "services": {
+    "storage": "http://storage:8081",
+    "tools": "http://tools:8082",
+    "sandbox": "http://sandbox:8083",
+    "token_env": "BRAIN_SERVICE_TOKEN",
+    "owner": "local-brain",
+    "epoch": 1
+  }
+}
