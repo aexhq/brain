@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -20,6 +21,11 @@ export const tokens = {
   reader: "journey-reader-a-0000000000000000", user: "journey-user-a-000000000000000000",
   tool: "journey-tools-0000000000000000000", operator: "journey-operator-0000000000000000",
 };
+// Fault-injection journeys address the physical tenant-scoped working copy.
+export function sessionDirectory(settings, id, tenant = 'a') {
+  const key = Buffer.from(tenant).toString('base64url')+'.'+Buffer.from(id).toString('base64url');
+  return path.join(settings.data_dir, 'sessions', createHash('sha256').update(key).digest('hex'));
+}
 export const config = (tools = []) => ({ harness: "pi", config: {
   model: "openai/gpt-4.1-mini", reasoning_effort: "off", instructions: "Stable journey instructions.", tools,
 } });

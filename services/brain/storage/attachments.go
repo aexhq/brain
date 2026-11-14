@@ -125,15 +125,32 @@ func (w *Workspace) ValidateInput(ctx context.Context, id string, input core.Inp
 		}
 	}
 	for _, ref := range input.References {
-		u, err := url.Parse(ref.URI)
-		if err != nil || len(ref.URI) > 4096 || u.User != nil || u.Fragment != "" || !supportedInput(ref.MediaType) {
-			return core.E(core.Invalid, "invalid external reference")
-		}
-		if !slices.Contains(w.MediaOrigins, u.Scheme+"://"+u.Host) {
-			return core.E(core.Forbidden, "reference origin is not authorized")
+		if _, err := w.referenceRequest(ctx, ref); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func (w *Workspace) referenceRequest(ctx context.Context, ref core.Reference) (*http.Request, error) {
+	u, err := url.Parse(ref.URI)
+	if err != nil || len(ref.URI) > 4096 || u.User != nil || u.Fragment != "" || !supportedInput(ref.MediaType) {
+		return nil, core.E(core.Invalid, "invalid external reference")
+	}
+	for _, origin := range w.MediaOrigins {
+		if origin != u.Scheme+"://"+u.Host {
+			continue
+		}
+		// The deployment chooses the destination. User input supplies only the
+		// path/query, never the host, scheme, credentials or redirect policy.
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, origin, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.URL.Path, req.URL.RawPath, req.URL.RawQuery = u.Path, u.RawPath, u.RawQuery
+		return req, nil
+	}
+	return nil, core.E(core.Forbidden, "reference origin is not authorized")
 }
 func (w *Workspace) ResolveInput(ctx context.Context, id string, input core.Input) (core.Text, error) {
 	out := core.Text{Text: input.Text, Media: input.Media}
@@ -171,7 +188,7 @@ func (w *Workspace) ResolveInput(ctx context.Context, id string, input core.Inpu
 	}
 	client := &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	for _, ref := range input.References {
-		req, err := http.NewRequestWithContext(ctx, "GET", ref.URI, nil)
+		req, err := w.referenceRequest(ctx, ref)
 		if err != nil {
 			return out, err
 		}

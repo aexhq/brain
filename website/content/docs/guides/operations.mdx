@@ -108,6 +108,6 @@ Load-test with your own workload before you size a fleet.
 
 ## Instrument SDK and CLI calls
 
-The TypeScript package exports `configureTelemetry` and `telemetry` from both its root and `@aexhq/brain/telemetry`. Register your application’s tracer/meter providers, context manager and propagator before creating clients. Your application owns exporter resources and shutdown. The CLI uses the same request instrumentation and exports this configuration API when imported programmatically.
+The TypeScript package exports `configureTelemetry` and `telemetry` from both its root and `@aexhq/brain/telemetry`. Register your application’s tracer/meter providers, context manager and propagator before creating clients. Your application owns exporter resources and shutdown. The CLI uses the same request instrumentation and exports this configuration API from `@aexhq/brain/cli` when imported programmatically.
 
 SDK request spans are named `brain.client.OPERATION`; the `brain.client.duration` histogram uses seconds and only `operation`/`status` labels. It propagates W3C trace context and excludes URLs, credentials, session IDs and request bodies. Server domain instruments stay beside the implementation that emits them. Pi reports model usage to Brain through runtime events; its process does not create an independent exporter.

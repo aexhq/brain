@@ -26,6 +26,10 @@
   "type": "module",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./cli": {
+      "types": "./dist/cli.d.mts",
+      "default": "./dist/cli.mjs"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"

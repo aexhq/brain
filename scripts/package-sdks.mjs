@@ -40,7 +40,7 @@ for (const sdk of ['typescript', 'python']) {
   assert.equal(await readFile(path.join(root, `sdks/${sdk}/LICENSE`), 'utf8'), await readFile(path.join(root, 'LICENSE'), 'utf8'));
 }
 const [packed] = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', artifacts], path.join(root, 'sdks/typescript'), true));
-for (const file of ['dist/index.js', 'dist/index.d.ts', 'dist/generated.d.ts', 'README.md', 'LICENSE']) {
+for (const file of ['dist/index.js', 'dist/index.d.ts', 'dist/generated.d.ts', 'dist/cli.mjs', 'dist/cli.d.mts', 'dist/telemetry.js', 'README.md', 'LICENSE']) {
   assert.ok(packed.files.some(item => item.path === file), `npm archive missing ${file}`);
 }
 assert.ok(!packed.files.some(item => /^(src|test|node_modules)\//.test(item.path)), 'unexpected npm package files');
@@ -58,8 +58,12 @@ run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-ex
 const tests = await readFile(path.join(root, 'sdks/typescript/test/client.test.mjs'), 'utf8');
 await writeFile(path.join(consumer, 'client.test.mjs'), tests.replace('"../dist/index.js"', '"@aexhq/brain"'));
 run(process.execPath, ['--test', 'client.test.mjs'], consumer);
+run(process.execPath, ['--input-type=module', '-e', "import { main } from '@aexhq/brain/cli'; await main(['--help']);"], consumer);
   await writeFile(path.join(consumer, 'consumer.ts'), `import { Pi, Brain, BrainError, Model, ApiKey, Tool, ManagedTool, type Session, type Event } from '@aexhq/brain';
+import {main, configureTelemetry} from '@aexhq/brain/cli';
 const brain = new Brain('http://brain.test', 'token');
+const cli: Promise<void> = main(['list'], {client: brain, output: () => {}});
+configureTelemetry({});
 const session: Promise<Session> = brain.get('id');
 const events: AsyncGenerator<Event> = brain.observe('id');
 const error: Error = new BrainError(409, 'conflict', 'busy');

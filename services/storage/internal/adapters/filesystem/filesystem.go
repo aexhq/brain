@@ -20,7 +20,7 @@ type Store struct {
 	owner    *os.File
 	once     sync.Once
 	closeErr error
-	root     string
+	root     *os.Root
 	mu       sync.Mutex
 }
 
@@ -36,13 +36,18 @@ func New(root string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{root: p, owner: owner}, nil
+	files, err := os.OpenRoot(p)
+	if err != nil {
+		owner.Close()
+		return nil, err
+	}
+	return &Store{root: files, owner: owner}, nil
 }
 func (s *Store) filename(key string) string {
-	return filepath.Join(s.root, filepath.FromSlash(key)+".object")
+	return filepath.FromSlash(key) + ".object"
 }
 func (s *Store) get(key string) (adapters.Object, error) {
-	b, err := os.ReadFile(s.filename(key))
+	b, err := s.root.ReadFile(s.filename(key))
 	if errors.Is(err, os.ErrNotExist) {
 		return adapters.Object{}, adapters.ErrNotFound
 	}
@@ -82,14 +87,15 @@ func (s *Store) Put(ctx context.Context, key string, data []byte, c adapters.Con
 		return adapters.Object{}, err
 	}
 	p := s.filename(key)
-	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+	if err := s.root.MkdirAll(filepath.Dir(p), 0700); err != nil {
 		return adapters.Object{}, err
 	}
-	f, err := os.CreateTemp(filepath.Dir(p), ".pending-")
+	temporary := filepath.Join(filepath.Dir(p), ".pending-"+adapters.Version())
+	f, err := s.root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return adapters.Object{}, err
 	}
-	defer os.Remove(f.Name())
+	defer s.root.Remove(temporary)
 	v := adapters.Version()
 	if _, err = f.Write(append([]byte(v+"\n"), data...)); err != nil {
 		f.Close()
@@ -102,10 +108,10 @@ func (s *Store) Put(ctx context.Context, key string, data []byte, c adapters.Con
 	if err = f.Close(); err != nil {
 		return adapters.Object{}, err
 	}
-	if err = os.Rename(f.Name(), p); err != nil {
+	if err = s.root.Rename(temporary, p); err != nil {
 		return adapters.Object{}, err
 	}
-	if err = syncDirectory(filepath.Dir(p)); err != nil {
+	if err = syncDirectory(s.root, filepath.Dir(p)); err != nil {
 		return adapters.Object{}, err
 	}
 	return adapters.Object{Key: key, Version: v, Data: data}, nil
@@ -119,7 +125,7 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	err := os.Remove(s.filename(key))
+	err := s.root.Remove(s.filename(key))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -132,7 +138,7 @@ func (s *Store) List(ctx context.Context, prefix, after string, limit int) (adap
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	keys := []string{}
-	err := filepath.WalkDir(s.root, func(p string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(s.root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -145,11 +151,7 @@ func (s *Store) List(ctx context.Context, prefix, after string, limit int) (adap
 		if d.IsDir() || !strings.HasSuffix(d.Name(), ".object") {
 			return nil
 		}
-		rel, err := filepath.Rel(s.root, p)
-		if err != nil {
-			return err
-		}
-		key := strings.TrimSuffix(filepath.ToSlash(rel), ".object")
+		key := strings.TrimSuffix(p, ".object")
 		if key > after && strings.HasPrefix(key, prefix) {
 			position, _ := slices.BinarySearch(keys, key)
 			if position <= limit {
@@ -176,4 +178,7 @@ func (s *Store) List(ctx context.Context, prefix, after string, limit int) (adap
 	}
 	return p, nil
 }
-func (s *Store) Close() error { s.once.Do(func() { s.closeErr = s.owner.Close() }); return s.closeErr }
+func (s *Store) Close() error {
+	s.once.Do(func() { s.closeErr = errors.Join(s.root.Close(), s.owner.Close()) })
+	return s.closeErr
+}

@@ -30,12 +30,8 @@ type Workspace struct {
 	MaxBytes     int64
 	locks        [64]sync.Mutex
 }
-type transcript struct {
-	Previous string `json:"previous,omitempty"`
-	Payload  string `json:"payload"`
-	Offset   int64  `json:"offset"`
-	Size     int64  `json:"size"`
-}
+type transcript = api.Transcript
+
 type snapshot struct {
 	Record api.Record `json:"record"`
 	Native string     `json:"native"`

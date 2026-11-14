@@ -4,8 +4,8 @@ package filesystem
 
 import "os"
 
-func syncDirectory(path string) error {
-	f, err := os.Open(path)
+func syncDirectory(root *os.Root, path string) error {
+	f, err := root.Open(path)
 	if err != nil {
 		return err
 	}
