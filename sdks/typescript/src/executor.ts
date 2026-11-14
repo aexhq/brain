@@ -1,14 +1,14 @@
 import type { Command, ExecutorCredential, ExecutorRegistration, Reply, Tool, ToolScope } from "./generated.js";
 
-export interface RuntimeContext {
+export interface BrowserContext {
   signal: AbortSignal;
   scope: ToolScope;
   progress(value: unknown): Promise<void>;
 }
-export interface RuntimeTool extends Tool {
-  run(arguments_: unknown, context: RuntimeContext): unknown | Promise<unknown>;
+export interface BrowserTool extends Tool {
+  run(arguments_: unknown, context: BrowserContext): unknown | Promise<unknown>;
 }
-export type RuntimeTransport = "sse" | "rpc";
+export type BrowserTransport = "sse" | "rpc";
 
 export async function* streamJSON<T>(body: ReadableStream<Uint8Array<ArrayBuffer>>): AsyncGenerator<T> {
   const reader = body.pipeThrough(new TextDecoderStream()).getReader();
@@ -29,21 +29,21 @@ export async function* streamJSON<T>(body: ReadableStream<Uint8Array<ArrayBuffer
   } finally { await reader.cancel(); reader.releaseLock(); }
 }
 
-export class RuntimeExecutor {
+export class BrowserExecutor {
   readonly abort = new AbortController();
   private socket?: WebSocket;
   private calls = new Map<string, AbortController>();
   private connection = "";
   private ended = false;
   private task?: Promise<void>;
-  private constructor(readonly url: string, readonly credential: ExecutorCredential, readonly tools: RuntimeTool[], private fetcher: typeof fetch) {}
+  private constructor(readonly url: string, readonly credential: ExecutorCredential, readonly tools: BrowserTool[], private fetcher: typeof fetch) {}
 
-  static async open(url: string, token: string, tools: RuntimeTool[], transport: RuntimeTransport, fetcher: typeof fetch, session?: string): Promise<RuntimeExecutor> {
+  static async open(url: string, token: string, tools: BrowserTool[], transport: BrowserTransport, fetcher: typeof fetch, session?: string): Promise<BrowserExecutor> {
     if (transport !== "sse" && transport !== "rpc") throw new Error("unsupported runtime transport");
     const input: ExecutorRegistration = { binding: "runtime", tools: tools.map(({ run: _, ...descriptor }) => descriptor), ...(session ? { session } : {}) };
     const response = await fetcher(new URL("/executors", url), { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(input), redirect: "error", signal: AbortSignal.timeout(30000) });
     if (!response.ok) throw new Error(`executor registration failed (${response.status})`);
-    const executor = new RuntimeExecutor(url, await response.json() as ExecutorCredential, tools, fetcher);
+    const executor = new BrowserExecutor(url, await response.json() as ExecutorCredential, tools, fetcher);
     try { await executor.connect(transport); return executor; }
     catch (error) { await executor.close(); throw error; }
   }
@@ -59,7 +59,7 @@ export class RuntimeExecutor {
     if (!response.ok && !(path === "close" && [401, 403].includes(response.status))) throw new Error(`executor ${path} failed (${response.status})`);
     return response;
   }
-  private async connect(transport: RuntimeTransport): Promise<void> {
+  private async connect(transport: BrowserTransport): Promise<void> {
     let ready!: () => void, failed!: (error: unknown) => void;
     const opening = new Promise<void>((resolve, reject) => { ready = resolve; failed = reject; });
     const timer = setTimeout(() => failed(new Error("executor readiness timeout")), 30000);

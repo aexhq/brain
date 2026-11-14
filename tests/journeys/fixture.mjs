@@ -286,15 +286,6 @@ export async function fixture(t, binaries, options = {}) {
       });
       return { operator, pending: async () => (await (await operator()).json()).approvals };
     },
-    async python(script, extra = {}) {
-      const executable = path.join(root, "bin/sdk-python", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
-      const args = ["-I", script];
-      const proc = startProcess(executable, args, { ...env, PYTHONPATH: "", JOURNEY_URL: url, ...extra });
-      processes.push(proc);
-      const ended = await until(() => proc.ended, Boolean, "Python SDK journey", 30000);
-      assert.equal(ended.code, 0, proc.output);
-      return JSON.parse(proc.stdout);
-    },
   };
   return f;
 }

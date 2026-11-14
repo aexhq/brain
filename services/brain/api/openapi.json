@@ -14,6 +14,7 @@
             "type": "string"
           },
           "size": {
+            "format": "int64",
             "type": "integer"
           }
         },
@@ -50,6 +51,7 @@
             "type": "string"
           },
           "offset": {
+            "format": "int64",
             "type": "integer"
           },
           "time": {
@@ -121,7 +123,10 @@
             "items": {
               "$ref": "#/components/schemas/CredentialInput"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "harness": {
             "type": "string"
@@ -222,7 +227,10 @@
             "items": {
               "$ref": "#/components/schemas/Event"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "next_cursor": {
             "type": "string"
@@ -263,7 +271,10 @@
             "items": {
               "$ref": "#/components/schemas/Tool"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           }
         },
         "required": [
@@ -279,7 +290,10 @@
             "items": {
               "type": "string"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "delivery": {
             "type": "string"
@@ -291,13 +305,19 @@
             "items": {
               "$ref": "#/components/schemas/Media"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "references": {
             "items": {
               "$ref": "#/components/schemas/Reference"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "text": {
             "type": "string"
@@ -342,7 +362,6 @@
             "type": "string"
           }
         },
-        "required": [],
         "type": "object"
       },
       "ModelRequest": {
@@ -382,7 +401,10 @@
             "items": {
               "type": "string"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "usage": {
             "$ref": "#/components/schemas/ModelUsage"
@@ -408,24 +430,29 @@
             "type": "string"
           },
           "cache_read_tokens": {
+            "format": "int64",
             "type": "integer"
           },
           "cache_write_tokens": {
+            "format": "int64",
             "type": "integer"
           },
           "input_cache": {
             "type": "string"
           },
           "input_tokens": {
+            "format": "int64",
             "type": "integer"
           },
           "output_reasoning": {
             "type": "string"
           },
           "output_tokens": {
+            "format": "int64",
             "type": "integer"
           },
           "reasoning_tokens": {
+            "format": "int64",
             "type": "integer"
           },
           "semantics": {
@@ -437,6 +464,27 @@
           "semantics",
           "input_cache",
           "output_reasoning"
+        ],
+        "type": "object"
+      },
+      "NativeFile": {
+        "additionalProperties": false,
+        "properties": {
+          "append_only": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "size",
+          "append_only"
         ],
         "type": "object"
       },
@@ -495,7 +543,10 @@
             "items": {
               "$ref": "#/components/schemas/Content"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "is_error": {
             "type": "boolean"
@@ -527,13 +578,19 @@
             "items": {
               "type": "string"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "descriptors": {
             "items": {
               "$ref": "#/components/schemas/Tool"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "harness": {
             "type": "string"
@@ -567,7 +624,10 @@
             "items": {
               "$ref": "#/components/schemas/ToolBinding"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "instructions": {
             "type": "string"
@@ -582,7 +642,10 @@
             "items": {
               "type": "string"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           }
         },
         "required": [
@@ -598,7 +661,10 @@
             "items": {
               "$ref": "#/components/schemas/Session"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           }
         },
         "required": [
@@ -628,6 +694,7 @@
             "type": "string"
           },
           "history_bytes": {
+            "format": "int64",
             "type": "integer"
           },
           "native_checkpoint": {
@@ -637,6 +704,7 @@
             "type": "boolean"
           },
           "resume_offset": {
+            "format": "int64",
             "type": "integer"
           },
           "time": {
@@ -683,7 +751,10 @@
             "items": {
               "type": "string"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "parameters": {},
           "provider": {
@@ -693,7 +764,10 @@
             "items": {
               "$ref": "#/components/schemas/Tool"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           }
         },
         "required": [
@@ -708,7 +782,10 @@
             "items": {
               "$ref": "#/components/schemas/Tool"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           }
         },
         "required": [
@@ -742,6 +819,8 @@
             "type": "string"
           },
           "epoch": {
+            "format": "int64",
+            "minimum": 0,
             "type": "integer"
           },
           "inspection_token": {

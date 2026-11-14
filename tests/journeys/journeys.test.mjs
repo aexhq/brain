@@ -32,8 +32,6 @@ test("installed SDK deletion removes local and archived state and prevents cold 
   await assert.rejects(access(sessionDirectory(f.settings, session.id)));
   await f.crash(); f.settings.data_dir = path.join(f.dir, "deleted-cold-cache"); await f.start();
   await rejects(f.api.restore(session.id, checkpoint.checkpoint), 404, "not_found");
-  const python = await f.python(path.join(root, "tests/journeys/python_delete.py"));
-  assert.equal(python.deleted, true);
 });
 
 test("Pi receipts preserve reported cache/reasoning subsets on both OpenAI transports", budget, async t => {
@@ -285,14 +283,6 @@ test("authoring constructors compose a managed service and a connected client fu
   assert.equal(toolResults(await history(f.api, s.id)).length, 2);
   await f.api.close(s.id);
   await f.api.dispose();
-});
-
-test("installed Python SDK owns its runtime function connection", budget, async t => {
-  const f = await fixture(t, binaries);
-  await f.start();
-  const result = await f.python(path.join(root, "tests/journeys/python_runtime.py"));
-  assert.equal(result.calls, 1);
-  assert.equal(f.model.requests.length, 2);
 });
 
 test("a developer validates host configuration before creating local state or starting inference", budget, async t => {
@@ -870,23 +860,6 @@ test("an observer exceeding its buffer is disconnected while canonical history a
   await replay.wait(event => completed(sent, event));
 });
 
-test("Python and TypeScript clients manage the same live conversation and saved checkpoints", budget, async t => {
-  const f = await fixture(t, binaries, { persistence: {} });
-  const service = await f.examples();
-  await f.start();
-  const s = await f.api.create(config(["echo", "ask_approval"]));
-  await f.api.send(s.id, message("TypeScript started this conversation"));
-  await state(f.api, s.id);
-  // Python creates another session, streams both, cancels a pending approval,
-  // restores a checkpoint, and closes its sessions using only the public SDK.
-  const result = await f.python(path.join(root, "tests/journeys/python_journey.py"), { JOURNEY_SESSION: s.id });
-  assert.equal((await f.api.get(s.id)).status, "closed");
-  assert.equal((await f.api.get(result.created)).status, "closed");
-  assert.ok((await history(f.api, s.id)).some(event => event.type === "assistant.message" && event.data.text === "tool handled"));
-  await until(service.pending, list => list.length === 0);
-  assert.equal(f.model.requests.length, 6);
-});
-
 test("concurrent tenant sessions respect the active limit and keep context isolated across runner eviction", budget, async t => {
   const f = await fixture(t, binaries, { limits: { active: 2, loaded: 4 } });
   const calls = [], waiting = [];
@@ -980,7 +953,7 @@ for (const transport of ["sse", "rpc"]) test(`runtime SDK callbacks over ${trans
   const tools = [{ name: "lookup", description: "Look up a client value", input_schema: { type: "object" }, output_schema: { type: "object", required: ["count"] },
     async run(args, context) { calls++; assert.equal(context.scope.tenant_id, "a"); assert.notEqual(context.scope.session_id, args.session_id); await context.progress({ ready: true }); return { count: calls }; },
   }];
-  const s = await f.api.create({ ...config(), runtime_tools: tools, runtime_transport: transport });
+  const s = await f.api.create({ ...config(), browser_tools: tools, browser_transport: transport });
   assert.deepEqual(s.descriptors.map(t => t.name), ["runtime_lookup"]);
   assert.ok(!JSON.stringify(s).includes("async run"));
   const stream = await f.observe(s.id);

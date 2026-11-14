@@ -61,7 +61,7 @@ fly scale count 1
 Keep Brain management credentials on your backend server:
 
 - A Next.js route handler, Python backend, or API gateway should authenticate its own end user, verify which session IDs that user owns, and proxy only permitted operations to Brain.
-- Use the TypeScript or Python SDKs (`examples/session.mjs` and `examples/session.py`) on your backend for `create`, `send`, `observe`, `interrupt`, `flush`, and `resume`; never expose a `manage: true` token directly to browser clients.
+- Use the TypeScript SDK (`examples/session.mjs`) on your backend for `create`, `send`, `observe`, `interrupt`, `flush`, and `resume`; never expose a `manage: true` token directly to browser clients.
 
 Sources: [Fly configuration](https://docs.fly.io/reference/configuration), [Fly volumes](https://docs.fly.io/volumes/overview), [ECS task parameters](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html).
 

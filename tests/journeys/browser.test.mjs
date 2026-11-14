@@ -38,10 +38,10 @@ async function attached(t, { ttlMs = 300000 } = {}) {
         const composition = await (await fetch('/composition', { headers: { Authorization: 'Bearer '+${JSON.stringify(pageGrant.token)} } })).json();
         window.calls = 0; window.scopes = []; window.observed = [];
         const tool = { ...${JSON.stringify(tool)}, run(args, context) { window.calls++; window.scopes.push(context.scope); return args.wait ? new Promise(resolve => window.complete = resolve) : { text: document.querySelector('#private').textContent }; } };
-        window.tryWithoutGesture = () => connectTab(brain, { create: { ...composition.create, runtime_tools: [tool] } });
+        window.tryWithoutGesture = () => connectTab(brain, { create: { ...composition.create, browser_tools: [tool] } });
         window.withoutGesture = await window.tryWithoutGesture().then(() => 'incorrectly attached', e => e.message);
         document.querySelector('#attach').addEventListener('click', async () => { try {
-          window.attached = await connectTab(brain, window.rebind ? { session: window.rebind, tools: [tool] } : { create: { ...composition.create, runtime_tools: [tool] } });
+          window.attached = await connectTab(brain, window.rebind ? { session: window.rebind, tools: [tool] } : { create: { ...composition.create, browser_tools: [tool] } });
           window.session = attached.session;
           const controller = new AbortController(); window.stopObserve = () => controller.abort();
           (async () => { try { for await (const event of brain.observe(session.id, { signal: controller.signal })) observed.push(event); } catch {} })();

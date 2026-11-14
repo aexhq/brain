@@ -17,7 +17,7 @@ document.querySelector('#attach')!.addEventListener('click', async () => {
   const attached = await connectTab(brain, {
     create: {
       ...approvedComposition,
-      runtime_tools: [{
+      browser_tools: [{
         ...approvedReadTool,
         run() { return { text: document.querySelector('#app')!.textContent }; },
       }],

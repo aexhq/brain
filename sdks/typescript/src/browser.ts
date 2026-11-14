@@ -1,9 +1,9 @@
 import type { Brain, SessionInput } from "./index.js";
-import type { RuntimeTool } from "./runtime.js";
+import type { BrowserTool } from "./executor.js";
 import type { Session } from "./generated.js";
 
 /** Call directly from a trusted click handler. The page owns its executor. */
-export async function connectTab(brain: Brain, input: { create: SessionInput } | { session: string; tools: RuntimeTool[] }): Promise<{ session: Session; detach(): Promise<void> }> {
+export async function connectTab(brain: Brain, input: { create: SessionInput } | { session: string; tools: BrowserTool[] }): Promise<{ session: Session; detach(): Promise<void> }> {
   if (typeof window === "undefined" || !navigator.userActivation.isActive) throw new Error("attach the tab from a user gesture");
   const lifetime = new AbortController();
   const unload = () => { lifetime.abort(); void brain.dispose().catch(() => {}); };

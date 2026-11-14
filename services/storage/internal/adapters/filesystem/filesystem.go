@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/aexhq/brain/internal/volume"
+	"github.com/aexhq/brain/internal/dirlock"
 	"github.com/aexhq/brain/services/storage/internal/adapters"
 )
 
@@ -32,7 +32,7 @@ func New(root string) (*Store, error) {
 	if err = os.MkdirAll(p, 0700); err != nil {
 		return nil, err
 	}
-	owner, err := volume.Lock(p)
+	owner, err := dirlock.Lock(p)
 	if err != nil {
 		return nil, err
 	}

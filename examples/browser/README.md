@@ -36,7 +36,7 @@ const composition = await (await fetch('/composition', {
 let attachment;
 document.querySelector('#attach').addEventListener('click', async () => {
   attachment = await connectTab(brain, {
-    create: { ...composition.create, runtime_tools: [{
+    create: { ...composition.create, browser_tools: [{
       ...composition.tools[0],
       run() { return { text: document.querySelector('#app').innerText }; },
     }] },

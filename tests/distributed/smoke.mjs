@@ -90,7 +90,7 @@ try {
   await sdk.send(remoteId,{type:'user.message',text:'CALL remote_echo {"value":"remote tool"}'});await settled(remoteId);
   assert.equal((await sdk.history(remoteId)).events.find(e=>e.type==='tool.result').data.result.content[0].text,'remote tool');
   const browserId='browser/'+randomUUID();sessions.push(browserId);
-  await sdk.create({id:browserId,harness:'pi',config:{model:'openai/gpt-4.1-mini',tools:[]},model_credential:{api_key:'local-fixture-key'},runtime_tools:[{name:'echo',description:'Client execution',input_schema:{type:'object'},run:args=>args.value}]});
+  await sdk.create({id:browserId,harness:'pi',config:{model:'openai/gpt-4.1-mini',tools:[]},model_credential:{api_key:'local-fixture-key'},browser_tools:[{name:'echo',description:'Client execution',input_schema:{type:'object'},run:args=>args.value}]});
   await sdk.send(browserId,{type:'user.message',text:'CALL runtime_echo {"value":"browser tool"}'});await settled(browserId);
   assert.equal((await sdk.history(browserId)).events.find(e=>e.type==='tool.result').data.result.structured_content,'browser tool');
   const tail=await request('GET',endpoint(browserId)+'/events?tail=true&limit=2');assert.equal(tail.events.length,2);

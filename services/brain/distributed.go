@@ -3,7 +3,7 @@ package brain
 import (
 	"context"
 	"errors"
-	"github.com/aexhq/brain/internal/volume"
+	"github.com/aexhq/brain/internal/dirlock"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
@@ -47,7 +47,7 @@ func newDistributed(ctx context.Context, o Options) (_ *Server, err error) {
 			}
 		}
 	}()
-	owner, err := volume.Lock(c.DataDir)
+	owner, err := dirlock.Lock(c.DataDir)
 	if err != nil {
 		return nil, err
 	}

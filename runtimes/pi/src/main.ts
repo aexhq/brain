@@ -81,7 +81,7 @@ class NativeSession {
     const settings = SettingsManager.inMemory({
       cacheWarming: "off", extensions: [], skills: [], prompts: [], themes: [],
     });
-    this.plugins = await plugins(options.plugins ?? [], (name, id, args, signal) => this.callTool(name, id, args, signal), (id, data) => this.event('plugin.progress', { id, data }), options.tools.map(tool => tool.name));
+    this.plugins = await plugins(options.plugins ?? [], (name, id, args, signal) => this.callTool(name, id, args, signal), (id, data) => this.event('plugin.progress', { id, data }), (options.tools ?? []).map(tool => tool.name));
     const instructions = options.config.instructions ?? "You are a helpful assistant. Use the available tools when needed.";
     const resources = new DefaultResourceLoader({
       cwd, agentDir, settingsManager: settings,
@@ -126,16 +126,16 @@ class NativeSession {
     const manager = files[0]
       ? SessionManager.open(path.join(sessionDir, files[0]), sessionDir, cwd)
       : SessionManager.create(cwd, sessionDir);
-    const customTools: ToolDefinition[] = options.tools.map(tool => ({
+    const customTools: ToolDefinition[] = (options.tools ?? []).map(tool => ({
       name: tool.name, label: tool.name, description: tool.description,
       parameters: tool.input_schema as ToolDefinition["parameters"],
       execute: async (callID, args, signal) => {
         const result = await this.callTool(tool.name, callID, args, signal);
         if (result.is_error) {
-          throw new Error(result.content.map(c => c.text ?? "").join("\n"));
+          throw new Error((result.content ?? []).map(c => c.text ?? "").join("\n"));
         }
         return {
-          content: result.content.map(c => {
+          content: (result.content ?? []).map(c => {
             if (c.type === "text") return { type: "text" as const, text: c.text ?? "" };
             if (c.type === "image" && c.data && c.mime_type) return { type: "image" as const, data: c.data, mimeType: c.mime_type };
             throw new Error("unsupported tool content");
@@ -156,7 +156,7 @@ class NativeSession {
       cwd, agentDir, modelRuntime: runtime, model,
       thinkingLevel: (options.config.reasoning_effort ?? "off") as CreateOptions["thinkingLevel"],
       sessionManager: manager, settingsManager: settings, resourceLoader: resources,
-      noTools: "builtin", tools: [...options.tools.map(t => t.name), ...this.plugins.tools.map(t => t.name)], customTools,
+      noTools: "builtin", tools: [...(options.tools ?? []).map(t => t.name), ...this.plugins.tools.map(t => t.name)], customTools,
     });
     this.session = created.session;
     if (options.plugins?.length) {
@@ -171,7 +171,7 @@ class NativeSession {
       throw new Error("requested reasoning effort is unsupported by the model");
     }
     const active = this.session.getActiveToolNames().sort();
-    const selected = [...options.tools.map(t => t.name), ...this.plugins.tools.map(t => t.name)].sort();
+    const selected = [...(options.tools ?? []).map(t => t.name), ...this.plugins.tools.map(t => t.name)].sort();
     if (new Set(selected).size !== selected.length) throw new Error('Plugin and application tools have duplicate names');
     if (JSON.stringify(active) !== JSON.stringify(selected)) throw new Error(`native tool isolation failed: expected ${JSON.stringify(selected)}, got ${JSON.stringify(active)}`);
     this.session.subscribe(e => {

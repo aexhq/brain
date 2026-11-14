@@ -1,5 +1,7 @@
 # 09: Delivery, documentation, and platform examples
 
+> Scope update (2026-11-14): the Python SDK and its delivery path were removed. Python SDK evidence below describes the earlier implementation; the supported client is TypeScript. See [repository tooling decisions](../implementation-plan.md#sdk-and-tooling-direction).
+
 Status: Implementation authorized on 2026-10-15. Complements [integration expansion](08-integration-expansion.md), [verification](07-verification-and-release.md), and the [research](../research/integration-options.md).
 
 This cut implements the CI aggregate gate, exact-image promotion, provenance, downloadable binaries, GitHub Pages subpath build, dependency update configuration, Docker/Fly/ECS recipes, an R2 Worker example, and TypeScript/Python session examples. Hosted fleet routing and a full application login/UI remain platform work, not Brain runtime entities. Cloud templates are labeled separately from live-qualified integrations.

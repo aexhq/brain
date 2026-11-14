@@ -17,7 +17,7 @@ The distributed Tools service exposes three execution forms through the same inv
 | --- | --- | --- |
 | HostedTool | Upload a bundled ESM module through `brain.uploadTool(descriptor, module)`; bind the returned package reference with provider `hosted`. | A separate Sandbox container per invocation. |
 | RemoteTool | Configure a tool endpoint or install a supplied integration provider in Tools. | Your remote service, including native Modal/E2B tools. |
-| BrowserTool | Supply `runtime_tools` callbacks or SDK `Tool()` functions from a connected client. | The attached client executor. |
+| BrowserTool | Supply `browser_tools` callbacks or SDK `Tool()` functions from a connected client. | The attached client executor. |
 
 The supplied integrations live under `tools/` and use the same registry and authoring contracts as application tools. Install a provider configuration with Tools' `providers_file`; mount that file and pass its credential variables to the Tools container.
 
@@ -113,10 +113,6 @@ const { tools } = await brain.catalog();
 const session = await brain.create({ harness: "pi", config: { model: "openai/gpt-4.1-mini", tools: ["echo"] } });
 ```
 
-```python tab="Python"
-tools = brain.catalog()["tools"]
-session = brain.create({"harness": "pi", "config": {"model": "openai/gpt-4.1-mini", "tools": ["echo"]}})
-```
 
 To try tools without writing a service, follow [Local tools & approvals](/docs/tools/local-tools). It generates a host config for the example tool server and runs `examples/session.mjs` with `BRAIN_TOOLS` set to the tools to enable.
 

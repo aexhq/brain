@@ -1,6 +1,6 @@
 # 05: API and SDKs plan
 
-- **Releases:** HTTP API, TypeScript SDK, and Python SDK implemented ([Roadmap](../roadmap.md))
+- **Releases:** HTTP API and TypeScript SDK implemented ([Roadmap](../roadmap.md))
 
 Generate the OpenAPI spec and SDK wire types from a single source in Go (`services/brain/internal/http/contract.go` and `services/brain/api/types.go` via `go run ./services/brain/cmd/generate`).
 
@@ -8,9 +8,9 @@ Generate the OpenAPI spec and SDK wire types from a single source in Go (`servic
 
 | ID | Scope | Acceptance criteria |
 | --- | --- | --- |
-| **A1: HTTP contract** | Define routes, request/response structs, error codes, pagination, and token grants; generate `api/openapi.json` and SDK types. | `go run ./services/brain/cmd/generate -check` verifies zero drift; unknown JSON fields, bad scopes, and state conflicts return predictable status codes. |
+| **A1: HTTP contract** | Define routes, request/response structs, error codes, pagination, and token grants; generate `services/brain/api/openapi.json` and SDK types. | `go run ./services/brain/cmd/generate -check` verifies zero drift; unknown JSON fields, bad scopes, and state conflicts return predictable status codes. |
 | **A2: Streaming & cursors** | Implement `POST /sessions/{id}/events`, JSON pagination, and SSE streaming with replay-to-live handoff, slow-client buffer limits, and `409 cursor_unavailable`. | Reconnecting with `?after=` or `Last-Event-ID` neither drops nor fabricates events; client disconnects leave active turns running. |
-| **A3: TypeScript & Python SDKs** | Ship `sdks/typescript` and `sdks/python` with generated wire types, SSE iterators, explicit timeouts, and `BrainError`. | Both SDKs pass unit tests and cross-SDK journey tests (`tests/journeys/journeys.test.mjs`). |
+| **A3: TypeScript SDK** | Ship `sdks/typescript` with generated wire types, SSE iterators, explicit timeouts, and `BrainError`. | The SDK passes unit tests and installed-package journey tests (`tests/journeys/journeys.test.mjs`). |
 | **A4: Single current contract** | Update server, runner protocol, SDKs, docs, and tests together without versioned routes or legacy schema shims. | Unreadable state fails explicitly rather than silently resetting a session. |
 
 ## Implemented routes

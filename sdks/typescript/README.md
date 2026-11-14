@@ -1,7 +1,7 @@
 # Brain JavaScript and TypeScript SDK
 
-Install with `npm install --save-exact @aexhq/brain@3.0.0`. Requires Node.js 24+;
-the runtime dependency is the OpenTelemetry API. Bundle the SDK and its dependency for browser applications. JavaScript and TypeScript use the same package.
+Install with `npm install --save-exact @aexhq/brain@4.0.0`. Requires Node.js 24+;
+the client uses openapi-fetch and OpenTelemetry, and the CLI uses Commander. Bundle the client and its dependencies for browser applications. JavaScript and TypeScript use the same package.
 
 ```js
 import { Pi, Brain, Model } from '@aexhq/brain';

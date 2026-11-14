@@ -101,7 +101,7 @@ Use OpenTelemetry exporters and trace propagation. Record admission, queue, turn
 services/
   brain/
     cmd/{brain,generate}/
-    api/                         # Public session types and authentication
+    api/                         # Public session types, authentication and generated OpenAPI
     internal/{http,config,sessions,storage,archive,credentialtests}/
     storage/                     # Storage client working copies and snapshots
     distributed.go               # Four-service composition
@@ -112,16 +112,16 @@ services/
       transcripts/               # Bounded pages and recent history
       tiering/                   # Memory/disk/external cache and capacity
       adapters/{memory,filesystem,sqlite,s3,dynamodb,postgres}/
-    main.go
+    cmd/storage/main.go
   tools/
     api/                         # Canonical invocation and browser executors
     registry/                    # Public Go tool authoring and binding API
     internal/{server,hosted}/
-    main.go
+    cmd/tools/main.go
   sandbox/
     api/
     internal/{server,environments}/
-    main.go
+    cmd/sandbox/main.go
 runtimes/
   pi/                            # Pi protocol and isolated session lifecycle
   host/                          # Shared process protocol and host admission
@@ -131,11 +131,11 @@ tools/                          # Ordinary supplied tool implementations
   {integrations,service,sandbox,browser,resources,mcp}/
 telemetry/                       # Public Go contract and bounded exporters
 credentials/                     # Public encrypted credential capability
-sdks/{typescript,python}/
+sdks/typescript/
 cli/
 deploy/docker/
 tests/{distributed,journeys}/
-internal/volume/                 # OS directory ownership lock
+internal/dirlock/                 # OS directory ownership lock
 ```
 
 Attachments use Storage objects and metadata links; their public streaming/resolution adapter lives beside Brain’s Storage client. Splitting that adapter into another running service would add a hop without separating a lifecycle.
