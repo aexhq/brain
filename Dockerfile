@@ -28,7 +28,7 @@ RUN go mod download
 COPY . .
 RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -trimpath -o /out/brain ./services/brain/cmd/brain && CGO_ENABLED=0 go build -trimpath -o /out/storage ./services/storage/cmd/storage && CGO_ENABLED=0 go build -trimpath -o /out/tools ./services/tools/cmd/tools && CGO_ENABLED=0 go build -trimpath -o /out/sandbox ./services/sandbox/cmd/sandbox
 
-FROM busybox:1.37.0-glibc@sha256:42a9ff19af33811ee466b24c66384461d37c32dcc28d1d27d49b8aca816bd5ee AS base
+FROM busybox:1.38.0-glibc@sha256:99813cb178ace2cd9c6c53ee3bddef5d2f5708aa438335111d7a9e3c5e1aaebe AS base
 LABEL org.opencontainers.image.source="https://github.com/aexhq/brain"
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN mkdir -p /data /external && chown 1000:1000 /data /external
