@@ -924,7 +924,11 @@ test("operators receive correlated traces and metrics; exporter failures do not 
     res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(result("traced tool result")));
   });
   await f.start();
-  const api = new Brain(f.url, tokens.a, (target, init) => fetch(target, { ...init, headers: { ...init.headers, traceparent: `00-${traceID}-0123456789abcdef-01` } }));
+  const api = new Brain(f.url, tokens.a, (target, init) => {
+    const request = new Request(target, init);
+    request.headers.set("traceparent", `00-${traceID}-0123456789abcdef-01`);
+    return fetch(request);
+  });
   const s = await api.create(config(["traced"]));
   await api.send(s.id, message(call("traced")));
   await state(api, s.id);
