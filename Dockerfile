@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 AS pi-build
+FROM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS pi-build
 WORKDIR /app/runtimes/pi
 COPY runtimes/pi/package*.json ./
 RUN npm ci --ignore-scripts
@@ -7,14 +7,14 @@ COPY runtimes/pi/src ./src
 COPY runtimes/common /app/runtimes/common
 RUN npm run build && npm prune --omit=dev --ignore-scripts
 
-FROM node:24-bookworm-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 AS pi
+FROM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS pi
 LABEL org.opencontainers.image.source="https://github.com/aexhq/brain"
 COPY --from=pi-build --chown=node:node /app/runtimes /app/runtimes
 USER node
 WORKDIR /workspace
 ENTRYPOINT ["node", "/app/runtimes/pi/dist/main.js"]
 
-FROM node:24-bookworm-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 AS tool-runtime
+FROM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS tool-runtime
 LABEL org.opencontainers.image.source="https://github.com/aexhq/brain"
 COPY tools/hosted/runner.mjs /app/tools/hosted/runner.mjs
 USER node
