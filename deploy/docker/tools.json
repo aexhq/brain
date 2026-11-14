@@ -1,0 +1,10 @@
+{
+  "listen": ":8082",
+  "storage": "http://storage:8081",
+  "sandbox": "http://sandbox:8083",
+  "token_env": "BRAIN_SERVICE_TOKEN",
+  "tokens": [{"token_env": "BRAIN_API_KEY", "tenant": "local", "manage": true}],
+  "credential_keys": {"active": "local", "keys": {"local": "BRAIN_ENCRYPTION_KEY"}},
+  "tools": [],
+  "executors": 1024
+}

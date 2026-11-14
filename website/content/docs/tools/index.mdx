@@ -9,6 +9,37 @@ Tools let the agent act outside the conversation: run code in a sandbox, read an
 
 The model sees exactly the tools you enable for its session, so you decide everything the agent can do.
 
+## Choose where execution happens
+
+The distributed Tools service exposes three execution forms through the same invocation/result contract:
+
+| Form | Registration | Execution |
+| --- | --- | --- |
+| HostedTool | Upload a bundled ESM module through `brain.uploadTool(descriptor, module)`; bind the returned package reference with provider `hosted`. | A separate Sandbox container per invocation. |
+| RemoteTool | Configure a tool endpoint or install a supplied integration provider in Tools. | Your remote service, including native Modal/E2B tools. |
+| BrowserTool | Supply `runtime_tools` callbacks or SDK `Tool()` functions from a connected client. | The attached client executor. |
+
+The supplied integrations live under `tools/` and use the same registry and authoring contracts as application tools. Install a provider configuration with Tools' `providers_file`; mount that file and pass its credential variables to the Tools container.
+
+### Upload a hosted module
+
+```js
+const uploaded = await brain.uploadTool({
+  name: 'echo', description: 'Echo a value',
+  input_schema: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] },
+}, 'export default async request => ({content:[{type:"text",text:request.arguments.value}]});');
+const session = await brain.create({
+  id: 'hosted/example', harness: 'pi',
+  config: { model: 'openai/gpt-4.1-mini', tools: [], bindings: [
+    { alias: 'sample', provider: 'hosted', operations: ['echo'], parameters: { package: uploaded.reference } },
+  ] },
+  model_credential: { api_key: process.env.OPENAI_API_KEY },
+});
+```
+
+The model sees `sample_echo`. The module is at most 1 MiB of bundled JavaScript and receives the canonical request. Its container has no network or model credentials. Package upload requires a tenant management token and commits the package externally before returning.
+
+
 ## Ways to provide tools
 
 <Cards>
@@ -66,7 +97,7 @@ Add a binding to the `tools` array of the host config. This binding declares the
 | `inspect_session` | No | Send a read-only token for the session with each call. See [Authentication & tenants](/docs/guides/authentication). |
 | `mcp_tool` | No | The remote tool name, for tools served by an MCP server. See [MCP tools](/docs/tools/mcp). |
 
-Brain checks every binding when it starts and doesn't start if one is invalid. Run `go run ./cmd/brain -config brain.json -check` to validate a config without starting the server.
+Brain checks every binding when it starts and doesn't start if one is invalid. Run `go run ./services/brain/cmd/brain -config brain.json -check` to validate a config without starting the server.
 
 ## Enable tools for a session
 

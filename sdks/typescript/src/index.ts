@@ -1,4 +1,6 @@
 import { RuntimeExecutor, type RuntimeTool, type RuntimeTransport } from "./runtime.js";
+import { instrumentRequest } from './telemetry.js';
+export { configureTelemetry, telemetry, instrumentRequest } from './telemetry.js';
 import { lower, type SessionOptions } from "./authoring.js";
 export { ApiKey, CredentialReference, Model, Tool, ManagedTool } from "./authoring.js";
 export { Pi, Codex, OpenCode, PiWebAccess, PiSubagents, PiMcp } from './harnesses.js';
@@ -15,7 +17,7 @@ export class BrainError extends Error {
   constructor(readonly status: number, readonly code: string, message: string, readonly requestId?: string) { super(message); }
 }
 
-export type SessionInput = (CreateSession & { runtime_tools?: RuntimeTool[]; runtime_transport?: RuntimeTransport }) | SessionOptions;
+export type SessionInput = (Omit<CreateSession, "id"> & { id?: string; runtime_tools?: RuntimeTool[]; runtime_transport?: RuntimeTransport }) | SessionOptions;
 
 export class Brain {
   private executors = new Map<string, RuntimeExecutor>();
@@ -24,19 +26,21 @@ export class Brain {
     const route = routes[operation];
     const target = new URL(route.path.replace("{id}", encodeURIComponent(id ?? "")), this.url);
     if (query) target.search = query.toString();
+    return instrumentRequest(operation, async traceHeaders => {
     const response = await this.requestFetch(target, {
-      method: route.method, headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" },
+      method: route.method, headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json", ...traceHeaders },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: signal ?? AbortSignal.timeout(30000), redirect: "error",
     });
     if (!response.ok) await this.fail(response);
     return response;
+    });
   }
   private async fail(response: Response): Promise<never> {
     const body = await response.json() as { error?: { code?: string; message?: string }; request_id?: string };
     throw new BrainError(response.status, body.error?.code ?? "http_error", body.error?.message ?? response.statusText, body.request_id);
   }
   async create(input: SessionInput, signal?: AbortSignal): Promise<Session> {
-    const normalized: CreateSession & { runtime_tools?: RuntimeTool[]; runtime_transport?: RuntimeTransport } = "config" in input ? input : (() => { const { wire, runtime } = lower(input); return { ...wire, runtime_tools: runtime }; })();
+    const normalized: CreateSession & { runtime_tools?: RuntimeTool[]; runtime_transport?: RuntimeTransport } = "config" in input ? { ...input, id: input.id ?? crypto.randomUUID() } : (() => { const { wire, runtime } = lower(input); return { ...wire, runtime_tools: runtime }; })();
     const { runtime_tools, runtime_transport, ...wire } = normalized;
     let executor: RuntimeExecutor | undefined;
     try {
@@ -70,6 +74,24 @@ export class Brain {
   async sync(id: string): Promise<SyncStatus> { return (await this.request("sync", id)).json(); }
   async restore(id: string, checkpoint: string, signal = AbortSignal.timeout(60000)): Promise<Session> { return (await this.request("restore", id, { checkpoint }, undefined, signal)).json(); }
   async catalog(): Promise<{ tools: ToolDescriptor[] }> { return (await this.request("catalog")).json(); }
+  async uploadTool(tool: ToolDescriptor, module: string, signal?: AbortSignal): Promise<{ reference: string }> {
+    return instrumentRequest('uploadTool', async headers => {
+      const response = await this.requestFetch(new URL('/tools/packages', this.url), { method: 'POST', headers: { ...headers, Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ tool, module }), signal: signal ?? AbortSignal.timeout(60000), redirect: 'error' });
+      if (!response.ok) await this.fail(response);
+      return response.json();
+    });
+  }
+  async uploadAttachment(id: string, name: string, body: Blob, signal?: AbortSignal): Promise<import('./generated.js').Attachment> {
+    const target = new URL(`/sessions/${encodeURIComponent(id)}/attachments`, this.url); target.searchParams.set('name', name);
+    return instrumentRequest('uploadAttachment', async headers => {
+      const response = await this.requestFetch(target, { method: 'POST', headers: { ...headers, Authorization: `Bearer ${this.token}`, 'Content-Type': body.type || 'application/octet-stream' }, body, signal: signal ?? AbortSignal.timeout(60000), redirect: 'error' });
+      if (!response.ok) await this.fail(response);
+      return response.json();
+    });
+  }
+  async downloadAttachment(id: string, reference: string, signal?: AbortSignal): Promise<Response> {
+    return this.request('downloadAttachment', id, undefined, new URLSearchParams({ reference }), signal);
+  }
   async history(id: string, after = "", limit = 100, signal?: AbortSignal): Promise<{ events: Event[]; next_cursor: string }> {
     return (await this.request("events", id, undefined, new URLSearchParams({ after, limit: String(limit) }), signal)).json();
   }

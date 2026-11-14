@@ -110,8 +110,8 @@ Resource settings can be supplied at registration or session creation. Changing
 a resource fixed by the server requires private session credentials. Custom
 service endpoints remain server-owned. S3 operations retain tenant-scoped keys
 and the existing text size limits; sandbox handles retain tenant/session ownership
-and expiry. See [resource tools](../../services/resources/README.md) and
-[sandbox providers](../../services/sandbox/README.md) for execution behavior.
+and expiry. See [resource tools](../../tools/resources/README.md) and
+[sandbox providers](../../tools/sandbox/README.md) for execution behavior.
 
 Session credentials are encrypted before storage and kept out of public config,
 events, and model arguments. The local encryption key is `<dataDir>/credential.key`;

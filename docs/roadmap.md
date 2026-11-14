@@ -2,6 +2,22 @@
 
 Brain is in active development. This page lists what you can use today, what's coming next with today's workaround for each item, and how each integration has been verified. To ask about an item or suggest one, open an [issue](https://github.com/aexhq/brain/issues).
 
+## Distributed platform status
+
+**Available:** four Go services with Docker Compose; isolated Pi per session; HostedTool, RemoteTool and BrowserTool dispatch; TypeScript SDK/CLI; streamed attachments and allowlisted references; bounded recent transcript reads; memory/disk/external object tiers; disk/external metadata; shared adapters for filesystem, SQLite, S3/R2, DynamoDB and PostgreSQL/Supabase; public telemetry configuration and service trace propagation.
+
+**Verified with local fixtures:** Pi model protocol, all tool flavours, container isolation checks, restart/restore, tenant deletion boundaries, owner fencing, immutable publication, dirty-cache protection, adapter CAS and pagination. PostgreSQL, DynamoDB Local and an S3-compatible server exercise the external adapter contract. This is not live-provider qualification.
+
+**Partly available — cloud qualification:** adapters and native tool packages exist. Real S3/R2/Supabase/DynamoDB accounts, live model providers, Modal/E2B and live search need account credentials and provider-specific acceptance runs. Local protocol fixtures do not establish IAM, quotas, network behavior or billing behavior for those accounts.
+
+**Partly available — capacity evidence:** admission, cache budgets, TTLs, memory pressure and disk reserve are enforced. The workload model separates retained sessions, loaded working sets, resident Pi environments and active turns. Sustained fleet throughput and mixed-workload latency have not been established. Benchmark warm/cold turns, attachments, long histories, slow tools, cold restores and sync outages before choosing production capacity.
+
+**Planned — storage maintenance:** add unreachable-upload/package garbage collection and retention policy. Interrupted uploads remain unlinked and cannot become message attachments; deleting a session removes its object namespace. External metadata listing and historical transcript pages may scan descriptors; recent tail reads are bounded. Active/SSE sessions materialize their working set within configured limits. The serial replica worker uses bounded batches but needs sustained-outage and large-backlog performance evidence.
+
+**Platform responsibility:** route each session to one Brain owner and one Storage partition, supply owner epochs, coordinate handoff, and keep browser executor connections on their Tools instance. Async external storage is not a fleet lease. The Docker controller uses container isolation; alternative kernel/microVM isolation profiles are separate work.
+
+The existing embedded Node/Go application package continues to ship Pi, Codex and OpenCode and keeps their complete tests. Distributed composition selects Pi only. Legacy persistence/provider qualification below applies to that embedded package unless the distributed entry explicitly names it.
+
 ## Available today
 
 - **[Sessions](https://aexhq.github.io/brain/docs/guides/sessions/):** choose Pi, Codex or OpenCode, stream events, interrupt and resume turns, and recover sessions after a restart.
@@ -106,7 +122,7 @@ Local tests and live runs are separate evidence. **Verified against live service
 | Google Cloud Storage archive | Verified with local tests | The official SDK passes multipart, precondition, read, and shared archive contract tests. Not yet run against a live GCS account. |
 | PostgreSQL session index | Verified with local tests | CI runs the index tests against a PostgreSQL 18 server. Hosted services such as Neon, Supabase, and RDS haven't been qualified separately. |
 | MCP tools | Verified with local tests | Official SDK HTTP and owned-stdio fixtures cover explicit discovery, process loss, progress, structured output, tenant isolation, limits, cancellation, and no replay. No third-party MCP server has been tested live. |
-| Modal, E2B, and Daytona sandboxes | Verified with local tests | Pinned SDK type checks, an HTTP tool journey, signed sandbox handles that stay valid across service restarts, and cancellation and cleanup fixtures. A live script, `npm --prefix services/sandbox run live -- PROVIDER`, needs your provider credentials. |
+| Modal, E2B, and Daytona sandboxes | Verified with local tests | Pinned SDK type checks, an HTTP tool journey, signed sandbox handles that stay valid across service restarts, and cancellation and cleanup fixtures. A live script, `npm --prefix tools/sandbox run live -- PROVIDER`, needs your provider credentials. |
 | Storage and web tools | Verified with local tests | An AWS SDK and HTTP registry journey covers authentication, tenant prefixes, read-only policy, and deletes, alongside Brave and Tavily request fixtures and public-network and HTML extraction tests. Live search and R2 tool accounts are unqualified. |
 | Platform templates | Verified with local tests | `tests/platforms.test.mjs` validates the Docker Compose, Fly.io, AWS ECS/Fargate, and Cloudflare Worker templates. They aren't evidence of a live deployment on each platform. |
 | Cloudflare Containers as a Brain runtime | Experimental | Cloudflare Containers run container images with Durable Objects for routing. This runtime stays experimental until container lifecycle and handoff tests pass. A standard Cloudflare Worker can host tool services, not Brain. |

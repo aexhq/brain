@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { before, after, test } from "node:test";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { Codex, OpenCode, Model, ApiKey, build, fixture, config, message, call, result, history, state, until, root, removeTemp, modelReply, rejects } from "./fixture.mjs";
+import { Codex, OpenCode, Model, ApiKey, sessionDirectory, build, fixture, config, message, call, result, history, state, until, root, removeTemp, modelReply, rejects } from "./fixture.mjs";
 import { responsesReply } from "./model-responses.mjs";
 let binaries;
 before(async () => { binaries = await build(); }, { timeout: 120000 });
@@ -12,7 +12,7 @@ const selection = (harness, tools = []) => ({ ...config(tools), harness });
 const adapters = ["codex", "opencode"];
 async function setup(t, harness, options = {}) {
   const f = await fixture(t, binaries, { api: "openai-responses", ...options });
-  f.settings.harnesses = { [harness]: { command: [process.execPath, path.join(root, `runners/${harness}/src/main.mjs`)] } };
+  f.settings.harnesses = { [harness]: { command: [process.execPath, path.join(root, `runtimes/${harness}/src/main.mjs`)] } };
   return f;
 }
 
@@ -137,7 +137,7 @@ for (const harness of adapters) {
     await f.start();
     const s = await f.api.create(selection(harness));
     await f.api.send(s.id, message("Remember my prior context")); await state(f.api, s.id);
-    const file = path.join(f.settings.data_dir, "sessions", s.id, "native", harness === "codex" ? "rollout.jsonl" : "session.jsonl");
+    const file = path.join(sessionDirectory(f.settings, s.id), "native", harness === "codex" ? "rollout.jsonl" : "session.jsonl");
     const first = await readFile(file);
     await f.api.send(s.id, message("Continue before restart")); await state(f.api, s.id);
     const next = await readFile(file);
@@ -174,7 +174,7 @@ for (const harness of adapters) {
     await f.api.send(s.id, message("Establish native context")); await state(f.api, s.id);
     await f.api.send(s.id, message("Continue with native compaction")); await state(f.api, s.id);
     assert.ok(f.model.requests.length >= 3, "native compaction did not issue a summary request");
-    const native = await readFile(path.join(f.settings.data_dir, "sessions", s.id, "native", harness === "codex" ? "rollout.jsonl" : "session.jsonl"), "utf8");
+    const native = await readFile(path.join(sessionDirectory(f.settings, s.id), "native", harness === "codex" ? "rollout.jsonl" : "session.jsonl"), "utf8");
     assert.ok(native.split("\n").some(line => line && (harness === "codex" ? JSON.parse(line).type === "compacted" : JSON.parse(line).message?.type === "compaction" && JSON.parse(line).message.status === "completed")), "native compaction was not checkpointed");
     await f.api.flush(s.id); await f.crash(); f.settings.data_dir = path.join(f.dir, "compaction-cold-cache"); await f.start();
     const before = f.model.requests.length; await f.api.get(s.id); await f.api.resume(s.id);

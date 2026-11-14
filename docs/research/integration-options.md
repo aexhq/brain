@@ -8,13 +8,13 @@ Start with the [integration implementation plan](../plans/08-integration-expansi
 
 | Area | Evidence in this repository | Remaining work |
 | --- | --- | --- |
-| Runtime | `internal/session`, `internal/store`, `internal/api` | Capacity measurements and deployment qualification; a fleet router is outside Brain. |
-| Cloud archives | `internal/persistence/objects.go`, `archive.go` | Filesystem, S3, and R2 are implemented. S3/R2 transport tests use a local HTTP fixture, not real cloud services. |
-| SQL metadata | `internal/persistence/metadata.go` | PostgreSQL discovery is implemented and has a real PostgreSQL CI job. Hosted-provider connection recipes are unqualified. |
-| Harness | `runners/pi`, `internal/harness` | Pi is pinned at `1.2.0`; OpenCode and Codex runners do not exist yet. |
-| Tools | `internal/tools/http.go`, `examples/tools` | HTTP/SSE, inspection, and approval examples exist. MCP and provider catalog services do not. |
+| Runtime | `services/brain/internal/sessions`, `services/brain/internal/storage`, `services/brain/internal/http` | Capacity measurements and deployment qualification; a fleet router is outside Brain. |
+| Cloud archives | `services/brain/internal/archive/objects.go`, `archive.go` | Filesystem, S3, and R2 are implemented. S3/R2 transport tests use a local HTTP fixture, not real cloud services. |
+| SQL metadata | `services/brain/internal/archive/metadata.go` | PostgreSQL discovery is implemented and has a real PostgreSQL CI job. Hosted-provider connection recipes are unqualified. |
+| Harness | `runtimes/pi`, `runtimes/host` | Pi is pinned at `1.2.0`; OpenCode and Codex runners do not exist yet. |
+| Tools | `services/tools/registry/http.go`, `examples/tools` | HTTP/SSE, inspection, and approval examples exist. MCP and provider catalog services do not. |
 | Delivery | `.github/workflows/ci.yml`, `Dockerfile` | Linux/Windows checks, race detection, PostgreSQL, and Docker smoke tests exist. There is no image publication or docs deployment workflow. |
-| Documentation | `website`, `cmd/generate` | Fumadocs, generated OpenAPI/types/interfaces/models, and site integrity tests exist. Platform recipes and application examples remain. |
+| Documentation | `website`, `services/brain/cmd/generate` | Fumadocs, generated OpenAPI/types/interfaces/models, and site integrity tests exist. Platform recipes and application examples remain. |
 | Distribution | `sdks/typescript/package.json`, `sdks/python` | TypeScript is private; Python is source-only without a packaging manifest. Do not advertise registry installation yet. |
 
 ## Storage: qualify existing adapters before adding another

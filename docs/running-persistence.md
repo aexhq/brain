@@ -1,5 +1,8 @@
 # Persistence and recovery
 
+For the four-service deployment, Storage owns persistence. Follow the [Docker deployment guide](https://github.com/aexhq/brain/blob/main/deploy/docker/README.md) and [distributed configuration reference](https://aexhq.github.io/brain/docs/reference/configuration/#distributed-service-configuration). Transcripts/state use memory, disk and external storage; metadata uses disk and external storage. `flush` commits referenced state before its external metadata pointer. The examples below configure persistence inside the embedded application package.
+
+
 External persistence is an optional background archive that uploads local session checkpoints and event logs to a secondary filesystem directory, AWS S3, Cloudflare R2, or Google Cloud Storage (`persistence` in `brain.json`).
 
 Brain always keeps active session state on local disk first (`metadata.sqlite` for session records, plus append-only `events.jsonl` and `native/` files in `data_dir`, `.brain/` by default) so turns never block on remote storage.

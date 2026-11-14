@@ -1,7 +1,7 @@
-import { toolServer, failure } from './services/http.mjs';
-import { sandboxService } from './services/sandbox/src/service.mjs';
-import { providersFromEnv } from './services/sandbox/src/providers.mjs';
-import { catalog } from './services/sandbox/src/catalog.mjs';
+import { toolServer, failure } from './tools/http.mjs';
+import { sandboxService } from './tools/sandbox/src/service.mjs';
+import { providersFromEnv } from './tools/sandbox/src/providers.mjs';
+import { catalog } from './tools/sandbox/src/catalog.mjs';
 
 const names = JSON.parse(process.env.BRAIN_NODE_SANDBOXES);
 const token = process.env.BRAIN_NODE_TOOL_TOKEN;

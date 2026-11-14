@@ -10,7 +10,7 @@ To run all repository checks including journeys:
 node scripts/check.mjs
 ```
 
-To run only the journey suite (after building `runners/pi` and `sdks/typescript` and running `node scripts/package-sdks.mjs` to install the clients):
+To run only the journey suite (after building `runtimes/pi` and `sdks/typescript` and running `node scripts/package-sdks.mjs` to install the clients):
 
 ```powershell
 node --test tests/journeys/journeys.test.mjs tests/journeys/adapters.test.mjs tests/journeys/browser.test.mjs

@@ -6,7 +6,7 @@ description: Reference for brain.json fields, authentication tokens, harnesses, 
 Brain reads its host configuration from a JSON file passed with `-config` (defaults to `brain.json`). You can validate the configuration file and all referenced environment variables without starting the HTTP server by passing `-check`:
 
 ```sh tab="macOS / Linux"
-go run ./cmd/brain -config brain.json -check
+go run ./services/brain/cmd/brain -config brain.json -check
 ```
 
 `-stdio` ties the server lifetime to its parent's stdin pipe. After initialization,
@@ -22,10 +22,55 @@ constructor's tool list; credential values are environment references. Integrati
 selection and private session overrides use the existing session binding contract.
 
 ```powershell tab="Windows"
-go run ./cmd/brain -config brain.json -check
+go run ./services/brain/cmd/brain -config brain.json -check
 ```
 
 Configuration files are limited to 4 MiB. Unknown JSON fields and trailing JSON data are rejected at startup. Relative paths (such as `data_dir` or `persistence.directory`) resolve from the working directory of the Brain process.
+
+## Distributed service configuration
+
+The Docker composition uses four JSON files in `deploy/docker`. Brain's `services` object selects distributed execution; its `harnesses` map must contain the Pi profile. Service-call authentication uses the configured environment variable. Secret values do not belong in JSON files.
+
+| Brain service field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `storage`, `tools`, `sandbox` | string | Yes | — | Private HTTP base URLs. |
+| `token_env` | string | Yes | — | Environment variable containing the shared service token, at least 32 bytes. |
+| `owner` | string | Yes | — | Platform-assigned Brain owner. |
+| `epoch` | integer | Yes | — | Positive platform-assigned ownership epoch. |
+| `idle_ttl_seconds` | integer | No | 300 | Release an idle Pi environment after this duration; settled state remains in Storage. |
+
+Storage reads these fields:
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `listen` | string | No | `:8081` | Private listener. |
+| `data_dir` | string | Yes | — | Exclusive local cache volume. |
+| `token_env` | string | No | `BRAIN_SERVICE_TOKEN` | Service token environment variable. |
+| `memory_bytes` | integer | No | 134217728 | Object memory budget, reduced under memory pressure. |
+| `disk_bytes` | integer | No | 4294967296 | Object disk budget. Unsynced data is pinned. |
+| `metadata_disk_bytes` | integer | No | 67108864 | Separate metadata disk budget; no metadata content memory cache. |
+| `memory_ttl_seconds` | integer | No | 300 | Object memory TTL. |
+| `disk_ttl_seconds` | integer | No | 86400 | Clean local-copy TTL; not permanent retention. |
+| `sync_seconds` | integer | No | 5 | Background sync interval; not an outage recovery-point guarantee. |
+| `objects`, `metadata` | object | Yes | — | External backend configuration. |
+
+Each external backend implements the same get, conditional put, delete and paginated list contract. Configure each `objects`/`metadata` entry with:
+
+| `kind` | Required configuration | Optional configuration |
+| --- | --- | --- |
+| `filesystem` | `path` | — |
+| `sqlite` | `path` | — |
+| `s3`, `r2` | `bucket`, `region` | `endpoint`, `prefix`, `path_style`, `access_key_env`, `secret_key_env` |
+| `dynamodb` | `table`, `region` | `endpoint`, `access_key_env`, `secret_key_env` |
+| `postgres`, `supabase` | `dsn_env` | — |
+
+R2 uses its S3 endpoint and region `auto`. Supabase uses a PostgreSQL connection string. DynamoDB requires a table with string partition key `k`. Database adapters create their own object table. Cloud identity can use the AWS SDK credential chain when explicit key variables are omitted. The memory adapter is used for caches and tests, not external persistence configuration.
+
+Storage reserves 256 MiB of filesystem free space before writes and evicts committed copies under pressure. Data objects use 64 KiB chunks. Metadata publication follows referenced object commitment; conditional head writes reject conflicts.
+
+Tools reads `listen`, `storage`, `sandbox`, `token_env`, `tokens`, `credential_keys`, `tools`, `executors` and optional `providers_file`. The provider file follows the supplied integrations' registry format. Sandbox reads `listen`, `instance`, `token_env`, `capacity`, `max_archive_bytes` and `profiles`; each approved profile specifies `image`, `network`, `memory_bytes`, string `cpus`, `pids`, `workspace_bytes` and `lifetime_seconds`.
+
+The configuration sections below also describe the embedded application composition. Its `persistence` and process `command` fields are replaced by service URLs and Sandbox profiles in distributed composition.
 
 ## Minimal example
 
@@ -38,7 +83,7 @@ Configuration files are limited to 4 MiB. Unknown JSON fields and trailing JSON 
     { "token_env": "BRAIN_API_KEY", "tenant": "local", "manage": true }
   ],
   "harnesses": {
-    "pi": { "command": ["node", "runners/pi/dist/main.js"] }
+    "pi": { "command": ["node", "runtimes/pi/dist/main.js"] }
   },
   "providers": {
     "openai": { "api_key_env": "OPENAI_API_KEY" }
@@ -83,7 +128,7 @@ Each key in `harnesses` is the harness name clients pass in `POST /sessions` (fo
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `command` | `string[]` | Yes | Non-empty command and arguments used to spawn the harness child process (for example, `["node", "runners/pi/dist/main.js"]`). `command[0]` must be non-empty. |
+| `command` | `string[]` | Yes | Non-empty command and arguments used to spawn the harness child process (for example, `["node", "runtimes/pi/dist/main.js"]`). `command[0]` must be non-empty. |
 | `kind` | `string` | No | Native adapter kind (`pi`, `codex`, or `opencode`); defaults to the profile name. Set it when the profile has a custom name. |
 | `plugins` | `PiPlugin[]` | No | Trusted Pi plugin definitions: `name` (`web-access`, `subagents`, or `mcp`), optional upstream `config`, and optional selected `tools`. Plugin profiles require `max_shared: 1` and `max_active_turns: 1`; these are their defaults. |
 | `max_shared` | `integer` | No | Session attachments per host; default `8`, range `1`–`1024`. |

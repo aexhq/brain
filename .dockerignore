@@ -4,8 +4,12 @@
 .brain-archive
 brain.json
 .env
+**/.env
 **/node_modules
 **/dist
 bin
 website
 
+
+%SystemDrive%/
+.artifacts/

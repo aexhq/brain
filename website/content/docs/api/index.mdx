@@ -3,7 +3,7 @@ title: HTTP API
 description: Endpoints, authentication, request rules, pagination, and streaming for the Brain HTTP API.
 ---
 
-Brain exposes a small JSON and server-sent events (SSE) HTTP API for creating sessions, sending messages, streaming events, and managing checkpoints. Every endpoint page is generated directly from Brain's Go route declarations and wire types (`internal/api/contract.go` and `internal/core/types.go`), and you can download the full [OpenAPI 3.1 contract](/openapi.json).
+Brain exposes a small JSON and server-sent events (SSE) HTTP API for creating sessions, sending messages, streaming events, and managing checkpoints. Every endpoint page is generated directly from Brain's Go route declarations and wire types (`services/brain/internal/http/contract.go` and `services/brain/api/types.go`), and you can download the full [OpenAPI 3.1 contract](/openapi.json).
 
 ## Base URL and authentication
 

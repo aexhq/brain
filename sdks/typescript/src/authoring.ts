@@ -19,6 +19,7 @@ export interface ManagedSelection {
 export const ManagedTool = (name: string, options: Omit<ManagedSelection, "kind" | "name"> = {}): ManagedSelection => ({ kind: "managed", name, ...options });
 
 export interface SessionOptions {
+  id?: string;
   harness: Harness;
   model: ReturnType<typeof Model>;
   tools?: (ManagedSelection | RuntimeTool)[];
@@ -43,6 +44,7 @@ export function lower(input: SessionOptions): { wire: CreateSession; runtime: Ru
     }
   }
   return { wire: {
+    id: input.id ?? crypto.randomUUID(),
     harness: input.harness.name,
     config: { model: input.model.name, tools: names, ...(bindings.length ? { bindings } : {}),
       ...(input.instructions === undefined ? {} : { instructions: input.instructions }),

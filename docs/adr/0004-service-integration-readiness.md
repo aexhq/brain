@@ -1,5 +1,8 @@
 # ADR 0004 Service integration readiness
 
+> Service ownership, runtime placement, storage and telemetry decisions are superseded where they conflict by [ADR 0001](0001-local-first-session-server.md). This record retains historical rationale.
+
+
 - **Status:** Accepted on 2026-10-19; implemented in source under [plan 12](../plans/12-service-integration-readiness.md), with CI gating release.
 - **Extends:** [ADR 0003](0003-application-sdk-and-session-bindings.md).
 - **Baseline:** Brain `850f90b1`. Pi packages are pinned to `1.2.0`; existing feasibility probes cover Codex `0.163.0` and OpenCode `2.0.30`.

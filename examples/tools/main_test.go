@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aexhq/brain/internal/core"
-	"github.com/aexhq/brain/internal/tools"
+	core "github.com/aexhq/brain/services/brain/api"
+	"github.com/aexhq/brain/services/tools/registry"
 )
 
 func TestExternalApprovalAndDelegatedInspection(t *testing.T) {

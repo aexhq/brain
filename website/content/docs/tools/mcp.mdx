@@ -16,10 +16,10 @@ The Model Context Protocol (MCP) is an open protocol for serving tools to AI app
 
 ## Discover tools
 
-Run `cmd/mcp-tools` to turn tools from an MCP server into Brain tool bindings:
+Run `tools/mcp` to turn tools from an MCP server into Brain tool bindings:
 
 ```sh
-go run ./cmd/mcp-tools -url https://YOUR_SERVER/mcp -token-env MCP_API_KEY -tenant local -tools search,fetch
+go run ./tools/mcp -url https://YOUR_SERVER/mcp -token-env MCP_API_KEY -tenant local -tools search,fetch
 ```
 
 | Flag | Description |

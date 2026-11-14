@@ -110,8 +110,8 @@ export class BrainServer extends Brain {
     catch (cause) { throw new Error(`Missing ${platformPackage}. Install brainserver with optional dependencies enabled on a supported platform.`, { cause }); }
     const runtime = path.join(path.dirname(binary), 'runtime');
     for (const harness of Object.values(this.#harnesses)) harness.command = [process.execPath, harness.kind === 'codex'
-      ? require.resolve(`@aexhq/brainserver-codex-${process.platform}-${process.arch}/runtime/runners/codex/src/main.mjs`)
-      : path.join(runtime, 'runners', harness.kind, harness.kind === 'pi' ? 'dist/main.js' : 'src/main.mjs')];
+      ? require.resolve(`@aexhq/brainserver-codex-${process.platform}-${process.arch}/runtime/runtimes/codex/src/main.mjs`)
+      : path.join(runtime, 'runtimes', harness.kind, harness.kind === 'pi' ? 'dist/main.js' : 'src/main.mjs')];
     const directory = await mkdtemp(path.join(tmpdir(), 'brainserver-'));
     try {
       await mkdir(this.#dataDir, { recursive: true });

@@ -3,7 +3,7 @@ title: Persistence adapters
 description: Object storage and metadata indexing interfaces for background checkpoints.
 ---
 
-Persistence adapters implement two small Go interfaces in `internal/persistence`: `Objects` for immutable checkpoint blocks and manifests, and `Metadata` for optional cross-instance session discovery (see [Go interfaces](/docs/adapters/interfaces)).
+Persistence adapters implement two small Go interfaces in `services/brain/internal/archive`: `Objects` for immutable checkpoint blocks and manifests, and `Metadata` for optional cross-instance session discovery (see [Go interfaces](/docs/adapters/interfaces)).
 
 ## Authoritative local database
 
@@ -16,7 +16,7 @@ tenant. All operations honor context cancellation.
 `store.SQLite` is the built-in implementation. `store.New(root, metadata)` combines
 an adapter with local session files and takes ownership of its lifecycle. It
 prepares native directories before creating metadata; a database failure propagates
-to the caller. Run `internal/store/metadata_test.go` against each implementation,
+to the caller. Run `services/brain/internal/storage/metadata_test.go` against each implementation,
 plus the restart/recovery journeys. A remote SQL database alone does not provide
 session placement, distributed ownership, or remote native files.
 
@@ -24,8 +24,8 @@ session placement, distributed ownership, or remote native files.
 
 | Interface | Purpose | Built-in implementations |
 | --- | --- | --- |
-| `persistence.Objects` | Stores 64 KiB immutable file blocks, bounded tail objects, checkpoint manifests, and per-session `latest` pointers. | `FileObjects` (`filesystem`), `S3Objects` (`s3` and `r2` in `internal/persistence/objects.go`), `GCSObjects` (`gcs` in `internal/persistence/gcs.go`). |
-| `persistence.Metadata` | Maintains an eventually consistent tenant-scoped index of sessions and their latest checkpoint IDs. | `Postgres` (`postgres_env` in `internal/persistence/metadata.go`). |
+| `persistence.Objects` | Stores 64 KiB immutable file blocks, bounded tail objects, checkpoint manifests, and per-session `latest` pointers. | `FileObjects` (`filesystem`), `S3Objects` (`s3` and `r2` in `services/brain/internal/archive/objects.go`), `GCSObjects` (`gcs` in `services/brain/internal/archive/gcs.go`). |
+| `persistence.Metadata` | Maintains an eventually consistent tenant-scoped index of sessions and their latest checkpoint IDs. | `Postgres` (`postgres_env` in `services/brain/internal/archive/metadata.go`). |
 
 ## `Objects` interface
 
@@ -37,7 +37,7 @@ session placement, distributed ownership, or remote native files.
 
 ### How `Archive` publishes and restores checkpoints
 
-`persistence.Archive` (`internal/persistence/archive.go`) coordinates incremental uploads of `events.jsonl` and append-only `native/` files (up to 128 files per checkpoint):
+`persistence.Archive` (`services/brain/internal/archive/archive.go`) coordinates incremental uploads of `events.jsonl` and append-only `native/` files (up to 128 files per checkpoint):
 
 <Steps>
   <Step title="Split into 64 KiB immutable blocks">
@@ -61,7 +61,7 @@ session placement, distributed ownership, or remote native files.
 
 ## Testing an adapter
 
-Every storage adapter should pass the contract tests in `internal/persistence/`:
+Every storage adapter should pass the contract tests in `services/brain/internal/archive/`:
 
 - Immutable block writes (`immutable: true`) and idempotent retries when a block or manifest already exists
 - Interrupted manifest publication (unreachable blocks must never expose a half-written checkpoint)

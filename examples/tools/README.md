@@ -10,7 +10,7 @@
 
 ## Before you begin
 
-- Go `1.26+` and Node.js `24+` installed (`npm --prefix runners/pi run build` and `npm --prefix sdks/typescript run build` completed).
+- Go `1.26+` and Node.js `24+` installed (`npm --prefix runtimes/pi run build` and `npm --prefix sdks/typescript run build` completed).
 - An LLM provider API key (for example, `OPENAI_API_KEY`).
 - Three distinct random tokens of at least 24 bytes each:
   - `BRAIN_API_KEY` — authenticates client requests to Brain.
@@ -36,7 +36,7 @@ In a second terminal, set `BRAIN_API_KEY`, `OPENAI_API_KEY`, and the same `BRAIN
 $env:BRAIN_API_KEY = "replace-with-a-random-token-of-at-least-24-bytes"
 $env:OPENAI_API_KEY = "your-provider-key"
 $env:BRAIN_TOOLS_KEY = "a-distinct-random-tool-token-at-least-24-bytes"
-go run ./cmd/brain -config brain.json
+go run ./services/brain/cmd/brain -config brain.json
 ```
 
 ## 3. Run a session with tools

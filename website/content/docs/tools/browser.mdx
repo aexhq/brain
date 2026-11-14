@@ -35,14 +35,14 @@ To attach again, have your platform authorize the existing session and issue a n
 
 ## Run a remote browser
 
-Run the [external browser service](https://github.com/aexhq/brain/tree/main/services/browser) alongside your other tool services:
+Run the [external browser service](https://github.com/aexhq/brain/tree/main/tools/browser) alongside your other tool services:
 
 ```sh
-npm --prefix services/browser ci --ignore-scripts
-npm --prefix services/browser run install-browser
-npm --prefix services/browser start
+npm --prefix tools/browser ci --ignore-scripts
+npm --prefix tools/browser run install-browser
+npm --prefix tools/browser start
 ```
 
 Set `TOOL_API_KEY` to the shared Brain/service secret and `BROWSER_ORIGINS` to an exact JSON origin allowlist such as `["https://example.com"]`. Install Chromium's OS dependencies on Linux using the service README's setup command.
 
-Register the service's exported `descriptor` at its `/browser` HTTP endpoint with the allowed tenants. Select `ManagedTool('browser')` when creating a session. The model can navigate, read, click, fill, take a screenshot and close its remote context. Trusted tenant/session identity selects separate browser cookies and storage; the service checks outgoing origins, including redirects and subresources. See the [service configuration and action reference](https://github.com/aexhq/brain/tree/main/services/browser).
+Register the service's exported `descriptor` at its `/browser` HTTP endpoint with the allowed tenants. Select `ManagedTool('browser')` when creating a session. The model can navigate, read, click, fill, take a screenshot and close its remote context. Trusted tenant/session identity selects separate browser cookies and storage; the service checks outgoing origins, including redirects and subresources. See the [service configuration and action reference](https://github.com/aexhq/brain/tree/main/tools/browser).

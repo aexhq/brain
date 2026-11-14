@@ -3,7 +3,7 @@ import { after, before, test } from "node:test";
 import { access, appendFile, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { responsesReply } from "./model-responses.mjs";
-import { Pi, Brain, Model, ApiKey, Tool, ManagedTool, build, call, config, delay, fixture, history, jsonBody, message,
+import { Pi, Brain, Model, ApiKey, Tool, ManagedTool, sessionDirectory, build, call, config, delay, fixture, history, jsonBody, message,
   modelReply, rejects, removeTemp, result, root, state, tokens, until,
 } from "./fixture.mjs";
 
@@ -29,7 +29,7 @@ test("installed SDK deletion removes local and archived state and prevents cold 
   await f.api.delete(session.id);
   await rejects(f.api.get(session.id), 404, "not_found");
   assert.ok(!(await f.api.list()).sessions.some(value => value.id === session.id));
-  await assert.rejects(access(path.join(f.settings.data_dir, "sessions", session.id)));
+  await assert.rejects(access(sessionDirectory(f.settings, session.id)));
   await f.crash(); f.settings.data_dir = path.join(f.dir, "deleted-cold-cache"); await f.start();
   await rejects(f.api.restore(session.id, checkpoint.checkpoint), 404, "not_found");
   const python = await f.python(path.join(root, "tests/journeys/python_delete.py"));
@@ -627,7 +627,7 @@ test("process death preserves local history and deduplication without replaying 
   const queued = await f.api.send(s.id, message("unexecuted queue tail", "queued"));
   const beforeCrash = await history(f.api, s.id);
   await f.crash();
-  const file = path.join(f.settings.data_dir, "sessions", s.id, "events.jsonl");
+  const file = path.join(sessionDirectory(f.settings, s.id), "events.jsonl");
   const bytes = await readFile(file);
   await appendFile(file, '{"id":"torn tail');
   await f.start();
@@ -795,7 +795,7 @@ test("corrupt local history fails explicitly and an operator can recover a verif
   const events = await history(f.api, s.id);
   const checkpoint = await f.api.flush(s.id);
   await f.crash();
-  const file = path.join(f.settings.data_dir, "sessions", s.id, "events.jsonl");
+  const file = path.join(sessionDirectory(f.settings, s.id), "events.jsonl");
   const corrupt = await readFile(file);
   corrupt[0] = "!".charCodeAt(0); // Complete damaged record followed by valid records.
   await writeFile(file, corrupt);

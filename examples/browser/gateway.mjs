@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -36,8 +36,8 @@ export function browserGateway({ origin, brainURL, brainToken }) {
   }
   function issue({ create, tools = [], session, ttlMs = 300000 }) {
     if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0 || ttlMs > 900000) throw new Error("browser grant lifetime must be at most 15 minutes");
-    if (create && (Object.keys(create).some(key => !["harness", "config"].includes(key)) || !create.config)) throw new Error("browser composition must contain public harness/config only");
-    const token = secret(), grant = { create: structuredClone(create), tools: structuredClone(tools), session, expires: Date.now() + ttlMs, authorities: new Set([token]), executors: new Map(), active: new Set(), creating: false };
+    if (create && (Object.keys(create).some(key => !["id", "harness", "config"].includes(key)) || !create.config)) throw new Error("browser composition must contain public id/harness/config only");
+    const token = secret(), grant = { create: create && { ...structuredClone(create), id: create.id ?? randomUUID() }, tools: structuredClone(tools), session, expires: Date.now() + ttlMs, authorities: new Set([token]), executors: new Map(), active: new Set(), creating: false };
     authorities.set(token, { grant }); grants.add(grant);
     grant.timer = setTimeout(() => { void revoke(token).catch(() => {}); }, ttlMs); grant.timer.unref();
     return { token, expires: grant.expires };
@@ -90,8 +90,8 @@ export function browserGateway({ origin, brainURL, brainToken }) {
         if (!new RegExp(`^/executors/${executor.id}/(commands|responses|close)$`).test(url.pathname) || (url.pathname.endsWith("/commands") ? req.method !== "GET" : req.method !== "POST")) throw deny();
         response = await upstream(url.pathname, req.method, body, executor.token, controller.signal, req.headers.accept);
       } else {
-        const match = /^\/sessions\/([a-f0-9]{32})(?:\/(events|resume|close))?$/.exec(url.pathname);
-        if (!match || match[1] !== grant.session || !["GET", "POST"].includes(req.method) || (req.method === "GET" ? ![undefined, "events"].includes(match[2]) : !["events", "resume", "close"].includes(match[2]))) throw deny();
+        const match = /^\/sessions\/([^/]+)(?:\/(events|resume|close))?$/.exec(url.pathname);
+        if (!match || match[1] !== encodeURIComponent(grant.session) || !["GET", "POST"].includes(req.method) || (req.method === "GET" ? ![undefined, "events"].includes(match[2]) : !["events", "resume", "close"].includes(match[2]))) throw deny();
         response = await upstream(url.pathname + url.search, req.method, body, brainToken, controller.signal, req.headers.accept);
       }
       res.writeHead(response.status, { "content-type": response.headers.get("content-type") ?? "application/json", "cache-control": "no-store", ...(response.headers.has("x-request-id") ? { "x-request-id": response.headers.get("x-request-id") } : {}) });

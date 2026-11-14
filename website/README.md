@@ -7,7 +7,7 @@
 Requires Go `1.26+`, Node.js `24+`, and `npm`. From the repository root:
 
 ```sh
-npm --prefix runners/pi ci --ignore-scripts
+npm --prefix runtimes/pi ci --ignore-scripts
 npm --prefix website ci --ignore-scripts
 npm --prefix website run dev
 ```
@@ -29,14 +29,14 @@ npm --prefix website start
 | `website/content/docs/**/*.mdx` | Authored guides and reference pages |
 | `api/openapi.json` | `/docs/api/generated/*` and `/openapi.json` |
 | `internal/harness` & `internal/persistence` | `/docs/adapters/interfaces` |
-| Pinned Pi runtime model registry (`runners/pi`) | `/docs/reference/model-catalog` |
+| Pinned Pi runtime model registry (`runtimes/pi`) | `/docs/reference/model-catalog` |
 | `docs/running-persistence.md` | `/docs/guides/persistence` |
 | `examples/tools/README.md` | `/docs/tools/local-tools` |
-| `services/sandbox/README.md` | `/docs/tools/sandboxes` |
-| `services/resources/README.md` | `/docs/tools/resources` |
+| `tools/sandbox/README.md` | `/docs/tools/sandboxes` |
+| `tools/resources/README.md` | `/docs/tools/resources` |
 | `examples/platforms/README.md` | `/docs/guides/platforms` |
 
-`website/scripts/generate.mjs` writes all generated MDX files (which are gitignored—never edit them by hand). If you change Go route definitions or wire types in `internal/api` or `internal/core`, run `go run ./cmd/generate` from the repository root first.
+`website/scripts/generate.mjs` writes all generated MDX files (which are gitignored—never edit them by hand). If you change Go route definitions or wire types in `internal/api` or `services/brain/api`, run `go run ./services/brain/cmd/generate` from the repository root first.
 
 ## Static export
 

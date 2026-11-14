@@ -40,7 +40,7 @@ Brain never sends periodic status prompts or synthetic heartbeats to keep a wait
 
 | Harness | Upstream control surface | Integration approach |
 | --- | --- | --- |
-| **Pi** | TypeScript SDK (`SessionManager`, custom tools, model/thinking settings, `steer`/`followUp`, `abort`, lifecycle events). ([Pi SDK](https://raw.githubusercontent.com/badlogic/pi-mono/main/packages/coding-agent/docs/sdk.md)) | Thin Node.js runner over stdio (`runners/pi`). Disables built-in local tools, extensions, and skills; bridges selected tools to Brain over stdio. |
+| **Pi** | TypeScript SDK (`SessionManager`, custom tools, model/thinking settings, `steer`/`followUp`, `abort`, lifecycle events). ([Pi SDK](https://raw.githubusercontent.com/badlogic/pi-mono/main/packages/coding-agent/docs/sdk.md)) | Thin Node.js runner over stdio (`runtimes/pi`). Disables built-in local tools, extensions, and skills; bridges selected tools to Brain over stdio. |
 | **Codex** | App Server over stdio (`turn/start`, `turn/steer`, `turn/interrupt`, resume/fork/revert, MCP). ([Codex App Server](https://learn.chatgpt.com/docs/app-server)) | Planned stdio adapter. Needs verification that built-in local tools can be fully excluded and native state restored passively. |
 | **OpenCode** | HTTP server & v2 plugin hooks (queue/steer delivery, model switching, context/tool hooks). ([OpenCode v2 API](https://dev.opencode.ai/v2/docs/api), [plugins](https://opencode.ai/v2/docs/build/plugins/)) | Planned adapter. Must isolate per-session state and prevent OpenCode's startup recovery from automatically resuming sessions on boot ([session spec](https://github.com/anomalyco/opencode/blob/dev/specs/v2/session.md)). |
 

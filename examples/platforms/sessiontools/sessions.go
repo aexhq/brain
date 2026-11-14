@@ -6,7 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/aexhq/brain"
+	"github.com/aexhq/brain/services/brain"
 )
 
 type SessionReader interface {

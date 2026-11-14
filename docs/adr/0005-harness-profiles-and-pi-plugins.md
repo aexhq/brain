@@ -1,5 +1,8 @@
 # ADR 0005: Typed harness profiles and installed Pi plugins
 
+> Service ownership, runtime placement, storage and telemetry decisions are superseded where they conflict by [ADR 0001](0001-local-first-session-server.md). This record retains historical rationale.
+
+
 - **Status:** Accepted
 - **Date:** 2026-10-22
 - **Extends:** [ADR 0003](0003-application-sdk-and-session-bindings.md) and [ADR 0004](0004-service-integration-readiness.md).

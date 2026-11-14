@@ -4,9 +4,9 @@
   "data_dir": ".brain-harnesses",
   "tokens": [{ "token_env": "BRAIN_API_KEY", "tenant": "local", "manage": true }],
   "harnesses": {
-    "pi": { "command": ["node", "runners/pi/dist/main.js"] },
-    "codex": { "command": ["node", "runners/codex/src/main.mjs"] },
-    "opencode": { "command": ["node", "runners/opencode/src/main.mjs"] }
+    "pi": { "command": ["node", "runtimes/pi/dist/main.js"] },
+    "codex": { "command": ["node", "runtimes/codex/src/main.mjs"] },
+    "opencode": { "command": ["node", "runtimes/opencode/src/main.mjs"] }
   },
   "providers": {
     "openai": { "api_key_env": "OPENAI_API_KEY", "api": "openai-responses" }

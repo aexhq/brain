@@ -85,7 +85,7 @@ Use the official Go SDK, pinned to a release that supports the chosen current pr
 
 ## I4: External tool catalog
 
-Keep catalog implementations outside `internal/session`. Prefer separate commands/packages with explicit dependencies and deployment instructions. Reuse the current descriptor and request/result shapes; generate examples and docs from actual tool descriptors.
+Keep catalog implementations outside `services/brain/internal/sessions`. Prefer separate commands/packages with explicit dependencies and deployment instructions. Reuse the current descriptor and request/result shapes; generate examples and docs from actual tool descriptors.
 
 | Service | First workflow | Scope and safety boundary |
 | --- | --- | --- |
