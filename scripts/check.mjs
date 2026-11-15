@@ -19,8 +19,10 @@ const commands = [
   ["node", ["--test", "tests/journeys/journeys.test.mjs", "tests/journeys/adapters.test.mjs", "tests/journeys/browser.test.mjs"]],
   ["node", ["--test", "tests/platforms.test.mjs"]],
   ["node", ["--test", "tests/registry-artifacts.test.mjs"]],
-  ["npm", ["--prefix", "website", "run", "build"]],
-  ["npm", ["--prefix", "website", "test"]],
+  ["npm", ["--prefix", "sites/docs", "run", "build"]],
+  ["npm", ["--prefix", "sites/docs", "test"]],
+  ["npm", ["--prefix", "sites/dashboard", "run", "build"]],
+  ["npm", ["--prefix", "sites/dashboard", "test"]],
 ];
 for (const [command, args] of commands) {
   console.log(`\n${command} ${args.join(" ")}`);
