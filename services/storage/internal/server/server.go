@@ -34,7 +34,7 @@ func (s *Server) Handler() (http.Handler, error) {
 		s.Logger = slog.Default()
 	}
 	var err error
-	s.appended, err = otel.Meter("github.com/aexhq/brain/services/storage").Int64Counter("storage.transcript.bytes", metric.WithUnit("By"))
+	s.appended, err = otel.Meter("github.com/aexhq/brain/services/storage").Int64Counter("brain.transcript.bytes", metric.WithUnit("By"))
 	if err != nil {
 		return nil, err
 	}

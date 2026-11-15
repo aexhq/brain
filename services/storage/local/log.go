@@ -72,7 +72,7 @@ func OpenLog(path string, maxBytes int64) (*Log, error) {
 	if err != nil {
 		return nil, err
 	}
-	written, err := otel.Meter("github.com/aexhq/brain/services/storage").Int64Counter("storage.transcript.bytes", metric.WithUnit("By"))
+	written, err := otel.Meter("github.com/aexhq/brain/services/storage").Int64Counter("brain.transcript.bytes", metric.WithUnit("By"))
 	if err != nil {
 		f.Close()
 		return nil, err
