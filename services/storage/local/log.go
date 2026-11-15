@@ -20,7 +20,7 @@ import (
 
 const MaxRecord = api.MaxRecord
 
-// Log serializes append and subscriber registration, never network I/O.
+// Log serializes durable append and live subscriber registration.
 type Log struct {
 	mu       sync.Mutex
 	f        *os.File
@@ -72,7 +72,7 @@ func OpenLog(path string, maxBytes int64) (*Log, error) {
 	if err != nil {
 		return nil, err
 	}
-	written, err := otel.Meter("github.com/aexhq/brain/services/brain").Int64Counter("brain.transcript.bytes", metric.WithUnit("By"))
+	written, err := otel.Meter("github.com/aexhq/brain/services/storage").Int64Counter("storage.transcript.bytes", metric.WithUnit("By"))
 	if err != nil {
 		f.Close()
 		return nil, err

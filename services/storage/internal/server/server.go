@@ -15,13 +15,15 @@ import (
 	"github.com/aexhq/brain/services/storage/internal/sessions/metadata"
 	"github.com/aexhq/brain/services/storage/internal/transcripts"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 )
 
 type Server struct {
-	Store  *metadata.Store
-	Token  string
-	Logger *slog.Logger
+	Store    *metadata.Store
+	Token    string
+	Logger   *slog.Logger
+	appended metric.Int64Counter
 }
 
 func (s *Server) Handler() (http.Handler, error) {
@@ -30,6 +32,11 @@ func (s *Server) Handler() (http.Handler, error) {
 	}
 	if s.Logger == nil {
 		s.Logger = slog.Default()
+	}
+	var err error
+	s.appended, err = otel.Meter("github.com/aexhq/brain/services/storage").Int64Counter("storage.transcript.bytes", metric.WithUnit("By"))
+	if err != nil {
+		return nil, err
 	}
 	m := http.NewServeMux()
 	m.HandleFunc("GET /health/live", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })

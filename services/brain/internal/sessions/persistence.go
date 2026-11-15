@@ -208,6 +208,5 @@ func (e *Engine) hydrate(ctx context.Context, g core.Grant, id, reference string
 	if err := e.opts.Store.InstallRestore(ctx, m.Session, staging); err != nil {
 		return core.Session{}, err
 	}
-	// Retain replaced local data for operator recovery; never hide unsynced loss.
 	return e.opts.Store.Get(ctx, id)
 }

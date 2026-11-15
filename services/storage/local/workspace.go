@@ -62,6 +62,7 @@ func (s *Store) InstallRestore(ctx context.Context, session core.Session, stagin
 		}
 		return errors.Join(err, rollback)
 	}
+	// Retain replaced local data for operator recovery.
 	return nil
 }
 func (s *Store) SyncState(ctx context.Context, session core.Session) (*api.Manifest, int64, error) {

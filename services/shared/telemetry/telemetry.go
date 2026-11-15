@@ -1,4 +1,4 @@
-// Package telemetry configures bounded OpenTelemetry exporters and instruments.
+// Package telemetry configures bounded OpenTelemetry exporters and propagation.
 package telemetry
 
 import (

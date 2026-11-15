@@ -80,7 +80,7 @@ Keep agent adapters and runnable payloads under `runtimes/`, separately from the
 
 ### Storage ownership and three-tier separation (2026-11-15)
 
-Status: implemented in the working tree; full verification, merge and deployment pending. The product owner authorized implementation on 2026-11-15. [ADR 0001](adr/0001-local-first-session-server.md#storage-adapters-and-tiers) owns the architecture.
+Status: implemented; CI gates merge and release. The product owner authorized implementation on 2026-11-15. [ADR 0001](adr/0001-local-first-session-server.md#storage-adapters-and-tiers) owns the architecture.
 
 Storage owns generic storage operations across memory, local disk and external backends. The in-memory storage tier is entirely Storage-owned, including cached session data and transcripts, budgets, load coalescing, pinning and eviction. Brain owns orchestration and invokes Storage primitives; disposable copies and staging do not justify a second storage implementation in Brain. Runtime execution files remain Sandbox-owned.
 

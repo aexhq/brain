@@ -76,7 +76,11 @@ func (s *Server) append(ctx context.Context, in api.Request) (api.Record, error)
 		return r, err
 	}
 	r.TranscriptBytes += size
-	return s.Store.Put(ctx, in.Identity, r, r.Revision)
+	r, err = s.Store.Put(ctx, in.Identity, r, r.Revision)
+	if err == nil {
+		s.appended.Add(ctx, size)
+	}
+	return r, err
 }
 
 // capture validates the requested file boundary and retains only those files.

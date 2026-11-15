@@ -15,7 +15,6 @@ type Metrics struct {
 	Active        metric.Int64UpDownCounter
 	ToolCalls     metric.Int64Counter
 	ToolDuration  metric.Float64Histogram
-	Appended      metric.Int64Counter
 	QueueDelay    metric.Float64Histogram
 	FirstOutput   metric.Float64Histogram
 	RunnerStartup metric.Float64Histogram
@@ -37,7 +36,6 @@ func Setup(ctx context.Context) (*Metrics, func(context.Context) error, error) {
 	active, e3 := meter.Int64UpDownCounter("brain.executions.active")
 	calls, e4 := meter.Int64Counter("brain.tool.calls")
 	toolDuration, e5 := meter.Float64Histogram("brain.tool.duration", metric.WithUnit("s"))
-	appended, e6 := meter.Int64Counter("brain.transcript.bytes", metric.WithUnit("By"))
 	queue, e7 := meter.Float64Histogram("brain.input.queue_delay", metric.WithUnit("s"))
 	first, e8 := meter.Float64Histogram("brain.assistant.first_output", metric.WithUnit("s"))
 	startup, e9 := meter.Float64Histogram("brain.runner.startup", metric.WithUnit("s"))
@@ -46,8 +44,8 @@ func Setup(ctx context.Context) (*Metrics, func(context.Context) error, error) {
 	syncDuration, e12 := meter.Float64Histogram("brain.sync.duration", metric.WithUnit("s"))
 	syncFailures, e13 := meter.Int64Counter("brain.sync.failures")
 	rejected, e14 := meter.Int64Counter("brain.http.rejected")
-	if err := errors.Join(e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14); err != nil {
+	if err := errors.Join(e1, e2, e3, e4, e5, e7, e8, e9, e10, e11, e12, e13, e14); err != nil {
 		return nil, nil, errors.Join(err, shutdown(ctx))
 	}
-	return &Metrics{Requests: requests, Duration: duration, Active: active, ToolCalls: calls, ToolDuration: toolDuration, Appended: appended, QueueDelay: queue, FirstOutput: first, RunnerStartup: startup, NativeBytes: native, SyncPending: pending, SyncDuration: syncDuration, SyncFailures: syncFailures, Rejected: rejected}, shutdown, nil
+	return &Metrics{Requests: requests, Duration: duration, Active: active, ToolCalls: calls, ToolDuration: toolDuration, QueueDelay: queue, FirstOutput: first, RunnerStartup: startup, NativeBytes: native, SyncPending: pending, SyncDuration: syncDuration, SyncFailures: syncFailures, Rejected: rejected}, shutdown, nil
 }
