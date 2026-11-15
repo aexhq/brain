@@ -131,8 +131,9 @@ tools/                          # Ordinary supplied tool implementations
   {integrations,service,sandbox,browser,resources,mcp}/
 telemetry/                       # Public Go contract and bounded exporters
 credentials/                     # Public encrypted credential capability
-sdks/typescript/
-cli/
+clients/
+  sdks/typescript/
+  cli/
 deploy/docker/
 tests/{distributed,journeys}/
 internal/dirlock/                 # OS directory ownership lock

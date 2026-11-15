@@ -66,7 +66,7 @@ const session: Session = await brain.create({harness: Pi(), model:Model('openai/
 void session;
 await brain.stop();
 `);
-  const checked = spawnSync(process.execPath, [path.join(root, 'sdks/typescript/node_modules/typescript/bin/tsc'), '--noEmit', '--strict', '--module', 'NodeNext', '--target', 'ES2023', 'consumer.ts'], { cwd: directory, encoding: 'utf8' });
+  const checked = spawnSync(process.execPath, [path.join(root, 'clients/sdks/typescript/node_modules/typescript/bin/tsc'), '--noEmit', '--strict', '--module', 'NodeNext', '--target', 'ES2023', 'consumer.ts'], { cwd: directory, encoding: 'utf8' });
   assert.equal(checked.status, 0, checked.stdout + checked.stderr);
 });
 

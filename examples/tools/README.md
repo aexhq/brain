@@ -10,7 +10,7 @@
 
 ## Before you begin
 
-- Go `1.26+` and Node.js `24+` installed (`npm --prefix runtimes/pi run build` and `npm --prefix sdks/typescript run build` completed).
+- Go `1.26+` and Node.js `24+` installed (`npm --prefix runtimes/pi run build` and `npm --prefix clients/sdks/typescript run build` completed).
 - An LLM provider API key (for example, `OPENAI_API_KEY`).
 - Three distinct random tokens of at least 24 bytes each:
   - `BRAIN_API_KEY` — authenticates client requests to Brain.

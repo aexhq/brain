@@ -27,7 +27,7 @@ Usage contract work precedes final adapter qualification so three implementation
 
 ## Implementation entry points
 
-- Authoring: `sdks/typescript/src/index.ts`, `executor.ts`, `server.go`, public provider types and `integrations/providers.go`.
+- Authoring: `clients/sdks/typescript/src/index.ts`, `executor.ts`, `server.go`, public provider types and `integrations/providers.go`.
 - Authority and credentials: `services/brain/api/auth.go`, `server.go`, `services/brain/api/types.go`, `services/brain/internal/sessions/credentials.go`, `credentials` and configured provider resolution.
 - Host ownership: `runtimes/host/process.go`, `ownership_linux.go`, `ownership_windows.go`, `services/brain/internal/sessions/engine.go`; preserve the existing protocol and native-state owner rather than introducing a second scheduler.
 - Request evidence: `runtimes/host/harness.go`, `services/brain/api/types.go`, session event persistence and `runtimes/pi/src/main.ts`; new adapters use the same path.

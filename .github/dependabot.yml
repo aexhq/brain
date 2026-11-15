@@ -5,7 +5,7 @@ updates:
     schedule: { interval: weekly }
     open-pull-requests-limit: 5
   - package-ecosystem: npm
-    directories: [/runtimes/pi, /sdks/typescript, /tools/sandbox, /website]
+    directories: [/runtimes/pi, /clients/sdks/typescript, /tools/sandbox, /website]
     schedule: { interval: weekly }
     open-pull-requests-limit: 5
   - package-ecosystem: github-actions

@@ -5,7 +5,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Brain } from '../../sdks/typescript/dist/index.js';
+import { Brain } from '../../clients/sdks/typescript/dist/index.js';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const compose = path.join(root, 'deploy/docker/compose.yaml');
@@ -94,7 +94,7 @@ try {
   await sdk.send(browserId,{type:'user.message',text:'CALL runtime_echo {"value":"browser tool"}'});await settled(browserId);
   assert.equal((await sdk.history(browserId)).events.find(e=>e.type==='tool.result').data.result.structured_content,'browser tool');
   const tail=await request('GET',endpoint(browserId)+'/events?tail=true&limit=2');assert.equal(tail.events.length,2);
-  const cli=spawnSync(process.execPath,[path.join(root,'sdks/typescript/dist/cli.mjs'),'get',id],{encoding:'utf8',windowsHide:true,env:{...process.env,BRAIN_API_KEY:environment.BRAIN_API_KEY,BRAIN_URL:'http://127.0.0.1:8080'}});
+  const cli=spawnSync(process.execPath,[path.join(root,'clients/sdks/typescript/dist/cli.mjs'),'get',id],{encoding:'utf8',windowsHide:true,env:{...process.env,BRAIN_API_KEY:environment.BRAIN_API_KEY,BRAIN_URL:'http://127.0.0.1:8080'}});
   assert.equal(cli.status,0,cli.stderr);assert.equal(JSON.parse(cli.stdout).id,id);
   const started = performance.now();
   await Promise.all(Array.from({length:3}, async (_, n) => {
