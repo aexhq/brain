@@ -1,7 +1,7 @@
 {
   "name": "@aexhq/brain",
-  "version": "4.0.0",
-  "description": "Typed client for Brain sessions, tools, checkpoints, and event streams",
+  "version": "4.0.1",
+  "description": "TypeScript SDK for Brain, an open-source managed agent platform",
   "license": "MIT",
   "homepage": "https://aexhq.github.io/brain/docs/sdks/typescript/",
   "repository": {

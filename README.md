@@ -5,7 +5,7 @@
   ▀▀  ▀▀     |______/___|__|___|___|_______|__|____|
 </pre>
 
-<p align="center"><strong>A minimal and extensible agent server for building agent applications</strong></p>
+<p align="center"><strong>An open-source managed agent platform</strong></p>
 
 <p align="center">
 <a href="https://aexhq.github.io/brain/docs/quickstart/">Quickstart</a> ·
@@ -15,7 +15,7 @@
 <a href="https://aexhq.github.io/brain/docs/roadmap/">Roadmap</a>
 </p>
 
-Brain runs agent sessions on infrastructure you control. Your application sends messages and connects tools; Brain keeps the session history and runs Pi in an isolated environment for each session.
+Brain is an open-source alternative to Claude Managed Agents. Run agent sessions on infrastructure you control. Your application sends messages and connects tools; Brain keeps the session history and runs Pi in an isolated environment for each session.
 
 Four services divide the work:
 

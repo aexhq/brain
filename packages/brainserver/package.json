@@ -1,7 +1,7 @@
 {
   "name": "brainserver",
   "version": "4.0.0",
-  "description": "Run Brain with Pi, Codex, OpenCode, and configured Pi extensions from Node.js",
+  "description": "Brain, an open-source managed agent platform, for Node.js",
   "license": "MIT",
   "type": "module",
   "engines": {
