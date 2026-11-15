@@ -13,7 +13,7 @@ import (
 
 	"github.com/aexhq/brain/runtimes/host"
 	core "github.com/aexhq/brain/services/brain/api"
-	"github.com/aexhq/brain/services/brain/internal/storage"
+	"github.com/aexhq/brain/services/storage/local"
 	"github.com/aexhq/brain/services/tools/registry"
 )
 

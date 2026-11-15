@@ -11,8 +11,8 @@ import (
 
 	"github.com/aexhq/brain/runtimes/host"
 	core "github.com/aexhq/brain/services/brain/api"
-	"github.com/aexhq/brain/services/brain/internal/archive"
-	"github.com/aexhq/brain/services/brain/internal/storage"
+	"github.com/aexhq/brain/services/storage/archive"
+	"github.com/aexhq/brain/services/storage/local"
 	"github.com/aexhq/brain/services/tools/registry"
 )
 
@@ -42,7 +42,7 @@ func persistentEngine(t *testing.T, objects persistence.Objects) (*Engine, *test
 		r.Close()
 		db.Close()
 	})
-	until(t, func() bool { return e.syncer.admit() })
+	until(t, func() bool { return e.syncer.Admit() })
 	return e, f
 }
 func until(t *testing.T, fn func() bool) {
@@ -147,7 +147,7 @@ func TestSynchronizationBackpressureAndRecovery(t *testing.T) {
 	if _, err := e.Flush(ctx, g, one.ID); err != nil {
 		t.Fatal(err)
 	}
-	until(t, e.syncer.admit)
+	until(t, e.syncer.Admit)
 	if _, err := e.Create(ctx, g, core.CreateSession{ID: core.ID(), Harness: "pi", Config: core.Config{Model: "test/model"}}); err != nil {
 		t.Fatal(err)
 	}

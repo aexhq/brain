@@ -8,9 +8,9 @@ Start with the [integration implementation plan](../plans/08-integration-expansi
 
 | Area | Evidence in this repository | Remaining work |
 | --- | --- | --- |
-| Runtime | `services/brain/internal/sessions`, `services/brain/internal/storage`, `services/brain/internal/http` | Capacity measurements and deployment qualification; a fleet router is outside Brain. |
-| Cloud archives | `services/brain/internal/archive/objects.go`, `archive.go` | Filesystem, S3, and R2 are implemented. S3/R2 transport tests use a local HTTP fixture, not real cloud services. |
-| SQL metadata | `services/brain/internal/archive/metadata.go` | PostgreSQL discovery is implemented and has a real PostgreSQL CI job. Hosted-provider connection recipes are unqualified. |
+| Runtime | `services/brain/internal/sessions`, `services/storage/local`, `services/brain/internal/http` | Capacity measurements and deployment qualification; a fleet router is outside Brain. |
+| Cloud archives | `services/storage/archive/objects.go`, `archive.go` | Filesystem, S3, and R2 are implemented. S3/R2 transport tests use a local HTTP fixture, not real cloud services. |
+| SQL metadata | `services/storage/archive/metadata.go` | PostgreSQL discovery is implemented and has a real PostgreSQL CI job. Hosted-provider connection recipes are unqualified. |
 | Harness | `runtimes/pi`, `runtimes/host` | Pi is pinned at `1.2.0`; OpenCode and Codex runners do not exist yet. |
 | Tools | `services/tools/registry/http.go`, `examples/tools` | HTTP/SSE, inspection, and approval examples exist. MCP and provider catalog services do not. |
 | Delivery | `.github/workflows/ci.yml`, `Dockerfile` | Linux/Windows checks, race detection, PostgreSQL, and Docker smoke tests exist. There is no image publication or docs deployment workflow. |

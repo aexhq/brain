@@ -3,13 +3,11 @@ package brain
 import (
 	"context"
 	"errors"
-	"github.com/aexhq/brain/internal/dirlock"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,11 +16,11 @@ import (
 	core "github.com/aexhq/brain/services/brain/api"
 	"github.com/aexhq/brain/services/brain/internal/http"
 	"github.com/aexhq/brain/services/brain/internal/sessions"
-	workspace "github.com/aexhq/brain/services/brain/storage"
+	"github.com/aexhq/brain/services/brain/internal/telemetry"
 	sandbox "github.com/aexhq/brain/services/sandbox/api"
 	storage "github.com/aexhq/brain/services/storage/api"
+	workspace "github.com/aexhq/brain/services/storage/client"
 	tools "github.com/aexhq/brain/services/tools/api"
-	"github.com/aexhq/brain/telemetry"
 )
 
 func newDistributed(ctx context.Context, o Options) (_ *Server, err error) {
@@ -36,9 +34,6 @@ func newDistributed(ctx context.Context, o Options) (_ *Server, err error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if err = os.MkdirAll(c.DataDir, 0700); err != nil {
-		return nil, err
-	}
 	s := &Server{keys: o.Keys}
 	defer func() {
 		if err != nil {
@@ -47,21 +42,7 @@ func newDistributed(ctx context.Context, o Options) (_ *Server, err error) {
 			}
 		}
 	}()
-	owner, err := dirlock.Lock(c.DataDir)
-	if err != nil {
-		return nil, err
-	}
-	s.close = append(s.close, owner.Close)
-	// This namespace contains only materialized copies of Storage-owned data.
-	// Discarding it after a crash bounds abandoned working files.
-	working := filepath.Join(c.DataDir, "work")
-	if err = os.RemoveAll(working); err != nil {
-		return nil, err
-	}
-	if err = os.MkdirAll(working, 0700); err != nil {
-		return nil, err
-	}
-	metrics, shutdown, err := telemetry.SetupService(ctx, "brain")
+	metrics, shutdown, err := telemetry.Setup(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -71,9 +52,9 @@ func newDistributed(ctx context.Context, o Options) (_ *Server, err error) {
 		return shutdown(ctx)
 	})
 	storeClient := &storage.Client{URL: deps.Storage, Token: token}
-	s.remote = &workspace.Workspace{Client: storeClient, Owner: deps.Owner, Epoch: deps.Epoch, Directory: working, MaxBytes: c.Limits.SessionBytes, MediaOrigins: c.MediaOrigins}
+	s.remote = &workspace.Workspace{Client: storeClient, Owner: deps.Owner, Epoch: deps.Epoch, MaxBytes: c.Limits.SessionBytes, MediaOrigins: c.MediaOrigins}
 	toolClient := &tools.Client{URL: deps.Tools, Token: token, Owner: deps.Owner, Epoch: deps.Epoch}
-	factory := pi.Factory(&sandbox.Client{URL: deps.Sandbox, Token: token}, c.Limits.SessionBytes)
+	factory := pi.Factory(&sandbox.Client{URL: deps.Sandbox, Token: token}, s.remote, c.Limits.SessionBytes)
 	factory.MaxHosts = c.Limits.Active
 	factory.MaxStarting = c.Harnesses["pi"].MaxStarting
 	factory.Plugins = c.Harnesses["pi"].Plugins

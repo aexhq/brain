@@ -63,7 +63,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
-      - run: go test -tags postgres ./services/brain/internal/archive
+      - run: go test -tags postgres ./services/storage/archive
   checks:
     strategy:
       fail-fast: false

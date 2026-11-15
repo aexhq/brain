@@ -1,16 +1,15 @@
-package session
+package replication
 
 import (
 	"context"
-	"errors"
-	"os"
-	"path/filepath"
 	"sort"
 	"sync"
 	"time"
 
 	core "github.com/aexhq/brain/services/brain/api"
-	"github.com/aexhq/brain/services/brain/internal/archive"
+	"github.com/aexhq/brain/services/storage/archive"
+	"go.opentelemetry.io/otel/metric"
+	"log/slog"
 )
 
 type pendingSync struct {
@@ -22,26 +21,38 @@ type pendingSync struct {
 	err      string
 	stopped  bool
 }
-type syncer struct {
-	engine      *Engine
+type Options struct {
+	Scan     func(context.Context, string, int) ([]core.Session, error)
+	State    func(context.Context, core.Session) (*persistence.Manifest, int64, error)
+	Flush    func(context.Context, string) (core.SyncStatus, error)
+	Logger   *slog.Logger
+	Pending  metric.Int64Gauge
+	Duration metric.Float64Histogram
+	Failures metric.Int64Counter
+}
+type Worker struct {
+	ctx         context.Context
+	opts        Options
 	mu          sync.Mutex
 	pending     map[string]*pendingSync
 	capacity    int
 	interval    time.Duration
 	overflow    bool
 	initialized bool
-	done        chan struct{}
+	Done        chan struct{}
 }
 
-func newSyncer(e *Engine, capacity int, interval time.Duration) *syncer {
-	return &syncer{engine: e, pending: make(map[string]*pendingSync), capacity: capacity, interval: interval, done: make(chan struct{})}
+func New(ctx context.Context, opts Options, capacity int, interval time.Duration) *Worker {
+	s := &Worker{ctx: ctx, opts: opts, pending: make(map[string]*pendingSync), capacity: capacity, interval: interval, Done: make(chan struct{})}
+	go s.run()
+	return s
 }
-func (s *syncer) admit() bool {
+func (s *Worker) Admit() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.initialized && !s.overflow && len(s.pending) < s.capacity
 }
-func (s *syncer) dirty(tenant, externalID string) {
+func (s *Worker) Dirty(tenant, externalID string) {
 	id := core.SessionKey(tenant, externalID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -55,7 +66,7 @@ func (s *syncer) dirty(tenant, externalID string) {
 	}
 	s.pending[id] = &pendingSync{change: 1, tenant: tenant, id: externalID}
 }
-func (s *syncer) retry(id string) {
+func (s *Worker) Retry(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if p := s.pending[id]; p != nil {
@@ -65,7 +76,7 @@ func (s *syncer) retry(id string) {
 		p.err = ""
 	}
 }
-func (s *syncer) status(id string) (bool, string) {
+func (s *Worker) Status(id string) (bool, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if p := s.pending[id]; p != nil {
@@ -76,16 +87,13 @@ func (s *syncer) status(id string) (bool, string) {
 
 // Disk is the pending-data buffer. This queue holds only bounded references;
 // startup and subsequent scans rediscover changes that could not be queued.
-func (s *syncer) scan(ctx context.Context) error {
-	// Directory replacement must wait for scan file handles on Windows.
-	s.engine.hydrateMu.Lock()
-	defer s.engine.hydrateMu.Unlock()
+func (s *Worker) scan(ctx context.Context) error {
 	s.mu.Lock()
 	s.overflow = false
 	s.mu.Unlock()
 	var after string
 	for {
-		batch, err := s.engine.opts.Store.Scan(ctx, after, 100)
+		batch, err := s.opts.Scan(ctx, after, 100)
 		if err != nil {
 			return err
 		}
@@ -101,19 +109,8 @@ func (s *syncer) scan(ctx context.Context) error {
 			if known {
 				continue
 			}
-			dir, err := s.engine.opts.Store.Dir(core.SessionKey(session.Tenant, session.ID))
+			state, size, err := s.opts.State(ctx, session)
 			if err != nil {
-				return err
-			}
-			state, err := persistence.ReadState(dir)
-			if err != nil {
-				return err
-			}
-			var size int64
-			info, err := os.Stat(filepath.Join(dir, "events.jsonl"))
-			if err == nil {
-				size = info.Size()
-			} else if !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
 			if state != nil && state.Session.UpdatedAt.Equal(session.UpdatedAt) && session.Checkpoint != nil && state.Session.Checkpoint.ID == session.Checkpoint.ID && state.HistoryBytes == size {
@@ -125,29 +122,29 @@ func (s *syncer) scan(ctx context.Context) error {
 				s.mu.Unlock()
 				return nil
 			}
-			s.dirty(session.Tenant, session.ID)
+			s.Dirty(session.Tenant, session.ID)
 		}
 	}
 }
 
-func (s *syncer) run() {
-	defer close(s.done)
+func (s *Worker) run() {
+	defer close(s.Done)
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 	for {
-		if err := s.scan(s.engine.ctx); err != nil {
-			if s.engine.ctx.Err() != nil {
+		if err := s.scan(s.ctx); err != nil {
+			if s.ctx.Err() != nil {
 				return
 			}
 			s.mu.Lock()
 			s.overflow = true
 			s.mu.Unlock()
-			s.engine.opts.Logger.Error("scan pending synchronization", "error", err)
+			s.opts.Logger.Error("scan pending synchronization", "error", err)
 		}
 		s.mu.Lock()
 		s.initialized = true
-		if s.engine.opts.Metrics != nil {
-			s.engine.opts.Metrics.SyncPending.Record(s.engine.ctx, int64(len(s.pending)))
+		if s.opts.Pending != nil {
+			s.opts.Pending.Record(s.ctx, int64(len(s.pending)))
 		}
 		ids := make([]string, 0, len(s.pending))
 		for id, p := range s.pending {
@@ -158,20 +155,20 @@ func (s *syncer) run() {
 		s.mu.Unlock()
 		sort.Strings(ids)
 		for _, id := range ids {
-			if s.engine.ctx.Err() != nil {
+			if s.ctx.Err() != nil {
 				return
 			}
 			s.mu.Lock()
 			p := s.pending[id]
 			change := p.change
 			s.mu.Unlock()
-			ctx, cancel := context.WithTimeout(s.engine.ctx, 45*time.Second)
+			ctx, cancel := context.WithTimeout(s.ctx, 45*time.Second)
 			started := time.Now()
-			_, err := s.engine.flush(core.WithTenant(ctx, p.tenant), p.id)
-			if s.engine.opts.Metrics != nil {
-				s.engine.opts.Metrics.SyncDuration.Record(ctx, time.Since(started).Seconds())
+			_, err := s.opts.Flush(core.WithTenant(ctx, p.tenant), p.id)
+			if s.opts.Duration != nil {
+				s.opts.Duration.Record(ctx, time.Since(started).Seconds())
 				if err != nil {
-					s.engine.opts.Metrics.SyncFailures.Add(ctx, 1)
+					s.opts.Failures.Add(ctx, 1)
 				}
 			}
 			cancel()
@@ -191,12 +188,12 @@ func (s *syncer) run() {
 				p.due = time.Now().Add(min(5*time.Minute, s.interval*time.Duration(1<<p.attempts)))
 			}
 			s.mu.Unlock()
-			if err != nil && s.engine.ctx.Err() == nil {
-				s.engine.opts.Logger.Error("synchronize session", "session", id, "error", err)
+			if err != nil && s.ctx.Err() == nil {
+				s.opts.Logger.Error("synchronize session", "session", id, "error", err)
 			}
 		}
 		select {
-		case <-s.engine.ctx.Done():
+		case <-s.ctx.Done():
 			return
 		case <-ticker.C:
 		}

@@ -16,7 +16,7 @@ import (
 	"github.com/aexhq/brain/credentials"
 	"github.com/aexhq/brain/runtimes/host"
 	core "github.com/aexhq/brain/services/brain/api"
-	"github.com/aexhq/brain/services/brain/internal/archive"
+	"github.com/aexhq/brain/services/storage/archive"
 	"github.com/aexhq/brain/services/tools/registry"
 )
 
@@ -165,14 +165,16 @@ func (c *Config) ValidateApplication(factories map[string]harness.Factory, exter
 	if _, _, err := net.SplitHostPort(c.Listen); err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	if c.DataDir == "" {
-		return errors.New("data_dir is required")
+	if c.Services == nil {
+		if c.DataDir == "" {
+			return errors.New("data_dir is required")
+		}
+		abs, err := filepath.Abs(c.DataDir)
+		if err != nil {
+			return err
+		}
+		c.DataDir = abs
 	}
-	abs, err := filepath.Abs(c.DataDir)
-	if err != nil {
-		return err
-	}
-	c.DataDir = abs
 	u, err := url.Parse(c.PublicURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return errors.New("invalid public_url")

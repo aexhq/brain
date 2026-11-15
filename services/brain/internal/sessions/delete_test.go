@@ -3,7 +3,8 @@ package session
 import (
 	"context"
 	core "github.com/aexhq/brain/services/brain/api"
-	"github.com/aexhq/brain/services/brain/internal/archive"
+	"github.com/aexhq/brain/services/storage/archive"
+	"github.com/aexhq/brain/services/storage/local"
 	"os"
 	"testing"
 	"time"
@@ -41,7 +42,7 @@ func TestDeleteCancelsActiveWorkErasesFilesAndCannotBeRestored(t *testing.T) {
 	if _, err := e.Get(ctx, g, s.ID); core.ErrorCode(err) != core.NotFound {
 		t.Fatal(err)
 	}
-	dir, _ := e.opts.Store.Dir(core.SessionKey(s.Tenant, s.ID))
+	dir, _ := e.opts.Store.(*store.Store).Dir(core.SessionKey(s.Tenant, s.ID))
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("files remain: %v", err)
 	}

@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aexhq/brain/services/shared/telemetry"
 	"github.com/aexhq/brain/services/storage/internal/adapters"
 	"github.com/aexhq/brain/services/storage/internal/adapters/dynamodb"
 	"github.com/aexhq/brain/services/storage/internal/adapters/filesystem"
@@ -23,7 +24,6 @@ import (
 	"github.com/aexhq/brain/services/storage/internal/server"
 	"github.com/aexhq/brain/services/storage/internal/sessions/metadata"
 	"github.com/aexhq/brain/services/storage/internal/tiering"
-	"github.com/aexhq/brain/telemetry"
 )
 
 type config struct {
@@ -115,7 +115,7 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	_, shutdown, e := telemetry.SetupService(ctx, "storage")
+	shutdown, e := telemetry.SetupService(ctx, "storage")
 	if e != nil {
 		return e
 	}

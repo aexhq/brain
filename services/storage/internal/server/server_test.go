@@ -1,10 +1,12 @@
 package server_test
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -12,8 +14,8 @@ import (
 	"time"
 
 	core "github.com/aexhq/brain/services/brain/api"
-	workspace "github.com/aexhq/brain/services/brain/storage"
 	"github.com/aexhq/brain/services/storage/api"
+	workspace "github.com/aexhq/brain/services/storage/client"
 	"github.com/aexhq/brain/services/storage/internal/adapters"
 	"github.com/aexhq/brain/services/storage/internal/adapters/memory"
 	"github.com/aexhq/brain/services/storage/internal/server"
@@ -46,7 +48,7 @@ func TestDistributedWorkspaceRecoveryFencingAndDeletion(t *testing.T) {
 	ctx := core.WithTenant(context.Background(), "tenant-a")
 	remote, heads := memory.New(), memory.New()
 	client, records := service(t, remote, heads)
-	w := &workspace.Workspace{Client: client, Owner: "owner-a", Epoch: 1, Directory: t.TempDir(), MaxBytes: 16 << 20}
+	w := &workspace.Workspace{Client: client, Owner: "owner-a", Epoch: 1, MaxBytes: 16 << 20}
 	s := core.Session{ID: "customer/issue:42", Tenant: "tenant-a", Harness: "pi", Status: "idle", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Checkpoint: &core.Checkpoint{ID: core.ID(), Files: []core.NativeFile{}}}
 	if e := w.Create(ctx, s); e != nil {
 		t.Fatal(e)
@@ -64,17 +66,27 @@ func TestDistributedWorkspaceRecoveryFencingAndDeletion(t *testing.T) {
 	if e = l.Close(); e != nil {
 		t.Fatal(e)
 	}
-	dir, _ := w.Dir(core.SessionKey(s.Tenant, s.ID))
 	native := []byte("native Pi state\n")
-	if e = os.WriteFile(filepath.Join(dir, "native", "session.jsonl"), native, 0600); e != nil {
+	s.Checkpoint = &core.Checkpoint{ID: core.ID(), Offset: size, Files: []core.NativeFile{{Path: "session.jsonl", Size: int64(len(native)), AppendOnly: true}}}
+	var captured bytes.Buffer
+	tw := tar.NewWriter(&captured)
+	if e = tw.WriteHeader(&tar.Header{Name: "native/session.jsonl", Mode: 0600, Size: int64(len(native))}); e != nil {
 		t.Fatal(e)
 	}
-	s.Checkpoint = &core.Checkpoint{ID: core.ID(), Offset: size, Files: []core.NativeFile{{Path: "session.jsonl", Size: int64(len(native)), AppendOnly: true}}}
+	if _, e = tw.Write(native); e != nil {
+		t.Fatal(e)
+	}
+	if e = tw.Close(); e != nil {
+		t.Fatal(e)
+	}
+	if e = w.CaptureNative(ctx, s.ID, s.Checkpoint.Files, &captured); e != nil {
+		t.Fatal(e)
+	}
 	if e = w.Save(ctx, s); e != nil {
 		t.Fatal(e)
 	}
 	a := &workspace.Archive{Workspace: w}
-	manifest, e := a.Publish(ctx, workspace.Snapshot{Session: s, Directory: dir, HistoryBytes: size})
+	manifest, e := a.Publish(ctx, workspace.Snapshot{Session: s, HistoryBytes: size})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -84,7 +96,7 @@ func TestDistributedWorkspaceRecoveryFencingAndDeletion(t *testing.T) {
 	// Start with entirely empty local Storage and Brain caches. Only external
 	// objects and the external session head survive this simulated host loss.
 	recovered, _ := service(t, remote, heads)
-	fresh := &workspace.Workspace{Client: recovered, Owner: "owner-a", Epoch: 1, Directory: t.TempDir(), MaxBytes: 16 << 20}
+	fresh := &workspace.Workspace{Client: recovered, Owner: "owner-a", Epoch: 1, MaxBytes: 16 << 20}
 	got, e := fresh.Get(ctx, s.ID)
 	if e != nil {
 		t.Fatal(e)
@@ -98,9 +110,17 @@ func TestDistributedWorkspaceRecoveryFencingAndDeletion(t *testing.T) {
 		t.Fatalf("replay: %+v %v", history, e)
 	}
 	log.Close()
-	dir, _ = fresh.Dir(core.SessionKey(s.Tenant, s.ID))
-	data, e := os.ReadFile(filepath.Join(dir, "native", "session.jsonl"))
-	if e != nil || string(data) != string(native) {
+	var restored bytes.Buffer
+	if e = fresh.ReadNative(ctx, s.ID, &restored); e != nil {
+		t.Fatal(e)
+	}
+	tr := tar.NewReader(&restored)
+	h, e := tr.Next()
+	if e != nil || h.Name != "native/session.jsonl" {
+		t.Fatal(h, e)
+	}
+	data, e := io.ReadAll(tr)
+	if e != nil || !bytes.Equal(data, native) {
 		t.Fatalf("native restore: %q %v", data, e)
 	}
 	listed, e := fresh.List(ctx, s.Tenant, "", 10)
@@ -256,7 +276,7 @@ func TestExternalIDsPageInOrderAndPackagesSurviveSessionDeletion(t *testing.T) {
 func TestAttachmentFinalizationAndTenantScope(t *testing.T) {
 	ctx := core.WithTenant(context.Background(), "tenant")
 	client, _ := service(t, memory.New(), memory.New())
-	w := &workspace.Workspace{Client: client, Owner: "brain", Epoch: 1, Directory: t.TempDir(), MaxBytes: 16 << 20}
+	w := &workspace.Workspace{Client: client, Owner: "brain", Epoch: 1, MaxBytes: 16 << 20}
 	s := core.Session{ID: "attachments", Tenant: "tenant", Harness: "pi", Status: "idle"}
 	if err := w.Create(ctx, s); err != nil {
 		t.Fatal(err)

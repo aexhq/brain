@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	core "github.com/aexhq/brain/services/brain/api"
-	"os"
 	"time"
 )
 
@@ -83,9 +82,5 @@ func (e *Engine) Delete(ctx context.Context, g core.Grant, id string) error {
 			return err
 		}
 	}
-	dir, err := e.opts.Store.Dir(core.SessionKey(core.Tenant(ctx), id))
-	if err != nil {
-		return err
-	}
-	return os.RemoveAll(dir)
+	return e.opts.Store.RemoveWorkingCopy(ctx, id)
 }

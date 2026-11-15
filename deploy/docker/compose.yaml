@@ -20,7 +20,6 @@ services:
     networks: [control, runtime]
     volumes:
       - ./brain.json:/config/brain.json:ro
-      - brain-work:/data
     mem_limit: 512m
     depends_on:
       storage: {condition: service_healthy}
@@ -89,7 +88,6 @@ services:
     build: {context: ../.., target: tool-runtime}
     entrypoint: ["true"]
 volumes:
-  brain-work:
   storage-cache:
   external-storage:
 networks:

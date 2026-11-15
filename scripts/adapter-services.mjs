@@ -26,6 +26,6 @@ try {
  env.BRAIN_TEST_POSTGRES=`postgres://postgres:${secret}@${pg.address}/postgres?sslmode=disable`;
  env.BRAIN_TEST_S3=`http://${s3.address}`;env.BRAIN_TEST_DDB=`http://${ddb.address}`;
  run('go',['test','-count=1','-tags','external','./services/storage/internal/adapters','-timeout','3m'],{stdio:'inherit'});
- run('go',['test','-count=1','-tags','postgres','./services/brain/internal/archive','-timeout','2m'],{stdio:'inherit'});
+ run('go',['test','-count=1','-tags','postgres','./services/storage/archive','-timeout','2m'],{stdio:'inherit'});
  console.log('External adapter contracts passed: PostgreSQL, S3-compatible RustFS and DynamoDB Local.');
 } finally {for(const name of names.reverse())run('docker',['rm','--force',name]);}

@@ -76,7 +76,26 @@ Agreed: keep Sandbox a generic, separately runnable service. It owns isolated en
 
 Brain owns agent coordination and the Pi-specific protocol adapter, prompt/steering behavior, tool forwarding and coherent checkpoint orchestration. Sandbox executes the installed runtime without implementing those agent semantics. Do not move the complete `runtimes/` tree into Sandbox or add Pi-specific session operations to its generic API.
 
-Keep agent adapters and runnable payloads under `runtimes/`, separately from the generic Sandbox service. Rename the private OS directory lock helper to `internal/dirlock` so the folder names its actual responsibility.
+Keep agent adapters and runnable payloads under `runtimes/`, separately from the generic Sandbox service. The private OS directory lock helper was renamed to `internal/dirlock`; its ownership and placement are superseded by the storage separation decision below.
+
+### Storage ownership and three-tier separation (2026-11-15)
+
+Status: implemented in the working tree; full verification, merge and deployment pending. The product owner authorized implementation on 2026-11-15. [ADR 0001](adr/0001-local-first-session-server.md#storage-adapters-and-tiers) owns the architecture.
+
+Storage owns generic storage operations across memory, local disk and external backends. The in-memory storage tier is entirely Storage-owned, including cached session data and transcripts, budgets, load coalescing, pinning and eviction. Brain owns orchestration and invokes Storage primitives; disposable copies and staging do not justify a second storage implementation in Brain. Runtime execution files remain Sandbox-owned.
+
+Implementation: `services/storage/client` calls Storage-owned transcript and snapshot primitives without retaining local files. Storage validates and stages streamed native state; Pi transfers it through Sandbox. Embedded persistence, archives and synchronization live under `services/storage/{local,archive,replication}`; the directory lock is private to Storage. Distributed Brain no longer opens a data directory, cleans a workspace, or mounts a storage volume. Shared telemetry setup lives under `services/shared/telemetry`; Brain instruments remain service-local.
+
+Refactor and verification sequence:
+
+1. Inventory Brain's filesystem operations and storage caches, including embedded storage, transcript/SSE working sets, snapshot staging and restore cleanup. Separate storage state from Brain's execution queues and Sandbox's runtime files.
+2. Extend existing Storage-owned primitives only where needed for bounded reads/appends, state/object streaming, snapshot publication, restore and release. Keep tenant/session scope, owner fencing, cancellation, limits and explicit errors at the API boundary; do not expose Storage paths or add Pi-specific behavior to generic operations.
+3. Move working-copy lifecycle, staging, cleanup and storage caches behind Storage's API. Keep memory → disk → external reads and disk → external metadata reads inside Storage. Preserve durable local acknowledgement, asynchronous replication and protection of unsynced data during eviction.
+4. Replace Brain's local storage mechanics with API calls. Brain/Pi determine coherent capture and restore timing; Storage handles persistence and Sandbox handles runtime file transfer. Preserve embedded application behavior through the same Storage-owned implementation, without retaining duplicate storage logic in Brain.
+5. Remove Brain's storage-directory lock and startup workspace deletion after their responsibilities have moved. Place the OS directory lock inside Storage's private implementation once all callers have moved; do not merely relocate the helper while leaving ownership unchanged. Update configuration, Compose volumes, layout documentation and affected contracts together.
+6. Verify tier hits/misses, bounded transcript reads, concurrent loads, dirty eviction protection, durable acknowledgement, snapshot/restore, crash cleanup, tenant isolation and stale-owner rejection. Verify that restarting Brain cannot delete another process's storage working set. Run the complete required checks (`node scripts/check.mjs`) and all existing embedded/distributed tests; CI remains the release gate.
+
+Completion means Brain needs no storage-owned local data directory or independent storage cache, all three tiers and their resource lifecycle are Storage-owned, and orchestration still accesses them through the owning API. This plan does not introduce a separate service for each tier.
 
 ### Credential ownership proposal
 

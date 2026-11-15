@@ -17,8 +17,8 @@ import (
 
 	"github.com/aexhq/brain/runtimes/host"
 	core "github.com/aexhq/brain/services/brain/api"
-	"github.com/aexhq/brain/services/brain/internal/archive"
-	"github.com/aexhq/brain/services/brain/internal/storage"
+	"github.com/aexhq/brain/services/storage/archive"
+	"github.com/aexhq/brain/services/storage/local"
 	"github.com/aexhq/brain/services/tools/registry"
 )
 
@@ -65,7 +65,7 @@ func TestPiRestorePreservesNextModelRequest(t *testing.T) {
 			registry.Close()
 			db.Close()
 		})
-		until(t, e.syncer.admit)
+		until(t, e.syncer.Admit)
 		return e
 	}
 	ctx := context.Background()

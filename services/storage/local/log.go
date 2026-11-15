@@ -13,11 +13,12 @@ import (
 
 	"context"
 	core "github.com/aexhq/brain/services/brain/api"
+	"github.com/aexhq/brain/services/storage/api"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 )
 
-const MaxRecord = 4 << 20
+const MaxRecord = api.MaxRecord
 
 // Log serializes append and subscriber registration, never network I/O.
 type Log struct {
@@ -29,11 +30,14 @@ type Log struct {
 	maxBytes int64
 	written  metric.Int64Counter
 	commit   func(int64, core.Event) error
+	read     func(string, int, int64) ([]core.Event, error)
 }
 
-// BeforeAppend installs the authoritative Storage durability barrier. Configure
-// it before exposing the log; a failed commit stops this writer without replay.
-func (l *Log) BeforeAppend(commit func(int64, core.Event) error) { l.commit = commit }
+// RemoteLog retains only the writer position and live subscriber queues. Reads
+// and durable appends execute in Storage; no transcript cache lives in the client.
+func RemoteLog(size, maxBytes int64, read func(string, int, int64) ([]core.Event, error), commit func(int64, core.Event) error) *Log {
+	return &Log{size: size, maxBytes: maxBytes, subs: make(map[*Subscription]struct{}), read: read, commit: commit}
+}
 
 type Subscription struct {
 	Events   chan core.Event
@@ -159,22 +163,27 @@ func (l *Log) Append(e core.Event) (core.Event, error) {
 			return e, err
 		}
 	}
-	n, err := l.f.Write(b)
-	if err != nil || n != len(b) {
-		if err == nil {
-			err = io.ErrShortWrite
+	n := len(b)
+	if l.f != nil {
+		n, err = l.f.Write(b)
+		if err != nil || n != len(b) {
+			if err == nil {
+				err = io.ErrShortWrite
+			}
+			l.broken = err
+			return e, err
 		}
-		l.broken = err
-		return e, err
-	}
-	// Acknowledgement and live publication follow the local durability barrier.
-	if err := l.f.Sync(); err != nil {
-		l.broken = err
-		return e, err
+		// Acknowledgement and live publication follow the local durability barrier.
+		if err := l.f.Sync(); err != nil {
+			l.broken = err
+			return e, err
+		}
 	}
 	e.Cursor = cursorFor(l.size, e.ID)
 	l.size += int64(n)
-	l.written.Add(context.Background(), int64(n))
+	if l.written != nil {
+		l.written.Add(context.Background(), int64(n))
+	}
 	l.publish(e)
 	return e, nil
 }
@@ -228,6 +237,9 @@ func (l *Log) Read(after string, limit int, until int64) ([]core.Event, error) {
 	if until < 0 {
 		until = l.Size()
 	}
+	if l.read != nil {
+		return l.read(after, limit, until)
+	}
 	var offset int64
 	if after != "" {
 		b, err := base64.RawURLEncoding.DecodeString(after)
@@ -273,5 +285,8 @@ func (l *Log) Close() error {
 	if l.broken == nil {
 		l.broken = errors.New("log closed")
 	}
-	return l.f.Close()
+	if l.f != nil {
+		return l.f.Close()
+	}
+	return nil
 }

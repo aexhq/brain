@@ -11,38 +11,19 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	core "github.com/aexhq/brain/services/brain/api"
-	"github.com/aexhq/brain/services/brain/internal/storage"
+	"github.com/aexhq/brain/services/storage/api"
+	"github.com/aexhq/brain/services/storage/local"
 )
 
 // Complete blocks are uploaded once. Only the bounded partial block repeats.
 const BlockBytes int64 = 64 << 10
 
-type Artifact struct {
-	Path       string `json:"path"`
-	Generation string `json:"generation"`
-	Size       int64  `json:"size"`
-	Tail       string `json:"tail,omitempty"`
-}
-
-type Manifest struct {
-	Credentials  []core.CredentialRecord `json:"credentials,omitempty"`
-	ID           string                  `json:"id"`
-	Tenant       string                  `json:"tenant"`
-	Session      core.Session            `json:"session"`
-	HistoryBytes int64                   `json:"history_bytes"`
-	Files        []Artifact              `json:"files"`
-	Time         time.Time               `json:"time"`
-}
-
-type Snapshot struct {
-	Session      core.Session
-	Directory    string
-	HistoryBytes int64
-}
+type Artifact = api.Artifact
+type Manifest = api.Manifest
+type Snapshot = api.Snapshot
 
 type Archive struct {
 	Objects         Objects
@@ -58,7 +39,6 @@ func statePath(dir string) string { return filepath.Join(dir, "uploaded.json") }
 
 // Windows cannot replace an upload-state file while a status reader holds it
 // open. Data directories already have a single process owner.
-var uploadStateMu sync.RWMutex
 
 func strictJSON(data []byte, v any) error {
 	d := json.NewDecoder(bytes.NewReader(data))
@@ -72,33 +52,15 @@ func strictJSON(data []byte, v any) error {
 	return nil
 }
 
-func ReadState(dir string) (*Manifest, error) {
-	uploadStateMu.RLock()
-	b, err := os.ReadFile(statePath(dir))
-	uploadStateMu.RUnlock()
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var m Manifest
-	if err := strictJSON(b, &m); err != nil {
-		return nil, err
-	}
-	if (!core.ValidID(m.ID) && !core.ValidObjectReference(m.ID)) || !core.ValidSessionID(m.Session.ID) || m.Session.Checkpoint == nil || !core.ValidID(m.Session.Checkpoint.ID) || m.HistoryBytes < 0 {
-		return nil, errors.New("invalid local upload state")
-	}
-	return &m, nil
-}
+func ReadState(dir string) (*Manifest, error) { return store.ReadState(dir) }
 
 func saveState(dir string, m Manifest) error {
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
 	}
-	uploadStateMu.Lock()
-	defer uploadStateMu.Unlock()
+	store.UploadStateMu.Lock()
+	defer store.UploadStateMu.Unlock()
 	return (FileObjects{Root: dir}).Put(context.Background(), "uploaded.json", b, false)
 }
 

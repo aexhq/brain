@@ -4,12 +4,11 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/aexhq/brain/credentials"
 	core "github.com/aexhq/brain/services/brain/api"
-	"github.com/aexhq/brain/services/brain/internal/archive"
+	"github.com/aexhq/brain/services/storage/archive"
 )
 
 func syncStatus(m *persistence.Manifest) core.SyncStatus {
@@ -21,7 +20,7 @@ func syncStatus(m *persistence.Manifest) core.SyncStatus {
 
 func (e *Engine) dirty(tenant, id string) {
 	if e.syncer != nil {
-		e.syncer.dirty(tenant, id)
+		e.syncer.Dirty(tenant, id)
 	}
 }
 
@@ -47,7 +46,7 @@ func (e *Engine) flush(ctx context.Context, id string) (core.SyncStatus, error) 
 		return core.SyncStatus{}, err
 	}
 	snapshot.Session.Credentials = fresh.Credentials
-	snapshot.Directory, err = e.opts.Store.Dir(core.SessionKey(core.Tenant(ctx), id))
+	snapshot, err = e.opts.Store.Snapshot(ctx, snapshot.Session, snapshot.HistoryBytes)
 	if err != nil {
 		return core.SyncStatus{}, err
 	}
@@ -73,7 +72,7 @@ func (e *Engine) Flush(ctx context.Context, g core.Grant, id string) (core.SyncS
 	defer cancel()
 	s, err := e.flush(ctx, id)
 	if err == nil && e.syncer != nil {
-		e.syncer.retry(core.SessionKey(g.Tenant, id))
+		e.syncer.Retry(core.SessionKey(g.Tenant, id))
 	}
 	return s, err
 }
@@ -94,26 +93,18 @@ func (e *Engine) SyncStatus(ctx context.Context, g core.Grant, id string) (core.
 	}
 	e.hydrateMu.Lock()
 	defer e.hydrateMu.Unlock()
-	dir, err := e.opts.Store.Dir(core.SessionKey(core.Tenant(ctx), id))
-	if err != nil {
-		return core.SyncStatus{}, err
-	}
-	m, err := persistence.ReadState(dir)
+	m, size, err := e.opts.Store.SyncState(ctx, s)
 	if err != nil {
 		return core.SyncStatus{}, err
 	}
 	status := syncStatus(m)
 	if e.syncer != nil {
-		status.Pending, status.Error = e.syncer.status(core.SessionKey(g.Tenant, id))
+		status.Pending, status.Error = e.syncer.Status(core.SessionKey(g.Tenant, id))
 	}
 	if m == nil || !m.Session.UpdatedAt.Equal(s.UpdatedAt) {
 		status.Pending = true
 	}
-	info, err := os.Stat(filepath.Join(dir, "events.jsonl"))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return core.SyncStatus{}, err
-	}
-	if info != nil && info.Size() != status.HistoryBytes {
+	if size != status.HistoryBytes {
 		status.Pending = true
 	}
 	return status, nil
@@ -197,14 +188,14 @@ func (e *Engine) hydrate(ctx context.Context, g core.Grant, id, reference string
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	m, staging, err := e.opts.Archive.Restore(ctx, g.Tenant, id, reference, e.opts.Store.Root())
+	m, staging, err := e.opts.Store.StageRestore(ctx, e.opts.Archive, id, reference)
 	if errors.Is(err, os.ErrNotExist) {
 		return core.Session{}, core.E(core.NotFound, "external checkpoint not found")
 	}
 	if err != nil {
 		return core.Session{}, err
 	}
-	defer os.RemoveAll(staging)
+	defer e.opts.Store.DiscardRestore(staging)
 	if err := credentials.Validate(ctx, e.opts.Keys, m.Session); err != nil {
 		return core.Session{}, err
 	}
@@ -214,35 +205,8 @@ func (e *Engine) hydrate(ctx context.Context, g core.Grant, id, reference string
 	if m.Session.Status != "closed" {
 		m.Session.Status = "interrupted"
 	}
-	dir, err := e.opts.Store.Dir(core.SessionKey(core.Tenant(ctx), id))
-	if err != nil {
+	if err := e.opts.Store.InstallRestore(ctx, m.Session, staging); err != nil {
 		return core.Session{}, err
-	}
-	if err := os.MkdirAll(filepath.Dir(dir), 0700); err != nil {
-		return core.Session{}, err
-	}
-	backup := dir + "-replaced-" + core.ID()
-	hadLocal := false
-	if _, err := os.Stat(dir); err == nil {
-		if err := os.Rename(dir, backup); err != nil {
-			return core.Session{}, err
-		}
-		hadLocal = true
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return core.Session{}, err
-	}
-	if err := os.Rename(staging, dir); err != nil {
-		if hadLocal {
-			err = errors.Join(err, os.Rename(backup, dir))
-		}
-		return core.Session{}, err
-	}
-	if err := e.opts.Store.Import(ctx, m.Session); err != nil {
-		rollback := os.Rename(dir, staging)
-		if rollback == nil && hadLocal {
-			rollback = os.Rename(backup, dir)
-		}
-		return core.Session{}, errors.Join(err, rollback)
 	}
 	// Retain replaced local data for operator recovery; never hide unsynced loss.
 	return e.opts.Store.Get(ctx, id)

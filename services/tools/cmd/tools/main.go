@@ -16,11 +16,11 @@ import (
 	"github.com/aexhq/brain/credentials"
 	public "github.com/aexhq/brain/services/brain/api"
 	sandbox "github.com/aexhq/brain/services/sandbox/api"
+	"github.com/aexhq/brain/services/shared/telemetry"
 	storage "github.com/aexhq/brain/services/storage/api"
 	"github.com/aexhq/brain/services/tools/internal/hosted"
 	"github.com/aexhq/brain/services/tools/internal/server"
 	"github.com/aexhq/brain/services/tools/registry"
-	"github.com/aexhq/brain/telemetry"
 	"github.com/aexhq/brain/tools/integrations"
 )
 
@@ -69,7 +69,7 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	_, shutdown, e := telemetry.SetupService(ctx, "tools")
+	shutdown, e := telemetry.SetupService(ctx, "tools")
 	if e != nil {
 		return e
 	}

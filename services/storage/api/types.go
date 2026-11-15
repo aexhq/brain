@@ -6,6 +6,7 @@ import (
 )
 
 const ChunkBytes = 64 << 10
+const MaxRecord = 4 << 20
 
 type Identity struct {
 	Collection string `json:"collection,omitempty"`
@@ -28,6 +29,7 @@ type Record struct {
 	TranscriptBytes int64                   `json:"transcript_bytes"`
 	Snapshot        string                  `json:"snapshot,omitempty"`
 	Attachments     string                  `json:"attachments,omitempty"`
+	Native          string                  `json:"native,omitempty"`
 	Deleted         bool                    `json:"deleted,omitempty"`
 }
 
@@ -39,15 +41,20 @@ type Object struct {
 }
 
 type Request struct {
-	Tail             bool     `json:"tail,omitempty"`
-	Operation        string   `json:"operation"`
-	Identity         Identity `json:"identity"`
-	Record           *Record  `json:"record,omitempty"`
-	ExpectedRevision uint64   `json:"expected_revision,omitempty"`
-	Reference        string   `json:"reference,omitempty"`
-	Object           *Object  `json:"object,omitempty"`
-	After            string   `json:"after,omitempty"`
-	Limit            int      `json:"limit,omitempty"`
+	Event            *core.Event       `json:"event,omitempty"`
+	Offset           int64             `json:"offset,omitempty"`
+	MaxBytes         int64             `json:"max_bytes,omitempty"`
+	Until            *int64            `json:"until,omitempty"`
+	Files            []core.NativeFile `json:"files,omitempty"`
+	Tail             bool              `json:"tail,omitempty"`
+	Operation        string            `json:"operation"`
+	Identity         Identity          `json:"identity"`
+	Record           *Record           `json:"record,omitempty"`
+	ExpectedRevision uint64            `json:"expected_revision,omitempty"`
+	Reference        string            `json:"reference,omitempty"`
+	Object           *Object           `json:"object,omitempty"`
+	After            string            `json:"after,omitempty"`
+	Limit            int               `json:"limit,omitempty"`
 }
 type Response struct {
 	Events    []core.Event     `json:"events,omitempty"`

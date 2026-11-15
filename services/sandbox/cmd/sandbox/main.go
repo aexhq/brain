@@ -7,7 +7,7 @@ import (
 	"flag"
 	"github.com/aexhq/brain/services/sandbox/internal/environments"
 	"github.com/aexhq/brain/services/sandbox/internal/server"
-	"github.com/aexhq/brain/telemetry"
+	"github.com/aexhq/brain/services/shared/telemetry"
 	"io"
 	"log/slog"
 	"net/http"
@@ -55,7 +55,7 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	_, shutdown, e := telemetry.SetupService(ctx, "sandbox")
+	shutdown, e := telemetry.SetupService(ctx, "sandbox")
 	if e != nil {
 		return e
 	}

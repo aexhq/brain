@@ -10,8 +10,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/aexhq/brain/internal/dirlock"
 	"github.com/aexhq/brain/services/storage/internal/adapters"
+	"github.com/aexhq/brain/services/storage/internal/dirlock"
 )
 
 // Store is exclusively owned by one Storage process. Publication uses a synced
