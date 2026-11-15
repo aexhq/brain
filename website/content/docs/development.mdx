@@ -40,15 +40,15 @@ node scripts/check.mjs
 
 It runs these steps in order and stops at the first failure:
 
-1. `go run ./services/brain/cmd/generate -check` and `node sdks/typescript/scripts/generate.mjs --check`: verify the service OpenAPI contract, runtime protocol schema and TypeScript declarations against their Go sources.
+1. `go run ./services/brain/cmd/generate -check` and `node clients/sdks/typescript/scripts/generate.mjs --check`: verify the service OpenAPI contract, runtime protocol schema and TypeScript declarations against their Go sources.
 2. `npm --prefix runtimes/pi run build`: compiles Pi; Codex and OpenCode build commands validate their JavaScript entry points.
-3. `npm --prefix sdks/typescript run build`: compiles the TypeScript SDK (`sdks/typescript/dist/`).
+3. `npm --prefix clients/sdks/typescript run build`: compiles the TypeScript SDK (`clients/sdks/typescript/dist/`).
 4. `node scripts/package-sdks.mjs`: packs and installs the npm package in an isolated consumer, then runs client tests, CLI help and a strict TypeScript consumer check.
    The suite also runs `npm run build` and `node --test tests/server-package.test.mjs`. These build the server, Pi harness, and client together, install their npm archives outside the checkout, and exercise model calls, application tools, restart recovery, startup failures, and parent-exit cleanup. Linux CI cross-compiles the six platform executables into the tested server release artifact.
 5. `go test -count=1 ./...`: runs all Go unit and integration tests across the services, runtimes and shared packages.
 6. `go vet ./...`: runs Go static analysis.
 7. `npm --prefix runtimes/pi test`: runs the Pi runner unit and integration tests against a local recording provider.
-8. `npm --prefix sdks/typescript test`: runs the TypeScript SDK test suite.
+8. `npm --prefix clients/sdks/typescript test`: runs the TypeScript SDK test suite.
 9. The sandbox and browser services run their test suites, including real Chromium network and cancellation checks.
 10. The three suites in `tests/journeys/` run the [end-to-end journeys](https://github.com/aexhq/brain/blob/main/tests/journeys/README.md) through installed clients and all three native harnesses, including browser attachment and the remote service.
 11. `node --test tests/platforms.test.mjs`: validates the platform deployment examples under `examples/platforms/`.
@@ -62,9 +62,9 @@ When you edit Go route declarations, wire structs, or shared Markdown sources, r
 
 ```sh
 # Regenerate services/brain/api/openapi.json, runtimes/pi/src/generated.ts,
-# sdks/typescript/src/generated.ts, and runtimes/host/protocol.json
+# clients/sdks/typescript/src/generated.ts, and runtimes/host/protocol.json
 go run ./services/brain/cmd/generate
-node sdks/typescript/scripts/generate.mjs
+node clients/sdks/typescript/scripts/generate.mjs
 
 # Regenerate website/content/docs/** generated pages and website/public/openapi.json
 npm --prefix website run generate
@@ -88,11 +88,11 @@ npm --prefix website start
 
 ## Where to edit what
 
-Don't hand-edit generated files (`services/brain/api/openapi.json`, `runtimes/pi/src/generated.ts`, `sdks/typescript/src/generated.ts`, `website/public/openapi.json`, or generated MDX pages). Edit the source of truth and run the corresponding generator:
+Don't hand-edit generated files (`services/brain/api/openapi.json`, `runtimes/pi/src/generated.ts`, `clients/sdks/typescript/src/generated.ts`, `website/public/openapi.json`, or generated MDX pages). Edit the source of truth and run the corresponding generator:
 
 | Area | Source of truth | Regenerate with |
 | --- | --- | --- |
-| HTTP routes, summaries, and wire types | `services/brain/internal/http/contract.go` & `services/brain/api/types.go` | `go run ./services/brain/cmd/generate`, `node sdks/typescript/scripts/generate.mjs`, then `npm --prefix website run generate` |
+| HTTP routes, summaries, and wire types | `services/brain/internal/http/contract.go` & `services/brain/api/types.go` | `go run ./services/brain/cmd/generate`, `node clients/sdks/typescript/scripts/generate.mjs`, then `npm --prefix website run generate` |
 | Harness & storage Go interfaces | `runtimes/host/harness.go`, `runtimes/host/process.go`, `services/brain/internal/archive/*.go` | `npm --prefix website run generate` |
 | Model catalog | Pinned `@earendil-works/pi-coding-agent` in `runtimes/pi/package.json` (`runtimes/pi/scripts/model-catalog.mjs`) | `npm --prefix website run generate` |
 | Persistence guide | `docs/running-persistence.md` | `npm --prefix website run generate` |
@@ -109,7 +109,7 @@ Follow the [writing guide](https://github.com/aexhq/brain/blob/main/docs/writing
 
 - `services/<service>/cmd/<program>/` contains Go executable startup and configuration. Each service owns its `api/` and private `internal/` packages.
 - `services/brain/api/openapi.json` is generated from Brain's Go types and route declarations using Huma schemas. `openapi-typescript` generates the TypeScript contract; `openapi-fetch` implements typed SDK requests.
-- `cli/` uses Commander and the public SDK. Its build helper lives in `cli/scripts/`; repository packaging and verification live in root `scripts/`.
+- `clients/cli/` uses Commander and the public SDK. Its build helper lives in `clients/cli/scripts/`; repository packaging and verification live in root `scripts/`.
 - `runtimes/` owns agent integrations and runnable payloads. The generic Sandbox service owns their environments and processes. See the [runtime layout](https://github.com/aexhq/brain/blob/main/runtimes/README.md).
 - `internal/dirlock/` is the private cross-platform directory ownership lock shared by local storage users.
 

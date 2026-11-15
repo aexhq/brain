@@ -14,12 +14,12 @@ Brain listens on `http://127.0.0.1:8080`. Storage, Tools, Sandbox and the OpenTe
 
 ## Run a session
 
-Build the client with `npm --prefix sdks/typescript ci` and `npm --prefix sdks/typescript run build`. Set `OPENAI_API_KEY` in your terminal, then use the CLI without copying the Brain key into commands:
+Build the client with `npm --prefix clients/sdks/typescript ci` and `npm --prefix clients/sdks/typescript run build`. Set `OPENAI_API_KEY` in your terminal, then use the CLI without copying the Brain key into commands:
 
 ```sh
-node --env-file=deploy/docker/.env sdks/typescript/dist/cli.mjs create --id support/42 --model openai/gpt-4.1-mini --credential-env OPENAI_API_KEY
-node --env-file=deploy/docker/.env sdks/typescript/dist/cli.mjs send support/42 "Say hello."
-node --env-file=deploy/docker/.env sdks/typescript/dist/cli.mjs observe support/42
+node --env-file=deploy/docker/.env clients/sdks/typescript/dist/cli.mjs create --id support/42 --model openai/gpt-4.1-mini --credential-env OPENAI_API_KEY
+node --env-file=deploy/docker/.env clients/sdks/typescript/dist/cli.mjs send support/42 "Say hello."
+node --env-file=deploy/docker/.env clients/sdks/typescript/dist/cli.mjs observe support/42
 ```
 
 Stop observation with Ctrl+C; the agent turn continues. `history`, `get`, `interrupt`, `resume`, `flush`, `sync`, `close` and `delete` accept the same session ID. The TypeScript SDK uses the same API. A session ID is supplied by your application; the SDK generates one when omitted.

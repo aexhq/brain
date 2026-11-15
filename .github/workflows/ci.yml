@@ -86,7 +86,7 @@ jobs:
       - run: npm --prefix runtimes/pi ci --ignore-scripts
       - run: npm --prefix runtimes/codex ci --ignore-scripts
       - run: npm --prefix runtimes/opencode ci --ignore-scripts
-      - run: npm --prefix sdks/typescript ci --ignore-scripts
+      - run: npm --prefix clients/sdks/typescript ci --ignore-scripts
       - run: npm --prefix website ci --ignore-scripts
       - run: npm --prefix tools/sandbox ci --ignore-scripts
       - run: npm --prefix tools/browser ci --ignore-scripts

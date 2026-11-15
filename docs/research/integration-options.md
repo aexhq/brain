@@ -15,7 +15,7 @@ Start with the [integration implementation plan](../plans/08-integration-expansi
 | Tools | `services/tools/registry/http.go`, `examples/tools` | HTTP/SSE, inspection, and approval examples exist. MCP and provider catalog services do not. |
 | Delivery | `.github/workflows/ci.yml`, `Dockerfile` | Linux/Windows checks, race detection, PostgreSQL, and Docker smoke tests exist. There is no image publication or docs deployment workflow. |
 | Documentation | `website`, `services/brain/cmd/generate` | Fumadocs, generated OpenAPI/types/interfaces/models, and site integrity tests exist. Platform recipes and application examples remain. |
-| Distribution | `sdks/typescript/package.json`, `sdks/python` | TypeScript is private; Python is source-only without a packaging manifest. Do not advertise registry installation yet. |
+| Distribution | `clients/sdks/typescript/package.json`, `sdks/python` | TypeScript is private; Python is source-only without a packaging manifest. Do not advertise registry installation yet. |
 
 ## Storage: qualify existing adapters before adding another
 

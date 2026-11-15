@@ -31,7 +31,7 @@ for (const directory of [stage, output]) {
 run('npm', ['--prefix', 'runtimes/pi', 'run', 'build']);
 run('npm', ['--prefix', 'runtimes/codex', 'run', 'build']);
 run('npm', ['--prefix', 'runtimes/opencode', 'run', 'build']);
-run('npm', ['--prefix', 'sdks/typescript', 'run', 'build']);
+run('npm', ['--prefix', 'clients/sdks/typescript', 'run', 'build']);
 const pkg = JSON.parse(await readFile(path.join(root, 'packages/brainserver/package.json'), 'utf8'));
 const pi = JSON.parse(await readFile(path.join(root, 'runtimes/pi/package.json'), 'utf8'));
 const sandbox = JSON.parse(await readFile(path.join(root, 'tools/sandbox/package.json'), 'utf8'));
@@ -111,10 +111,10 @@ await mkdir(main);
 // The portable entry point has no runtime dependencies outside its selected
 // platform packages. Their complete locked native trees stay opaque to npm.
 for (const file of ['index.js', 'index.d.ts', 'process.js', 'README.md']) await copyFile(path.join(root, 'packages/brainserver', file), path.join(main, file));
-await cp(path.join(root, 'sdks/typescript/dist'), path.join(main, 'sdk'), { recursive: true });
-const sdk = JSON.parse(await readFile(path.join(root, 'sdks/typescript/package.json'), 'utf8'));
+await cp(path.join(root, 'clients/sdks/typescript/dist'), path.join(main, 'sdk'), { recursive: true });
+const sdk = JSON.parse(await readFile(path.join(root, 'clients/sdks/typescript/package.json'), 'utf8'));
 // Bundle the SDK's production dependencies, including transitive dependencies.
-await cp(path.join(root, 'sdks/typescript/package-lock.json'), path.join(main, 'package-lock.json'));
+await cp(path.join(root, 'clients/sdks/typescript/package-lock.json'), path.join(main, 'package-lock.json'));
 await writeFile(path.join(main, 'package.json'), JSON.stringify(sdk));
 run('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], main);
 await rm(path.join(main, 'package-lock.json'));

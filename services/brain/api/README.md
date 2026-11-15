@@ -14,7 +14,7 @@ From the repository root:
 
 ```sh
 go run ./services/brain/cmd/generate
-node sdks/typescript/scripts/generate.mjs
+node clients/sdks/typescript/scripts/generate.mjs
 ```
 
 The Go command writes this contract and `runtimes/host/protocol.json`. The Node

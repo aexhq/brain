@@ -11,8 +11,8 @@ cd brain
 node scripts/docker-env.mjs
 docker compose -f deploy/docker/compose.yaml --profile images build
 docker compose -f deploy/docker/compose.yaml up -d --wait
-npm --prefix sdks/typescript ci
-npm --prefix sdks/typescript run build
+npm --prefix clients/sdks/typescript ci
+npm --prefix clients/sdks/typescript run build
 ```
 
 The setup script creates an ignored `deploy/docker/.env` file with random access and encryption keys. Brain listens on `http://127.0.0.1:8080`.
@@ -32,9 +32,9 @@ $env:OPENAI_API_KEY = "your-provider-key"
 Create a session with an ID chosen by your application, send a message and observe its events:
 
 ```sh
-node --env-file=deploy/docker/.env sdks/typescript/dist/cli.mjs create --id support/42 --model openai/gpt-4.1-mini --credential-env OPENAI_API_KEY
-node --env-file=deploy/docker/.env sdks/typescript/dist/cli.mjs send support/42 "Explain what makes a good agent tool."
-node --env-file=deploy/docker/.env sdks/typescript/dist/cli.mjs observe support/42
+node --env-file=deploy/docker/.env clients/sdks/typescript/dist/cli.mjs create --id support/42 --model openai/gpt-4.1-mini --credential-env OPENAI_API_KEY
+node --env-file=deploy/docker/.env clients/sdks/typescript/dist/cli.mjs send support/42 "Explain what makes a good agent tool."
+node --env-file=deploy/docker/.env clients/sdks/typescript/dist/cli.mjs observe support/42
 ```
 
 Ctrl+C stops observation. Use `history support/42` to read retained events, or `interrupt support/42` to stop a turn.

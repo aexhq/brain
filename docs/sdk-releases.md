@@ -21,7 +21,7 @@ Go applications import `github.com/aexhq/brain` and optionally `github.com/aexhq
 
 ## Maintainer workflow
 
-1. Change the version in `sdks/typescript/package.json` and refresh the npm lockfile. Use a major for breaking
+1. Change the version in `clients/sdks/typescript/package.json` and refresh the npm lockfile. Use a major for breaking
    client contracts, minor for compatible additions, patch for fixes. Changes to
    packaged files require a new version; unrelated server changes do not.
 2. Run `node scripts/setup.mjs` and `node scripts/check.mjs`. The full check packs

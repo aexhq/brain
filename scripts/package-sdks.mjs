@@ -22,9 +22,9 @@ function run(command, args, cwd = root, capture = false) {
 await rm(artifacts, { recursive: true, force: true });
 await mkdir(artifacts, { recursive: true });
 await mkdir(consumer, { recursive: true });
-const pkg = JSON.parse(await readFile(path.join(root, 'sdks/typescript/package.json'), 'utf8'));
-assert.equal(await readFile(path.join(root, 'sdks/typescript/LICENSE'), 'utf8'), await readFile(path.join(root, 'LICENSE'), 'utf8'));
-const [packed] = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', artifacts], path.join(root, 'sdks/typescript'), true));
+const pkg = JSON.parse(await readFile(path.join(root, 'clients/sdks/typescript/package.json'), 'utf8'));
+assert.equal(await readFile(path.join(root, 'clients/sdks/typescript/LICENSE'), 'utf8'), await readFile(path.join(root, 'LICENSE'), 'utf8'));
+const [packed] = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', artifacts], path.join(root, 'clients/sdks/typescript'), true));
 for (const file of ['dist/index.js', 'dist/index.d.ts', 'dist/generated.d.ts', 'dist/cli.mjs', 'dist/cli.d.mts', 'dist/telemetry.js', 'README.md', 'LICENSE']) {
   assert.ok(packed.files.some(item => item.path === file), `npm archive missing ${file}`);
 }
@@ -32,7 +32,7 @@ assert.ok(!packed.files.some(item => /^(src|test|node_modules)\//.test(item.path
 // Consumer directories contain only installed packages, never a source checkout.
 await writeFile(path.join(consumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
 run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', path.join(artifacts, packed.filename)], consumer);
-const tests = await readFile(path.join(root, 'sdks/typescript/test/client.test.mjs'), 'utf8');
+const tests = await readFile(path.join(root, 'clients/sdks/typescript/test/client.test.mjs'), 'utf8');
 await writeFile(path.join(consumer, 'client.test.mjs'), tests.replace('"../dist/index.js"', '"@aexhq/brain"'));
 run(process.execPath, ['--test', 'client.test.mjs'], consumer);
 run(process.execPath, ['--input-type=module', '-e', "import { main } from '@aexhq/brain/cli'; await main(['--help']);"], consumer);
@@ -47,7 +47,7 @@ const error: Error = new BrainError(409, 'conflict', 'busy');
   const declared: Promise<Session> = brain.create({ harness: Pi(), model: Model('openai/model', ApiKey('key')), tools: [ManagedTool('lookup'), Tool({name: 'local', description: 'Read', input_schema: {type: 'object'}, run: (_args, context) => ({tenant: context.scope.tenant_id})})] });
   const descriptor: Tool = {name: 'local', description: 'Read', input_schema: {type: 'object'}};
   void [session, events, error, declared, descriptor];\n`);
-run(process.execPath, [path.join(root, 'sdks/typescript/node_modules/typescript/bin/tsc'), '--noEmit', '--strict', '--module', 'NodeNext', '--target', 'ES2023', 'consumer.ts'], consumer);
+run(process.execPath, [path.join(root, 'clients/sdks/typescript/node_modules/typescript/bin/tsc'), '--noEmit', '--strict', '--module', 'NodeNext', '--target', 'ES2023', 'consumer.ts'], consumer);
 const commit = run('git', ['rev-parse', 'HEAD'], root, true).trim();
 await writeFile(path.join(artifacts, 'release.json'), JSON.stringify({ version: pkg.version, commit, npm: packed.filename }, null, 2) + '\n');
 console.log(`Verified installed SDK ${pkg.version} distributions at ${artifacts}`);

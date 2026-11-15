@@ -7,7 +7,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/aexhq/brain.git",
-    "directory": "sdks/typescript"
+    "directory": "clients/sdks/typescript"
   },
   "bugs": {
     "url": "https://github.com/aexhq/brain/issues"
