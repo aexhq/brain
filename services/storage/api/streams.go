@@ -8,7 +8,15 @@ import (
 
 // Upload bounds every request and builds a tree with at most 512 children per
 // node. It returns a durable local reference; session.flush is the remote barrier.
+type Objects interface {
+	PutObject(context.Context, Identity, Object) (string, error)
+	GetObject(context.Context, Identity, string) (Object, error)
+}
+
 func (c *Client) Upload(ctx context.Context, identity Identity, r io.Reader, limit int64) (string, int64, error) {
+	return Upload(ctx, c, identity, r, limit)
+}
+func Upload(ctx context.Context, c Objects, identity Identity, r io.Reader, limit int64) (string, int64, error) {
 	if limit < 0 {
 		return "", 0, errors.New("negative upload limit")
 	}
@@ -51,6 +59,9 @@ func (c *Client) Upload(ctx context.Context, identity Identity, r io.Reader, lim
 }
 
 func (c *Client) Download(ctx context.Context, identity Identity, ref string, w io.Writer, limit int64) (int64, error) {
+	return Download(ctx, c, identity, ref, w, limit)
+}
+func Download(ctx context.Context, c Objects, identity Identity, ref string, w io.Writer, limit int64) (int64, error) {
 	var written int64
 	stack := []string{ref}
 	for len(stack) > 0 {

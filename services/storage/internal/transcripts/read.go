@@ -59,7 +59,7 @@ func (r Reader) Read(ctx context.Context, i api.Identity, head api.Record, after
 			return nil, "", err
 		}
 		var n api.Transcript
-		if json.Unmarshal(o.Data, &n) != nil || n.Offset < 0 || n.Size <= 0 || n.Size > 2<<20 || n.Offset+n.Size != end {
+		if json.Unmarshal(o.Data, &n) != nil || n.Offset < 0 || n.Size <= 0 || n.Size > api.MaxRecord || n.Offset+n.Size != end {
 			return nil, "", errors.New("invalid transcript chain")
 		}
 		if after != "" && n.Offset <= c.Offset {
@@ -92,7 +92,7 @@ func (r Reader) Read(ctx context.Context, i api.Identity, head api.Record, after
 	next := after
 	bytes := int64(0)
 	for _, n := range nodes {
-		if len(events) > 0 && bytes+n.Size > 2<<20 {
+		if len(events) > 0 && bytes+n.Size > api.MaxRecord {
 			break
 		}
 		b, err := r.payload(ctx, i, n.Payload, n.Size)

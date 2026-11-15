@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/aexhq/brain/internal/dirlock"
 	core "github.com/aexhq/brain/services/brain/api"
+	"github.com/aexhq/brain/services/storage/internal/dirlock"
 )
 
 // Metadata is the authoritative local session database, not an eventual index.

@@ -93,7 +93,7 @@ Don't hand-edit generated files (`services/brain/api/openapi.json`, `runtimes/pi
 | Area | Source of truth | Regenerate with |
 | --- | --- | --- |
 | HTTP routes, summaries, and wire types | `services/brain/internal/http/contract.go` & `services/brain/api/types.go` | `go run ./services/brain/cmd/generate`, `node clients/sdks/typescript/scripts/generate.mjs`, then `npm --prefix website run generate` |
-| Harness & storage Go interfaces | `runtimes/host/harness.go`, `runtimes/host/process.go`, `services/brain/internal/archive/*.go` | `npm --prefix website run generate` |
+| Harness & storage Go interfaces | `runtimes/host/harness.go`, `runtimes/host/process.go`, `services/storage/archive/*.go` | `npm --prefix website run generate` |
 | Model catalog | Pinned `@earendil-works/pi-coding-agent` in `runtimes/pi/package.json` (`runtimes/pi/scripts/model-catalog.mjs`) | `npm --prefix website run generate` |
 | Persistence guide | `docs/running-persistence.md` | `npm --prefix website run generate` |
 | Local tools walkthrough | `examples/tools/README.md` | `npm --prefix website run generate` |
@@ -111,7 +111,7 @@ Follow the [writing guide](https://github.com/aexhq/brain/blob/main/docs/writing
 - `services/brain/api/openapi.json` is generated from Brain's Go types and route declarations using Huma schemas. `openapi-typescript` generates the TypeScript contract; `openapi-fetch` implements typed SDK requests.
 - `clients/cli/` uses Commander and the public SDK. Its build helper lives in `clients/cli/scripts/`; repository packaging and verification live in root `scripts/`.
 - `runtimes/` owns agent integrations and runnable payloads. The generic Sandbox service owns their environments and processes. See the [runtime layout](https://github.com/aexhq/brain/blob/main/runtimes/README.md).
-- `internal/dirlock/` is the private cross-platform directory ownership lock shared by local storage users.
+- `services/storage/internal/dirlock/` is Storage's private cross-platform directory ownership lock. Shared exporter configuration lives in `services/shared/telemetry/`; service instruments stay beside their emitters.
 
 ## Design documents
 

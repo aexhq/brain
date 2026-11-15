@@ -50,6 +50,10 @@ Idle eviction first exports a settled snapshot and stores it durably. Resumption
 
 ## Storage adapters and tiers
 
+Ownership clarified by the product owner on 2026-11-15: Storage owns all three storage tiers, including the entire in-memory storage tier. Generic storage operations, working copies, staging, directory ownership locks, cache loading/eviction and cleanup belong inside Storage. Brain initiates reads, writes, snapshot publication and restoration through Storage-owned primitives; it does not implement a parallel storage layer. Brain retains session orchestration and decides when runtime state is coherent enough to capture. Its queues and execution state are compute coordination, not a storage cache.
+
+Storage APIs expose scoped data, streams and references rather than private filesystem paths. Sandbox owns files needed by a running isolated environment; Brain coordinates transfer through the owned service APIs. Keeping a working copy disposable does not transfer storage ownership to Brain. The [implementation plan](../implementation-plan.md#storage-ownership-and-three-tier-separation-2026-11-15) records the ownership refactor and its verification gates.
+
 All backends implement one low-level adapter contract: scoped keys, get, conditional put, delete, pagination, standardized missing/conflict errors and explicit limits. Backends include memory, filesystem, SQLite, S3/R2, PostgreSQL/Supabase and DynamoDB. Adapters perform I/O; logical repositories, chunking, TTL, tiering and replication are implemented once above them.
 
 | Data | Memory | Local disk | External |
@@ -91,23 +95,30 @@ Modal, E2B, browser automation and resource tools are ordinary supplied packages
 
 ## Public telemetry
 
-Telemetry is a public cross-component contract. Shared conventions define event/metric names, units, attributes, correlation and propagation. Go exposes `telemetry`; the TypeScript SDK exposes configuration, context and instrumentation APIs. The CLI uses the SDK instrumentation. Pi reports model usage through its runtime protocol; Brain emits the corresponding session telemetry. Domain emitters stay beside their implementations.
+Telemetry is a public cross-component contract. Shared conventions define event/metric names, units, attributes, correlation and propagation. Go exposes `services/shared/telemetry`; the TypeScript SDK exposes configuration, context and instrumentation APIs. The CLI uses the SDK instrumentation. Pi reports model usage through its runtime protocol; Brain emits the corresponding session telemetry. Domain emitters stay beside their implementations.
 
 Use OpenTelemetry exporters and trace propagation. Record admission, queue, turn and tool timing, model usage events, storage/cache/sync behavior and sandbox lifecycle. Resource profiles enforce container limits; fleet utilization reporting remains on the roadmap. Session/call identifiers are trace/log correlation fields, not unbounded metric dimensions. Default telemetry excludes credentials and transcript/tool payloads. Export queues and shutdown are bounded; exporter failures are observable without turning a successful application operation into a replayable failure.
 
 ## Layout
 
+This tree records the implemented ownership boundaries.
+
 ```text
 services/
+  shared/telemetry/              # Shared Go telemetry contract and bounded exporters
   brain/
     cmd/{brain,generate}/
     api/                         # Public session types, authentication and generated OpenAPI
-    internal/{http,config,sessions,storage,archive,credentialtests}/
-    storage/                     # Storage client working copies and snapshots
+    internal/{http,config,sessions,telemetry,credentialtests}/
     distributed.go               # Four-service composition
   storage/
+    client/                      # Session-facing Storage client; no local data files
+    local/                       # Embedded persistence and log delivery
+    archive/                     # Embedded archive adapters and checkpoints
+    replication/                 # Bounded embedded synchronization worker
     api/                         # Owned wire types, client and chunk streams
     internal/
+      dirlock/                   # Exclusive local-volume ownership
       sessions/metadata/         # Heads, tombstones, ownership and publication
       transcripts/               # Bounded pages and recent history
       tiering/                   # Memory/disk/external cache and capacity
@@ -129,14 +140,12 @@ runtimes/
   {codex,opencode}/               # Existing embedded application integrations
 tools/                          # Ordinary supplied tool implementations
   {integrations,service,sandbox,browser,resources,mcp}/
-telemetry/                       # Public Go contract and bounded exporters
 credentials/                     # Public encrypted credential capability
 clients/
   sdks/typescript/
   cli/
 deploy/docker/
 tests/{distributed,journeys}/
-internal/dirlock/                 # OS directory ownership lock
 ```
 
 Attachments use Storage objects and metadata links; their public streaming/resolution adapter lives beside Brain’s Storage client. Splitting that adapter into another running service would add a hop without separating a lifecycle.
@@ -173,6 +182,6 @@ Docker containers provide the implemented execution boundary: non-root customer 
 
 Each cache partition has one Storage writer. The platform routes a session to that partition and supplies an increasing owner epoch. Local metadata CAS and externally conditional publication fence stale heads. Async object storage is not a distributed lease service. Browser executors likewise require routing to their Tools instance until reattached.
 
-The initial replica worker processes bounded batches serially. Recent transcript reads fetch only the requested tail and do not load native state. Historical pages walk immutable chain descriptors, while active sessions and SSE materialize their transcript/native working set under per-session and loaded-session limits. These are explicit performance tradeoffs, not measured fleet capacity claims.
+The initial replica worker processes bounded batches serially. Recent transcript reads fetch only the requested tail and do not load native state. Historical pages walk immutable chain descriptors, while active sessions and SSE read bounded transcript pages from Storage; native state streams between Storage and Sandbox under per-session limits. These are explicit performance tradeoffs, not measured fleet capacity claims.
 
 Compose uses separate Docker volumes for local cache and external filesystem/SQLite data. Those volumes survive process replacement but share the Docker host failure domain. Configure S3/R2/DynamoDB/PostgreSQL/Supabase for off-host persistence. Real account qualification and sustained workload benchmarks are recorded separately from local protocol tests on the roadmap.

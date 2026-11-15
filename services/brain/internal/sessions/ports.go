@@ -5,13 +5,12 @@ import (
 	"encoding/json"
 
 	core "github.com/aexhq/brain/services/brain/api"
-	"github.com/aexhq/brain/services/brain/internal/archive"
+	"github.com/aexhq/brain/services/storage/api"
+	"github.com/aexhq/brain/services/storage/local"
 )
 
-// Repository is the local state consumed by the session owner. Metadata writes
-// are durable before returning. Root and Dir identify the local workspace used
-// by native harnesses and staged recovery; remote databases do not replace it.
-// The composition root owns Close, after Engine.Shutdown has drained executions.
+// Repository supplies Storage-owned persistence and runtime state operations.
+// The composition root closes it after Engine.Shutdown drains executions.
 type Repository interface {
 	Deleted(context.Context, string) (string, error)
 	Delete(context.Context, core.Session) error
@@ -21,8 +20,15 @@ type Repository interface {
 	List(context.Context, string, string, int) ([]core.Session, error)
 	Scan(context.Context, string, int) ([]core.Session, error)
 	Import(context.Context, core.Session) error
-	Root() string
-	Dir(string) (string, error)
+	OpenLog(context.Context, core.Session, int64) (*store.Log, error)
+	PrepareNative(context.Context, core.Session, bool) (string, error)
+	ValidateNative(context.Context, core.Session, []core.NativeFile) error
+	RemoveWorkingCopy(context.Context, string) error
+	Snapshot(context.Context, core.Session, int64) (api.Snapshot, error)
+	StageRestore(context.Context, api.Checkpoints, string, string) (api.Manifest, string, error)
+	InstallRestore(context.Context, core.Session, string) error
+	DiscardRestore(string) error
+	SyncState(context.Context, core.Session) (*api.Manifest, int64, error)
 }
 
 // ToolExecutor applies authorization and dispatch policy outside scheduling.
@@ -36,9 +42,4 @@ type ToolExecutor interface {
 
 // Checkpoints publishes and restores immutable snapshots without inference.
 // List is eventual discovery; it must never be used as an ownership lock.
-type Checkpoints interface {
-	Delete(context.Context, string, string) error
-	Publish(context.Context, persistence.Snapshot) (persistence.Manifest, error)
-	Restore(context.Context, string, string, string, string) (persistence.Manifest, string, error)
-	List(context.Context, string, string, int) ([]core.Session, error)
-}
+type Checkpoints = api.Checkpoints

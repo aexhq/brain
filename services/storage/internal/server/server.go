@@ -15,13 +15,15 @@ import (
 	"github.com/aexhq/brain/services/storage/internal/sessions/metadata"
 	"github.com/aexhq/brain/services/storage/internal/transcripts"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 )
 
 type Server struct {
-	Store  *metadata.Store
-	Token  string
-	Logger *slog.Logger
+	Store    *metadata.Store
+	Token    string
+	Logger   *slog.Logger
+	appended metric.Int64Counter
 }
 
 func (s *Server) Handler() (http.Handler, error) {
@@ -30,6 +32,11 @@ func (s *Server) Handler() (http.Handler, error) {
 	}
 	if s.Logger == nil {
 		s.Logger = slog.Default()
+	}
+	var err error
+	s.appended, err = otel.Meter("github.com/aexhq/brain/services/storage").Int64Counter("brain.transcript.bytes", metric.WithUnit("By"))
+	if err != nil {
+		return nil, err
 	}
 	m := http.NewServeMux()
 	m.HandleFunc("GET /health/live", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
@@ -47,7 +54,7 @@ func (s *Server) rpc(w http.ResponseWriter, r *http.Request) {
 	ctx, span := otel.Tracer("github.com/aexhq/brain/storage").Start(ctx, "storage.request")
 	defer span.End()
 	var in api.Request
-	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20))
+	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 5<<20))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&in); err != nil || d.Decode(new(any)) != io.EOF {
 		s.fail(w, core.E(core.Invalid, "invalid storage request"))
@@ -60,11 +67,80 @@ func (s *Server) rpc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch in.Operation {
+	case "transcript.append":
+		v, e := s.append(ctx, in)
+		out.Record, err = &v, e
+	case "state.capture":
+		v, e := s.capture(ctx, in)
+		out.Record, err = &v, e
+	case "state.read":
+		v, e := s.owned(ctx, in.Identity)
+		if e == nil {
+			if v.Snapshot != "" {
+				v, e = s.readSnapshot(ctx, in.Identity, v.Snapshot)
+			} else {
+				v.Native = ""
+			}
+			if e == nil {
+				state, se := s.native(ctx, in.Identity, v)
+				out.Reference, e = state.Content, se
+			}
+		}
+		err = e
+	case "session.save":
+		v, e := s.save(ctx, in)
+		out.Record, err = &v, e
+	case "snapshot.publish":
+		v, e := s.owned(ctx, in.Identity)
+		// Capture may have completed while the coordinator failed before saving
+		// its checkpoint. Publish only the last coherent native boundary.
+		if e == nil {
+			if v.Snapshot == "" {
+				v.Native = ""
+			} else {
+				var saved api.Record
+				saved, e = s.readSnapshot(ctx, in.Identity, v.Snapshot)
+				v.Native = saved.Native
+			}
+		}
+		if e == nil {
+			v.Snapshot, e = s.snapshot(ctx, in.Identity, v)
+		}
+		if e == nil {
+			v, e = s.Store.Put(ctx, in.Identity, v, v.Revision)
+		}
+		if e == nil {
+			v, e = s.Store.Flush(ctx, in.Identity)
+		}
+		out.Record, err = &v, e
+	case "snapshot.read", "snapshot.restore":
+		current, e := s.owned(ctx, in.Identity)
+		var v api.Record
+		if e == nil {
+			v, e = s.readSnapshot(ctx, in.Identity, in.Reference)
+		}
+		if e == nil {
+			v.Credentials, v.Session.Credentials = current.Credentials, current.Credentials
+			v.Session.Tenant = in.Identity.Tenant
+			if in.Operation == "snapshot.restore" {
+				if in.Record == nil || in.Record.Session.ID != v.Session.ID {
+					e = core.E(core.Invalid, "restored session is required")
+				} else {
+					v.Session = in.Record.Session
+					v.Session.Credentials = current.Credentials
+					v, e = s.Store.Put(ctx, in.Identity, v, current.Revision)
+				}
+			}
+		}
+		out.Record, err = &v, e
 	case "transcript.read":
 		var head api.Record
 		head, err = s.Store.Get(ctx, in.Identity)
 		if err == nil && head.Deleted {
 			err = core.E(core.NotFound, "session was deleted")
+		}
+		if err == nil && in.Until != nil {
+			head, err = s.boundary(ctx, in.Identity, head, *in.Until)
 		}
 		if err == nil {
 			out.Events, out.Next, err = (transcripts.Reader{Get: s.Store.GetObject}).Read(ctx, in.Identity, head, in.After, in.Limit, in.Tail)

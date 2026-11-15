@@ -40,7 +40,7 @@ func (c *Client) Do(ctx context.Context, input Request) (Response, error) {
 		return out, err
 	}
 	defer response.Body.Close()
-	d := json.NewDecoder(io.LimitReader(response.Body, 4<<20))
+	d := json.NewDecoder(io.LimitReader(response.Body, 5<<20))
 	if err = d.Decode(&out); err != nil {
 		return out, err
 	}

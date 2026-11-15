@@ -37,7 +37,7 @@ Use the same credential keyring for Brain and Tools. Pass backend secret variabl
 
 ## Persistence and recovery
 
-`brain-work` is disposable materialized state. `storage-cache` holds locally acknowledged writes that may not have reached the external backend. `external-storage` holds the example filesystem objects and SQLite metadata. All three are Docker volumes on this host. Restarting containers preserves them; deleting volumes destroys them. The external example is a separate copy, not off-host disaster recovery.
+Brain streams state through Storage and Sandbox APIs and has no storage volume. `storage-cache` holds locally acknowledged writes that may not have reached the external backend. `external-storage` holds the example filesystem objects and SQLite metadata. Both are Docker volumes on this host. Restarting containers preserves them; deleting volumes destroys them. The external example is a separate copy, not off-host disaster recovery.
 
 Use `flush` to wait for a settled snapshot, its transcript and attachments to be committed externally; use `sync` to inspect the actual published boundary. Replace the example external backends with S3/R2/DynamoDB/PostgreSQL/Supabase for off-host storage. A Storage partition must have exactly one local-volume writer. The platform owns partition routing and ownership transfer.
 

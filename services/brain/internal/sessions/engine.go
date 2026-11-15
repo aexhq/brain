@@ -6,11 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/url"
-	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -20,8 +17,10 @@ import (
 	"github.com/aexhq/brain/credentials"
 	"github.com/aexhq/brain/runtimes/host"
 	core "github.com/aexhq/brain/services/brain/api"
-	"github.com/aexhq/brain/services/brain/internal/storage"
-	"github.com/aexhq/brain/telemetry"
+	"github.com/aexhq/brain/services/brain/internal/telemetry"
+	"github.com/aexhq/brain/services/storage/api"
+	"github.com/aexhq/brain/services/storage/local"
+	"github.com/aexhq/brain/services/storage/replication"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -67,7 +66,7 @@ type Engine struct {
 	shutdownOnce sync.Once
 	stopped      chan struct{}
 	shutdownErr  error
-	syncer       *syncer
+	syncer       *replication.Worker
 }
 
 type queued struct {
@@ -118,8 +117,17 @@ func New(opts Options) (*Engine, error) {
 			cancel()
 			return nil, errors.New("invalid synchronization limits")
 		}
-		e.syncer = newSyncer(e, opts.SyncQueue, opts.SyncInterval)
-		go e.syncer.run()
+		syncOptions := replication.Options{Scan: opts.Store.Scan, Flush: e.flush, Logger: opts.Logger, State: func(ctx context.Context, s core.Session) (*api.Manifest, int64, error) {
+			e.hydrateMu.Lock()
+			defer e.hydrateMu.Unlock()
+			return opts.Store.SyncState(ctx, s)
+		}}
+		if opts.Metrics != nil {
+			syncOptions.Pending = opts.Metrics.SyncPending
+			syncOptions.Duration = opts.Metrics.SyncDuration
+			syncOptions.Failures = opts.Metrics.SyncFailures
+		}
+		e.syncer = replication.New(e.ctx, syncOptions, opts.SyncQueue, opts.SyncInterval)
 	}
 	if opts.IdleTTL > 0 {
 		e.wg.Add(1)
@@ -170,7 +178,7 @@ func (e *Engine) Ready() bool {
 	e.mu.Lock()
 	closed := e.closed
 	e.mu.Unlock()
-	return !closed && (e.syncer == nil || e.syncer.admit())
+	return !closed && (e.syncer == nil || e.syncer.Admit())
 }
 
 func (e *Engine) load(ctx context.Context, id string) (*entry, error) {
@@ -266,18 +274,7 @@ func (e *Engine) load(ctx context.Context, id string) (*entry, error) {
 	if a.err != nil {
 		return nil, a.err
 	}
-	dir, err := e.opts.Store.Dir(key)
-	if err != nil {
-		a.err = err
-		return nil, err
-	}
-	if remote, ok := e.opts.Store.(interface {
-		OpenLog(context.Context, core.Session, int64) (*store.Log, error)
-	}); ok {
-		a.log, a.err = remote.OpenLog(ctx, a.meta, e.opts.MaxLogBytes)
-	} else {
-		a.log, a.err = store.OpenLog(filepath.Join(dir, "events.jsonl"), e.opts.MaxLogBytes)
-	}
+	a.log, a.err = e.opts.Store.OpenLog(ctx, a.meta, e.opts.MaxLogBytes)
 	if a.err != nil {
 		return nil, a.err
 	}
@@ -463,7 +460,7 @@ func (e *Engine) Create(ctx context.Context, g core.Grant, input core.CreateSess
 	if closed {
 		return core.Session{}, core.E(core.Overloaded, "server is draining")
 	}
-	if e.syncer != nil && !e.syncer.admit() {
+	if e.syncer != nil && !e.syncer.Admit() {
 		return core.Session{}, core.E(core.Overloaded, "external synchronization backlog is full")
 	}
 	now := time.Now().UTC()
@@ -618,7 +615,7 @@ func (e *Engine) Submit(ctx context.Context, g core.Grant, id string, input core
 			return accepted.event, nil
 		}
 	}
-	if e.syncer != nil && !e.syncer.admit() {
+	if e.syncer != nil && !e.syncer.Admit() {
 		return core.Event{}, core.E(core.Overloaded, "external synchronization backlog is full")
 	}
 	if a.closing || a.meta.Status == "closed" {
@@ -786,24 +783,18 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 		e.opts.Metrics.Active.Add(ctx, 1)
 		defer e.opts.Metrics.Active.Add(ctx, -1)
 	}
-	dir, err := e.opts.Store.Dir(core.SessionKey(a.meta.Tenant, a.meta.ID))
-	if err != nil {
-		return err
-	}
-	nativeDir := filepath.Join(dir, "native")
 	a.mu.Lock()
 	needsRestore := a.restore
-	checkpoint := a.meta.Checkpoint
 	cfg := a.meta.Config
 	metadata := clone(a.meta)
 	a.mu.Unlock()
+	a.nativeMu.Lock()
+	nativeDir, err := e.opts.Store.PrepareNative(ctx, metadata, needsRestore)
+	a.nativeMu.Unlock()
+	if err != nil {
+		return err
+	}
 	if needsRestore {
-		a.nativeMu.Lock()
-		err := restoreNative(nativeDir, checkpoint)
-		a.nativeMu.Unlock()
-		if err != nil {
-			return err
-		}
 		a.mu.Lock()
 		a.restore = false
 		a.mu.Unlock()
@@ -962,18 +953,8 @@ func (e *Engine) run(ctx context.Context, a *entry, q queued) (runErr error) {
 	if err != nil {
 		return err
 	}
-	for _, f := range files {
-		p, err := nativePath(nativeDir, f.Path)
-		if err != nil {
-			return err
-		}
-		info, err := os.Lstat(p)
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() || info.Size() != f.Size {
-			return errors.New("inconsistent native checkpoint")
-		}
+	if err := e.opts.Store.ValidateNative(ctx, metadata, files); err != nil {
+		return err
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1048,53 +1029,6 @@ func (e *Engine) acquireRunner(ctx context.Context) error {
 	}
 }
 
-func nativePath(dir, name string) (string, error) {
-	if name == "" || !filepath.IsLocal(filepath.FromSlash(name)) {
-		return "", errors.New("invalid native artifact path")
-	}
-	return filepath.Join(dir, filepath.FromSlash(name)), nil
-}
-
-func restoreNative(dir string, cp *core.Checkpoint) error {
-	if cp == nil {
-		return errors.New("session has no usable checkpoint")
-	}
-	if len(cp.Files) == 0 {
-		entries, err := os.ReadDir(dir)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		if len(entries) > 0 {
-			if err := os.Rename(dir, dir+"-interrupted-"+core.ID()); err != nil {
-				return err
-			}
-		}
-		return os.MkdirAll(dir, 0700)
-	}
-	for _, f := range cp.Files {
-		p, err := nativePath(dir, f.Path)
-		if err != nil {
-			return err
-		}
-		info, err := os.Lstat(p)
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() || info.Size() < f.Size {
-			return fmt.Errorf("native state is incomplete: %s", f.Path)
-		}
-		if info.Size() != f.Size {
-			if !f.AppendOnly {
-				return errors.New("native state differs from saved checkpoint")
-			}
-			if err := os.Truncate(p, f.Size); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 func (e *Engine) Interrupt(ctx context.Context, g core.Grant, id string) error {
 	ctx = core.WithTenant(ctx, g.Tenant)
 	if _, err := e.inspect(ctx, g, id); err != nil {
@@ -1148,11 +1082,7 @@ func (e *Engine) Resume(ctx context.Context, g core.Grant, id string) (core.Sess
 	if a.meta.Status == "idle" {
 		return clone(a.meta), nil
 	}
-	dir, err := e.opts.Store.Dir(core.SessionKey(g.Tenant, id))
-	if err != nil {
-		return core.Session{}, err
-	}
-	if err := restoreNative(filepath.Join(dir, "native"), a.meta.Checkpoint); err != nil {
+	if _, err := e.opts.Store.PrepareNative(ctx, a.meta, true); err != nil {
 		return core.Session{}, err
 	}
 	a.restore = false
@@ -1200,7 +1130,7 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 		go func() {
 			e.wg.Wait()
 			if e.syncer != nil {
-				<-e.syncer.done
+				<-e.syncer.Done
 			}
 			e.mu.Lock()
 			entries := make([]*entry, 0, len(e.entries))

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	core "github.com/aexhq/brain/services/brain/api"
-	"github.com/aexhq/brain/services/brain/internal/storage"
+	"github.com/aexhq/brain/services/storage/local"
 )
 
 type recordedObjects struct {

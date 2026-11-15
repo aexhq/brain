@@ -209,7 +209,7 @@ func (s *Store) Claim(ctx context.Context, i api.Identity) (api.Record, error) {
 }
 func references(r api.Record) []string {
 	refs := []string{}
-	for _, v := range []string{r.Transcript, r.Snapshot, r.Attachments} {
+	for _, v := range []string{r.Transcript, r.Snapshot, r.Attachments, r.Native} {
 		if v != "" {
 			refs = append(refs, v)
 		}
