@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 AS pi-build
+FROM node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS pi-build
 WORKDIR /app/runtimes/pi
 COPY runtimes/pi/package*.json ./
 RUN npm ci --ignore-scripts
@@ -7,14 +7,14 @@ COPY runtimes/pi/src ./src
 COPY runtimes/common /app/runtimes/common
 RUN npm run build && npm prune --omit=dev --ignore-scripts
 
-FROM node:24-bookworm-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 AS pi
+FROM node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS pi
 LABEL org.opencontainers.image.source="https://github.com/aexhq/brain"
 COPY --from=pi-build --chown=node:node /app/runtimes /app/runtimes
 USER node
 WORKDIR /workspace
 ENTRYPOINT ["node", "/app/runtimes/pi/dist/main.js"]
 
-FROM node:24-bookworm-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 AS tool-runtime
+FROM node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS tool-runtime
 LABEL org.opencontainers.image.source="https://github.com/aexhq/brain"
 COPY tools/hosted/runner.mjs /app/tools/hosted/runner.mjs
 USER node
@@ -28,7 +28,7 @@ RUN go mod download
 COPY . .
 RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -trimpath -o /out/brain ./services/brain/cmd/brain && CGO_ENABLED=0 go build -trimpath -o /out/storage ./services/storage/cmd/storage && CGO_ENABLED=0 go build -trimpath -o /out/tools ./services/tools/cmd/tools && CGO_ENABLED=0 go build -trimpath -o /out/sandbox ./services/sandbox/cmd/sandbox
 
-FROM busybox:1.37.0-glibc@sha256:42a9ff19af33811ee466b24c66384461d37c32dcc28d1d27d49b8aca816bd5ee AS base
+FROM busybox:1.38.0-glibc@sha256:99813cb178ace2cd9c6c53ee3bddef5d2f5708aa438335111d7a9e3c5e1aaebe AS base
 LABEL org.opencontainers.image.source="https://github.com/aexhq/brain"
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN mkdir -p /data /external && chown 1000:1000 /data /external
