@@ -15,7 +15,6 @@ import type { Brain } from '@aexhq/brain';
 import {
   ArrowRight,
   BookOpen,
-  ChevronRight,
   ExternalLink,
   KeyRound,
   Layers,
@@ -51,7 +50,6 @@ function Brand() {
       <strong>
         brain<span className="brand-period">.</span>
       </strong>
-      <span className="brand-tag">console</span>
     </Link>
   );
 }
@@ -96,7 +94,6 @@ export function Shell({
             router.refresh();
           }}
         />
-        <div className="connect-footer">Your agents. Your infrastructure.</div>
       </div>
     );
   const links = [
@@ -128,15 +125,6 @@ export function Shell({
               <X size={18} />
             </button>
           </div>
-          <div className="workspace">
-            <span className="workspace-mark">B</span>
-            <div>
-              <strong>Brain workspace</strong>
-              <span>Connected deployment</span>
-            </div>
-            <span className="online-dot" />
-          </div>
-          <div className="nav-label">WORKSPACE</div>
           <nav aria-label="Main navigation">
             {links.map(({ href, label, icon: Icon }) => (
               <Link
@@ -164,41 +152,18 @@ export function Shell({
               Documentation
               <ExternalLink size={13} />
             </a>
-            <div className="connection-status">
-              <span className="online-dot" />
-              <span>API connected</span>
-              <span className="version-tag">v1</span>
-            </div>
           </div>
         </aside>
         <div className="main-column">
-          <header className="topbar">
-            <div className="breadcrumbs">
-              <button
-                className="icon-button mobile-only"
-                onClick={() => setMobile(true)}
-                aria-label="Open navigation"
-              >
-                <Menu size={20} />
-              </button>
-              <span>Workspace</span>
-              <ChevronRight size={14} />
-              <strong>
-                {pathname === '/tools'
-                  ? 'Tools'
-                  : pathname === '/settings'
-                    ? 'Connection'
-                    : 'Sessions'}
-              </strong>
-            </div>
-            <a
-              href="https://github.com/aexhq/brain"
-              target="_blank"
-              rel="noreferrer"
-              className="top-link"
+          <header className="mobile-header">
+            <button
+              className="icon-button"
+              onClick={() => setMobile(true)}
+              aria-label="Open navigation"
             >
-              Open source <ExternalLink size={13} />
-            </a>
+              <Menu size={20} />
+            </button>
+            <Brand />
           </header>
           <main id="main">{children}</main>
         </div>
@@ -233,15 +198,10 @@ function Connect({ endpoint, onConnect }: { endpoint: string; onConnect: () => v
   }
   return (
     <div className="connect-card">
-      <span className="eyebrow">
-        <span className="online-dot" /> AGENT WORKSPACE
-      </span>
-      <h1>
-        A clear view of
-        <br />
-        your agents at work.
-      </h1>
-      <p className="lead">Run sessions, follow each step, and pick up where you left off.</p>
+      <h1>Connect to Brain</h1>
+      <p className="connect-endpoint">
+        <code>{endpoint}</code>
+      </p>
       <form onSubmit={submit}>
         <label htmlFor="token">Brain API token</label>
         <div className="input-icon">
@@ -254,24 +214,23 @@ function Connect({ endpoint, onConnect }: { endpoint: string; onConnect: () => v
             onChange={(event) => setToken(event.target.value)}
             required
             maxLength={1017}
-            placeholder="Enter your deployment token"
+            placeholder="Deployment token"
           />
         </div>
-        <p className="field-hint">
-          Connects to <code>{endpoint}</code>. Your token is never stored in local storage.
-        </p>
         <ErrorNotice message={error} />
-        <button className="button primary full" disabled={busy}>
-          {busy ? 'Connecting…' : 'Connect to Brain'}
+        <button className="button primary full" disabled={busy} aria-label="Connect to Brain">
+          {busy ? 'Connecting…' : 'Connect'}
           <ArrowRight size={16} />
         </button>
       </form>
-      <div className="connect-note">
-        Need a deployment?{' '}
-        <a href="https://aexhq.github.io/brain/docs/quickstart/" target="_blank" rel="noreferrer">
-          Start with the quickstart <ExternalLink size={12} />
-        </a>
-      </div>
+      <a
+        className="connect-note"
+        href="https://aexhq.github.io/brain/docs/guides/authentication/"
+        target="_blank"
+        rel="noreferrer"
+      >
+        Token setup <ExternalLink size={12} />
+      </a>
     </div>
   );
 }
@@ -284,19 +243,10 @@ export function ConnectionSettings() {
     <div className="page">
       <div className="page-heading">
         <div>
-          <span className="eyebrow">WORKSPACE</span>
           <h1>Connection</h1>
-          <p>Access to your Brain deployment.</p>
         </div>
       </div>
       <section className="panel settings-panel">
-        <div className="panel-heading">
-          <h2>API connection</h2>
-          <span className="status status-idle">
-            <span />
-            Connected
-          </span>
-        </div>
         <dl className="details">
           <div>
             <dt>Service address</dt>
@@ -309,14 +259,11 @@ export function ConnectionSettings() {
             <dd>Scoped API token</dd>
           </div>
           <div>
-            <dt>Session lifetime</dt>
-            <dd>8 hours from connection</dd>
+            <dt>Browser access</dt>
+            <dd>Expires after 8 hours</dd>
           </div>
         </dl>
-        <p className="muted">
-          Your token stays in an HttpOnly cookie. Disconnecting removes dashboard access; your agent
-          sessions keep their state.
-        </p>
+        <p className="muted">Disconnecting leaves your agent sessions running.</p>
         <ErrorNotice message={error} />
         <button
           disabled={busy}

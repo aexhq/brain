@@ -215,12 +215,25 @@ test('real browser browses sessions, tools, recorded activity and usage without 
     path: fileURLToPath(new URL('../artifacts/sessions-desktop.png', import.meta.url)),
     fullPage: true,
   });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await page.screenshot({
+    path: fileURLToPath(new URL('../artifacts/sessions-populated-mobile.png', import.meta.url)),
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole('link', { name: 'Tools', exact: true }).click();
   await page.getByRole('heading', { name: 'lookup_release' }).waitFor();
+  await page.screenshot({
+    path: fileURLToPath(new URL('../artifacts/tools-desktop.png', import.meta.url)),
+    fullPage: true,
+  });
   await page.getByText('Input schema').click();
   assert.ok((await page.locator('pre').innerText()).includes('version'));
   await page.getByRole('link', { name: 'Sessions', exact: true }).click();
-  await page.locator('a.session-link').filter({ hasText: 'support/issue-42' }).click();
+  await page.getByText('Open by ID', { exact: true }).click();
+  await page.getByLabel('Session ID to open').fill('support/issue-42');
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
   await page
     .getByRole('heading', { name: 'support/issue-42' })
     .waitFor({ timeout: 5000 })
@@ -242,12 +255,25 @@ test('real browser browses sessions, tools, recorded activity and usage without 
   await page.getByRole('dialog').waitFor();
   await page.keyboard.press('Escape');
   await page.getByRole('tab', { name: 'Usage' }).click();
-  await page.getByRole('button', { name: 'Read full session usage' }).click();
+  await page.getByRole('button', { name: 'Load full history' }).click();
   await page.getByText('1,240', { exact: true }).waitFor();
-  await page.getByText('Full-history snapshot', { exact: false }).waitFor();
+  await page.getByText('Full history ·', { exact: false }).waitFor();
+  await page.getByRole('tab', { name: 'Configuration' }).click();
+  await page.getByRole('heading', { name: 'Instructions', exact: true }).waitFor();
+  await page.getByText('View JSON', { exact: true }).click();
+  assert.ok(
+    (await page.locator('.configuration-tab pre').innerText()).includes('openai/gpt-4.1-mini'),
+  );
   await page.getByRole('tab', { name: 'Conversation' }).click();
   await page.screenshot({
     path: fileURLToPath(new URL('../artifacts/session-desktop.png', import.meta.url)),
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  assert.ok(await page.getByLabel('Message', { exact: true }).isVisible());
+  await page.screenshot({
+    path: fileURLToPath(new URL('../artifacts/session-mobile.png', import.meta.url)),
     fullPage: true,
   });
 });
@@ -256,10 +282,16 @@ test('create, attach, send, reconnect, resolve uncertain acceptance, resume, clo
   const page = await pageFor(t);
   await page.getByRole('link', { name: 'New session' }).click();
   await page.getByRole('heading', { name: 'New session', exact: true }).waitFor();
-  await page.getByLabel('Session ID', { exact: false }).fill('dashboard%2Ftest/✓');
   await page.getByLabel('Model API key', { exact: false }).fill('private-model-test');
   await page.getByLabel('Instructions', { exact: false }).fill('Answer accurately and concisely.');
   await page.getByRole('checkbox', { name: 'lookup_release', exact: false }).check();
+  await page.screenshot({
+    path: fileURLToPath(new URL('../artifacts/new-session-desktop.png', import.meta.url)),
+    fullPage: true,
+  });
+  await page.getByText('Advanced options', { exact: true }).click();
+  await page.getByLabel('Session ID', { exact: false }).fill('dashboard%2Ftest/✓');
+  await page.getByText('TypeScript example', { exact: true }).click();
   assert.ok(!(await page.locator('.code-preview pre').innerText()).includes('private-model-test'));
   await page.getByRole('button', { name: 'Create session', exact: true }).click();
   await page
@@ -344,7 +376,7 @@ test('create, attach, send, reconnect, resolve uncertain acceptance, resume, clo
 
 test('mobile navigation, empty account, and sign out are usable', async (t) => {
   const page = await pageFor(t, 'test-b', 390);
-  await page.getByRole('heading', { name: 'Your first session starts here' }).waitFor();
+  await page.getByRole('heading', { name: 'No sessions yet' }).waitFor();
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await page.screenshot({
     path: fileURLToPath(new URL('../artifacts/sessions-mobile.png', import.meta.url)),
@@ -355,4 +387,8 @@ test('mobile navigation, empty account, and sign out are usable', async (t) => {
   await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
   await page.getByLabel('Brain API token').waitFor();
   assert.ok(!(await page.context().cookies()).some((cookie) => cookie.name === 'brain_dashboard'));
+  await page.screenshot({
+    path: fileURLToPath(new URL('../artifacts/connect-mobile.png', import.meta.url)),
+    fullPage: true,
+  });
 });

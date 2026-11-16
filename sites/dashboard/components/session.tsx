@@ -198,13 +198,15 @@ export function SessionWorkspace({ id }: { id: string }) {
         </Link>
         <div className="session-heading">
           <div>
-            <h1>{id}</h1>
+            <div className="session-title">
+              <h1>{id}</h1>
+              <CopyButton value={id} label="Copy ID" />
+            </div>
             <div className="session-meta">
               {session && (
                 <>
                   <Status value={session.status} />
                   <span>{session.config.model}</span>
-                  <span className="runtime-pill">{session.harness}</span>
                 </>
               )}
             </div>
@@ -306,10 +308,9 @@ export function SessionWorkspace({ id }: { id: string }) {
             <div className="workspace-grid">
               <div className="conversation-column">
                 <div className="conversation-feed">
-                  <div className="activity-label">
-                    <span>RECENT ACTIVITY</span>
-                    <span>
-                      {events.length} loaded events ·{' '}
+                  {events.length >= 200 && (
+                    <div className="activity-label">
+                      <span>Recent activity</span>
                       <button
                         className="text-button"
                         onClick={() => {
@@ -317,30 +318,20 @@ export function SessionWorkspace({ id }: { id: string }) {
                           void loadHistory();
                         }}
                       >
-                        Browse full history
+                        Full history <ArrowRightIcon />
                       </button>
-                    </span>
-                  </div>
+                    </div>
+                  )}
                   {!turns.length && (
                     <div className="empty-state conversation-empty">
                       <span className="empty-icon">
                         <MessageSquare size={27} />
                       </span>
-                      <h2>Ready when you are</h2>
-                      <p>
-                        Send a task to start this session. You can follow each response and tool
-                        call here.
-                      </p>
+                      <h2>Start a conversation</h2>
                     </div>
                   )}
-                  {turns.map(([key, group], index) => (
-                    <Turn
-                      key={key}
-                      sessionId={id}
-                      events={group}
-                      index={index}
-                      onInspect={setSelected}
-                    />
+                  {turns.map(([key, group]) => (
+                    <Turn key={key} sessionId={id} events={group} onInspect={setSelected} />
                   ))}
                   {liveText && (
                     <div className="assistant-message">
@@ -354,6 +345,18 @@ export function SessionWorkspace({ id }: { id: string }) {
                   <div ref={end} />
                 </div>
                 <div className="composer-wrap">
+                  {turns.length > 2 && (
+                    <button
+                      className="jump-latest icon-button"
+                      aria-label="Jump to latest"
+                      title="Jump to latest"
+                      onClick={() =>
+                        end.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+                      }
+                    >
+                      <ArrowDown size={16} />
+                    </button>
+                  )}
                   {!['idle', 'running'].includes(session.status) ? (
                     <div className="inactive-composer">
                       {session.status === 'closed'
@@ -378,8 +381,8 @@ export function SessionWorkspace({ id }: { id: string }) {
                         rows={3}
                         placeholder={
                           session.status === 'running'
-                            ? 'Queue a follow-up for the next turn…'
-                            : 'Give your agent a task…'
+                            ? 'Queue a follow-up…'
+                            : 'Message your agent…'
                         }
                         onKeyDown={(event) => {
                           if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
@@ -431,8 +434,8 @@ export function SessionWorkspace({ id }: { id: string }) {
                           </button>
                           <span className="muted">
                             {session.status === 'running'
-                              ? 'Messages queue after the active turn'
-                              : 'Ctrl / ⌘ + Enter to send'}
+                              ? 'Queued after the active turn'
+                              : '⌘ / Ctrl + Enter'}
                           </span>
                         </div>
                         <div>
@@ -468,72 +471,13 @@ export function SessionWorkspace({ id }: { id: string }) {
                       </div>
                     </form>
                   )}
-                  <p className="composer-note">
-                    {uncertain
-                      ? 'The original message may have been accepted. Retrying keeps its identity.'
-                      : 'Session configuration stays fixed. Create a new session to change it.'}
-                  </p>
-                </div>
-              </div>
-              <aside className="session-inspector">
-                <div className="inspector-title">
-                  SESSION DETAILS
-                  <CopyButton value={id} label="Copy ID" />
-                </div>
-                <dl className="details">
-                  <div>
-                    <dt>Status</dt>
-                    <dd>
-                      <Status value={session.status} />
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Runtime</dt>
-                    <dd>{session.harness}</dd>
-                  </div>
-                  <div>
-                    <dt>Model</dt>
-                    <dd>{session.config.model}</dd>
-                  </div>
-                  <div>
-                    <dt>Created</dt>
-                    <dd>{timestamp(session.created_at)}</dd>
-                  </div>
-                  <div>
-                    <dt>Last activity</dt>
-                    <dd>{timestamp(session.updated_at)}</dd>
-                  </div>
-                </dl>
-                <div className="inspector-section">
-                  <h3>
-                    Available tools{' '}
-                    <span className="count">{(session.descriptors ?? []).length}</span>
-                  </h3>
-                  {(session.descriptors ?? []).length ? (
-                    (session.descriptors ?? []).map((tool) => (
-                      <div className="bound-tool" key={tool.name}>
-                        <Wrench size={14} />
-                        <span>{tool.name}</span>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="muted">No tools configured.</p>
+                  {uncertain && (
+                    <p className="composer-note">
+                      The original message may have been accepted. Retrying keeps its identity.
+                    </p>
                   )}
                 </div>
-                <div className="inspector-section">
-                  <h3>Instructions</h3>
-                  <p className="instruction-preview">
-                    {session.config.instructions || 'Default runtime instructions.'}
-                  </p>
-                </div>
-                <button
-                  className="text-button"
-                  onClick={() => end.current?.scrollIntoView({ behavior: 'smooth' })}
-                >
-                  <ArrowDown size={14} />
-                  Jump to latest
-                </button>
-              </aside>
+              </div>
             </div>
           )}
           {tab === 'events' && (
@@ -541,9 +485,6 @@ export function SessionWorkspace({ id }: { id: string }) {
               <div className="section-title">
                 <div>
                   <h2>Event history</h2>
-                  <p className="muted">
-                    Retained events in server order. Select a row to inspect its JSON.
-                  </p>
                 </div>
                 <button
                   className="button secondary small"
@@ -597,15 +538,67 @@ export function SessionWorkspace({ id }: { id: string }) {
           )}
           {tab === 'configuration' && (
             <section className="tab-content configuration-tab">
-              <div className="panel">
-                <div className="panel-heading">
-                  <h2>Session configuration</h2>
+              <dl className="details configuration-details">
+                <div>
+                  <dt>Model</dt>
+                  <dd>
+                    <code>{session.config.model}</code>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Runtime</dt>
+                  <dd>{session.harness}</dd>
+                </div>
+                <div>
+                  <dt>Created</dt>
+                  <dd>{timestamp(session.created_at)}</dd>
+                </div>
+                <div>
+                  <dt>Updated</dt>
+                  <dd>{timestamp(session.updated_at)}</dd>
+                </div>
+              </dl>
+              <section className="configuration-section">
+                <h2>Instructions</h2>
+                <p className="instruction-preview">
+                  {session.config.instructions || 'Default runtime instructions.'}
+                </p>
+              </section>
+              <section className="configuration-section">
+                <h2>Tools</h2>
+                <div className="bound-tools">
+                  {(session.descriptors ?? []).map((tool) => (
+                    <span className="bound-tool" key={tool.name}>
+                      <Wrench size={14} />
+                      {tool.name}
+                    </span>
+                  ))}
+                  {!session.descriptors?.length && (
+                    <span className="muted">No tools configured.</span>
+                  )}
+                </div>
+              </section>
+              <details className="code-preview">
+                <summary>
+                  <span>
+                    <Code2 size={16} />
+                    View JSON
+                  </span>
+                  <ChevronDown size={15} />
+                </summary>
+                <div className="code-heading">
                   <CopyButton
                     value={JSON.stringify(
-                      { harness: session.harness, config: session.config },
+                      {
+                        harness: session.harness,
+                        config: session.config,
+                        tools: session.descriptors,
+                        credential_bindings: session.credential_bindings ?? [],
+                      },
                       null,
                       2,
                     )}
+                    label="Copy JSON"
                   />
                 </div>
                 <pre className="json-view">
@@ -620,21 +613,16 @@ export function SessionWorkspace({ id }: { id: string }) {
                     2,
                   )}
                 </pre>
-              </div>
-              <p className="muted">
-                Credentials are omitted by Brain. Configuration is fixed when a session is created.
-              </p>
+              </details>
             </section>
           )}
           {tab === 'usage' && (
             <section className="tab-content">
               <div className="section-title">
                 <div>
-                  <h2>Reported model usage</h2>
+                  <h2>Token usage</h2>
                   <p className="muted">
-                    {allUsage
-                      ? `Full-history snapshot at ${usageTime}. Refresh to include later activity.`
-                      : 'Based on loaded activity. Read the full history for session-wide usage.'}
+                    {allUsage ? `Full history · ${usageTime}` : 'Recent activity only'}
                   </p>
                 </div>
                 <button
@@ -647,30 +635,29 @@ export function SessionWorkspace({ id }: { id: string }) {
                     ? 'Reading history…'
                     : allUsage
                       ? 'Refresh usage'
-                      : 'Read full session usage'}
+                      : 'Load full history'}
                 </button>
               </div>
               <div className="stats usage-stats">
                 <div>
-                  <span>Reported input tokens</span>
+                  <span>Input</span>
                   <strong>{usage.input?.toLocaleString() ?? 'Unknown'}</strong>
                 </div>
                 <div>
-                  <span>Reported output tokens</span>
+                  <span>Output</span>
                   <strong>{usage.output?.toLocaleString() ?? 'Unknown'}</strong>
                 </div>
                 <div>
-                  <span>Observed requests / attempts</span>
+                  <span>Requests / attempts</span>
                   <strong>{usage.requests}</strong>
                 </div>
               </div>
-              <div className="notice">
-                {usage.partial
-                  ? 'Some token quantities are unknown. Reported counts may be incomplete. '
-                  : ''}
-                Usage reflects provider reports. Brain does not calculate model charges; check your
-                provider for billing.
-              </div>
+              {usage.partial && (
+                <p className="notice">Some usage is unreported. Totals may be incomplete.</p>
+              )}
+              <p className="muted">
+                Provider-reported tokens. Billing is managed by your provider.
+              </p>
             </section>
           )}
         </>
@@ -719,19 +706,14 @@ function ArrowRightIcon() {
 function Turn({
   sessionId,
   events,
-  index,
   onInspect,
 }: {
   sessionId: string;
   events: Event[];
-  index: number;
   onInspect: (event: Event) => void;
 }) {
   return (
     <section className="turn">
-      <div className="turn-divider">
-        <span>TURN {index + 1} IN LOADED ACTIVITY</span>
-      </div>
       {events.map((event) => {
         const payload = data(event);
         if (event.type === 'user.message')

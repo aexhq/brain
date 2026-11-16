@@ -7,8 +7,8 @@ import type { Session, Tool } from '@aexhq/brain';
 import {
   ArrowLeft,
   ArrowRight,
-  ArrowUpRight,
   Code2,
+  ChevronDown,
   Layers,
   Plus,
   RefreshCw,
@@ -73,83 +73,56 @@ export function Sessions() {
   return (
     <div className="page">
       <div className="page-heading">
-        <div>
-          <span className="eyebrow">YOUR AGENTS AT WORK</span>
-          <h1>Sessions</h1>
-          <p>Start a task. Follow the work. Keep the conversation going.</p>
-        </div>
+        <h1>Sessions</h1>
         <Link className="button primary" href="/sessions/new">
-          <Plus size={17} />
+          <Plus size={16} />
           New session
         </Link>
       </div>
-      <div className="stats">
-        <div>
-          <span>Loaded sessions</span>
-          <strong>{sessions.length.toLocaleString()}</strong>
-          <span className="stat-note">Saved conversations</span>
-        </div>
-        <div>
-          <span>
-            <i className="dot running" />
-            Running
-          </span>
-          <strong>{sessions.filter((item) => item.status === 'running').length}</strong>
-          <span className="stat-note">Agents working now</span>
-        </div>
-        <div>
-          <span>
-            <i className="dot attention" />
-            Needs attention
-          </span>
-          <strong>
-            {sessions.filter((item) => ['failed', 'interrupted'].includes(item.status)).length}
-          </strong>
-          <span className="stat-note">Review and resume</span>
-        </div>
-      </div>
-      <section className="panel">
-        <div className="table-toolbar">
-          <div className="search-field">
-            <Search size={17} />
-            <input
-              aria-label="Filter loaded sessions"
-              placeholder="Filter by ID, model, or runtime…"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
+      <section className="session-list">
+        {(sessions.length > 0 || loading || error) && (
+          <div className="table-toolbar">
+            <div className="search-field">
+              <Search size={17} />
+              <input
+                aria-label="Filter loaded sessions"
+                placeholder="Filter sessions…"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </div>
+            <div className="toolbar-actions">
+              <select
+                aria-label="Session status"
+                value={status}
+                onChange={(event) => setStatus(event.target.value)}
+              >
+                <option value="all">All statuses</option>
+                {['running', 'idle', 'interrupted', 'failed', 'closed'].map((value) => (
+                  <option key={value} value={value}>
+                    {value[0].toUpperCase() + value.slice(1)}
+                  </option>
+                ))}
+              </select>
+              <select
+                aria-label="Sort sessions"
+                value={sort}
+                onChange={(event) => setSort(event.target.value)}
+              >
+                <option value="updated_at">Recent activity</option>
+                <option value="created_at">Newest first</option>
+              </select>
+              <button
+                className="icon-button"
+                disabled={loading}
+                aria-label="Refresh sessions"
+                onClick={() => void load()}
+              >
+                <RefreshCw size={16} className={loading ? 'spin' : ''} />
+              </button>
+            </div>
           </div>
-          <div className="toolbar-actions">
-            <select
-              aria-label="Session status"
-              value={status}
-              onChange={(event) => setStatus(event.target.value)}
-            >
-              <option value="all">All statuses</option>
-              {['running', 'idle', 'interrupted', 'failed', 'closed'].map((value) => (
-                <option key={value} value={value}>
-                  {value[0].toUpperCase() + value.slice(1)}
-                </option>
-              ))}
-            </select>
-            <select
-              aria-label="Sort sessions"
-              value={sort}
-              onChange={(event) => setSort(event.target.value)}
-            >
-              <option value="updated_at">Recent activity</option>
-              <option value="created_at">Newest first</option>
-            </select>
-            <button
-              className="icon-button"
-              disabled={loading}
-              aria-label="Refresh sessions"
-              onClick={() => void load()}
-            >
-              <RefreshCw size={16} className={loading ? 'spin' : ''} />
-            </button>
-          </div>
-        </div>
+        )}
         <ErrorNotice message={error} />
         {loading && !sessions.length ? (
           <Loading label="Loading sessions…" />
@@ -160,12 +133,8 @@ export function Sessions() {
                 <tr>
                   <th>Session</th>
                   <th>Status</th>
-                  <th>Model</th>
-                  <th>Runtime</th>
-                  <th>Last activity</th>
-                  <th>
-                    <span className="sr-only">Open</span>
-                  </th>
+                  <th className="model-column">Model</th>
+                  <th className="updated-column">Updated</th>
                 </tr>
               </thead>
               <tbody>
@@ -176,37 +145,21 @@ export function Sessions() {
                         className="session-link"
                         href={`/sessions/${encodeURIComponent(session.id)}`}
                       >
-                        <span className="session-glyph">
-                          <Layers size={16} />
-                        </span>
                         <div>
                           <strong>{session.id}</strong>
-                          <span>{session.config.instructions || 'Agent session'}</span>
+                          {session.config.instructions && (
+                            <span>{session.config.instructions}</span>
+                          )}
                         </div>
                       </Link>
                     </td>
                     <td>
                       <Status value={session.status} />
                     </td>
-                    <td>
-                      <span className="model-name">
-                        {session.config.model.split('/').slice(1).join('/') || session.config.model}
-                      </span>
-                      <span className="cell-subtitle">{session.config.model.split('/')[0]}</span>
+                    <td className="model-column">
+                      <code className="model-name">{session.config.model}</code>
                     </td>
-                    <td>
-                      <code className="runtime-pill">{session.harness}</code>
-                    </td>
-                    <td className="nowrap muted">{timestamp(session.updated_at)}</td>
-                    <td>
-                      <Link
-                        className="icon-button"
-                        href={`/sessions/${encodeURIComponent(session.id)}`}
-                        aria-label={`Open session ${session.id}`}
-                      >
-                        <ArrowUpRight size={16} />
-                      </Link>
-                    </td>
+                    <td className="updated-column muted nowrap">{timestamp(session.updated_at)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -217,56 +170,55 @@ export function Sessions() {
             <span className="empty-icon">
               <Layers size={26} />
             </span>
-            <h2>{sessions.length ? 'No matching sessions' : 'Your first session starts here'}</h2>
-            <p>
-              {sessions.length
-                ? 'Try another filter, or load more sessions.'
-                : 'Give an agent a task and follow its progress, tools, and results in one place.'}
-            </p>
-            {!sessions.length && !error && (
-              <Link href="/sessions/new" className="button primary">
-                <Plus size={16} />
-                Create a session
-              </Link>
-            )}
+            <h2>
+              {error
+                ? 'Could not load sessions'
+                : sessions.length
+                  ? 'No matching sessions'
+                  : 'No sessions yet'}
+            </h2>
+            {sessions.length > 0 && <p>Try another filter.</p>}
           </div>
         )}
-        <div className="table-footer">
-          <span>
-            {shown.length} of {sessions.length} loaded sessions{more ? ' · More available' : ''}
-          </span>
-          {more && (
-            <button
-              className="button secondary small"
-              disabled={loading}
-              onClick={() => void load(cursor)}
-            >
-              Load more
-            </button>
-          )}
-          <span className="muted">Filters apply to loaded sessions</span>
-        </div>
       </section>
-      <form
-        className="open-session"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const id = String(new FormData(event.currentTarget).get('id') ?? '').trim();
-          if (id) window.location.assign(`/sessions/${encodeURIComponent(id)}`);
-        }}
-      >
-        <span>Have a session ID?</span>
-        <input
-          name="id"
-          aria-label="Session ID to open"
-          placeholder="Open a specific session"
-          required
-          maxLength={128}
-        />
-        <button className="text-button">
-          Open <ArrowRight size={14} />
-        </button>
-      </form>
+      <div className="list-footer">
+        <span className="muted">
+          {sessions.length > 0 &&
+            `${shown.length === sessions.length ? sessions.length : `${shown.length} of ${sessions.length}`} ${more ? 'loaded ' : ''}sessions`}
+        </span>
+        {more && (
+          <button
+            className="button secondary small"
+            disabled={loading}
+            onClick={() => void load(cursor)}
+          >
+            Load more
+          </button>
+        )}
+        <details className="open-session">
+          <summary>
+            Open by ID <ChevronDown size={13} />
+          </summary>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              const id = String(new FormData(event.currentTarget).get('id') ?? '').trim();
+              if (id) window.location.assign(`/sessions/${encodeURIComponent(id)}`);
+            }}
+          >
+            <input
+              name="id"
+              aria-label="Session ID to open"
+              placeholder="Session ID"
+              required
+              maxLength={128}
+            />
+            <button className="button secondary small">
+              Open <ArrowRight size={14} />
+            </button>
+          </form>
+        </details>
+      </div>
     </div>
   );
 }
@@ -323,23 +275,85 @@ export function NewSession() {
     }
   }
   return (
-    <div className="page">
+    <div className="page form-page">
       <Link href="/" className="back-link">
         <ArrowLeft size={15} />
         Sessions
       </Link>
       <div className="page-heading">
-        <div>
-          <span className="eyebrow">START SOMETHING</span>
-          <h1>New session</h1>
-          <p>Choose how your agent works. Send its first task once you’re ready.</p>
-        </div>
-        <span className="runtime-pill">Pi runtime</span>
+        <h1>New session</h1>
       </div>
-      <div className="creation-grid">
-        <form className="panel config-form" onSubmit={create}>
+      <form className="config-form" onSubmit={create}>
+        <div className="form-section">
+          <label htmlFor="model">Model</label>
+          <input
+            id="model"
+            value={model}
+            onChange={(event) => setModel(event.target.value)}
+            required
+            pattern="[^\s/]+/[^\s]+"
+            maxLength={256}
+          />
+          <label htmlFor="model-key">
+            Model API key <span className="optional">optional</span>
+          </label>
+          <input
+            id="model-key"
+            type="password"
+            autoComplete="off"
+            value={modelKey}
+            onChange={(event) => setModelKey(event.target.value)}
+            placeholder="Use deployment credentials"
+          />
+          <label htmlFor="instructions">
+            Instructions <span className="optional">optional</span>
+          </label>
+          <textarea
+            id="instructions"
+            rows={5}
+            value={instructions}
+            onChange={(event) => setInstructions(event.target.value)}
+            maxLength={65536}
+            placeholder="What should this agent do?"
+          />
+        </div>
+        <div className="form-section">
+          <div className="section-title">
+            <h2>Tools</h2>
+            {selected.length > 0 && <span className="muted">{selected.length} selected</span>}
+          </div>
+          <ErrorNotice message={catalogError} />
+          {catalog.length ? (
+            <div className="tool-choices">
+              {catalog.map((tool) => (
+                <label key={tool.name} className="tool-choice">
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(tool.name)}
+                    onChange={(event) =>
+                      setSelected((current) =>
+                        event.target.checked
+                          ? [...current, tool.name]
+                          : current.filter((name) => name !== tool.name),
+                      )
+                    }
+                  />
+                  <span>
+                    <strong>{tool.name}</strong>
+                    <small>{tool.description}</small>
+                  </span>
+                </label>
+              ))}
+            </div>
+          ) : (
+            !catalogError && <p className="muted">No tools available.</p>
+          )}
+        </div>
+        <details className="advanced-options">
+          <summary>
+            Advanced options <ChevronDown size={15} />
+          </summary>
           <div className="form-section">
-            <h2>Configuration</h2>
             <label htmlFor="session-id">
               Session ID <span className="optional">optional</span>
             </label>
@@ -349,39 +363,7 @@ export function NewSession() {
               onChange={(event) => setId(event.target.value)}
               maxLength={128}
               pattern="(?!\.{1,2}$).*\S.*"
-              placeholder="Generated automatically, or use your own"
-            />
-            <label htmlFor="model">Model</label>
-            <input
-              id="model"
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
-              required
-              pattern="[^\s/]+/[^\s]+"
-              maxLength={256}
-            />
-            <p className="field-hint">Use a provider/model supported by your deployment.</p>
-            <label htmlFor="model-key">
-              Model API key <span className="optional">optional</span>
-            </label>
-            <input
-              id="model-key"
-              type="password"
-              autoComplete="off"
-              value={modelKey}
-              onChange={(event) => setModelKey(event.target.value)}
-              placeholder="Use the deployment’s credential, or supply yours"
-            />
-            <label htmlFor="instructions">
-              Instructions <span className="optional">optional</span>
-            </label>
-            <textarea
-              id="instructions"
-              rows={5}
-              value={instructions}
-              onChange={(event) => setInstructions(event.target.value)}
-              maxLength={65536}
-              placeholder="What should this agent do, and how should it approach its work?"
+              placeholder="Generated automatically"
             />
             <label htmlFor="effort">Reasoning effort</label>
             <select id="effort" value={effort} onChange={(event) => setEffort(event.target.value)}>
@@ -389,66 +371,32 @@ export function NewSession() {
                 <option key={value}>{value}</option>
               ))}
             </select>
-            <p className="field-hint">Choose an effort supported by the selected model.</p>
+            <p className="field-hint">Choose an effort supported by your model.</p>
           </div>
-          <div className="form-section">
-            <div className="section-title">
-              <h2>Tools</h2>
-              <span className="count">{selected.length} selected</span>
-            </div>
-            <p className="muted">Only tools available to your token are listed.</p>
-            <ErrorNotice message={catalogError} />
-            {catalog.length ? (
-              <div className="tool-choices">
-                {catalog.map((tool) => (
-                  <label key={tool.name} className="tool-choice">
-                    <input
-                      type="checkbox"
-                      checked={selected.includes(tool.name)}
-                      onChange={(event) =>
-                        setSelected((current) =>
-                          event.target.checked
-                            ? [...current, tool.name]
-                            : current.filter((name) => name !== tool.name),
-                        )
-                      }
-                    />
-                    <span>
-                      <strong>{tool.name}</strong>
-                      <small>{tool.description}</small>
-                    </span>
-                  </label>
-                ))}
-              </div>
-            ) : (
-              !catalogError && <p className="muted">No tools are available in this deployment.</p>
-            )}
-          </div>
-          <div className="form-section">
-            <ErrorNotice message={error} />
-            <button className="button primary" disabled={busy}>
-              {busy ? 'Creating…' : 'Create session'}
-              <ArrowRight size={16} />
-            </button>
-          </div>
-        </form>
-        <aside className="code-preview">
-          <div className="code-heading">
-            <span>
-              <Code2 size={16} />
-              Use it in your app
-            </span>
-            <CopyButton value={snippet} label="Copy code" />
-          </div>
-          <pre>
-            <code>{snippet}</code>
-          </pre>
-          <p>
-            The same configuration, through the TypeScript SDK. Credentials use environment
-            variables.
-          </p>
-        </aside>
-      </div>
+        </details>
+        <div className="form-actions">
+          <ErrorNotice message={error} />
+          <button className="button primary" disabled={busy}>
+            {busy ? 'Creating…' : 'Create session'}
+            <ArrowRight size={16} />
+          </button>
+        </div>
+      </form>
+      <details className="code-preview">
+        <summary>
+          <span>
+            <Code2 size={16} />
+            TypeScript example
+          </span>
+          <ChevronDown size={15} />
+        </summary>
+        <div className="code-heading">
+          <CopyButton value={snippet} label="Copy code" />
+        </div>
+        <pre>
+          <code>{snippet}</code>
+        </pre>
+      </details>
     </div>
   );
 }
@@ -483,11 +431,9 @@ export function Tools() {
     <div className="page">
       <div className="page-heading">
         <div>
-          <span className="eyebrow">WHAT YOUR AGENTS CAN DO</span>
           <h1>
             Tools <span className="heading-count">{tools.length}</span>
           </h1>
-          <p>Explore the capabilities available to your workspace.</p>
         </div>
       </div>
       <div className="search-field tools-search">
@@ -505,12 +451,9 @@ export function Tools() {
       ) : shown.length ? (
         <div className="tools-grid">
           {shown.map((tool) => (
-            <article className="panel tool-card" key={tool.name}>
-              <span className="tool-icon">
-                <Wrench size={20} />
-              </span>
+            <article className="tool-card" key={tool.name}>
               <h2>{tool.name}</h2>
-              <p>{tool.description || 'Available in this deployment.'}</p>
+              {tool.description && <p>{tool.description}</p>}
               <details>
                 <summary>
                   Input schema <Code2 size={14} />
@@ -524,11 +467,6 @@ export function Tools() {
         <div className="empty-state">
           <Wrench size={28} />
           <h2>{search ? 'No matching tools' : 'No tools available'}</h2>
-          <p>
-            {search
-              ? 'Try a different search.'
-              : 'Tools configured for your tenant will appear here.'}
-          </p>
         </div>
       )}
     </div>

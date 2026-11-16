@@ -22,7 +22,7 @@ Your token's permissions apply throughout the dashboard. Use a read-only token t
 
 ## Create a session and send a task
 
-1. Select **New session**. Enter a session ID, or leave it blank to generate one.
+1. Select **New session**. To choose your own session ID, open **Advanced options**; otherwise, an ID is generated for you.
 2. Set the model as `provider/model`, add instructions, and choose tools from your deployment's catalog. Supply a model API key if your deployment does not provide one.
 3. Select **Create session**, write a task, and select **Send message**. Use the attachment button to include files of up to 16 MiB each.
 
@@ -32,11 +32,11 @@ If the connection drops while a message is being accepted, select **Retry same m
 
 ## Inspect activity and usage
 
-The **Sessions** page filters and sorts the entries already loaded. Select **Load more** to include more entries, or open a specific session ID below the table.
+The **Sessions** page filters and sorts the entries already loaded. Select **Load more** to include more entries, or use **Open by ID** below the table.
 
 Open a session to see its recent conversation. Use **Events** to page through older records and **Configuration** to inspect its model, instructions, and enabled tools. **Export loaded events** saves the activity currently loaded in the conversation as JSON.
 
-In **Usage**, select **Read full session usage** to read a snapshot of token usage across retained history. Refresh it after further activity. Unknown quantities stay marked as unknown; partial provider reports are identified. Check your model provider for monetary charges.
+In **Usage**, select **Load full history** to read a snapshot of token usage across retained history. Refresh it after further activity. Unknown quantities stay marked as unknown; partial provider reports are identified. Check your model provider for monetary charges.
 
 Open **Tools** in the sidebar to inspect available descriptions and input schemas before choosing them for a new session.
 
