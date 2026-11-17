@@ -12,7 +12,7 @@
     "@earendil-works/pi-coding-agent": "1.2.0",
     "jiti": "2.7.0",
     "pi-mcp-adapter": "5.4.0",
-    "pi-subagents": "0.80.0",
+    "pi-subagents": "0.88.1",
     "pi-web-access": "0.44.0",
     "@earendil-works/pi-agent-core": "1.2.0",
     "@earendil-works/pi-tui": "1.2.0",
