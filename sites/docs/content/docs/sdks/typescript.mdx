@@ -53,7 +53,7 @@ Keep the client process alive while callbacks are needed. `dispose()` closes its
 
 ## Select models and managed tools
 
-Use `Model("provider/model", ApiKey(customerKey))` to supply a private API key, or `CredentialReference(reference)` for an application-authorized reference. Omit the second argument to select the startup default. Configure independent encryption keys on the server before supplying overrides. Rejected or unavailable overrides fail without switching to the default.
+Use `Model("provider/model", ApiKey(customerKey))` to supply a private API key, or `CredentialReference(reference)` for an application-authorized reference. Omit the second argument to select the startup default. Configure Storage encryption keys before supplying overrides. Rejected or unavailable overrides fail without switching to the default.
 
 Use `ManagedTool("lookup")` for an installed ordinary tool. Select builtin integrations with `AwsS3`, `Modal`, `E2B`, or `Daytona`:
 

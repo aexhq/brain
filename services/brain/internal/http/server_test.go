@@ -44,7 +44,7 @@ func TestRealPiHTTPAndIsolation(t *testing.T) {
 		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", b)
 	}))
 	defer provider.Close()
-	db, err := store.Open(t.TempDir())
+	db, err := store.Open(t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,7 +2,6 @@
   "listen": ":8080",
   "public_url": "http://brain:8080",
   "tokens": [{"token_env": "BRAIN_API_KEY", "tenant": "local", "manage": true}],
-  "credential_keys": {"active": "local", "keys": {"local": "BRAIN_MODEL_ENCRYPTION_KEY"}},
   "harnesses": {"pi": {"max_shared": 1, "max_active_turns": 1, "max_starting": 4}},
   "providers": {"openai": {}, "anthropic": {}},
   "services": {

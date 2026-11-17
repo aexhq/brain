@@ -100,7 +100,7 @@ func (r *Registry) resolve(ctx context.Context, s core.Session) (*Registry, erro
 			if json.Unmarshal(params, &value) != nil || schema == nil || schema.Validate(value) != nil {
 				return nil, core.E(core.Invalid, "invalid provider parameters")
 			}
-			secret, err := credentials.Open(ctx, r.Keys, s, b.Alias)
+			secret, err := credentials.Resolve(s, b.Alias)
 			if err != nil {
 				return nil, err
 			}

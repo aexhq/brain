@@ -110,7 +110,7 @@ test("Pi automatic compaction uses the private key and survives passive cold rec
   const key = "private-compaction-provider-key";
   const f = await fixture(t, binaries, { persistence: {}, modelKeys: [key] });
   f.env.JOURNEY_ENCRYPTION = Buffer.alloc(32, 9).toString("base64");
-  f.settings.credential_keys = { active: "test", keys: { test: "JOURNEY_ENCRYPTION" } };
+  f.settings.storage_keys = { active: "test", keys: { test: "JOURNEY_ENCRYPTION" } };
   await f.start();
   const s = await f.api.create({ harness: Pi(), model: Model("openai/gpt-4.1-mini", ApiKey(key)), tools: [] });
   f.model.respond = async (_input, response) => {
@@ -220,7 +220,7 @@ test("private model keys reach Pi independently and survive restart and cold res
   const keys = ["customer-one-private-key", "customer-two-private-key"];
   const f = await fixture(t, binaries, { persistence: {}, modelKeys: keys });
   f.env.JOURNEY_ENCRYPTION = Buffer.alloc(32, 7).toString("base64");
-  f.settings.credential_keys = { active: "test", keys: { test: "JOURNEY_ENCRYPTION" } };
+  f.settings.storage_keys = { active: "test", keys: { test: "JOURNEY_ENCRYPTION" } };
   await f.start();
   const sessions = await Promise.all(keys.map(key => f.api.create({ harness: Pi(), model: Model("openai/gpt-4.1-mini", ApiKey(key)), tools: [] })));
   const peers = [];

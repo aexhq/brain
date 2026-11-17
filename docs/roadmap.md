@@ -22,7 +22,7 @@ The existing embedded Node/Go application package continues to ship Pi, Codex an
 
 ## Intent alignment
 
-**Planned — transparent credential storage:** move encryption, decryption and key management behind Storage's interface. Brain and Tools still use separate key providers and a shared cipher package. Use the existing configuration until that refactor is implemented; the revised intent does not change running behavior.
+**Available — transparent credential storage:** Storage owns encryption at database and checkpoint writes and decryption at reads. Embedded deployments use `storage_keys`; distributed deployments configure `credential_keys` in Storage. Brain and Tools use private values without cipher or key-provider dependencies.
 
 **Planned — deployment alignment:** reconcile the four-process Compose implementation with Storage as an internal package responsibility. The current deployment remains available; separate processes do not establish separate credential trust requirements.
 

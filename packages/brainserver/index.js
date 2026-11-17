@@ -115,15 +115,12 @@ export class BrainServer extends Brain {
     const directory = await mkdtemp(path.join(tmpdir(), 'brainserver-'));
     try {
       await mkdir(this.#dataDir, { recursive: true });
-      const keys = {};
-      for (const domain of ['model', 'tool']) {
-        const keyFile = path.join(this.#dataDir, `${domain}-credential.key`);
-        try { await writeFile(keyFile, randomBytes(32), { flag: 'wx', mode: 0o600 }); }
-        catch (error) { if (error.code !== 'EEXIST') throw error; }
-        keys[domain] = await readFile(keyFile);
-        if (keys[domain].length !== 32) throw new Error(`Brain ${domain}-credential.key must contain 32 bytes`);
-        this.#environment[`BRAIN_NODE_${domain.toUpperCase()}_CREDENTIAL_KEY`] = keys[domain].toString('base64');
-      }
+      const keyFile = path.join(this.#dataDir, 'storage.key');
+      try { await writeFile(keyFile, randomBytes(32), { flag: 'wx', mode: 0o600 }); }
+      catch (error) { if (error.code !== 'EEXIST') throw error; }
+      const storageKey = await readFile(keyFile);
+      if (storageKey.length !== 32) throw new Error('Brain storage.key must contain 32 bytes');
+      this.#environment.BRAIN_NODE_STORAGE_KEY = storageKey.toString('base64');
       const sandboxes = this.#tools.filter(tool => tool.name !== 'aws_s3');
       if (sandboxes.length) {
         const token = randomBytes(32).toString('hex');
@@ -131,7 +128,7 @@ export class BrainServer extends Brain {
           ...process.env,
           BRAIN_NODE_TOOL_TOKEN: token,
           BRAIN_NODE_SANDBOXES: JSON.stringify(sandboxes.map(tool => tool.name)),
-          BRAIN_NODE_SANDBOX_SIGNING_KEY: Buffer.from(hkdfSync('sha256', keys.tool, '', 'brain-sandbox-handles', 32)).toString('hex'),
+          BRAIN_NODE_SANDBOX_SIGNING_KEY: Buffer.from(hkdfSync('sha256', storageKey, '', 'brain-sandbox-handles', 32)).toString('hex'),
         });
         this.#environment.BRAIN_NODE_TOOL_TOKEN = token;
         for (const tool of sandboxes) {
@@ -148,8 +145,7 @@ export class BrainServer extends Brain {
         tokens: [{ token_env: 'BRAIN_NODE_TOKEN', tenant: 'local', manage: true }],
         harnesses: this.#harnesses,
         providers: this.#providers, tools: [],
-        tool_credential_keys: { active: 'local', keys: { local: 'BRAIN_NODE_TOOL_CREDENTIAL_KEY' } },
-        credential_keys: { active: 'local', keys: { local: 'BRAIN_NODE_MODEL_CREDENTIAL_KEY' } },
+        storage_keys: { active: 'local', keys: { local: 'BRAIN_NODE_STORAGE_KEY' } },
       }), { mode: 0o600 });
       this.#main = await startProcess(binary, ['-config', config, '-tool-providers', integrations, '-stdio'], this.#environment);
       this.url = this.#main.ready.url;

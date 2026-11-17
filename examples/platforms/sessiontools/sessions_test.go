@@ -19,7 +19,7 @@ func (r *reader) ReadSession(_ context.Context, tenant, id string) (brain.Sessio
 		return brain.Session{}, errors.New("foreign")
 	}
 	r.reads++
-	return brain.Session{ID: id, Credentials: []credential.Record{{Ciphertext: []byte("private")}}}, nil
+	return brain.Session{ID: id, Credentials: []credential.Record{{Value: json.RawMessage(`"private"`)}}}, nil
 }
 func (r *reader) ReadEvents(context.Context, string, string, string, int) ([]brain.Event, error) {
 	return []brain.Event{}, nil

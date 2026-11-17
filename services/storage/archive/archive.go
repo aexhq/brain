@@ -1,7 +1,6 @@
 package persistence
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,7 +13,9 @@ import (
 	"time"
 
 	core "github.com/aexhq/brain/services/brain/api"
+	"github.com/aexhq/brain/services/storage"
 	"github.com/aexhq/brain/services/storage/api"
+	"github.com/aexhq/brain/services/storage/internal/credentialcipher"
 	"github.com/aexhq/brain/services/storage/local"
 )
 
@@ -26,6 +27,7 @@ type Manifest = api.Manifest
 type Snapshot = api.Snapshot
 
 type Archive struct {
+	Keys            storage.Keys
 	Objects         Objects
 	Metadata        Metadata
 	MaxSessionBytes int64
@@ -40,21 +42,11 @@ func statePath(dir string) string { return filepath.Join(dir, "uploaded.json") }
 // Windows cannot replace an upload-state file while a status reader holds it
 // open. Data directories already have a single process owner.
 
-func strictJSON(data []byte, v any) error {
-	d := json.NewDecoder(bytes.NewReader(data))
-	d.DisallowUnknownFields()
-	if err := d.Decode(v); err != nil {
-		return err
-	}
-	if d.Decode(new(any)) != io.EOF {
-		return errors.New("trailing stored JSON")
-	}
-	return nil
-}
-
 func ReadState(dir string) (*Manifest, error) { return store.ReadState(dir) }
 
 func saveState(dir string, m Manifest) error {
+	m.Credentials = nil
+	m.Session.Credentials = nil
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
@@ -122,7 +114,7 @@ func (a *Archive) publish(ctx context.Context, s Snapshot) (Manifest, error) {
 		}
 		m.Files = append(m.Files, artifact)
 	}
-	b, err := json.Marshal(m)
+	b, err := credentialcipher.EncodeManifest(ctx, a.Keys, m)
 	if err != nil {
 		return zero, err
 	}
@@ -212,7 +204,7 @@ func (a *Archive) restore(ctx context.Context, tenant, id, reference, parent str
 	if err != nil {
 		return m, "", err
 	}
-	if err := strictJSON(b, &m); err != nil {
+	if m, err = credentialcipher.DecodeManifest(ctx, a.Keys, b); err != nil {
 		return m, "", err
 	}
 	if m.Tenant != tenant {

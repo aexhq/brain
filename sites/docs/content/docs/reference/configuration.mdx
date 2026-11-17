@@ -45,6 +45,7 @@ Storage reads these fields:
 | --- | --- | --- | --- | --- |
 | `listen` | string | No | `:8081` | Private listener. |
 | `data_dir` | string | Yes | — | Exclusive local cache volume. |
+| `credential_keys` | object | No | `null` | Storage encryption keyring for persisted credentials; see [Private credential keys](#private-credential-keys). |
 | `token_env` | string | No | `BRAIN_SERVICE_TOKEN` | Service token environment variable. |
 | `memory_bytes` | integer | No | 134217728 | Object memory budget, reduced under memory pressure. |
 | `disk_bytes` | integer | No | 4294967296 | Object disk budget. Unsynced data is pinned. |
@@ -68,7 +69,7 @@ R2 uses its S3 endpoint and region `auto`. Supabase uses a PostgreSQL connection
 
 Storage reserves 256 MiB of filesystem free space before writes and evicts committed copies under pressure. Data objects use 64 KiB chunks. Metadata publication follows referenced object commitment; conditional head writes reject conflicts.
 
-Tools reads `listen`, `storage`, `sandbox`, `token_env`, `tokens`, `credential_keys`, `tools`, `executors` and optional `providers_file`. The provider file follows the supplied integrations' registry format. Sandbox reads `listen`, `instance`, `token_env`, `capacity`, `max_archive_bytes` and `profiles`; each approved profile specifies `image`, `network`, `memory_bytes`, string `cpus`, `pids`, `workspace_bytes` and `lifetime_seconds`.
+Tools reads `listen`, `storage`, `sandbox`, `token_env`, `tokens`, `tools`, `executors` and optional `providers_file`. The provider file follows the supplied integrations' registry format. Sandbox reads `listen`, `instance`, `token_env`, `capacity`, `max_archive_bytes` and `profiles`; each approved profile specifies `image`, `network`, `memory_bytes`, string `cpus`, `pids`, `workspace_bytes` and `lifetime_seconds`.
 
 The configuration sections below also describe the embedded application composition. Its `persistence` and process `command` fields are replaced by service URLs and Sandbox profiles in distributed composition.
 
@@ -108,8 +109,7 @@ The configuration sections below also describe the embedded application composit
 | `host_pool` | `object` | `{}` | Optional aggregate host, startup and active-turn ceilings across installed process factories. |
 | `limits` | `Limits` | See below | In-memory, disk, queue, and SSE subscriber bounds (see [`limits`](#resource-limits-limits)). |
 | `persistence` | `Settings` | `null` | Optional background checkpoint storage and session index settings (see [`persistence`](#external-persistence-persistence)). |
-| `tool_credential_keys` | `object` | `null` | Embedded Tools encryption keys for private provider overrides; configured separately from model keys. |
-| `credential_keys` | `object` | `null` | Encryption keys for private model overrides. |
+| `storage_keys` | `object` | `null` | Embedded Storage encryption keys for persisted model and provider credentials. |
 
 ## Authentication tokens (`tokens`)
 
@@ -156,10 +156,10 @@ Values must be non-negative. In Go applications, supply `Options.HostPool` from 
 ## Private credential keys
 
 ```json
-{"credential_keys":{"active":"key-2026","keys":{"key-2026":"BRAIN_CREDENTIAL_KEY"}}}
+{"storage_keys":{"active":"key-2026","keys":{"key-2026":"STORAGE_ENCRYPTION_KEY"}}}
 ```
 
-`active` selects a key ID from `keys`. Each value names an environment variable containing a base64-encoded 32-byte AES key. Every configured key must be available at startup. Keep retired keys available while retained checkpoints still reference them. Application code may instead supply `Options.Keys` implementing `CredentialKeys`. Model overrides use `credential_keys` / `Options.Keys`. Embedded provider overrides use `tool_credential_keys` / `Options.ToolKeys`. In distributed deployments, configure provider keys only in the Tools service using its `credential_keys`; Brain rejects local tool keys in distributed mode. Keep model and Tools key material separate. Storage does not receive either key.
+`active` selects a key ID from `keys`. Each value names an environment variable containing a base64-encoded 32-byte AES key. Every configured key must be available at startup. Keep retired keys available while retained checkpoints still reference them. Application code may instead supply `Options.StorageKeys` implementing `storage.Keys`. Storage encrypts credentials at database and checkpoint writes and decrypts them at reads. In distributed deployments, configure `credential_keys` in the Storage service; Brain rejects embedded storage keys in distributed mode. Brain and Tools receive private values through Storage interfaces, with no cipher calls or separate encryption keys.
 
 Private overrides are authenticated encrypted SQL records, bound to tenant, session, and alias. Creation rejects overrides without configured keys. Public JSON never contains ciphertext or plaintext values. [Credential administration](/docs/sdks/application#persist-private-overrides) covers rotation, revocation, and checkpoint retention.
 

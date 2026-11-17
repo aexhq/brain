@@ -31,32 +31,10 @@ func CredentialSession(s core.Session) core.Session {
 	return s
 }
 
-func (r *Registry) SealCredentials(ctx context.Context, s core.Session, inputs []core.CredentialInput) ([]credential.Record, error) {
-	return credentials.Seal(ctx, r.Keys, CredentialSession(s), inputs)
+func (r *Registry) PrepareCredentials(ctx context.Context, s core.Session, inputs []core.CredentialInput) ([]credential.Record, error) {
+	return credentials.Prepare(CredentialSession(s), inputs)
 }
 
 func (r *Registry) ValidateCredentials(ctx context.Context, s core.Session) error {
-	return credentials.Validate(ctx, r.Keys, CredentialSession(s))
-}
-
-func (r *Registry) RotateCredentials(ctx context.Context, s core.Session) ([]credential.Record, error) {
-	s = CredentialSession(s)
-	if err := credential.ValidateCatalog(s.CredentialBindings, s.Credentials); err != nil {
-		return nil, err
-	}
-	inputs := []core.CredentialInput{}
-	var revoked []credential.Record
-	for _, record := range s.Credentials {
-		if record.Revoked {
-			revoked = append(revoked, record)
-			continue
-		}
-		value, err := credentials.Open(ctx, r.Keys, s, record.Binding)
-		if err != nil {
-			return nil, err
-		}
-		inputs = append(inputs, core.CredentialInput{Binding: record.Binding, Value: value})
-	}
-	sealed, err := credentials.Seal(ctx, r.Keys, s, inputs)
-	return append(sealed, revoked...), err
+	return credentials.Validate(CredentialSession(s))
 }

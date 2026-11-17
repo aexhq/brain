@@ -59,7 +59,7 @@ Implement model-visible session inspection in your platform. The [platform examp
 
 ## Persist private overrides
 
-Provide `Options.ToolKeys` or configure [`tool_credential_keys`](/docs/reference/configuration#private-credential-keys) before accepting direct provider credentials. Model credentials use `Options.Keys` / `credential_keys` separately. Distributed provider keys are configured in Tools. Keep keys independently of the SQL database and checkpoint archive.
+Provide `Options.StorageKeys` (the `storage.Keys` interface) or configure [`storage_keys`](/docs/reference/configuration#private-credential-keys) for embedded persistence. Storage encrypts model and provider credentials on write and decrypts them on read. In distributed deployments, configure keys in Storage. Keep keys independently of the SQL database and checkpoint archive.
 
 ```typescript
 import { Pi, Brain, Model, ManagedTool } from "@aexhq/brain";

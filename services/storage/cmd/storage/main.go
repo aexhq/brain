@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/aexhq/brain/services/shared/telemetry"
+	"github.com/aexhq/brain/services/storage"
 	"github.com/aexhq/brain/services/storage/internal/adapters"
 	"github.com/aexhq/brain/services/storage/internal/adapters/dynamodb"
 	"github.com/aexhq/brain/services/storage/internal/adapters/filesystem"
@@ -27,17 +28,18 @@ import (
 )
 
 type config struct {
-	Listen           string          `json:"listen"`
-	DataDir          string          `json:"data_dir"`
-	TokenEnv         string          `json:"token_env"`
-	MemoryBytes      int64           `json:"memory_bytes"`
-	DiskBytes        int64           `json:"disk_bytes"`
-	MemoryTTLSeconds int             `json:"memory_ttl_seconds"`
-	DiskTTLSeconds   int             `json:"disk_ttl_seconds"`
-	SyncSeconds      int             `json:"sync_seconds"`
-	Objects          adapters.Config `json:"objects"`
-	Metadata         adapters.Config `json:"metadata"`
-	MetadataBytes    int64           `json:"metadata_disk_bytes"`
+	Keys             *storage.KeyConfig `json:"credential_keys,omitempty"`
+	Listen           string             `json:"listen"`
+	DataDir          string             `json:"data_dir"`
+	TokenEnv         string             `json:"token_env"`
+	MemoryBytes      int64              `json:"memory_bytes"`
+	DiskBytes        int64              `json:"disk_bytes"`
+	MemoryTTLSeconds int                `json:"memory_ttl_seconds"`
+	DiskTTLSeconds   int                `json:"disk_ttl_seconds"`
+	SyncSeconds      int                `json:"sync_seconds"`
+	Objects          adapters.Config    `json:"objects"`
+	Metadata         adapters.Config    `json:"metadata"`
+	MetadataBytes    int64              `json:"metadata_disk_bytes"`
 }
 
 func backend(ctx context.Context, c adapters.Config) (adapters.Adapter, error) {
@@ -107,6 +109,9 @@ func run() error {
 	if d.Decode(new(any)) != io.EOF {
 		return errors.New("trailing configuration data")
 	}
+	if err := c.Keys.Validate(); err != nil {
+		return err
+	}
 	if c.DataDir == "" || c.SyncSeconds <= 0 {
 		return errors.New("data directory and positive synchronization interval are required")
 	}
@@ -153,7 +158,11 @@ func run() error {
 		return e
 	}
 	defer metadataCache.Close()
-	records := &metadata.Store{Disk: metadataCache, Remote: index, Objects: objects}
+	var keys storage.Keys
+	if c.Keys != nil {
+		keys = c.Keys
+	}
+	records := &metadata.Store{Keys: keys, Disk: metadataCache, Remote: index, Objects: objects}
 	h, e := (&server.Server{Store: records, Token: os.Getenv(c.TokenEnv)}).Handler()
 	if e != nil {
 		return e

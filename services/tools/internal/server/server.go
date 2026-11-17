@@ -121,12 +121,10 @@ func (s *Server) rpc(w http.ResponseWriter, r *http.Request) {
 	var out api.Frame
 	var err error
 	switch in.Operation {
-	case "credentials.seal":
-		out.Credentials, err = s.Registry.SealCredentials(ctx, in.Session, in.Inputs)
+	case "credentials.prepare":
+		out.Credentials, err = s.Registry.PrepareCredentials(ctx, in.Session, in.Inputs)
 	case "credentials.validate":
 		err = s.Registry.ValidateCredentials(ctx, in.Session)
-	case "credentials.rotate":
-		out.Credentials, err = s.Registry.RotateCredentials(ctx, in.Session)
 	case "bind":
 		err = s.Registry.Bind(ctx, &in.Session)
 		out.Session = &in.Session

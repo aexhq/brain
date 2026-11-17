@@ -18,7 +18,7 @@ import (
 
 func persistentEngine(t *testing.T, objects persistence.Objects) (*Engine, *testFactory) {
 	t.Helper()
-	db, err := store.Open(t.TempDir())
+	db, err := store.Open(t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

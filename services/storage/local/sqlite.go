@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/aexhq/brain/services/storage"
 	"github.com/aexhq/brain/services/storage/api/credential"
+	"github.com/aexhq/brain/services/storage/internal/credentialcipher"
 	"time"
 
 	core "github.com/aexhq/brain/services/brain/api"
@@ -15,7 +17,10 @@ import (
 )
 
 // SQLite implements the authoritative local metadata database.
-type SQLite struct{ db *sql.DB }
+type SQLite struct {
+	db   *sql.DB
+	Keys storage.Keys
+}
 
 func OpenSQLite(file string) (*SQLite, error) {
 	db, err := sql.Open("sqlite", file)
@@ -49,7 +54,7 @@ func (s *SQLite) Create(ctx context.Context, session core.Session) error {
 	if _, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,tenant,created,data) VALUES(?,?,?,?)`, core.SessionKey(session.Tenant, session.ID), session.Tenant, session.CreatedAt.Format(time.RFC3339Nano), data); err != nil {
 		return err
 	}
-	if err := insertCredentials(ctx, tx, session); err != nil {
+	if err := s.insertCredentials(ctx, tx, session); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -72,6 +77,9 @@ func (s *SQLite) Get(ctx context.Context, id string) (core.Session, error) {
 		return core.Session{}, core.E(core.NotFound, "session not found")
 	}
 	session.Credentials, err = s.credentials(ctx, session)
+	if err == nil {
+		err = credential.ValidateCatalog(session.CredentialBindings, session.Credentials)
+	}
 	return session, err
 }
 
@@ -162,15 +170,19 @@ func (s *SQLite) Import(ctx context.Context, session core.Session) error {
 	if err != nil {
 		return err
 	}
-	if err := insertCredentials(ctx, tx, session); err != nil {
+	if err := s.insertCredentials(ctx, tx, session); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
 // Existing private state wins during restore, including a revocation tombstone.
-func insertCredentials(ctx context.Context, tx *sql.Tx, session core.Session) error {
-	for _, record := range session.Credentials {
+func (s *SQLite) insertCredentials(ctx context.Context, tx *sql.Tx, session core.Session) error {
+	records, err := credentialcipher.SealRecords(ctx, s.Keys, session.Tenant, session.ID, session.Credentials)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
 		data, err := json.Marshal(record)
 		if err != nil {
 			return err
@@ -187,19 +199,22 @@ func (s *SQLite) credentials(ctx context.Context, session core.Session) ([]crede
 		return nil, err
 	}
 	defer rows.Close()
-	result := []credential.Record{}
+	result := []credentialcipher.Record{}
 	for rows.Next() {
 		var data []byte
 		if err := rows.Scan(&data); err != nil {
 			return nil, err
 		}
-		var record credential.Record
+		var record credentialcipher.Record
 		if err := json.Unmarshal(data, &record); err != nil {
 			return nil, err
 		}
 		result = append(result, record)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return credentialcipher.OpenRecords(ctx, s.Keys, session.Tenant, session.ID, result)
 }
 
 // RevokeCredential retains a tombstone so old checkpoints cannot resurrect it.
@@ -231,15 +246,18 @@ func touchCredentials(ctx context.Context, tx *sql.Tx, tenant, id string) error 
 	return err
 }
 
-// RotateCredentials re-encrypts a session's records atomically; callers supply
-// only ciphertext produced with the independent key provider.
+// RotateCredentials rewrites live values using Storage's active key.
 func (s *SQLite) RotateCredentials(ctx context.Context, session core.Session) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	for _, record := range session.Credentials {
+	records, err := credentialcipher.SealRecords(ctx, s.Keys, session.Tenant, session.ID, session.Credentials)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
 		if record.Revoked {
 			continue
 		}

@@ -9,7 +9,7 @@ import (
 )
 
 func TestRestoreHandlesCannotMoveOrDeleteOutsideStorage(t *testing.T) {
-	s, err := Open(t.TempDir())
+	s, err := Open(t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

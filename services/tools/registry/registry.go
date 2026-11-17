@@ -13,7 +13,6 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/aexhq/brain/internal/credentialcipher"
 	core "github.com/aexhq/brain/services/brain/api"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -45,7 +44,6 @@ type Registry struct {
 	tools      map[string]compiled
 	transports map[string]Transport
 	Providers  map[string]Provider
-	Keys       credentialcipher.Keys
 	Runtime    RuntimeProvider
 }
 type Request struct {

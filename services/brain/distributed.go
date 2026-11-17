@@ -66,7 +66,7 @@ func newDistributed(ctx context.Context, o Options) (_ *Server, err error) {
 	s.close = append(s.close, pool.Close)
 	auth := core.NewAuth(c.Tokens)
 	auth.Application = o.Authenticate
-	s.engine, err = session.New(session.Options{IdleTTL: time.Duration(deps.IdleTTLSeconds) * time.Second, Inputs: s.remote, Store: s.remote, Archive: &workspace.Archive{Workspace: s.remote}, Tools: toolClient, Keys: o.Keys, Factories: map[string]harness.Factory{"pi": factory}, Provider: o.resolveModel, MaxActive: c.Limits.Active, MaxLoaded: c.Limits.Loaded, MaxQueue: c.Limits.Queue, MaxInputBytes: c.Limits.InputBytes, MaxLogBytes: c.Limits.SessionBytes, Logger: logger, Metrics: metrics, MediaOrigins: c.MediaOrigins, Inspection: func(v core.Session) (string, string, func()) {
+	s.engine, err = session.New(session.Options{IdleTTL: time.Duration(deps.IdleTTLSeconds) * time.Second, Inputs: s.remote, Store: s.remote, Archive: &workspace.Archive{Workspace: s.remote}, Tools: toolClient, Factories: map[string]harness.Factory{"pi": factory}, Provider: o.resolveModel, MaxActive: c.Limits.Active, MaxLoaded: c.Limits.Loaded, MaxQueue: c.Limits.Queue, MaxInputBytes: c.Limits.InputBytes, MaxLogBytes: c.Limits.SessionBytes, Logger: logger, Metrics: metrics, MediaOrigins: c.MediaOrigins, Inspection: func(v core.Session) (string, string, func()) {
 		token, revoke := auth.Delegate(v)
 		return token, c.PublicURL, revoke
 	}})

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/aexhq/brain/services/storage"
 	"testing"
 
 	core "github.com/aexhq/brain/services/brain/api"
@@ -12,12 +13,12 @@ import (
 	tools "github.com/aexhq/brain/services/tools/registry"
 )
 
-func TestModelAndToolCredentialOwnersUseIndependentKeys(t *testing.T) {
+func TestModelAndToolCredentialsUseStorageKeys(t *testing.T) {
 	o, _ := modelOptions(t)
 	t.Setenv("TOOL_KEY_FIRST", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32)))
 	t.Setenv("TOOL_KEY_SECOND", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32)))
-	toolKeys := &KeyConfig{ActiveID: "first", Environments: map[string]string{"first": "TOOL_KEY_FIRST", "second": "TOOL_KEY_SECOND"}}
-	o.ToolKeys = toolKeys
+	keys := &storage.KeyConfig{ActiveID: "first", Environments: map[string]string{"first": "TOOL_KEY_FIRST", "second": "TOOL_KEY_SECOND"}}
+	o.StorageKeys = keys
 	secret := json.RawMessage(`{"token":"tool-only-secret"}`)
 	o.Providers = map[string]ToolProvider{"data": {
 		Parameters: json.RawMessage(`{"type":"object"}`),
@@ -43,19 +44,18 @@ func TestModelAndToolCredentialOwnersUseIndependentKeys(t *testing.T) {
 	if err := s.engine.ValidateCredentials(ctx, v); err != nil {
 		t.Fatal(err)
 	}
-	if value, err := modelcredential.Open(ctx, toolKeys, v); err == nil || value != nil {
-		t.Fatal("Tools keys decrypted model credentials")
+	if value, err := modelcredential.Resolve(v); err != nil || value.APIKey != "model-only-secret" {
+		t.Fatalf("model credential: %v", err)
 	}
 	registry, err := tools.New(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer registry.Close()
-	registry.Keys = o.Keys
-	if err := registry.ValidateCredentials(ctx, v); err == nil {
-		t.Fatal("model keys decrypted tool credentials")
+	if err := registry.ValidateCredentials(ctx, v); err != nil {
+		t.Fatal(err)
 	}
-	toolKeys.ActiveID = "second"
+	keys.ActiveID = "second"
 	if err := s.RotateCredentials(ctx, "one", v.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -63,13 +63,9 @@ func TestModelAndToolCredentialOwnersUseIndependentKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, record := range v.Credentials {
-		if record.Binding == "data" && record.Key != "second" {
-			t.Fatal("tool rotation used the model key provider")
-		}
-		if record.Binding == modelcredential.Binding && record.Key != "test" {
-			t.Fatal("model rotation used the Tools key provider")
-		}
+	delete(keys.Environments, "first")
+	if _, err := s.db.Get(core.WithTenant(ctx, "one"), v.ID); err != nil {
+		t.Fatalf("storage rotation: %v", err)
 	}
 	// Both revocation tombstones must survive subsequent rotation.
 	if err := s.RevokeCredential(ctx, "one", v.ID, "data"); err != nil {

@@ -105,7 +105,7 @@ func TestReplayLiveBoundaryAndSlowSubscriber(t *testing.T) {
 
 func TestMetadataTenantAndRestart(t *testing.T) {
 	root := t.TempDir()
-	s, err := Open(root)
+	s, err := Open(root, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestMetadataTenantAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Close()
-	s, err = Open(root)
+	s, err = Open(root, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
