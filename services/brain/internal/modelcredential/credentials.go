@@ -13,7 +13,7 @@ import (
 const Binding = "$model"
 
 func scope(s core.Session) credentialcipher.Scope {
-	return credentialcipher.Scope{Domain: "model", Tenant: s.Tenant, Session: s.ID, Binding: Binding}
+	return credentialcipher.Scope{Tenant: s.Tenant, Session: s.ID, Binding: Binding}
 }
 
 func Seal(ctx context.Context, keys credentialcipher.Keys, s core.Session, value *core.ModelCredential) (credential.Record, error) {

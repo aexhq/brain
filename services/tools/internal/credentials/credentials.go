@@ -77,5 +77,5 @@ func Validate(ctx context.Context, keys credentialcipher.Keys, s core.Session) e
 }
 
 func scope(s core.Session, binding string) credentialcipher.Scope {
-	return credentialcipher.Scope{Domain: "tool", Tenant: s.Tenant, Session: s.ID, Binding: binding}
+	return credentialcipher.Scope{Tenant: s.Tenant, Session: s.ID, Binding: binding}
 }

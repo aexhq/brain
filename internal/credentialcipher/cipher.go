@@ -17,10 +17,10 @@ type Keys interface {
 	Get(context.Context, string) ([]byte, error)
 }
 
-type Scope struct{ Domain, Tenant, Session, Binding string }
+type Scope struct{ Tenant, Session, Binding string }
 
 func (s Scope) ownership() []byte {
-	b, _ := json.Marshal([]string{s.Domain, s.Tenant, s.Session, s.Binding})
+	b, _ := json.Marshal([]string{s.Tenant, s.Session, s.Binding})
 	return b
 }
 

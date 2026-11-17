@@ -103,8 +103,8 @@ only provider credential records; model records stay on the model execution path
 Each owner has its own configured key provider. Storage persists opaque envelopes,
 including revocation tombstones and checkpoint recovery material, without keys.
 
-Shared cryptographic code is private infrastructure and accepts explicit domain,
-tenant, session and binding scope. It contains no session or authorization policy.
+Shared cryptographic code is private infrastructure and accepts explicit tenant, session
+and binding scope. Model and tool binding namespaces are disjoint. It contains no session or authorization policy.
 Encrypted records belong to Storage's service contract and are excluded from public
 session JSON and generated schemas. There is no general decrypt endpoint.
 

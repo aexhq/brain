@@ -99,7 +99,7 @@ Completion means Brain needs no storage-owned local data directory or independen
 
 ### Credential ownership
 
-Tools owns provider credential sealing, authorized decryption, recovery validation and rotation. Brain owns model credentials and routes provider inputs through the Tools contract before atomic session persistence. Separate key providers and domain-authenticated encryption keep model and tool custody distinct. Storage owns opaque encrypted records, checkpoints and revocation persistence. Shared crypto is private infrastructure under `internal/credentialcipher`; tool authors receive only their authorized binding credential. There is no public decrypt endpoint.
+Tools owns provider credential sealing, authorized decryption, recovery validation and rotation. Brain owns model credentials and routes provider inputs through the Tools contract before atomic session persistence. Separate key providers and disjoint authenticated binding namespaces keep model and tool custody distinct. Storage owns opaque encrypted records, checkpoints and revocation persistence. Shared crypto is private infrastructure under `internal/credentialcipher`; tool authors receive only their authorized binding credential. There is no public decrypt endpoint.
 
 ### Public tool naming
 
