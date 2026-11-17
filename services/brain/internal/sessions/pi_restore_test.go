@@ -41,7 +41,7 @@ func TestPiRestorePreservesNextModelRequest(t *testing.T) {
 	runner := filepath.Join(filepath.Dir(file), "..", "..", "..", "..", "runtimes", "pi", "dist", "main.js")
 	objects := persistence.FileObjects{Root: t.TempDir()}
 	newEngine := func() *Engine {
-		db, err := store.Open(t.TempDir())
+		db, err := store.Open(t.TempDir(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}

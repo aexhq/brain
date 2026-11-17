@@ -4,6 +4,9 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"github.com/aexhq/brain/services/storage"
 	"github.com/aexhq/brain/services/storage/api/credential"
 	"io"
 	"strings"
@@ -88,9 +91,12 @@ func TestCaptureRequiresCompleteStateAndPublishesOnlyCoherentCheckpoint(t *testi
 	ctx, cancel := context.WithTimeout(core.WithTenant(context.Background(), "tenant"), 10*time.Second)
 	defer cancel()
 	client, records := service(t, memory.New(), memory.New())
+	t.Setenv("STORAGE_TEST_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	records.Keys = &storage.KeyConfig{ActiveID: "test", Environments: map[string]string{"test": "STORAGE_TEST_KEY"}}
 	w := &workspace.Workspace{Client: client, Owner: "brain", Epoch: 1, MaxBytes: 16 << 20}
 	s := core.Session{ID: "state", Tenant: "tenant", Status: "idle", Checkpoint: &core.Checkpoint{ID: core.ID()}}
-	s.Credentials = []credential.Record{{Binding: "model", Key: "test", Ciphertext: []byte("encrypted-test-state")}}
+	s.CredentialBindings = []string{"model"}
+	s.Credentials = []credential.Record{{Binding: "model", Value: json.RawMessage(`"private-test-state"`)}}
 	if err := w.Create(ctx, s); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +150,7 @@ func TestCaptureRequiresCompleteStateAndPublishesOnlyCoherentCheckpoint(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored.Session.Tenant != s.Tenant || len(restored.Session.Credentials) != 1 || !bytes.Equal(restored.Session.Credentials[0].Ciphertext, s.Credentials[0].Ciphertext) {
+	if restored.Session.Tenant != s.Tenant || len(restored.Session.Credentials) != 1 || !bytes.Equal(restored.Session.Credentials[0].Value, s.Credentials[0].Value) {
 		t.Fatal("restore lost private session identity or credentials")
 	}
 	if err = w.InstallRestore(ctx, restored.Session, ref); err != nil {

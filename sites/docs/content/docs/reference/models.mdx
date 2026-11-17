@@ -46,7 +46,7 @@ When `api_key_env` is present, that environment variable must be set and non-emp
 
 ## Private model credentials
 
-`POST /sessions` accepts `model_credential` separately from `config` and tool `credentials`. Creation requires session-management authority and an independent [credential key](/docs/reference/configuration#private-credential-keys). Application provider authorization runs at admission and before each turn. The JSON-encoded credential object is limited to 65,536 bytes; the total HTTP request body limit also applies.
+`POST /sessions` accepts `model_credential` separately from `config` and tool `credentials`. Creation requires session-management authority and a configured [storage encryption key](/docs/reference/configuration#private-credential-keys). Application provider authorization runs at admission and before each turn. The JSON-encoded credential object is limited to 65,536 bytes; the total HTTP request body limit also applies.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |

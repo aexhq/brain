@@ -122,11 +122,11 @@ func (c *Client) CloseSession(tenant, id string) {
 	_, _ = c.Do(ctx, Request{Operation: "close", Tenant: tenant, Session: core.Session{ID: id}}, nil)
 }
 
-func (c *Client) SealCredentials(ctx context.Context, s core.Session, inputs []core.CredentialInput) ([]credential.Record, error) {
+func (c *Client) PrepareCredentials(ctx context.Context, s core.Session, inputs []core.CredentialInput) ([]credential.Record, error) {
 	if len(inputs) == 0 {
 		return nil, nil
 	}
-	in := input("credentials.seal", s)
+	in := input("credentials.prepare", s)
 	in.Inputs = inputs
 	f, err := c.Do(ctx, in, nil)
 	return f.Credentials, err
@@ -134,8 +134,4 @@ func (c *Client) SealCredentials(ctx context.Context, s core.Session, inputs []c
 func (c *Client) ValidateCredentials(ctx context.Context, s core.Session) error {
 	_, err := c.Do(ctx, input("credentials.validate", s), nil)
 	return err
-}
-func (c *Client) RotateCredentials(ctx context.Context, s core.Session) ([]credential.Record, error) {
-	f, err := c.Do(ctx, input("credentials.rotate", s), nil)
-	return f.Credentials, err
 }

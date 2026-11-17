@@ -9,6 +9,7 @@ import (
 	"github.com/aexhq/brain/services/brain/internal/http"
 	"github.com/aexhq/brain/services/brain/internal/sessions"
 	"github.com/aexhq/brain/services/brain/internal/telemetry"
+	"github.com/aexhq/brain/services/storage"
 	"github.com/aexhq/brain/services/storage/archive"
 	workspace "github.com/aexhq/brain/services/storage/client"
 	"github.com/aexhq/brain/services/storage/local"
@@ -30,8 +31,7 @@ type Options struct {
 	Authenticate func(*http.Request) (Grant, bool)
 	Harnesses    map[string]HarnessFactory
 	Providers    map[string]ToolProvider
-	Keys         CredentialKeys
-	ToolKeys     CredentialKeys
+	StorageKeys  storage.Keys
 	Logger       *slog.Logger
 }
 
@@ -48,8 +48,8 @@ type Server struct {
 }
 
 func validate(o *Options) error {
-	if o.Config.Services != nil && (o.ToolKeys != nil || o.Config.ToolCredentialKeys != nil) {
-		return errors.New("distributed Tools owns provider credential keys")
+	if o.Config.Services != nil && (o.StorageKeys != nil || o.Config.StorageKeys != nil) {
+		return errors.New("configure encryption keys in Storage for distributed deployments")
 	}
 	poolLimits := o.Config.HostPool
 	if o.HostPool != nil {
@@ -104,11 +104,8 @@ func Validate(o Options) error {
 }
 
 func New(ctx context.Context, o Options) (_ *Server, err error) {
-	if o.Keys == nil && o.Config.CredentialKeys != nil {
-		o.Keys = o.Config.CredentialKeys
-	}
-	if o.ToolKeys == nil && o.Config.ToolCredentialKeys != nil {
-		o.ToolKeys = o.Config.ToolCredentialKeys
+	if o.StorageKeys == nil && o.Config.StorageKeys != nil {
+		o.StorageKeys = o.Config.StorageKeys
 	}
 	if err = validate(&o); err != nil {
 		return nil, err
@@ -138,7 +135,6 @@ func New(ctx context.Context, o Options) (_ *Server, err error) {
 	s.close = append(s.close, func() error { bridge.Close(); return nil })
 	registry.Runtime = bridge
 	registry.Providers = o.Providers
-	registry.Keys = o.ToolKeys
 	metrics, shutdownTelemetry, err := telemetry.Setup(ctx)
 	if err != nil {
 		return nil, err
@@ -148,7 +144,7 @@ func New(ctx context.Context, o Options) (_ *Server, err error) {
 		defer cancel()
 		return shutdownTelemetry(ctx)
 	})
-	db, err := store.Open(o.Config.DataDir)
+	db, err := store.Open(o.Config.DataDir, o.StorageKeys)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +161,7 @@ func New(ctx context.Context, o Options) (_ *Server, err error) {
 		if c, ok := objects.(io.Closer); ok {
 			s.close = append(s.close, c.Close)
 		}
-		a := &persistence.Archive{Objects: objects, MaxSessionBytes: o.Config.Limits.SessionBytes}
+		a := &persistence.Archive{Keys: o.StorageKeys, Objects: objects, MaxSessionBytes: o.Config.Limits.SessionBytes}
 		archive = a
 		if p.PostgresEnv != "" {
 			metadata, err := persistence.NewPostgres(os.Getenv(p.PostgresEnv))
@@ -212,7 +208,7 @@ func New(ctx context.Context, o Options) (_ *Server, err error) {
 		}
 	}
 	l := o.Config.Limits
-	s.engine, err = session.New(session.Options{MediaOrigins: o.Config.MediaOrigins, Store: db, Keys: o.Keys, Tools: registry, Factories: factories, Provider: o.resolveModel, MaxActive: l.Active, MaxLoaded: l.Loaded, MaxQueue: l.Queue, MaxInputBytes: l.InputBytes, MaxLogBytes: l.SessionBytes, Logger: logger, Metrics: metrics, Archive: archive, SyncQueue: queue, SyncInterval: interval, Inspection: func(s core.Session) (string, string, func()) {
+	s.engine, err = session.New(session.Options{MediaOrigins: o.Config.MediaOrigins, Store: db, Tools: registry, Factories: factories, Provider: o.resolveModel, MaxActive: l.Active, MaxLoaded: l.Loaded, MaxQueue: l.Queue, MaxInputBytes: l.InputBytes, MaxLogBytes: l.SessionBytes, Logger: logger, Metrics: metrics, Archive: archive, SyncQueue: queue, SyncInterval: interval, Inspection: func(s core.Session) (string, string, func()) {
 		token, revoke := auth.Delegate(s)
 		return token, o.Config.PublicURL, revoke
 	}})
@@ -294,7 +290,7 @@ func (s *Server) RevokeCredential(ctx context.Context, tenant, sessionID, bindin
 			for i := range current.Credentials {
 				if current.Credentials[i].Binding == binding {
 					current.Credentials[i].Revoked = true
-					current.Credentials[i].Ciphertext = nil
+					current.Credentials[i].Value = nil
 					found = true
 				}
 			}
@@ -312,11 +308,6 @@ func (s *Server) RevokeCredential(ctx context.Context, tenant, sessionID, bindin
 // Keep old keys until every retained checkpoint that needs them has expired.
 func (s *Server) RotateCredentials(ctx context.Context, tenant, sessionID string) error {
 	return s.engine.ChangeCredentials(ctx, tenant, sessionID, func(current core.Session) error {
-		sealed, err := s.engine.RotateCredentials(ctx, current)
-		if err != nil {
-			return err
-		}
-		current.Credentials = sealed
 		if s.remote != nil {
 			current.UpdatedAt = time.Now().UTC()
 			return s.remote.Save(ctx, current)

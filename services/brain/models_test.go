@@ -50,7 +50,7 @@ func modelOptions(t *testing.T) (Options, *modelFactory) {
 	cfg.DataDir = t.TempDir()
 	cfg.Persistence = &Persistence{Provider: "filesystem", Directory: t.TempDir(), IntervalSeconds: 3600, Queue: 32}
 	f := &modelFactory{opened: make(chan HarnessOptions, 16)}
-	return Options{Config: cfg, Keys: modelKeys{}, Models: map[string]ModelProvider{"test": NewModelProvider("startup-key")},
+	return Options{Config: cfg, StorageKeys: modelKeys{}, Models: map[string]ModelProvider{"test": NewModelProvider("startup-key")},
 		Harnesses: map[string]HarnessFactory{"test": f}, Authenticate: func(r *http.Request) (Grant, bool) {
 			return Grant{Tenant: "one", Manage: true}, r.Header.Get("Authorization") == "Bearer app-token"
 		}}, f
@@ -227,7 +227,7 @@ func TestModelOverridesFailClosedAndReferencesAreTenantScoped(t *testing.T) {
 		}
 		provider.Credentials = nil
 		// A missing encrypted row must fail instead of selecting the startup key.
-		if _, err := modelcredential.Open(ctx, o.Keys, provider); err == nil {
+		if _, err := modelcredential.Resolve(provider); err == nil {
 			t.Fatal("missing model record accepted")
 		}
 	}

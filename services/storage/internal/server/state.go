@@ -13,6 +13,7 @@ import (
 
 	core "github.com/aexhq/brain/services/brain/api"
 	"github.com/aexhq/brain/services/storage/api"
+	"github.com/aexhq/brain/services/storage/internal/credentialcipher"
 	"github.com/aexhq/brain/services/storage/local"
 )
 
@@ -21,7 +22,7 @@ type nativeState struct {
 	Files   []core.NativeFile `json:"files"`
 }
 type snapshot struct {
-	Record api.Record `json:"record"`
+	Record json.RawMessage `json:"record"`
 }
 
 func (s *Server) owned(ctx context.Context, i api.Identity) (api.Record, error) {
@@ -217,7 +218,11 @@ func (s *Server) snapshot(ctx context.Context, i api.Identity, r api.Record) (st
 		return "", core.E(core.Invalid, "session has no usable checkpoint")
 	}
 	r.Snapshot = ""
-	data, err := json.Marshal(snapshot{Record: r})
+	record, err := credentialcipher.EncodeRecord(ctx, s.Store.Keys, r)
+	if err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(snapshot{Record: record})
 	if err != nil {
 		return "", err
 	}
@@ -239,16 +244,23 @@ func (s *Server) readSnapshot(ctx context.Context, i api.Identity, ref string) (
 	d := json.NewDecoder(bytes.NewReader(object.Data))
 	d.DisallowUnknownFields()
 	if err = d.Decode(&v); err != nil {
-		return v.Record, err
+		return api.Record{}, err
 	}
-	if d.Decode(new(any)) != io.EOF || v.Record.Session.Checkpoint == nil {
-		return v.Record, errors.New("invalid snapshot")
+	if d.Decode(new(any)) != io.EOF {
+		return api.Record{}, errors.New("invalid snapshot")
 	}
-	if v.Record.Tenant != i.Tenant || v.Record.Session.ID != i.Session {
-		return v.Record, core.E(core.Forbidden, "snapshot belongs to another session")
+	r, err := credentialcipher.DecodeRecord(ctx, s.Store.Keys, v.Record)
+	if err != nil {
+		return api.Record{}, err
 	}
-	v.Record.Snapshot = ref
-	return v.Record, nil
+	if r.Session.Checkpoint == nil {
+		return api.Record{}, errors.New("invalid snapshot")
+	}
+	if r.Tenant != i.Tenant || r.Session.ID != i.Session {
+		return api.Record{}, core.E(core.Forbidden, "snapshot belongs to another session")
+	}
+	r.Snapshot = ref
+	return r, nil
 }
 
 func (s *Server) boundary(ctx context.Context, i api.Identity, r api.Record, until int64) (api.Record, error) {

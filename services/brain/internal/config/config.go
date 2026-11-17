@@ -2,7 +2,6 @@
 package config
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,9 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/aexhq/brain/internal/credentialcipher"
 	"github.com/aexhq/brain/runtimes/host"
 	core "github.com/aexhq/brain/services/brain/api"
+	"github.com/aexhq/brain/services/storage"
 	"github.com/aexhq/brain/services/storage/archive"
 	"github.com/aexhq/brain/services/tools/registry"
 )
@@ -38,8 +37,6 @@ type Runner struct {
 	MaxStarting     int                `json:"max_starting,omitempty"`
 }
 
-type KeyConfig = credentialcipher.KeyConfig
-
 type Limits struct {
 	Active           int   `json:"active"`
 	Loaded           int   `json:"loaded"`
@@ -51,20 +48,19 @@ type Limits struct {
 	SubscriberBytes  int64 `json:"subscriber_bytes"`
 }
 type Config struct {
-	Services           *Services             `json:"services,omitempty"`
-	MediaOrigins       []string              `json:"media_origins,omitempty"`
-	HostPool           harness.PoolLimits    `json:"host_pool,omitempty"`
-	ToolCredentialKeys *KeyConfig            `json:"tool_credential_keys,omitempty"`
-	CredentialKeys     *KeyConfig            `json:"credential_keys,omitempty"`
-	Listen             string                `json:"listen"`
-	PublicURL          string                `json:"public_url"`
-	DataDir            string                `json:"data_dir"`
-	Tokens             []Token               `json:"tokens"`
-	Harnesses          map[string]Runner     `json:"harnesses"`
-	Providers          map[string]Provider   `json:"providers"`
-	Tools              []tools.Binding       `json:"tools"`
-	Limits             Limits                `json:"limits"`
-	Persistence        *persistence.Settings `json:"persistence,omitempty"`
+	Services     *Services             `json:"services,omitempty"`
+	MediaOrigins []string              `json:"media_origins,omitempty"`
+	HostPool     harness.PoolLimits    `json:"host_pool,omitempty"`
+	StorageKeys  *storage.KeyConfig    `json:"storage_keys,omitempty"`
+	Listen       string                `json:"listen"`
+	PublicURL    string                `json:"public_url"`
+	DataDir      string                `json:"data_dir"`
+	Tokens       []Token               `json:"tokens"`
+	Harnesses    map[string]Runner     `json:"harnesses"`
+	Providers    map[string]Provider   `json:"providers"`
+	Tools        []tools.Binding       `json:"tools"`
+	Limits       Limits                `json:"limits"`
+	Persistence  *persistence.Settings `json:"persistence,omitempty"`
 }
 
 type Services struct {
@@ -148,17 +144,8 @@ func (c *Config) ValidateApplication(factories map[string]harness.Factory, exter
 	if err := c.HostPool.Validate(); err != nil {
 		return err
 	}
-	for _, keys := range []*KeyConfig{c.CredentialKeys, c.ToolCredentialKeys} {
-		if keys != nil {
-			if _, _, err := keys.Active(context.Background()); err != nil {
-				return err
-			}
-			for id := range keys.Environments {
-				if _, err := keys.Get(context.Background(), id); err != nil {
-					return err
-				}
-			}
-		}
+	if err := c.StorageKeys.Validate(); err != nil {
+		return err
 	}
 	if c.Persistence != nil {
 		if err := c.Persistence.Validate(); err != nil {

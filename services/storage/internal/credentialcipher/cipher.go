@@ -8,13 +8,17 @@ import (
 	"crypto/cipher"
 	"encoding/json"
 	"errors"
-	"github.com/aexhq/brain/services/storage/api/credential"
+	"github.com/aexhq/brain/services/storage"
 )
 
 // Keys remain independent of session storage and archives.
-type Keys interface {
-	Active(context.Context) (string, []byte, error)
-	Get(context.Context, string) ([]byte, error)
+type Keys = storage.Keys
+
+type Record struct {
+	Binding    string `json:"binding"`
+	Key        string `json:"key,omitempty"`
+	Ciphertext []byte `json:"ciphertext,omitempty"`
+	Revoked    bool   `json:"revoked,omitempty"`
 }
 
 type Scope struct{ Tenant, Session, Binding string }
@@ -35,25 +39,25 @@ func aead(key []byte) (cipher.AEAD, error) {
 	return cipher.NewGCMWithRandomNonce(b)
 }
 
-func Seal(ctx context.Context, keys Keys, scope Scope, value []byte) (credential.Record, error) {
+func Seal(ctx context.Context, keys Keys, scope Scope, value []byte) (Record, error) {
 	if keys == nil {
-		return credential.Record{}, errors.New("private credentials are not configured")
+		return Record{}, errors.New("private credentials are not configured")
 	}
 	id, key, err := keys.Active(ctx)
 	if err != nil {
-		return credential.Record{}, errors.New("credential key unavailable")
+		return Record{}, errors.New("credential key unavailable")
 	}
 	if id == "" {
-		return credential.Record{}, errors.New("credential key identity is required")
+		return Record{}, errors.New("credential key identity is required")
 	}
 	c, err := aead(key)
 	if err != nil {
-		return credential.Record{}, err
+		return Record{}, err
 	}
-	return credential.Record{Binding: scope.Binding, Key: id, Ciphertext: c.Seal(nil, nil, value, scope.ownership())}, nil
+	return Record{Binding: scope.Binding, Key: id, Ciphertext: c.Seal(nil, nil, value, scope.ownership())}, nil
 }
 
-func Open(ctx context.Context, keys Keys, scope Scope, record credential.Record) ([]byte, error) {
+func Open(ctx context.Context, keys Keys, scope Scope, record Record) ([]byte, error) {
 	if keys == nil {
 		return nil, errors.New("credential keys unavailable")
 	}

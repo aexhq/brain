@@ -3,7 +3,6 @@
 package metadata
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,13 +10,16 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"reflect"
 	"sort"
 	"sync"
 	"time"
 
 	core "github.com/aexhq/brain/services/brain/api"
+	"github.com/aexhq/brain/services/storage"
 	"github.com/aexhq/brain/services/storage/api"
 	"github.com/aexhq/brain/services/storage/internal/adapters"
+	"github.com/aexhq/brain/services/storage/internal/credentialcipher"
 	"github.com/aexhq/brain/services/storage/internal/tiering"
 )
 
@@ -26,7 +28,13 @@ type stored struct {
 	RemoteVersion  string     `json:"remote_version,omitempty"`
 	SyncedRevision uint64     `json:"synced_revision"`
 }
+type diskState struct {
+	Record         json.RawMessage `json:"record"`
+	RemoteVersion  string          `json:"remote_version,omitempty"`
+	SyncedRevision uint64          `json:"synced_revision"`
+}
 type Store struct {
+	Keys         storage.Keys
 	Disk, Remote adapters.Adapter
 	Objects      *tiering.Store
 	locks        [64]sync.Mutex
@@ -59,8 +67,11 @@ func (s *Store) read(ctx context.Context, k string) (stored, error) {
 	if errors.Is(err, adapters.ErrNotFound) && s.Remote != nil {
 		o, err = s.Remote.Get(ctx, k)
 		if err == nil {
-			if err = json.Unmarshal(o.Data, &v.Record); err != nil {
+			if v.Record, err = credentialcipher.DecodeRecord(ctx, s.Keys, o.Data); err != nil {
 				return v, err
+			}
+			if key(api.Identity{Tenant: v.Record.Tenant, Session: v.Record.Session.ID}) != k {
+				return v, errors.New("stored session identity mismatch")
 			}
 			v.RemoteVersion = o.Version
 			v.SyncedRevision = v.Record.Revision
@@ -71,7 +82,16 @@ func (s *Store) read(ctx context.Context, k string) (stored, error) {
 	if err != nil {
 		return v, err
 	}
-	err = json.Unmarshal(o.Data, &v)
+	var disk diskState
+	err = json.Unmarshal(o.Data, &disk)
+	if err == nil {
+		v.Record, err = credentialcipher.DecodeRecord(ctx, s.Keys, disk.Record)
+		v.RemoteVersion = disk.RemoteVersion
+		v.SyncedRevision = disk.SyncedRevision
+	}
+	if err == nil && key(api.Identity{Tenant: v.Record.Tenant, Session: v.Record.Session.ID}) != k {
+		return v, errors.New("stored session identity mismatch")
+	}
 	if err == nil && v.Record.Revision == v.SyncedRevision {
 		if cache, ok := s.Disk.(*tiering.Store); ok {
 			err = cache.MarkCommitted(ctx, k, o.Version)
@@ -80,7 +100,11 @@ func (s *Store) read(ctx context.Context, k string) (stored, error) {
 	return v, err
 }
 func (s *Store) write(ctx context.Context, k string, v stored) error {
-	b, err := json.Marshal(v)
+	record, err := credentialcipher.EncodeRecord(ctx, s.Keys, v.Record)
+	if err != nil {
+		return err
+	}
+	b, err := json.Marshal(diskState{record, v.RemoteVersion, v.SyncedRevision})
 	if err != nil {
 		return err
 	}
@@ -382,7 +406,7 @@ func (s *Store) Flush(ctx context.Context, i api.Identity) (api.Record, error) {
 			return v.Record, err
 		}
 	}
-	b, err := json.Marshal(v.Record)
+	b, err := credentialcipher.EncodeRecord(ctx, s.Keys, v.Record)
 	if err != nil {
 		return v.Record, err
 	}
@@ -395,9 +419,9 @@ func (s *Store) Flush(ctx context.Context, i api.Identity) (api.Record, error) {
 		// A previous publish may have committed before its acknowledgement or
 		// local version update was lost. Recover only our own monotonic history.
 		known, readErr := s.Remote.Get(ctx, k)
-		var head api.Record
-		if readErr == nil && json.Unmarshal(known.Data, &head) == nil && head.Owner == v.Record.Owner && head.Epoch == v.Record.Epoch && head.Revision > v.SyncedRevision && head.Revision <= v.Record.Revision {
-			if head.Revision == v.Record.Revision && bytes.Equal(known.Data, b) {
+		head, decodeErr := credentialcipher.DecodeRecord(ctx, s.Keys, known.Data)
+		if readErr == nil && decodeErr == nil && head.Owner == v.Record.Owner && head.Epoch == v.Record.Epoch && head.Revision > v.SyncedRevision && head.Revision <= v.Record.Revision {
+			if head.Revision == v.Record.Revision && reflect.DeepEqual(head, v.Record) {
 				remote, err = known, nil
 			} else if head.Revision < v.Record.Revision {
 				remote, err = s.Remote.Put(ctx, k, b, adapters.Condition{Version: known.Version})

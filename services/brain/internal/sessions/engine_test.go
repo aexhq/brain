@@ -52,7 +52,7 @@ func (r *testRunner) Close() error { return nil }
 
 func setup(t *testing.T) (*Engine, *testFactory, core.Grant) {
 	t.Helper()
-	db, err := store.Open(t.TempDir())
+	db, err := store.Open(t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

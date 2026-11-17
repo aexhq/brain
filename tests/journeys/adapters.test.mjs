@@ -95,7 +95,7 @@ for (const harness of adapters) {
     // Keep the owned native homes inside the inspected fixture on both platforms.
     for (const name of ["TMP", "TEMP", "TMPDIR"]) f.env[name] = f.dir;
     f.env.JOURNEY_KEYS = Buffer.alloc(32, 5).toString("base64");
-    f.settings.credential_keys = { active: "test", keys: { test: "JOURNEY_KEYS" } };
+    f.settings.storage_keys = { active: "test", keys: { test: "JOURNEY_KEYS" } };
     await f.start();
     const customers = [{ client: f.api, key: keys[0], label: "customer-one-context" }, { client: f.b, key: keys[1], label: "customer-two-context" }];
     const sessions = await Promise.all(customers.map(({ client, key }) => client.create({ harness: ({ codex: Codex, opencode: OpenCode })[harness](), model: Model("openai/gpt-4.1-mini", ApiKey(key)), tools: [] })));

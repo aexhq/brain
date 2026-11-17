@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	core "github.com/aexhq/brain/services/brain/api"
+	"github.com/aexhq/brain/services/storage"
 	"github.com/aexhq/brain/services/storage/internal/dirlock"
 )
 
@@ -39,7 +40,7 @@ type Store struct {
 	err  error
 }
 
-func Open(root string) (*Store, error) {
+func Open(root string, keys storage.Keys) (*Store, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
@@ -56,6 +57,7 @@ func Open(root string) (*Store, error) {
 		lock.Close()
 		return nil, err
 	}
+	db.Keys = keys
 	return &Store{Metadata: db, root: root, lock: lock}, nil
 }
 

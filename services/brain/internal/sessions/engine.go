@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aexhq/brain/internal/credentialcipher"
 	"github.com/aexhq/brain/runtimes/host"
 	core "github.com/aexhq/brain/services/brain/api"
 	"github.com/aexhq/brain/services/brain/internal/modelcredential"
@@ -36,7 +35,6 @@ type Options struct {
 	}
 	MediaOrigins  []string
 	Store         Repository
-	Keys          credentialcipher.Keys
 	Tools         ToolExecutor
 	Factories     map[string]harness.Factory
 	Provider      func(context.Context, core.Session, *core.ModelCredential) (harness.Provider, error)
@@ -370,7 +368,7 @@ func clone(s core.Session) core.Session {
 	s.CredentialBindings = slices.Clone(s.CredentialBindings)
 	s.Credentials = slices.Clone(s.Credentials)
 	for i := range s.Credentials {
-		s.Credentials[i].Ciphertext = slices.Clone(s.Credentials[i].Ciphertext)
+		s.Credentials[i].Value = slices.Clone(s.Credentials[i].Value)
 	}
 	if s.Checkpoint != nil {
 		cp := *s.Checkpoint
@@ -481,12 +479,12 @@ func (e *Engine) Create(ctx context.Context, g core.Grant, input core.CreateSess
 		s.Config.Tools = []string{}
 	}
 	var err error
-	s.Credentials, err = e.opts.Tools.SealCredentials(ctx, s, input.Credentials)
+	s.Credentials, err = e.opts.Tools.PrepareCredentials(ctx, s, input.Credentials)
 	if err != nil {
 		return core.Session{}, err
 	}
 	if input.ModelCredential != nil {
-		record, err := modelcredential.Seal(ctx, e.opts.Keys, s, input.ModelCredential)
+		record, err := modelcredential.Prepare(input.ModelCredential)
 		if err != nil {
 			return core.Session{}, err
 		}

@@ -99,7 +99,7 @@ Completion means Brain needs no storage-owned local data directory or independen
 
 ### Credential ownership
 
-The November 17 custody split is superseded by [Brain intents](intents.md#2-ownership-and-boundaries). Storage owns transparent encryption; the [roadmap](roadmap.md#intent-alignment) tracks the implementation change. Earlier implementation sequences in this document describe their historical scope and do not add design requirements.
+The November 17 custody split is superseded by [Brain intents](intents.md#2-ownership-and-boundaries). Storage owns transparent encryption at database and checkpoint writes and decryption at reads. The [roadmap](roadmap.md#intent-alignment) records the implementation status. Earlier implementation sequences in this document describe their historical scope and do not add design requirements.
 
 ### Public tool naming
 

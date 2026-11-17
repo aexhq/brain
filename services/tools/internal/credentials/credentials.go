@@ -1,11 +1,10 @@
-// Package credentials encrypts private binding values before they reach storage.
+// Package credentials validates and resolves private tool binding values.
 package credentials
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
-	"github.com/aexhq/brain/internal/credentialcipher"
+
 	core "github.com/aexhq/brain/services/brain/api"
 	"github.com/aexhq/brain/services/storage/api/credential"
 	"regexp"
@@ -13,12 +12,9 @@ import (
 
 var alias = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]{0,63}$`)
 
-func Seal(ctx context.Context, keys credentialcipher.Keys, s core.Session, inputs []core.CredentialInput) ([]credential.Record, error) {
+func Prepare(s core.Session, inputs []core.CredentialInput) ([]credential.Record, error) {
 	if len(inputs) == 0 {
 		return nil, nil
-	}
-	if keys == nil {
-		return nil, core.E(core.Unsupported, "private credentials are not configured")
 	}
 	allowed := map[string]bool{}
 	for _, b := range s.Config.Bindings {
@@ -32,16 +28,12 @@ func Seal(ctx context.Context, keys credentialcipher.Keys, s core.Session, input
 			return nil, core.E(core.Invalid, "invalid or duplicate private credential binding")
 		}
 		delete(allowed, input.Binding)
-		record, err := credentialcipher.Seal(ctx, keys, scope(s, input.Binding), input.Value)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, record)
+		result = append(result, credential.Record{Binding: input.Binding, Value: append(json.RawMessage(nil), input.Value...)})
 	}
 	return result, nil
 }
 
-func Open(ctx context.Context, keys credentialcipher.Keys, s core.Session, binding string) (json.RawMessage, error) {
+func Resolve(s core.Session, binding string) (json.RawMessage, error) {
 	for _, record := range s.Credentials {
 		if record.Binding != binding {
 			continue
@@ -49,11 +41,10 @@ func Open(ctx context.Context, keys credentialcipher.Keys, s core.Session, bindi
 		if record.Revoked {
 			return nil, core.E(core.Forbidden, "binding credential is revoked")
 		}
-		value, err := credentialcipher.Open(ctx, keys, scope(s, binding), record)
-		if err != nil {
-			return nil, err
+		if !json.Valid(record.Value) {
+			return nil, errors.New("invalid private credential value")
 		}
-		return value, nil
+		return record.Value, nil
 	}
 	for _, required := range s.CredentialBindings {
 		if required == binding {
@@ -64,18 +55,14 @@ func Open(ctx context.Context, keys credentialcipher.Keys, s core.Session, bindi
 }
 
 // Validate checks the complete private catalog, including missing recovery rows.
-func Validate(ctx context.Context, keys credentialcipher.Keys, s core.Session) error {
+func Validate(s core.Session) error {
 	if err := credential.ValidateCatalog(s.CredentialBindings, s.Credentials); err != nil {
 		return err
 	}
 	for _, binding := range s.CredentialBindings {
-		if _, err := Open(ctx, keys, s, binding); err != nil && core.ErrorCode(err) != core.Forbidden {
+		if _, err := Resolve(s, binding); err != nil && core.ErrorCode(err) != core.Forbidden {
 			return err
 		}
 	}
 	return nil
-}
-
-func scope(s core.Session, binding string) credentialcipher.Scope {
-	return credentialcipher.Scope{Tenant: s.Tenant, Session: s.ID, Binding: binding}
 }

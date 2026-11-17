@@ -13,9 +13,6 @@ x-service: &service
 services:
   brain:
     <<: *service
-    environment:
-      <<: *environment
-      BRAIN_MODEL_ENCRYPTION_KEY: ${BRAIN_MODEL_ENCRYPTION_KEY:?Run node scripts/docker-env.mjs}
     image: brain:local-dev
     build: {context: ../.., target: brain}
     ports: [127.0.0.1:8080:8080]
@@ -34,6 +31,9 @@ services:
       retries: 12
   storage:
     <<: *service
+    environment:
+      <<: *environment
+      STORAGE_ENCRYPTION_KEY: ${STORAGE_ENCRYPTION_KEY:?Run node scripts/docker-env.mjs}
     image: brain-storage:local-dev
     build: {context: ../.., target: storage}
     volumes:
@@ -49,9 +49,6 @@ services:
       retries: 12
   tools:
     <<: *service
-    environment:
-      <<: *environment
-      TOOLS_ENCRYPTION_KEY: ${TOOLS_ENCRYPTION_KEY:?Run node scripts/docker-env.mjs}
     image: brain-tools:local-dev
     build: {context: ../.., target: tools}
     volumes: [./tools.json:/config/tools.json:ro]

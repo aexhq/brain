@@ -1,4 +1,5 @@
-package credentialcipher
+// Package storage configures storage-owned persistence.
+package storage
 
 import (
 	"context"
@@ -6,6 +7,11 @@ import (
 	"errors"
 	"os"
 )
+
+type Keys interface {
+	Active(context.Context) (string, []byte, error)
+	Get(context.Context, string) ([]byte, error)
+}
 
 // KeyConfig names deployment environment variables, never encryption key values.
 type KeyConfig struct {
@@ -27,4 +33,20 @@ func (k *KeyConfig) Get(_ context.Context, id string) ([]byte, error) {
 		return nil, errors.New("credential key must be base64-encoded 32 bytes")
 	}
 	return key, nil
+}
+
+// Validate checks all configured keys before opening storage.
+func (k *KeyConfig) Validate() error {
+	if k == nil {
+		return nil
+	}
+	if _, _, err := k.Active(context.Background()); err != nil {
+		return err
+	}
+	for id := range k.Environments {
+		if _, err := k.Get(context.Background(), id); err != nil {
+			return err
+		}
+	}
+	return nil
 }

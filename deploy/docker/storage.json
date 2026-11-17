@@ -1,4 +1,5 @@
 {
+  "credential_keys": {"active": "local", "keys": {"local": "STORAGE_ENCRYPTION_KEY"}},
   "listen": ":8081",
   "data_dir": "/data",
   "token_env": "BRAIN_SERVICE_TOKEN",

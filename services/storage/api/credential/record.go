@@ -1,14 +1,15 @@
-// Package credential defines Storage's opaque private recovery records.
-// Storage persists these envelopes without holding decryption keys.
+// Package credential defines private credential values exchanged with Storage.
 package credential
 
-import "errors"
+import (
+	"encoding/json"
+	"errors"
+)
 
 type Record struct {
-	Binding    string `json:"binding"`
-	Key        string `json:"key"`
-	Ciphertext []byte `json:"ciphertext"`
-	Revoked    bool   `json:"revoked,omitempty"`
+	Binding string          `json:"binding"`
+	Value   json.RawMessage `json:"value,omitempty"`
+	Revoked bool            `json:"revoked,omitempty"`
 }
 
 // ValidateCatalog detects missing, duplicate or unexpected recovery records.
