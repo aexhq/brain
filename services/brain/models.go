@@ -4,9 +4,9 @@ import (
 	"context"
 	"strings"
 
-	"github.com/aexhq/brain/credentials"
 	"github.com/aexhq/brain/runtimes/host"
 	core "github.com/aexhq/brain/services/brain/api"
+	"github.com/aexhq/brain/services/brain/internal/modelcredential"
 )
 
 // ModelContext carries authenticated scope, never model-supplied arguments.
@@ -58,7 +58,7 @@ func (o Options) resolveModel(ctx context.Context, s core.Session, credential *c
 
 // RevokeModelCredential retains a recovery tombstone like tool revocation.
 func (s *Server) RevokeModelCredential(ctx context.Context, tenant, sessionID string) error {
-	return s.RevokeCredential(ctx, tenant, sessionID, credentials.ModelBinding)
+	return s.RevokeCredential(ctx, tenant, sessionID, modelcredential.Binding)
 }
 
 // NewTool declares an ordinary application function using the common tool contract.

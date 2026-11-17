@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aexhq/brain/credentials"
+	"github.com/aexhq/brain/internal/credentialcipher"
 	public "github.com/aexhq/brain/services/brain/api"
 	sandbox "github.com/aexhq/brain/services/sandbox/api"
 	"github.com/aexhq/brain/services/shared/telemetry"
@@ -25,15 +25,15 @@ import (
 )
 
 type settings struct {
-	ProvidersFile string                 `json:"providers_file,omitempty"`
-	Listen        string                 `json:"listen"`
-	Storage       string                 `json:"storage"`
-	Sandbox       string                 `json:"sandbox"`
-	TokenEnv      string                 `json:"token_env"`
-	Tokens        []public.Token         `json:"tokens"`
-	Tools         []tools.Binding        `json:"tools"`
-	Keys          *credentials.KeyConfig `json:"credential_keys,omitempty"`
-	Executors     int                    `json:"executors"`
+	ProvidersFile string                      `json:"providers_file,omitempty"`
+	Listen        string                      `json:"listen"`
+	Storage       string                      `json:"storage"`
+	Sandbox       string                      `json:"sandbox"`
+	TokenEnv      string                      `json:"token_env"`
+	Tokens        []public.Token              `json:"tokens"`
+	Tools         []tools.Binding             `json:"tools"`
+	Keys          *credentialcipher.KeyConfig `json:"credential_keys,omitempty"`
+	Executors     int                         `json:"executors"`
 }
 
 func main() {
@@ -89,6 +89,11 @@ func run() error {
 	if c.Keys != nil {
 		if _, _, e = c.Keys.Active(ctx); e != nil {
 			return e
+		}
+		for id := range c.Keys.Environments {
+			if _, e = c.Keys.Get(ctx, id); e != nil {
+				return e
+			}
 		}
 		r.Keys = c.Keys
 	}

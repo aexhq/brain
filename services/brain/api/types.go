@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/aexhq/brain/services/storage/api/credential"
 	"time"
 )
 
@@ -86,14 +87,6 @@ type ModelCredential struct {
 	Reference string `json:"reference,omitempty"`
 }
 
-// CredentialRecord is private recovery material, not part of the public contract.
-type CredentialRecord struct {
-	Binding    string `json:"binding"`
-	Key        string `json:"key"`
-	Ciphertext []byte `json:"ciphertext"`
-	Revoked    bool   `json:"revoked,omitempty"`
-}
-
 type CreateSession struct {
 	ID              string            `json:"id"`
 	ModelCredential *ModelCredential  `json:"model_credential,omitempty"`
@@ -103,17 +96,17 @@ type CreateSession struct {
 }
 
 type Session struct {
-	ID                 string             `json:"id"`
-	Tenant             string             `json:"-"`
-	Harness            string             `json:"harness"`
-	Config             Config             `json:"config"`
-	Status             string             `json:"status"`
-	CreatedAt          time.Time          `json:"created_at"`
-	UpdatedAt          time.Time          `json:"updated_at"`
-	Checkpoint         *Checkpoint        `json:"checkpoint,omitempty"`
-	Descriptors        []Tool             `json:"descriptors"`
-	CredentialBindings []string           `json:"credential_bindings,omitempty"`
-	Credentials        []CredentialRecord `json:"-"`
+	ID                 string              `json:"id"`
+	Tenant             string              `json:"-"`
+	Harness            string              `json:"harness"`
+	Config             Config              `json:"config"`
+	Status             string              `json:"status"`
+	CreatedAt          time.Time           `json:"created_at"`
+	UpdatedAt          time.Time           `json:"updated_at"`
+	Checkpoint         *Checkpoint         `json:"checkpoint,omitempty"`
+	Descriptors        []Tool              `json:"descriptors"`
+	CredentialBindings []string            `json:"credential_bindings,omitempty"`
+	Credentials        []credential.Record `json:"-"`
 }
 
 type Event struct {

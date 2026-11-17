@@ -8,7 +8,7 @@ docker compose -f deploy/docker/compose.yaml --profile images build
 docker compose -f deploy/docker/compose.yaml up -d --wait
 ```
 
-The environment script creates `deploy/docker/.env` with random API, service and encryption keys. It refuses to overwrite an existing file. Keep this ignored file with the volumes: losing the encryption key prevents recovery of stored credentials.
+The environment script creates `deploy/docker/.env` with random API, service and encryption keys. It refuses to overwrite an existing file. Keep this ignored file with the volumes: losing either encryption key prevents recovery of its stored credentials. Brain receives `BRAIN_MODEL_ENCRYPTION_KEY`; Tools receives `TOOLS_ENCRYPTION_KEY`; Storage receives neither.
 
 Brain listens on `http://127.0.0.1:8080`. Storage, Tools, Sandbox and the OpenTelemetry Collector have no published host ports. The Pi and tool-runtime build targets supply execution images; Compose does not keep those two profiles running. Sandbox starts their containers on demand.
 

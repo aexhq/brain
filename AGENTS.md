@@ -2,6 +2,8 @@
 
 Follow `docs/adr/0001-local-first-session-server.md`. Code and tests own implemented behavior; plans describe work still to do.
 
+- Place domain policy with its owning service. Multiple callers alone do not justify a root or public shared package. Shared internal primitives must not depend on service session or authorization policy.
+- Keep model and provider credential custody separate: Brain owns model coordination, Tools owns provider authorization and decryption, and Storage persists opaque envelopes without keys. Public session contracts must not expose private recovery material.
 - Keep the core small. Harnesses own inference and context; external services own tools and approvals.
 - Fail explicitly. Tool errors become tool results; Brain errors stop the affected execution.
 - Before adding a check or layer, identify a reachable failure and what changes when it fires.

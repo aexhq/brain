@@ -31,7 +31,9 @@ func TestPublicSchemaExcludesPrivateRecoveryState(t *testing.T) {
 			t.Fatalf("missing public %s.id", name)
 		}
 	}
-	if _, ok := schemas["CredentialRecord"]; ok {
-		t.Fatal("private credential records exposed")
+	for _, name := range []string{"CredentialRecord", "Record"} {
+		if _, ok := schemas[name]; ok {
+			t.Fatal("private credential records exposed")
+		}
 	}
 }

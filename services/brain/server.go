@@ -3,7 +3,6 @@ package brain
 import (
 	"context"
 	"errors"
-	"github.com/aexhq/brain/credentials"
 	"github.com/aexhq/brain/runtimes/host"
 	core "github.com/aexhq/brain/services/brain/api"
 	"github.com/aexhq/brain/services/brain/internal/config"
@@ -32,6 +31,7 @@ type Options struct {
 	Harnesses    map[string]HarnessFactory
 	Providers    map[string]ToolProvider
 	Keys         CredentialKeys
+	ToolKeys     CredentialKeys
 	Logger       *slog.Logger
 }
 
@@ -44,11 +44,13 @@ type Server struct {
 	close  []func() error
 	once   sync.Once
 	err    error
-	keys   CredentialKeys
 	bridge *tools.Bridge
 }
 
 func validate(o *Options) error {
+	if o.Config.Services != nil && (o.ToolKeys != nil || o.Config.ToolCredentialKeys != nil) {
+		return errors.New("distributed Tools owns provider credential keys")
+	}
 	poolLimits := o.Config.HostPool
 	if o.HostPool != nil {
 		if poolLimits != (harness.PoolLimits{}) {
@@ -105,6 +107,9 @@ func New(ctx context.Context, o Options) (_ *Server, err error) {
 	if o.Keys == nil && o.Config.CredentialKeys != nil {
 		o.Keys = o.Config.CredentialKeys
 	}
+	if o.ToolKeys == nil && o.Config.ToolCredentialKeys != nil {
+		o.ToolKeys = o.Config.ToolCredentialKeys
+	}
 	if err = validate(&o); err != nil {
 		return nil, err
 	}
@@ -115,7 +120,7 @@ func New(ctx context.Context, o Options) (_ *Server, err error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	s := &Server{keys: o.Keys}
+	s := &Server{}
 	defer func() {
 		if err != nil {
 			for i := len(s.close) - 1; i >= 0; i-- {
@@ -133,7 +138,7 @@ func New(ctx context.Context, o Options) (_ *Server, err error) {
 	s.close = append(s.close, func() error { bridge.Close(); return nil })
 	registry.Runtime = bridge
 	registry.Providers = o.Providers
-	registry.Keys = o.Keys
+	registry.Keys = o.ToolKeys
 	metrics, shutdownTelemetry, err := telemetry.Setup(ctx)
 	if err != nil {
 		return nil, err
@@ -307,21 +312,7 @@ func (s *Server) RevokeCredential(ctx context.Context, tenant, sessionID, bindin
 // Keep old keys until every retained checkpoint that needs them has expired.
 func (s *Server) RotateCredentials(ctx context.Context, tenant, sessionID string) error {
 	return s.engine.ChangeCredentials(ctx, tenant, sessionID, func(current core.Session) error {
-		if err := credentials.Validate(ctx, s.keys, current); err != nil {
-			return err
-		}
-		inputs := []core.CredentialInput{}
-		for _, record := range current.Credentials {
-			if record.Revoked {
-				continue
-			}
-			value, err := credentials.Open(ctx, s.keys, current, record.Binding)
-			if err != nil {
-				return err
-			}
-			inputs = append(inputs, core.CredentialInput{Binding: record.Binding, Value: value})
-		}
-		sealed, err := credentials.Seal(ctx, s.keys, current, inputs)
+		sealed, err := s.engine.RotateCredentials(ctx, current)
 		if err != nil {
 			return err
 		}

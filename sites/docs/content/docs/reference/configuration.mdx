@@ -108,7 +108,8 @@ The configuration sections below also describe the embedded application composit
 | `host_pool` | `object` | `{}` | Optional aggregate host, startup and active-turn ceilings across installed process factories. |
 | `limits` | `Limits` | See below | In-memory, disk, queue, and SSE subscriber bounds (see [`limits`](#resource-limits-limits)). |
 | `persistence` | `Settings` | `null` | Optional background checkpoint storage and session index settings (see [`persistence`](#external-persistence-persistence)). |
-| `credential_keys` | `object` | `null` | Independent encryption key configuration for private session overrides. |
+| `tool_credential_keys` | `object` | `null` | Embedded Tools encryption keys for private provider overrides; configured separately from model keys. |
+| `credential_keys` | `object` | `null` | Encryption keys for private model overrides. |
 
 ## Authentication tokens (`tokens`)
 
@@ -158,7 +159,7 @@ Values must be non-negative. In Go applications, supply `Options.HostPool` from 
 {"credential_keys":{"active":"key-2026","keys":{"key-2026":"BRAIN_CREDENTIAL_KEY"}}}
 ```
 
-`active` selects a key ID from `keys`. Each value names an environment variable containing a base64-encoded 32-byte AES key. Every configured key must be available at startup. Keep retired keys available while retained checkpoints still reference them. Application code may instead supply `Options.Keys` implementing `CredentialKeys`.
+`active` selects a key ID from `keys`. Each value names an environment variable containing a base64-encoded 32-byte AES key. Every configured key must be available at startup. Keep retired keys available while retained checkpoints still reference them. Application code may instead supply `Options.Keys` implementing `CredentialKeys`. Model overrides use `credential_keys` / `Options.Keys`. Embedded provider overrides use `tool_credential_keys` / `Options.ToolKeys`. In distributed deployments, configure provider keys only in the Tools service using its `credential_keys`; Brain rejects local tool keys in distributed mode. Keep model and Tools key material separate. Storage does not receive either key.
 
 Private overrides are authenticated encrypted SQL records, bound to tenant, session, and alias. Creation rejects overrides without configured keys. Public JSON never contains ciphertext or plaintext values. [Credential administration](/docs/sdks/application#persist-private-overrides) covers rotation, revocation, and checkpoint retention.
 

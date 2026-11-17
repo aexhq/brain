@@ -3,6 +3,7 @@ package api
 
 import (
 	core "github.com/aexhq/brain/services/brain/api"
+	"github.com/aexhq/brain/services/storage/api/credential"
 )
 
 const ChunkBytes = 64 << 10
@@ -19,18 +20,18 @@ type Identity struct {
 // Record includes private recovery material. It is never returned by Brain's
 // public API; only authenticated service peers may read Storage records.
 type Record struct {
-	Session         core.Session            `json:"session"`
-	Tenant          string                  `json:"tenant"`
-	Credentials     []core.CredentialRecord `json:"credentials,omitempty"`
-	Owner           string                  `json:"owner"`
-	Epoch           uint64                  `json:"epoch"`
-	Revision        uint64                  `json:"revision"`
-	Transcript      string                  `json:"transcript,omitempty"`
-	TranscriptBytes int64                   `json:"transcript_bytes"`
-	Snapshot        string                  `json:"snapshot,omitempty"`
-	Attachments     string                  `json:"attachments,omitempty"`
-	Native          string                  `json:"native,omitempty"`
-	Deleted         bool                    `json:"deleted,omitempty"`
+	Session         core.Session        `json:"session"`
+	Tenant          string              `json:"tenant"`
+	Credentials     []credential.Record `json:"credentials,omitempty"`
+	Owner           string              `json:"owner"`
+	Epoch           uint64              `json:"epoch"`
+	Revision        uint64              `json:"revision"`
+	Transcript      string              `json:"transcript,omitempty"`
+	TranscriptBytes int64               `json:"transcript_bytes"`
+	Snapshot        string              `json:"snapshot,omitempty"`
+	Attachments     string              `json:"attachments,omitempty"`
+	Native          string              `json:"native,omitempty"`
+	Deleted         bool                `json:"deleted,omitempty"`
 }
 
 // Object forms an immutable, bounded DAG. References are committed before the

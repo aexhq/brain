@@ -93,6 +93,21 @@ Tools validates and dispatches; it does not run the agent loop or write transcri
 
 Modal, E2B, browser automation and resource tools are ordinary supplied packages under `tools/`. They use the same SDK, registration, schemas, credentials, bindings and limits as user tools. Provider implementations do not live in the core services or receive a privileged path. Remote browser automation is a tool package; BrowserTool is the transport for user-defined client execution.
 
+## Credential ownership
+
+Tools owns provider credential admission, decryption, validation and rotation.
+Brain owns model credential coordination and its private `$model` namespace.
+Brain routes provider inputs to Tools and commits the returned encrypted envelopes
+with the session through Storage before acknowledging admission. Tools receives
+only provider credential records; model records stay on the model execution path.
+Each owner has its own configured key provider. Storage persists opaque envelopes,
+including revocation tombstones and checkpoint recovery material, without keys.
+
+Shared cryptographic code is private infrastructure and accepts explicit domain,
+tenant, session and binding scope. It contains no session or authorization policy.
+Encrypted records belong to Storage's service contract and are excluded from public
+session JSON and generated schemas. There is no general decrypt endpoint.
+
 ## Public telemetry
 
 Telemetry is a public cross-component contract. Shared conventions define event/metric names, units, attributes, correlation and propagation. Go exposes `services/shared/telemetry`; the TypeScript SDK exposes configuration, context and instrumentation APIs. The CLI uses the SDK instrumentation. Pi reports model usage through its runtime protocol; Brain emits the corresponding session telemetry. Domain emitters stay beside their implementations.
@@ -108,8 +123,9 @@ services/
   shared/telemetry/              # Shared Go telemetry contract and bounded exporters
   brain/
     cmd/{brain,generate}/
+    internal/modelcredential/    # Model credential custody and policy
     api/                         # Public session types, authentication and generated OpenAPI
-    internal/{http,config,sessions,telemetry,credentialtests}/
+    internal/{http,config,sessions,telemetry}/
     distributed.go               # Four-service composition
   storage/
     client/                      # Session-facing Storage client; no local data files
@@ -117,6 +133,7 @@ services/
     archive/                     # Embedded archive adapters and checkpoints
     replication/                 # Bounded embedded synchronization worker
     api/                         # Owned wire types, client and chunk streams
+      credential/                # Opaque encrypted recovery record contract
     internal/
       dirlock/                   # Exclusive local-volume ownership
       sessions/metadata/         # Heads, tombstones, ownership and publication
@@ -127,7 +144,7 @@ services/
   tools/
     api/                         # Canonical invocation and browser executors
     registry/                    # Public Go tool authoring and binding API
-    internal/{server,hosted}/
+    internal/{server,hosted,credentials}/
     cmd/tools/main.go
   sandbox/
     api/
@@ -140,7 +157,7 @@ runtimes/
   {codex,opencode}/               # Existing embedded application integrations
 tools/                          # Ordinary supplied tool implementations
   {integrations,service,sandbox,browser,resources,mcp}/
-credentials/                     # Public encrypted credential capability
+internal/credentialcipher/       # Private, domain-independent AES-GCM and key loading
 clients/
   sdks/typescript/
   cli/

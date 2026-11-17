@@ -14,9 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aexhq/brain/credentials"
+	"github.com/aexhq/brain/internal/credentialcipher"
 	"github.com/aexhq/brain/runtimes/host"
 	core "github.com/aexhq/brain/services/brain/api"
+	"github.com/aexhq/brain/services/brain/internal/modelcredential"
 	"github.com/aexhq/brain/services/brain/internal/telemetry"
 	"github.com/aexhq/brain/services/storage/api"
 	"github.com/aexhq/brain/services/storage/local"
@@ -35,7 +36,7 @@ type Options struct {
 	}
 	MediaOrigins  []string
 	Store         Repository
-	Keys          credentials.Keys
+	Keys          credentialcipher.Keys
 	Tools         ToolExecutor
 	Factories     map[string]harness.Factory
 	Provider      func(context.Context, core.Session, *core.ModelCredential) (harness.Provider, error)
@@ -480,20 +481,16 @@ func (e *Engine) Create(ctx context.Context, g core.Grant, input core.CreateSess
 		s.Config.Tools = []string{}
 	}
 	var err error
-	if input.ModelCredential != nil {
-		s.CredentialBindings = append(s.CredentialBindings, credentials.ModelBinding)
-		value, _ := json.Marshal(input.ModelCredential)
-		// Copy before appending: admission must not mutate the caller's inputs.
-		input.Credentials = append(slices.Clone(input.Credentials), core.CredentialInput{Binding: credentials.ModelBinding, Value: value})
-	}
-	for _, credential := range input.Credentials {
-		if credential.Binding == credentials.ModelBinding && input.ModelCredential == nil {
-			return core.Session{}, core.E(core.Invalid, "model credentials require model_credential")
-		}
-	}
-	s.Credentials, err = credentials.Seal(ctx, e.opts.Keys, s, input.Credentials)
+	s.Credentials, err = e.opts.Tools.SealCredentials(ctx, s, input.Credentials)
 	if err != nil {
 		return core.Session{}, err
+	}
+	if input.ModelCredential != nil {
+		record, err := modelcredential.Seal(ctx, e.opts.Keys, s, input.ModelCredential)
+		if err != nil {
+			return core.Session{}, err
+		}
+		s.Credentials = append(s.Credentials, record)
 	}
 	s.CredentialBindings = nil
 	for _, record := range s.Credentials {

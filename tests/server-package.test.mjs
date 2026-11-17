@@ -282,6 +282,11 @@ test('remote SDK sessions use optional defaults and encrypted credential overrid
   await starting;
   t.after(() => server.stop());
   let client = new Brain(server.url, apiKey);
+  const modelKey = await readFile(path.join(options.dataDir, 'model-credential.key'));
+  const toolKey = await readFile(path.join(options.dataDir, 'tool-credential.key'));
+  assert.equal(modelKey.length, 32);
+  assert.equal(toolKey.length, 32);
+  assert.equal(modelKey.equals(toolKey), false, 'model and tool encryption keys share custody');
   const defaults = await client.create({ harness: Pi(), model: Model('openai/gpt-4.1-mini'), tools: [AwsS3(), Modal()] });
   const privateSession = await client.create({ harness: Pi(), model: Model('openai/gpt-4.1-mini'), tools: [
     AwsS3({ accessKeyId: 'session-s3-access', secretAccessKey: 'session-s3-private-secret', sessionToken: 'session-temporary-token', operations: ['read'] }),

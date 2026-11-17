@@ -3,7 +3,7 @@
 package brain
 
 import (
-	"github.com/aexhq/brain/credentials"
+	"github.com/aexhq/brain/internal/credentialcipher"
 	"github.com/aexhq/brain/runtimes/host"
 	core "github.com/aexhq/brain/services/brain/api"
 	"github.com/aexhq/brain/services/brain/internal/config"
@@ -33,7 +33,7 @@ type Content = core.Content
 type CreateSession = core.CreateSession
 type CredentialInput = core.CredentialInput
 type ModelCredential = core.ModelCredential
-type CredentialKeys = credentials.Keys
+type CredentialKeys = credentialcipher.Keys
 type KeyConfig = config.KeyConfig
 type ManagedTool = tools.Binding
 type Handler = tools.Handler

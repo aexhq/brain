@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"github.com/aexhq/brain/services/storage/api/credential"
 
 	core "github.com/aexhq/brain/services/brain/api"
 	"github.com/aexhq/brain/services/storage/api"
@@ -34,6 +35,9 @@ type Repository interface {
 // ToolExecutor applies authorization and dispatch policy outside scheduling.
 // Calls honor cancellation, do not retry, and return model-visible failures.
 type ToolExecutor interface {
+	SealCredentials(context.Context, core.Session, []core.CredentialInput) ([]credential.Record, error)
+	ValidateCredentials(context.Context, core.Session) error
+	RotateCredentials(context.Context, core.Session) ([]credential.Record, error)
 	Bind(context.Context, *core.Session) error
 	Describe(context.Context, core.Session) ([]core.Tool, error)
 	NeedsInspection(string) bool
