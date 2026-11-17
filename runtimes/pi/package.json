@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-ai": "1.2.0",
-    "@earendil-works/pi-coding-agent": "1.2.0",
+    "@earendil-works/pi-coding-agent": "1.5.2",
     "jiti": "2.7.0",
     "pi-mcp-adapter": "5.4.0",
     "pi-subagents": "0.80.0",
