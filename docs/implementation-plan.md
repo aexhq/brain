@@ -3,7 +3,7 @@
 The service-integration work is recorded in [12 Service integration readiness](plans/12-service-integration-readiness.md), extending [11 Application SDK and session-bound execution](plans/11-application-sdk.md) and [10 Published clients and subsystem boundaries](plans/10-modernization.md). Earlier work is in [08 Integration expansion](plans/08-integration-expansion.md) and [09 Delivery, documentation, and examples](plans/09-delivery-and-examples.md).
 
 - **Status:** In progress (local runtime, SDKs, HTTP/SSE tools, and archive adapters implemented)
-- **Architecture:** [ADR 0001](adr/0001-local-first-session-server.md)
+- **Architecture:** [Brain intents](intents.md)
 - **Release stages:** [Roadmap](roadmap.md)
 
 This index links the subsystem plans and tracks how they fit together.
@@ -80,7 +80,7 @@ Keep agent adapters and runnable payloads under `runtimes/`, separately from the
 
 ### Storage ownership and three-tier separation (2026-11-15)
 
-Status: implemented; CI gates merge and release. The product owner authorized implementation on 2026-11-15. [ADR 0001](adr/0001-local-first-session-server.md#storage-adapters-and-tiers) owns the architecture.
+Status: implemented; CI gates merge and release. The product owner authorized implementation on 2026-11-15. [Brain intents](intents.md#2-ownership-and-boundaries) owns the architecture.
 
 Storage owns generic storage operations across memory, local disk and external backends. The in-memory storage tier is entirely Storage-owned, including cached session data and transcripts, budgets, load coalescing, pinning and eviction. Brain owns orchestration and invokes Storage primitives; disposable copies and staging do not justify a second storage implementation in Brain. Runtime execution files remain Sandbox-owned.
 
@@ -99,7 +99,7 @@ Completion means Brain needs no storage-owned local data directory or independen
 
 ### Credential ownership
 
-Tools owns provider credential sealing, authorized decryption, recovery validation and rotation. Brain owns model credentials and routes provider inputs through the Tools contract before atomic session persistence. Separate key providers and disjoint authenticated binding namespaces keep model and tool custody distinct. Storage owns opaque encrypted records, checkpoints and revocation persistence. Shared crypto is private infrastructure under `internal/credentialcipher`; tool authors receive only their authorized binding credential. There is no public decrypt endpoint.
+The November 17 custody split is superseded by [Brain intents](intents.md#2-ownership-and-boundaries). Storage owns transparent encryption; the [roadmap](roadmap.md#intent-alignment) tracks the implementation change. Earlier implementation sequences in this document describe their historical scope and do not add design requirements.
 
 ### Public tool naming
 

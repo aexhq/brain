@@ -20,6 +20,12 @@ Brain is in active development. This page lists what you can use today, what's c
 
 The existing embedded Node/Go application package continues to ship Pi, Codex and OpenCode and keeps their complete tests. Distributed composition selects Pi only. Legacy persistence/provider qualification below applies to that embedded package unless the distributed entry explicitly names it.
 
+## Intent alignment
+
+**Planned — transparent credential storage:** move encryption, decryption and key management behind Storage's interface. Brain and Tools still use separate key providers and a shared cipher package. Use the existing configuration until that refactor is implemented; the revised intent does not change running behavior.
+
+**Planned — deployment alignment:** reconcile the four-process Compose implementation with Storage as an internal package responsibility. The current deployment remains available; separate processes do not establish separate credential trust requirements.
+
 ## Available today
 
 - **[Sessions](https://aexhq.github.io/brain/docs/guides/sessions/):** choose Pi, Codex or OpenCode, stream events, interrupt and resume turns, and recover sessions after a restart.
@@ -146,10 +152,10 @@ Brain is built in stages: a solid local session server first, then portable sess
 
 These documents are for contributors. They record how Brain is designed and how the work is split up.
 
-- [ADR 0001: Local-first ephemeral session server](https://github.com/aexhq/brain/blob/main/docs/adr/0001-local-first-session-server.md) records the architecture, ownership boundaries, and design decisions.
-- [ADR 0002: Subsystem contracts and published SDKs](https://github.com/aexhq/brain/blob/main/docs/adr/0002-subsystem-contracts-and-sdk-delivery.md) extends it with subsystem contracts and SDK delivery.
-- [ADR 0003: Application SDK, session bindings, and harness integration](https://github.com/aexhq/brain/blob/main/docs/adr/0003-application-sdk-and-session-bindings.md) selects application composition, session-bound integrations and shared native hosts.
-- [ADR 0004 Service integration readiness](https://github.com/aexhq/brain/blob/main/docs/adr/0004-service-integration-readiness.md) extends those decisions for dependent services and records implementation defaults.
+- [Brain intents](https://github.com/aexhq/brain/blob/main/docs/intents.md) records product intent and component ownership.
+- [ADR 0002: Subsystem contracts and published SDKs](https://github.com/aexhq/brain/blob/main/docs/adr/0002-subsystem-contracts-and-sdk-delivery.md) retains historical subsystem contracts and SDK delivery rationale.
+- [ADR 0003: Application SDK, session bindings, and harness integration](https://github.com/aexhq/brain/blob/main/docs/adr/0003-application-sdk-and-session-bindings.md) retains historical application composition, session bindings and host design.
+- [ADR 0004 Service integration readiness](https://github.com/aexhq/brain/blob/main/docs/adr/0004-service-integration-readiness.md) retains historical integration decisions and implementation defaults.
 - The [implementation plan](https://github.com/aexhq/brain/blob/main/docs/implementation-plan.md) breaks the work down across runtime, persistence, harnesses, tools, API, and operations.
 - Research: [integration options](https://github.com/aexhq/brain/blob/main/docs/research/integration-options.md), [harness feasibility probes](https://github.com/aexhq/brain/blob/main/docs/research/harness-probes.md), [application SDK architecture spikes](https://github.com/aexhq/brain/blob/main/docs/research/application-sdk-spikes.md), and [integration evidence](https://github.com/aexhq/brain/blob/main/docs/research/qualification.md).
 

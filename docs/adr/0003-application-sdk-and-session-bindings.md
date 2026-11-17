@@ -1,9 +1,9 @@
 # ADR 0003: Application SDK, session bindings, and harness integration
 
-> Service ownership, runtime placement, storage and telemetry decisions are superseded where they conflict by [ADR 0001](0001-local-first-session-server.md). This record retains historical rationale.
+> Historical context only. [Brain intents](../intents.md) is the source of truth for design direction; this record adds no requirements.
 
 
-- **Status:** Accepted for implementation on 2026-10-17. Go application SDK, managed and client-runtime tools, direct HTTP/reverse SSE plus HTTP/RPC bindings, bounded shared local harness hosts, and external-only arbitrary code execution selected. Hosts may contain different tenants, subject to session-isolation qualification. Server-default credentials and authorized session overrides must survive normal server restarts; encrypted credential storage in the session SQL database is selected, with external vault integration available through application providers. See [Selected decisions](#selected-decisions).
+- **Status:** Historical. Approved for implementation on 2026-10-17. Go application SDK, managed and client-runtime tools, direct HTTP/reverse SSE plus HTTP/RPC bindings, bounded shared local harness hosts, and external-only arbitrary code execution selected. Hosts may contain different tenants, subject to session-isolation qualification. Server-default credentials and authorized session overrides must survive normal server restarts; encrypted credential storage in the session SQL database is selected, with external vault integration available through application providers. See [Selected decisions](#selected-decisions).
 - **Date:** 2026-10-16
 - **Extends:** [ADR 0001](0001-local-first-session-server.md) and [ADR 0002](0002-subsystem-contracts-and-sdk-delivery.md).
 - **Scope:** Architecture and SDK semantics, not implementation, package names, or a final wire schema.

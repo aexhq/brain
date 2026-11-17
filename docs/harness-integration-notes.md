@@ -1,7 +1,7 @@
 # Harness integration and prompt caching notes
 
 - **Reviewed:** 2026-10-15
-- **Context:** Background research for [ADR 0001](adr/0001-local-first-session-server.md) and the [harness adapter plan](plans/03-harness-adapters.md).
+- **Context:** Background research for [Brain intents](intents.md) and the [harness adapter plan](plans/03-harness-adapters.md).
 
 ## Keep the public model small
 

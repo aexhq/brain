@@ -1,7 +1,7 @@
 # 01: Local runtime plan
 
 - **Release:** R0 ([Roadmap](../roadmap.md))
-- **Architecture:** [ADR 0001](../adr/0001-local-first-session-server.md)
+- **Architecture:** [Brain intents](../intents.md)
 
 Build a single Go server that runs local Pi sessions with SQLite metadata, append-only event and native state files, external HTTP/SSE tools, and OpenTelemetry instrumentation.
 
