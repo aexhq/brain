@@ -1,0 +1,53 @@
+---
+title: Dashboard
+description: Run the Brain dashboard, create sessions, follow live activity, and inspect tools and usage.
+---
+
+Use the dashboard to manage sessions in your Brain deployment from a browser.
+
+## Start the dashboard
+
+Start Brain with the [Docker quickstart](/docs/quickstart), then run these commands from the repository root with Node.js 24+:
+
+```sh
+npm --prefix clients/sdks/typescript ci --ignore-scripts
+npm --prefix clients/sdks/typescript run build
+npm --prefix sites/dashboard ci --ignore-scripts
+npm --prefix sites/dashboard run dev
+```
+
+Open `http://127.0.0.1:3100/`. Enter a Brain API token with access to the sessions you want to manage. The dashboard connects to Brain at `http://127.0.0.1:8080`; set `BRAIN_API_URL` in the dashboard process environment to use another deployment.
+
+Your token's permissions apply throughout the dashboard. Use a read-only token to inspect activity or a management token to create and change sessions. See [Authentication](/docs/guides/authentication) for issuing and scoping tokens.
+
+## Create a session and send a task
+
+1. Select **New session**. To choose your own session ID, open **Advanced options**; otherwise, an ID is generated for you.
+2. Set the model as `provider/model`, add instructions, and choose tools from your deployment's catalog. Supply a model API key if your deployment does not provide one.
+3. Select **Create session**, write a task, and select **Send message**. Use the attachment button to include files of up to 16 MiB each.
+
+The conversation shows responses and tool calls as the session progresses. Expand a tool call to inspect its input and result. Inspect a message to see its recorded event, or select an attachment to download it. Sending a follow-up while the session is running queues it for a later turn.
+
+If the connection drops while a message is being accepted, select **Retry same message** to retry with the same message identity. See [Session lifecycle](/docs/guides/sessions) for delivery and ordering behavior.
+
+## Inspect activity and usage
+
+The **Sessions** page filters and sorts the entries already loaded. Select **Load more** to include more entries, or use **Open by ID** below the table.
+
+Open a session to see its recent conversation. Use **Events** to page through older records and **Configuration** to inspect its model, instructions, and enabled tools. **Export loaded events** saves the activity currently loaded in the conversation as JSON.
+
+In **Usage**, select **Load full history** to read a snapshot of token usage across retained history. Refresh it after further activity. Unknown quantities stay marked as unknown; partial provider reports are identified. Check your model provider for monetary charges.
+
+Open **Tools** in the sidebar to inspect available descriptions and input schemas before choosing them for a new session.
+
+## Control a session
+
+Select **Interrupt** to stop an active turn. Select **Resume** on an interrupted or failed session to continue it. Use the session actions menu to close a session while keeping its history, or delete it and its resources. Confirm the chosen action in the dialog. If resource cleanup is pending, retry deletion when cleanup can complete.
+
+Use **Connection → Disconnect** to end browser access. Agent sessions retain their state.
+
+## Serve the dashboard
+
+Build with `npm --prefix sites/dashboard run build`, then run `npm --prefix sites/dashboard start`. Serve remote connections through HTTPS, preserve the incoming Host header, and allow unbuffered event streams through your reverse proxy.
+
+The [dashboard README](https://github.com/aexhq/brain/blob/main/sites/dashboard/README.md) covers deployment settings and verification. Follow [Operations](/docs/guides/operations) to monitor the Brain services.

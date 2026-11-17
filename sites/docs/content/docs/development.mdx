@@ -14,7 +14,7 @@ Python 3.11+ must also be available as `python` for the sandbox execution fixtur
 
 ## 1. Install workspace dependencies
 
-Install the locked dependencies for the three harness runners, TypeScript SDK, sandbox and browser services, and documentation site:
+Install the locked dependencies for the three harness runners, TypeScript SDK, sandbox and browser services, documentation site, and dashboard:
 
 ```sh
 node scripts/setup.mjs
@@ -53,8 +53,9 @@ It runs these steps in order and stops at the first failure:
 10. The three suites in `tests/journeys/` run the [end-to-end journeys](https://github.com/aexhq/brain/blob/main/tests/journeys/README.md) through installed clients and all three native harnesses, including browser attachment and the remote service.
 11. `node --test tests/platforms.test.mjs`: validates the platform deployment examples under `examples/platforms/`.
 12. `node --test tests/registry-artifacts.test.mjs`: tests the SDK release workflow's admission checks and registry publication, including partial uploads, registry outages, and version reuse.
-13. `npm --prefix website run build`: generates the derived docs pages and builds the static Next.js / Fumadocs export.
-14. `npm --prefix website test`: runs `website/scripts/site.test.mjs`.
+13. `npm --prefix sites/docs run build`: generates the derived docs pages and builds the static Next.js / Fumadocs export.
+14. `npm --prefix sites/docs test`: runs `sites/docs/scripts/site.test.mjs`.
+15. `npm --prefix sites/dashboard run build` and `npm --prefix sites/dashboard test`: builds the dashboard and verifies authentication, session workflows, reconnects, usage accounting, and mobile navigation in Chromium.
 
 ## 3. Regenerate contracts and docs
 
@@ -66,8 +67,8 @@ When you edit Go route declarations, wire structs, or shared Markdown sources, r
 go run ./services/brain/cmd/generate
 node clients/sdks/typescript/scripts/generate.mjs
 
-# Regenerate website/content/docs/** generated pages and website/public/openapi.json
-npm --prefix website run generate
+# Regenerate sites/docs/content/docs/** generated pages and sites/docs/public/openapi.json
+npm --prefix sites/docs run generate
 ```
 
 ## 4. Preview the documentation site
@@ -75,33 +76,35 @@ npm --prefix website run generate
 Regenerate the derived pages and start the local Next.js development server:
 
 ```sh
-npm --prefix website run dev
+npm --prefix sites/docs run dev
 ```
 
-Open `http://127.0.0.1:3000/docs`. To test the static production export locally, build it, run the site tests, and serve `website/out` on port 3000:
+Open `http://127.0.0.1:3000/docs`. To test the static production export locally, build it, run the site tests, and serve `sites/docs/out` on port 3000:
 
 ```sh
-npm --prefix website run build
-npm --prefix website test
-npm --prefix website start
+npm --prefix sites/docs run build
+npm --prefix sites/docs test
+npm --prefix sites/docs start
 ```
 
 ## Where to edit what
 
-Don't hand-edit generated files (`services/brain/api/openapi.json`, `runtimes/pi/src/generated.ts`, `clients/sdks/typescript/src/generated.ts`, `website/public/openapi.json`, or generated MDX pages). Edit the source of truth and run the corresponding generator:
+The dashboard lives in `sites/dashboard/`. Build the TypeScript SDK, then run `npm --prefix sites/dashboard run dev` to open it on port 3100. See the [dashboard guide](/docs/guides/dashboard) for connecting to a deployment and using the session workspace.
+
+Don't hand-edit generated files (`services/brain/api/openapi.json`, `runtimes/pi/src/generated.ts`, `clients/sdks/typescript/src/generated.ts`, `sites/docs/public/openapi.json`, or generated MDX pages). Edit the source of truth and run the corresponding generator:
 
 | Area | Source of truth | Regenerate with |
 | --- | --- | --- |
-| HTTP routes, summaries, and wire types | `services/brain/internal/http/contract.go` & `services/brain/api/types.go` | `go run ./services/brain/cmd/generate`, `node clients/sdks/typescript/scripts/generate.mjs`, then `npm --prefix website run generate` |
-| Harness & storage Go interfaces | `runtimes/host/harness.go`, `runtimes/host/process.go`, `services/storage/archive/*.go` | `npm --prefix website run generate` |
-| Model catalog | Pinned `@earendil-works/pi-coding-agent` in `runtimes/pi/package.json` (`runtimes/pi/scripts/model-catalog.mjs`) | `npm --prefix website run generate` |
-| Persistence guide | `docs/running-persistence.md` | `npm --prefix website run generate` |
-| Local tools walkthrough | `examples/tools/README.md` | `npm --prefix website run generate` |
-| Sandbox service guide | `tools/sandbox/README.md` | `npm --prefix website run generate` |
-| Resource service guide | `tools/resources/README.md` | `npm --prefix website run generate` |
-| Platform examples guide | `examples/platforms/README.md` | `npm --prefix website run generate` |
-| Roadmap | `docs/roadmap.md` | `npm --prefix website run generate` |
-| Docs pages & guides | `website/content/docs/**/*.mdx` | `npm --prefix website run build` |
+| HTTP routes, summaries, and wire types | `services/brain/internal/http/contract.go` & `services/brain/api/types.go` | `go run ./services/brain/cmd/generate`, `node clients/sdks/typescript/scripts/generate.mjs`, then `npm --prefix sites/docs run generate` |
+| Harness & storage Go interfaces | `runtimes/host/harness.go`, `runtimes/host/process.go`, `services/storage/archive/*.go` | `npm --prefix sites/docs run generate` |
+| Model catalog | Pinned `@earendil-works/pi-coding-agent` in `runtimes/pi/package.json` (`runtimes/pi/scripts/model-catalog.mjs`) | `npm --prefix sites/docs run generate` |
+| Persistence guide | `docs/running-persistence.md` | `npm --prefix sites/docs run generate` |
+| Local tools walkthrough | `examples/tools/README.md` | `npm --prefix sites/docs run generate` |
+| Sandbox service guide | `tools/sandbox/README.md` | `npm --prefix sites/docs run generate` |
+| Resource service guide | `tools/resources/README.md` | `npm --prefix sites/docs run generate` |
+| Platform examples guide | `examples/platforms/README.md` | `npm --prefix sites/docs run generate` |
+| Roadmap | `docs/roadmap.md` | `npm --prefix sites/docs run generate` |
+| Docs pages & guides | `sites/docs/content/docs/**/*.mdx` | `npm --prefix sites/docs run build` |
 
 Follow the [writing guide](https://github.com/aexhq/brain/blob/main/docs/writing.md) when you change the README, a docs page, or a shared Markdown source.
 

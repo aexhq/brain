@@ -4,7 +4,7 @@ Brain is in active development. This page lists what you can use today, what's c
 
 ## Distributed platform status
 
-**Available:** four Go services with Docker Compose; isolated Pi per session; HostedTool, RemoteTool and BrowserTool dispatch; TypeScript SDK/CLI; streamed attachments and allowlisted references; bounded recent transcript reads; memory/disk/external object tiers; disk/external metadata; shared adapters for filesystem, SQLite, S3/R2, DynamoDB and PostgreSQL/Supabase; public telemetry configuration and service trace propagation.
+**Available:** four Go services with Docker Compose; isolated Pi per session; HostedTool, RemoteTool and BrowserTool dispatch; TypeScript SDK/CLI; a [browser dashboard](https://aexhq.github.io/brain/docs/guides/dashboard/) for session management, live activity, tools and reported token usage; streamed attachments and allowlisted references; bounded recent transcript reads; memory/disk/external object tiers; disk/external metadata; shared adapters for filesystem, SQLite, S3/R2, DynamoDB and PostgreSQL/Supabase; public telemetry configuration and service trace propagation.
 
 **Verified with local fixtures:** Pi model protocol, all tool flavours, container isolation checks, restart/restore, tenant deletion boundaries, owner fencing, immutable publication, dirty-cache protection, adapter CAS and pagination. PostgreSQL, DynamoDB Local and an S3-compatible server exercise the external adapter contract. This is not live-provider qualification.
 

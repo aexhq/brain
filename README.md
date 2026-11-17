@@ -47,6 +47,7 @@ await brain.send(session.id, { type: 'user.message', text: 'Hello.' });
 | I want to… | Read |
 | --- | --- |
 | Run my first session | [Quickstart](https://aexhq.github.io/brain/docs/quickstart/) |
+| Manage sessions from a browser | [Dashboard](sites/dashboard/README.md) |
 | Understand how Brain runs a session | [Architecture](https://aexhq.github.io/brain/docs/architecture/) |
 | Stream events, interrupt turns, and resume sessions | [Session lifecycle](https://aexhq.github.io/brain/docs/guides/sessions/) |
 | Write a tool service | [Distributed tools](https://aexhq.github.io/brain/docs/tools/) |

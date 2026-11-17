@@ -5,8 +5,8 @@ import path from 'node:path';
 import { generateFiles } from 'fumadocs-openapi';
 import { createOpenAPI } from 'fumadocs-openapi/server';
 
-const root = fileURLToPath(new URL('../../', import.meta.url));
-const site = path.join(root, 'website');
+const root = fileURLToPath(new URL('../../../', import.meta.url));
+const site = path.join(root, 'sites/docs');
 const content = path.join(site, 'content/docs');
 const apiDir = path.join(content, 'api/generated');
 await mkdir(apiDir, { recursive: true });

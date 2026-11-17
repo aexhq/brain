@@ -1,6 +1,6 @@
 # Brain documentation site
 
-`website/` builds the static Brain documentation site using [Fumadocs](https://www.fumadocs.dev/), Next.js (static export), and MDX.
+`sites/docs/` builds the static Brain documentation site using [Fumadocs](https://www.fumadocs.dev/), Next.js (static export), and MDX.
 
 ## Local development
 
@@ -8,25 +8,25 @@ Requires Go `1.26+`, Node.js `24+`, and `npm`. From the repository root:
 
 ```sh
 npm --prefix runtimes/pi ci --ignore-scripts
-npm --prefix website ci --ignore-scripts
-npm --prefix website run dev
+npm --prefix sites/docs ci --ignore-scripts
+npm --prefix sites/docs run dev
 ```
 
-Open `http://127.0.0.1:3000/docs/`. `npm run dev` runs `website/scripts/generate.mjs` first to generate the OpenAPI endpoint pages, Go interface definitions, model catalog, and shared Markdown guides before starting Next.js. Re-run `npm --prefix website run generate` whenever you edit those upstream sources.
+Open `http://127.0.0.1:3000/docs/`. `npm run dev` runs `sites/docs/scripts/generate.mjs` first to generate the OpenAPI endpoint pages, Go interface definitions, model catalog, and shared Markdown guides before starting Next.js. Re-run `npm --prefix sites/docs run generate` whenever you edit those upstream sources.
 
 To build and verify the static export locally (requires Python 3 for the local preview server):
 
 ```sh
-npm --prefix website run build
-npm --prefix website test
-npm --prefix website start
+npm --prefix sites/docs run build
+npm --prefix sites/docs test
+npm --prefix sites/docs start
 ```
 
 ## Where content comes from
 
 | Source | Generated / published output |
 | --- | --- |
-| `website/content/docs/**/*.mdx` | Authored guides and reference pages |
+| `sites/docs/content/docs/**/*.mdx` | Authored guides and reference pages |
 | `services/brain/api/openapi.json` | `/docs/api/generated/*` and `/openapi.json` |
 | `internal/harness` & `internal/persistence` | `/docs/adapters/interfaces` |
 | Pinned Pi runtime model registry (`runtimes/pi`) | `/docs/reference/model-catalog` |
@@ -36,16 +36,16 @@ npm --prefix website start
 | `tools/resources/README.md` | `/docs/tools/resources` |
 | `examples/platforms/README.md` | `/docs/guides/platforms` |
 
-`website/scripts/generate.mjs` writes all generated MDX files (which are gitignored—never edit them by hand). If you change Go route definitions or wire types in `internal/api` or `services/brain/api`, run `go run ./services/brain/cmd/generate` from the repository root first.
+`sites/docs/scripts/generate.mjs` writes all generated MDX files (which are gitignored—never edit them by hand). If you change Go route definitions or wire types in `internal/api` or `services/brain/api`, run `go run ./services/brain/cmd/generate` from the repository root first.
 
 ## Static export
 
-`npm --prefix website run build` writes the static site to `website/out/`, including:
+`npm --prefix sites/docs run build` writes the static site to `sites/docs/out/`, including:
 
 - HTML pages under `/docs/*`
 - Prebuilt search index at `/api/search`
 - LLM-friendly Markdown exports at `/llms.txt`, `/llms-full.txt`, and `/llms.mdx/docs/*`
 
-Serve `website/out/` with any static file host that resolves directory `index.html` files and preserves extensionless files (`/api/search`, `/llms.txt`, `/llms-full.txt`).
+Serve `sites/docs/out/` with any static file host that resolves directory `index.html` files and preserves extensionless files (`/api/search`, `/llms.txt`, `/llms-full.txt`).
 
 For a subpath deployment, set `NEXT_PUBLIC_BASE_PATH=/brain` before **both** `build` and `test`. CI tests both the root export and the GitHub Pages `/brain` subpath, then deploys the verified artifact after all checks pass. The public site is published at [aexhq.github.io/brain/docs](https://aexhq.github.io/brain/docs/). Keep `NEXT_PUBLIC_BASE_PATH` unset during local development.

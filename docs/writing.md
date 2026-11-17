@@ -88,7 +88,7 @@ Avoid these words on every page, with three exceptions:
 - **Synonym cycling:** Calling one thing a session, a conversation, a thread, and a chat in turn. Use the word from [Terms](#terms) every time.
 - **Decoration:** Emoji, exclamation marks, and Title Case headings. Use sentence case for headings.
 
-`website/scripts/site.test.mjs` rejects the temporary states and the clearest of these words on the README, Introduction, and Architecture pages. The vocabulary drifts as products and models change. When a word shows up across several competing products or in model output, add it here, and add it to the test if it has no legitimate use on those pages.
+`sites/docs/scripts/site.test.mjs` rejects the temporary states and the clearest of these words on the README, Introduction, and Architecture pages. The vocabulary drifts as products and models change. When a word shows up across several competing products or in model output, add it here, and add it to the test if it has no legitimate use on those pages.
 
 Sources: Google's [voice and tone guide](https://developers.google.com/style/tone), Microsoft's [Use simple words, concise sentences](https://learn.microsoft.com/en-us/style-guide/word-choice/use-simple-words-concise-sentences), GitLab's [`Simplicity` lint rule](https://gitlab.com/gitlab-org/gitlab/-/blob/master/doc/.vale/gitlab_base/Simplicity.yml), Wikipedia's [Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing), and Kobak et al.'s [study of 15 million biomedical abstracts](https://doi.org/10.1126/sciadv.adt3813) (Science Advances, 2025).
 

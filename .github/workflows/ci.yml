@@ -87,7 +87,8 @@ jobs:
       - run: npm --prefix runtimes/codex ci --ignore-scripts
       - run: npm --prefix runtimes/opencode ci --ignore-scripts
       - run: npm --prefix clients/sdks/typescript ci --ignore-scripts
-      - run: npm --prefix website ci --ignore-scripts
+      - run: npm --prefix sites/docs ci --ignore-scripts
+      - run: npm --prefix sites/dashboard ci --ignore-scripts
       - run: npm --prefix tools/sandbox ci --ignore-scripts
       - run: npm --prefix tools/browser ci --ignore-scripts
       - run: npm --prefix tools/browser run install-browser
@@ -176,12 +177,12 @@ jobs:
         with:
           node-version: '24'
       - run: npm --prefix runtimes/pi ci --ignore-scripts
-      - run: npm --prefix website ci --ignore-scripts
-      - run: npm --prefix website run build
-      - run: npm --prefix website test
+      - run: npm --prefix sites/docs ci --ignore-scripts
+      - run: npm --prefix sites/docs run build
+      - run: npm --prefix sites/docs test
       - uses: actions/upload-pages-artifact@5f327015a708106f6f1b7c9a633901af30fe80cb
         with:
-          path: website/out
+          path: sites/docs/out
 
   # All verification jobs gate publication.
   build-test:

@@ -8,7 +8,7 @@ import { browserService, descriptor as remoteDescriptor } from "../../tools/brow
 const requireBrowser = createRequire(new URL("../../tools/browser/package.json", import.meta.url));
 const requireSDK = createRequire(new URL("../../bin/sdk-consumer/package.json", import.meta.url));
 const { chromium } = requireBrowser("playwright");
-const requireBuild = createRequire(new URL('../../website/package.json', import.meta.url));
+const requireBuild = createRequire(new URL('../../sites/docs/package.json', import.meta.url));
 // Exercise the installed SDK as a browser app bundles it, including telemetry.
 const bundle = await requireBuild('esbuild').build({entryPoints:[requireSDK.resolve('@aexhq/brain')],bundle:true,write:false,format:'esm',platform:'browser'});
 const sdkFiles = new Map([['index.js', bundle.outputFiles[0].contents]]);

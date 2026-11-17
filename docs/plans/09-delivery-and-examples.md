@@ -75,7 +75,7 @@ Continue the current Brain visual design. Reuse installed Tabs, Steps, Callout, 
 | API/SDK | Complete response schemas, errors, generated types, practical snippets | Go-owned contract and SDK sources |
 | Operations | Required resources, overload, shutdown, backup/restore, telemetry | Metrics/config code and measured reports |
 
-Extend `website/scripts/generate.mjs` to import tested snippets or descriptors when needed. Avoid a parallel hand-maintained integration manifest unless it replaces real duplication. Keep existing link/anchor, API, search, and Markdown-export tests. Add browser checks only for interactions new static tests cannot verify, such as deployed search or streamed application UI behavior.
+Extend `sites/docs/scripts/generate.mjs` to import tested snippets or descriptors when needed. Avoid a parallel hand-maintained integration manifest unless it replaces real duplication. Keep existing link/anchor, API, search, and Markdown-export tests. Add browser checks only for interactions new static tests cannot verify, such as deployed search or streamed application UI behavior.
 
 ## Application examples
 
