@@ -19,7 +19,7 @@ func TestSeparateGoApplication(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(module), 0600); err != nil {
 		t.Fatal(err)
 	}
-	source, err := os.ReadFile(filepath.Join(root, "testdata/application/main.go"))
+	source, err := os.ReadFile("testdata/application/main.go")
 	if err != nil {
 		t.Fatal(err)
 	}
