@@ -1,13 +1,13 @@
 # Lessons from the predecessor runtime
 
 - **Date:** 2026-10-15
-- **Context:** Architectural review comparing the previous Rust/Wasm Brain prototype ([ADR index][old-index]) with the current Go implementation ([ADR 0001](adr/0001-local-first-session-server.md)).
+- **Context:** Architectural review comparing the previous Rust/Wasm Brain prototype ([ADR index][old-index]) with the current Go implementation ([Brain intents](intents.md)).
 
 ## Summary of changes
 
 The current Brain server keeps the predecessor's best ideas—single-owner sessions, passive recovery, code-generated contracts, and strict error separation—while dropping its custom Environment framework, in-process extension runtime, and synchronous per-effect disk flushes.
 
-| Area | Predecessor (ADRs 009–057) | Current Brain ([ADR 0001](adr/0001-local-first-session-server.md)) |
+| Area | Predecessor (ADRs 009–057) | Current Brain ([Brain intents](intents.md)) |
 | --- | --- | --- |
 | **Durability** | Synchronous `fsync` before every effect and publication ([ADR-032][old-032], [ADR-035][old-035]). | Append locally first; upload checkpoints asynchronously in 64 KiB blocks. Machine loss can lose the unsynced tail, but known local write failures immediately abort the turn. |
 | **Storage layout** | Single canonical execution journal ([ADR-032][old-032]). | SQLite for session metadata; append-only event log for history; native harness files for model context. |

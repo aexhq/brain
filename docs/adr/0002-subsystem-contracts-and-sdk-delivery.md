@@ -1,9 +1,9 @@
 # ADR 0002: Subsystem contracts and published SDKs
 
-> Service ownership, runtime placement, storage and telemetry decisions are superseded where they conflict by [ADR 0001](0001-local-first-session-server.md). This record retains historical rationale.
+> Historical context only. [Brain intents](../intents.md) is the source of truth for design direction; this record adds no requirements.
 
 
-- **Status:** Accepted
+- **Status:** Historical
 - **Date:** 2026-10-16
 - **Extends:** [ADR 0001](0001-local-first-session-server.md)
 

@@ -11,7 +11,7 @@ Brain's documentation speaks at six levels, from a one-line pitch to design reco
 | **L2 Guide** | How do I do X? | Quickstart, guides, tool pages, SDK pages | Imperative, second person, task first | Exhaustive field tables, design rationale, "can't yet" disclaimers |
 | **L3 Reference** | What exactly does X accept and return? | HTTP API, host configuration, events, errors, models | Exact, neutral, complete | Narrative, promises, "currently", "yet", "for now" |
 | **L4 Roadmap** | What's next, and how mature is each part? | [Roadmap](roadmap.md) | Honest, forward-looking | Task breakdowns (link to the plans) |
-| **L5 Design** | Why is it built this way? How do I change it? | ADRs, plans, research, Development, Adapters, this guide | Technical, rationale first | Nothing |
+| **L5 Design** | Why is it built this way? How do I change it? | Intents, historical ADRs, plans, research, Development, Adapters, this guide | Technical, rationale first | Nothing |
 
 ## Rules
 
@@ -22,7 +22,9 @@ Brain's documentation speaks at six levels, from a one-line pitch to design reco
 5. **State design choices as features.** Write "Your application chooses the tools each session can use", not "Brain has no built-in tools".
 6. **Keep guarantees explicit.** Isolation and security properties are promises, not limitations: "A session-scoped token sees only its session."
 7. **Don't overclaim.** L0 and L1 never imply that planned work exists.
-8. **Reword facts for each level.** The same fact appears at several levels with different wording. Never paste a sentence from one level into another.
+8. **Keep intent authoritative.** `docs/intents.md` owns design direction in three layers: product intent, ownership and boundaries, and concrete preferences and derived choices. Historical ADRs are context; plans do not add requirements. Give direct requests and focused answers more weight than broad approval of long proposals.
+
+9. **Reword facts for each level.** The same fact appears at several levels with different wording. Never paste a sentence from one level into another.
 
 ## One fact at each level
 
