@@ -4,6 +4,7 @@ package api
 import (
 	"encoding/json"
 	core "github.com/aexhq/brain/services/brain/api"
+	"github.com/aexhq/brain/services/storage/api/credential"
 )
 
 type Kind string
@@ -15,20 +16,22 @@ const (
 )
 
 type Request struct {
-	Operation   string                  `json:"operation"`
-	Tenant      string                  `json:"tenant"`
-	Session     core.Session            `json:"session"`
-	Credentials []core.CredentialRecord `json:"credentials,omitempty"`
-	Scope       core.ToolScope          `json:"scope"`
-	Call        core.Call               `json:"call"`
+	Inputs      []core.CredentialInput `json:"inputs,omitempty"`
+	Operation   string                 `json:"operation"`
+	Tenant      string                 `json:"tenant"`
+	Session     core.Session           `json:"session"`
+	Credentials []credential.Record    `json:"credentials,omitempty"`
+	Scope       core.ToolScope         `json:"scope"`
+	Call        core.Call              `json:"call"`
 }
 type Frame struct {
-	Tools    []core.Tool     `json:"tools,omitempty"`
-	Session  *core.Session   `json:"session,omitempty"`
-	Progress json.RawMessage `json:"progress,omitempty"`
-	Result   *core.Result    `json:"result,omitempty"`
-	Error    *core.Error     `json:"error,omitempty"`
-	Done     bool            `json:"done,omitempty"`
+	Credentials []credential.Record `json:"credentials,omitempty"`
+	Tools       []core.Tool         `json:"tools,omitempty"`
+	Session     *core.Session       `json:"session,omitempty"`
+	Progress    json.RawMessage     `json:"progress,omitempty"`
+	Result      *core.Result        `json:"result,omitempty"`
+	Error       *core.Error         `json:"error,omitempty"`
+	Done        bool                `json:"done,omitempty"`
 }
 type Upload struct {
 	Tool   core.Tool `json:"tool"`

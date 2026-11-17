@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"github.com/aexhq/brain/services/storage/api/credential"
 	"io"
 	"strings"
 	"testing"
@@ -89,7 +90,7 @@ func TestCaptureRequiresCompleteStateAndPublishesOnlyCoherentCheckpoint(t *testi
 	client, records := service(t, memory.New(), memory.New())
 	w := &workspace.Workspace{Client: client, Owner: "brain", Epoch: 1, MaxBytes: 16 << 20}
 	s := core.Session{ID: "state", Tenant: "tenant", Status: "idle", Checkpoint: &core.Checkpoint{ID: core.ID()}}
-	s.Credentials = []core.CredentialRecord{{Binding: "model", Key: "test", Ciphertext: []byte("encrypted-test-state")}}
+	s.Credentials = []credential.Record{{Binding: "model", Key: "test", Ciphertext: []byte("encrypted-test-state")}}
 	if err := w.Create(ctx, s); err != nil {
 		t.Fatal(err)
 	}

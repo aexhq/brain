@@ -6,7 +6,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/aexhq/brain/credentials"
 	core "github.com/aexhq/brain/services/brain/api"
 	"github.com/aexhq/brain/services/storage/archive"
 )
@@ -196,7 +195,7 @@ func (e *Engine) hydrate(ctx context.Context, g core.Grant, id, reference string
 		return core.Session{}, err
 	}
 	defer e.opts.Store.DiscardRestore(staging)
-	if err := credentials.Validate(ctx, e.opts.Keys, m.Session); err != nil {
+	if err := e.ValidateCredentials(ctx, m.Session); err != nil {
 		return core.Session{}, err
 	}
 	if _, ok := e.opts.Factories[m.Session.Harness]; !ok {

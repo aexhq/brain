@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/aexhq/brain/credentials"
 	core "github.com/aexhq/brain/services/brain/api"
+	"github.com/aexhq/brain/services/tools/internal/credentials"
 	"reflect"
 	"regexp"
 )

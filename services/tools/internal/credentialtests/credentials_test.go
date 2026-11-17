@@ -5,10 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/aexhq/brain/credentials"
 	core "github.com/aexhq/brain/services/brain/api"
+	"github.com/aexhq/brain/services/storage/api/credential"
 	"github.com/aexhq/brain/services/storage/archive"
 	"github.com/aexhq/brain/services/storage/local"
+	"github.com/aexhq/brain/services/tools/internal/credentials"
 	"os"
 	"path/filepath"
 	"testing"
@@ -108,7 +109,7 @@ func TestCredentialRestartArchiveRotationRevocationAndTampering(t *testing.T) {
 	}
 	for _, mutate := range []func(*core.Session){func(s *core.Session) { s.Tenant = "two" }, func(s *core.Session) { s.ID = core.ID() }, func(s *core.Session) { s.Credentials[0].Ciphertext[0] ^= 1 }} {
 		copy := got
-		copy.Credentials = append([]core.CredentialRecord{}, got.Credentials...)
+		copy.Credentials = append([]credential.Record{}, got.Credentials...)
 		copy.Credentials[0].Ciphertext = append([]byte{}, got.Credentials[0].Ciphertext...)
 		mutate(&copy)
 		if _, err := credentials.Open(ctx, k, copy, "data"); err == nil {

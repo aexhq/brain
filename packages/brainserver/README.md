@@ -114,8 +114,9 @@ and expiry. See [resource tools](../../tools/resources/README.md) and
 [sandbox providers](../../tools/sandbox/README.md) for execution behavior.
 
 Session credentials are encrypted before storage and kept out of public config,
-events, and model arguments. The local encryption key is `<dataDir>/credential.key`;
-checkpoints omit it. Keep that key when moving or restoring private-credential sessions.
+events, and model arguments. The local model and provider encryption keys are `<dataDir>/model-credential.key` and
+`<dataDir>/tool-credential.key`; checkpoints omit them. Keep both keys when moving
+or restoring private-credential sessions.
 Server defaults remain in the server environment and are not recorded as session overrides.
 The API token belongs to the `local` tenant and can manage sessions.
 For application functions, use the exported `Tool` constructor in `brain.create()`.

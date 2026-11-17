@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	core "github.com/aexhq/brain/services/brain/api"
+	"github.com/aexhq/brain/services/storage/api/credential"
+	"github.com/aexhq/brain/services/tools/registry"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"io"
@@ -73,6 +75,7 @@ func (c *Client) Do(ctx context.Context, in Request, progress func(json.RawMessa
 	return out, e
 }
 func input(op string, s core.Session) Request {
+	s = tools.CredentialSession(s)
 	return Request{Operation: op, Tenant: s.Tenant, Session: s, Credentials: s.Credentials}
 }
 func (c *Client) Bind(ctx context.Context, s *core.Session) error {
@@ -117,4 +120,22 @@ func (c *Client) CloseSession(tenant, id string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, _ = c.Do(ctx, Request{Operation: "close", Tenant: tenant, Session: core.Session{ID: id}}, nil)
+}
+
+func (c *Client) SealCredentials(ctx context.Context, s core.Session, inputs []core.CredentialInput) ([]credential.Record, error) {
+	if len(inputs) == 0 {
+		return nil, nil
+	}
+	in := input("credentials.seal", s)
+	in.Inputs = inputs
+	f, err := c.Do(ctx, in, nil)
+	return f.Credentials, err
+}
+func (c *Client) ValidateCredentials(ctx context.Context, s core.Session) error {
+	_, err := c.Do(ctx, input("credentials.validate", s), nil)
+	return err
+}
+func (c *Client) RotateCredentials(ctx context.Context, s core.Session) ([]credential.Record, error) {
+	f, err := c.Do(ctx, input("credentials.rotate", s), nil)
+	return f.Credentials, err
 }

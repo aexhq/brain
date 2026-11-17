@@ -8,12 +8,14 @@ x-service: &service
   environment: &environment
     BRAIN_SERVICE_TOKEN: ${BRAIN_SERVICE_TOKEN:?Run node scripts/docker-env.mjs}
     BRAIN_API_KEY: ${BRAIN_API_KEY:?Run node scripts/docker-env.mjs}
-    BRAIN_ENCRYPTION_KEY: ${BRAIN_ENCRYPTION_KEY:?Run node scripts/docker-env.mjs}
     OTEL_EXPORTER_OTLP_ENDPOINT: http://telemetry:4318
   networks: [control]
 services:
   brain:
     <<: *service
+    environment:
+      <<: *environment
+      BRAIN_MODEL_ENCRYPTION_KEY: ${BRAIN_MODEL_ENCRYPTION_KEY:?Run node scripts/docker-env.mjs}
     image: brain:local-dev
     build: {context: ../.., target: brain}
     ports: [127.0.0.1:8080:8080]
@@ -47,6 +49,9 @@ services:
       retries: 12
   tools:
     <<: *service
+    environment:
+      <<: *environment
+      TOOLS_ENCRYPTION_KEY: ${TOOLS_ENCRYPTION_KEY:?Run node scripts/docker-env.mjs}
     image: brain-tools:local-dev
     build: {context: ../.., target: tools}
     volumes: [./tools.json:/config/tools.json:ro]

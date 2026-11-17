@@ -97,9 +97,9 @@ Refactor and verification sequence:
 
 Completion means Brain needs no storage-owned local data directory or independent storage cache, all three tiers and their resource lifecycle are Storage-owned, and orchestration still accesses them through the owning API. This plan does not introduce a separate service for each tier.
 
-### Credential ownership proposal
+### Credential ownership
 
-Provider credential ownership entirely within Tools, with transparent encryption behind a private scoped storage interface, remains proposed. The existing Brain admission / Tools decryption flow remains implemented and documented in `credentials/README.md`. Individual tool authors receive only their authorized binding credential and do not implement storage encryption. No public decrypt endpoint is planned.
+Tools owns provider credential sealing, authorized decryption, recovery validation and rotation. Brain owns model credentials and routes provider inputs through the Tools contract before atomic session persistence. Separate key providers and disjoint authenticated binding namespaces keep model and tool custody distinct. Storage owns opaque encrypted records, checkpoints and revocation persistence. Shared crypto is private infrastructure under `internal/credentialcipher`; tool authors receive only their authorized binding credential. There is no public decrypt endpoint.
 
 ### Public tool naming
 

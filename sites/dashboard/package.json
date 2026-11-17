@@ -16,7 +16,7 @@
   "dependencies": {
     "@aexhq/brain": "file:../../clients/sdks/typescript",
     "lucide-react": "1.50.0",
-    "next": "16.4.1",
+    "next": "16.4.6",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },

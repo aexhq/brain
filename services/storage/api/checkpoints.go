@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	core "github.com/aexhq/brain/services/brain/api"
+	"github.com/aexhq/brain/services/storage/api/credential"
 	"time"
 )
 
@@ -14,13 +15,13 @@ type Artifact struct {
 }
 
 type Manifest struct {
-	Credentials  []core.CredentialRecord `json:"credentials,omitempty"`
-	ID           string                  `json:"id"`
-	Tenant       string                  `json:"tenant"`
-	Session      core.Session            `json:"session"`
-	HistoryBytes int64                   `json:"history_bytes"`
-	Files        []Artifact              `json:"files"`
-	Time         time.Time               `json:"time"`
+	Credentials  []credential.Record `json:"credentials,omitempty"`
+	ID           string              `json:"id"`
+	Tenant       string              `json:"tenant"`
+	Session      core.Session        `json:"session"`
+	HistoryBytes int64               `json:"history_bytes"`
+	Files        []Artifact          `json:"files"`
+	Time         time.Time           `json:"time"`
 }
 
 type Snapshot struct {

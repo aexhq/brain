@@ -34,7 +34,7 @@ func newDistributed(ctx context.Context, o Options) (_ *Server, err error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	s := &Server{keys: o.Keys}
+	s := &Server{}
 	defer func() {
 		if err != nil {
 			for i := len(s.close) - 1; i >= 0; i-- {

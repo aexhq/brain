@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aexhq/brain/credentials"
 	core "github.com/aexhq/brain/services/brain/api"
+	"github.com/aexhq/brain/services/brain/internal/modelcredential"
 )
 
 type modelKeys struct{}
@@ -227,7 +227,7 @@ func TestModelOverridesFailClosedAndReferencesAreTenantScoped(t *testing.T) {
 		}
 		provider.Credentials = nil
 		// A missing encrypted row must fail instead of selecting the startup key.
-		if _, err := credentials.Open(ctx, o.Keys, provider, credentials.ModelBinding); err == nil {
+		if _, err := modelcredential.Open(ctx, o.Keys, provider); err == nil {
 			t.Fatal("missing model record accepted")
 		}
 	}

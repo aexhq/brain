@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/aexhq/brain/services/storage/api/credential"
 	"time"
 
 	core "github.com/aexhq/brain/services/brain/api"
@@ -180,19 +181,19 @@ func insertCredentials(ctx context.Context, tx *sql.Tx, session core.Session) er
 	}
 	return nil
 }
-func (s *SQLite) credentials(ctx context.Context, session core.Session) ([]core.CredentialRecord, error) {
+func (s *SQLite) credentials(ctx context.Context, session core.Session) ([]credential.Record, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT data FROM credentials WHERE session=? AND tenant=? ORDER BY binding`, core.SessionKey(session.Tenant, session.ID), session.Tenant)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	result := []core.CredentialRecord{}
+	result := []credential.Record{}
 	for rows.Next() {
 		var data []byte
 		if err := rows.Scan(&data); err != nil {
 			return nil, err
 		}
-		var record core.CredentialRecord
+		var record credential.Record
 		if err := json.Unmarshal(data, &record); err != nil {
 			return nil, err
 		}
