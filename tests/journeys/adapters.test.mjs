@@ -18,7 +18,7 @@ async function setup(t, harness, options = {}) {
 
 for (const harness of ["pi", ...adapters]) test(`${harness}: native image inputs retain pixels through passive cold recovery`, budget, async t => {
   const f = harness === "pi" ? await fixture(t, binaries, { api: "openai-responses", persistence: {} }) : await setup(t, harness, { persistence: {} });
-  const png = await readFile(path.join(root, "testdata/image.png"));
+  const png = await readFile(new URL("./testdata/image.png", import.meta.url));
   let fetched = 0;
   const images = await f.listen((_req, res) => { fetched++; res.writeHead(200, { "content-type": "image/png" }); res.end(png); });
   f.settings.media_origins = [images.url];
